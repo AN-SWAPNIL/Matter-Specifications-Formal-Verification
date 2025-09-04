@@ -294,11 +294,41 @@ Retrieved relevant context:
                     clean_response = clean_response[:-3]  # Remove ```
                 clean_response = clean_response.strip()
                 
+                # Check if response looks truncated
+                if len(response) > 30000 and not clean_response.endswith('}'):
+                    logger.warning(f"Response for {cluster_name} appears truncated ({len(response)} chars)")
+                    # Try to find the last complete JSON object
+                    brace_count = 0
+                    last_valid_pos = 0
+                    for i, char in enumerate(clean_response):
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                last_valid_pos = i + 1
+                                break
+                    
+                    if last_valid_pos > 0:
+                        clean_response = clean_response[:last_valid_pos]
+                        logger.info(f"Attempting to parse truncated response up to position {last_valid_pos}")
+                
                 cluster_info = json.loads(clean_response)
                 return cluster_info
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parsing error for {cluster_name}: {e}")
-                logger.error(f"LLM response: {response[:500]}...")
+                logger.error(f"LLM response length: {len(response)} chars")
+                logger.error(f"LLM response preview: {response[:500]}...")
+                logger.error(f"LLM response ending: ...{response[-200:]}")
+                
+                # Try alternative parsing strategies
+                logger.info(f"Attempting alternative JSON repair for {cluster_name}")
+                repaired_json = self._attempt_json_repair(response, cluster_name)
+                if repaired_json:
+                    return repaired_json
+                
+                # If all else fails, use fallback
+                logger.warning(f"Using fallback extraction for {cluster_name}")
                 return self._create_fallback_cluster_info(cluster_text)
                 
         except Exception as e:
@@ -387,6 +417,95 @@ TEXT TO ANALYZE ({len(cluster_text)} characters):
             logger.error(f"Error in direct extraction for {cluster_name}: {e}")
             return self._create_fallback_cluster_info(cluster_text)
     
+    def _attempt_json_repair(self, response: str, cluster_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Attempt to repair malformed JSON response
+        
+        Args:
+            response: Raw LLM response
+            cluster_name: Name of the cluster for logging
+            
+        Returns:
+            Parsed JSON if repair successful, None otherwise
+        """
+        try:
+            # Clean response
+            clean_response = response.strip()
+            if clean_response.startswith('```json'):
+                clean_response = clean_response[7:]
+            if clean_response.endswith('```'):
+                clean_response = clean_response[:-3]
+            clean_response = clean_response.strip()
+            
+            # Strategy 1: Find the last complete JSON structure
+            brace_count = 0
+            last_valid_pos = 0
+            in_string = False
+            escape_next = False
+            
+            for i, char in enumerate(clean_response):
+                if escape_next:
+                    escape_next = False
+                    continue
+                    
+                if char == '\\':
+                    escape_next = True
+                    continue
+                    
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                    
+                if not in_string:
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            last_valid_pos = i + 1
+                            break
+            
+            if last_valid_pos > 0:
+                truncated_response = clean_response[:last_valid_pos]
+                logger.info(f"Attempting to parse truncated JSON for {cluster_name} (length: {last_valid_pos})")
+                return json.loads(truncated_response)
+            
+            # Strategy 2: Try to close unclosed braces
+            open_braces = clean_response.count('{') - clean_response.count('}')
+            if open_braces > 0:
+                repaired_response = clean_response + '}' * open_braces
+                logger.info(f"Attempting to close {open_braces} unclosed braces for {cluster_name}")
+                return json.loads(repaired_response)
+            
+            # Strategy 3: Extract just the cluster_info section if it's complete
+            cluster_info_start = clean_response.find('"cluster_info"')
+            if cluster_info_start > 0:
+                # Find the opening brace for cluster_info
+                brace_start = clean_response.find('{', cluster_info_start)
+                if brace_start > 0:
+                    brace_count = 0
+                    end_pos = brace_start
+                    for i in range(brace_start, len(clean_response)):
+                        if clean_response[i] == '{':
+                            brace_count += 1
+                        elif clean_response[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_pos = i + 1
+                                break
+                    
+                    if brace_count == 0:
+                        cluster_info_json = clean_response[brace_start:end_pos]
+                        minimal_json = '{"cluster_info": ' + cluster_info_json + '}'
+                        logger.info(f"Attempting to extract cluster_info section for {cluster_name}")
+                        return json.loads(minimal_json)
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"JSON repair failed for {cluster_name}: {e}")
+            return None
+    
     def _create_fallback_cluster_info(self, cluster_text: str) -> Dict[str, Any]:
         """
         Create fallback cluster info when extraction fails
@@ -437,6 +556,7 @@ TEXT TO ANALYZE ({len(cluster_text)} characters):
         
         # Try to create vector store and use RAG if successful
         vector_store = self.create_vector_store(cluster_text)
+        # vector_store = None  # Disable RAG for now due to instability
         
         if vector_store:
             logger.info("Using RAG approach for extraction")

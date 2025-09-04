@@ -25,8 +25,9 @@ from langchain.schema import Document
 
 # Configuration
 from config import (
-    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_TEMPERATURE,
-    CLUSTER_CATEGORIES
+    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_TEMPERATURE, GEMINI_MAX_OUTPUT_TOKENS,
+    CLUSTER_CATEGORIES, EMBEDDINGS_MODEL, CHUNK_SIZE, CHUNK_OVERLAP, VECTOR_SEARCH_K,
+    FSM_GENERATION_PROMPT_TEMPLATE, PROMELA_GENERATION_PROMPT_TEMPLATE
 )
 
 # Configure logging
@@ -128,7 +129,7 @@ class ClusterFSMGenerator:
                 model=GEMINI_MODEL,
                 google_api_key=GOOGLE_API_KEY,
                 temperature=GEMINI_TEMPERATURE,
-                max_output_tokens=8192  # Increase token limit for complete responses
+                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS
             )
             self.embeddings = GoogleGenerativeAIEmbeddings(
                 model="models/embedding-001",
@@ -160,97 +161,13 @@ class ClusterFSMGenerator:
         Returns:
             Formatted prompt string
         """
-        cluster_data = cluster_info.get('cluster_info', {})
-        cluster_name = cluster_data.get('cluster_name', 'Unknown')
-        cluster_id = cluster_data.get('cluster_id', 'Unknown')
-        category = cluster_info.get('metadata', {}).get('category', 'Unknown')
+        # Convert cluster_info to a nicely formatted JSON string
+        cluster_info_str = json.dumps(cluster_info, indent=2, ensure_ascii=False)
         
-        # Extract key information
-        attributes = cluster_data.get('attributes', [])
-        commands = cluster_data.get('commands', [])
-        events = cluster_data.get('events', [])
-        features = cluster_data.get('features', [])
-        
-        # Format attributes info
-        attr_info = "\n".join([
-            f"- {attr.get('name', 'Unknown')} (ID: {attr.get('id', 'N/A')}, Type: {attr.get('type', 'N/A')}, Access: {attr.get('access', 'N/A')})"
-            for attr in attributes
-        ]) if attributes else "None"
-        
-        # Format commands info
-        cmd_info = "\n".join([
-            f"- {cmd.get('name', 'Unknown')} (ID: {cmd.get('id', 'N/A')}, Direction: {cmd.get('direction', 'N/A')})"
-            for cmd in commands
-        ]) if commands else "None"
-        
-        # Format events info
-        event_info = "\n".join([
-            f"- {event.get('name', 'Unknown')} (ID: {event.get('id', 'N/A')}, Priority: {event.get('priority', 'N/A')})"
-            for event in events
-        ]) if events else "None"
-        
-        return f"""
-You are a formal methods expert creating a Finite State Machine (FSM) for a Matter IoT cluster.
-
-CLUSTER: {cluster_name} (ID: {cluster_id}, Category: {category})
-
-ATTRIBUTES: {attr_info}
-
-COMMANDS: {cmd_info}
-
-EVENTS: {event_info}
-
-TASK: Create a focused FSM model with essential states and transitions.
-
-Focus on these key states:
-1. Uninitialized - Before cluster setup
-2. Ready - Normal operation state  
-3. Processing - When handling commands
-4. Error - Error/fault state
-
-Include realistic transitions based on commands and attribute changes.
-
-REQUIRED JSON OUTPUT (must be complete and valid):
-{{
-  "fsm_model": {{
-    "cluster_name": "{cluster_name}",
-    "cluster_id": "{cluster_id}",
-    "category": "{category}",
-    "states": [
-      {{
-        "name": "state_name",
-        "description": "brief description",
-        "is_initial": true/false,
-        "is_final": false,
-        "attributes_monitored": ["relevant_attributes"],
-        "invariants": ["key_conditions"]
-      }}
-    ],
-    "transitions": [
-      {{
-        "from_state": "source_state",
-        "to_state": "target_state", 
-        "trigger": "command_or_event_name",
-        "guard_condition": "when this transition is valid",
-        "actions": ["what_happens"],
-        "response_command": "response_if_any"
-      }}
-    ],
-    "initial_state": "initial_state_name",
-    "final_states": [],
-    "attributes_used": {[attr.get('name', '') for attr in attributes[:5]]},
-    "commands_handled": {[cmd.get('name', '') for cmd in commands[:5]]},
-    "events_generated": {[event.get('name', '') for event in events[:3]]},
-    "formal_properties": {{
-      "safety_properties": ["no_invalid_transitions", "state_consistency"],
-      "liveness_properties": ["eventually_ready", "command_completion"],
-      "invariants": ["state_valid", "attribute_consistency"]
-    }}
-  }}
-}}
-
-Generate ONLY complete valid JSON. Keep descriptions concise. Ensure all JSON brackets are properly closed.
-"""
+        # Use config template with full cluster information
+        return FSM_GENERATION_PROMPT_TEMPLATE.format(
+            cluster_info=cluster_info_str
+        )
     
     def generate_cluster_fsm(self, cluster_info: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -421,7 +338,7 @@ Generate ONLY complete valid JSON. Keep descriptions concise. Ensure all JSON br
     
     def save_fsm_model(self, fsm_model: Dict[str, Any], cluster_name: str, section_number: str = None):
         """
-        Save FSM model to JSON file and generate formal specification files (.tla, .pml)
+        Save FSM model to JSON file and generate Promela model for SPIN verification
         
         Args:
             fsm_model: Generated FSM model
@@ -439,20 +356,13 @@ Generate ONLY complete valid JSON. Keep descriptions concise. Ensure all JSON br
             else:
                 filename_base = f"{safe_name}"
             
-            # Save JSON file
+            # Save JSON file (primary format)
             json_filepath = os.path.join(self.output_dir, f"{filename_base}_fsm.json")
             with open(json_filepath, 'w', encoding='utf-8') as f:
                 json.dump(fsm_model, f, indent=2, ensure_ascii=False)
             logger.info(f"Saved FSM JSON to: {json_filepath}")
             
-            # Generate and save TLA+ specification
-            tla_content = self._generate_tla_specification(fsm_model, cluster_name)
-            tla_filepath = os.path.join(self.output_dir, f"{filename_base}_spec.tla")
-            with open(tla_filepath, 'w', encoding='utf-8') as f:
-                f.write(tla_content)
-            logger.info(f"Saved TLA+ spec to: {tla_filepath}")
-            
-            # Generate and save Promela model
+            # Generate and save Promela model for SPIN verification
             promela_content = self._generate_promela_model(fsm_model, cluster_name)
             promela_filepath = os.path.join(self.output_dir, f"{filename_base}_model.pml")
             with open(promela_filepath, 'w', encoding='utf-8') as f:
@@ -462,128 +372,158 @@ Generate ONLY complete valid JSON. Keep descriptions concise. Ensure all JSON br
         except Exception as e:
             logger.error(f"Error saving FSM model for {cluster_name}: {e}")
     
-    def _generate_tla_specification(self, fsm_model: Dict[str, Any], cluster_name: str) -> str:
+    def _generate_promela_model(self, fsm_model: Dict[str, Any], cluster_name: str) -> str:
         """
-        Generate TLA+ formal specification from FSM model
+        Generate Promela model for SPIN verification using AI analysis
         
         Args:
             fsm_model: FSM model dictionary
             cluster_name: Name of the cluster
             
         Returns:
-            TLA+ specification as string
+            AI-generated Promela model as string
+        """
+        try:
+            # Convert FSM model to JSON string for AI analysis
+            fsm_json = json.dumps(fsm_model, indent=2, ensure_ascii=False)
+            
+            # AI prompt for Promela generation
+            promela_prompt = f"""
+You are a formal verification expert. Convert this FSM model to a Promela model for SPIN verification.
+
+FSM MODEL:
+{fsm_json}
+
+TASK: Generate a complete Promela model that:
+1. **Models the exact states and transitions** from the FSM
+2. **Implements realistic state behavior** based on cluster functionality
+3. **Includes proper message passing** for commands and events
+4. **Adds verification properties** (safety, liveness)
+5. **Uses proper Promela syntax** for SPIN model checker
+
+EXAMPLE STRUCTURE (adapt to your FSM):
+```promela
+/*
+ * Promela Model for {cluster_name}
+ */
+
+#define MAX_USERS 3
+#define TIMEOUT 10
+
+mtype = {{ state1, state2, state3 }};  // Your actual states
+mtype = {{ cmd1, cmd2, cmd3 }};        // Your actual commands
+
+// Global variables based on your FSM
+mtype current_state = initial_state;
+chan commands = [5] of {{ mtype }};
+bool attribute_value = false;
+
+// Process modeling the cluster behavior
+active proctype ClusterFSM() {{
+    do
+    :: (current_state == state1) ->
+        if
+        :: commands?cmd1 -> current_state = state2;
+        :: timeout -> // handle timeouts
+        fi
+    :: (current_state == state2) ->
+        // implement other transitions
+    od
+}}
+
+// Verification properties
+ltl safety {{ [](!error_condition) }}
+ltl progress {{ []<>(current_state == target_state) }}
+```
+
+IMPORTANT: Generate the Promela code based on the ACTUAL FSM states, transitions, and behavior above. Do not use generic templates.
+
+Return ONLY the Promela code, no explanations."""
+
+            # Generate Promela using AI
+            response = self.llm.invoke(promela_prompt)
+            
+            # Clean up response (remove markdown if present)
+            promela_code = response.strip()
+            if promela_code.startswith("```"):
+                lines = promela_code.split('\n')
+                # Remove first and last lines if they contain ```
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                promela_code = '\n'.join(lines)
+            
+            return promela_code
+            
+        except Exception as e:
+            logger.warning(f"AI Promela generation failed for {cluster_name}: {e}")
+            # Fallback to basic structure
+            return self._generate_basic_promela_fallback(fsm_model, cluster_name)
+    
+    def _generate_basic_promela_fallback(self, fsm_model: Dict[str, Any], cluster_name: str) -> str:
+        """
+        Generate basic Promela model as fallback when AI generation fails
+        
+        Args:
+            fsm_model: FSM model dictionary
+            cluster_name: Name of the cluster
+            
+        Returns:
+            Basic Promela model as string
         """
         model = fsm_model.get("fsm_model", {})
-        cluster_id = model.get("cluster_id", "unknown")
         states = model.get("states", [])
-        transitions = model.get("transitions", [])
-        attributes = model.get("attributes_used", [])
         commands = model.get("commands_handled", [])
         
-        # Create safe module name
-        module_name = "".join(c for c in cluster_name if c.isalnum())
+        # Extract state names
+        state_names = [state.get("name", f"state{i}").lower().replace(" ", "_") 
+                      for i, state in enumerate(states)]
+        initial_state = model.get("initial_state", state_names[0] if state_names else "init").lower().replace(" ", "_")
         
-        # Generate state names
-        state_names = [state.get("name", f"State{i}") for i, state in enumerate(states)]
-        initial_state = model.get("initial_state", state_names[0] if state_names else "Init")
+        # Clean command names
+        clean_commands = []
+        for cmd in commands[:5]:  # Limit to 5 commands
+            if cmd and str(cmd).strip():
+                clean_cmd = str(cmd).lower().replace(" ", "_").replace("-", "_")
+                clean_cmd = "".join(c for c in clean_cmd if c.isalnum() or c == "_")
+                if clean_cmd and not clean_cmd[0].isdigit():
+                    clean_commands.append(clean_cmd)
         
-        tla_content = f'''---- MODULE {module_name}Cluster ----
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+        if not clean_commands:
+            clean_commands = ["nop"]
+        
+        return f'''/*
+ * Basic Promela Model for {cluster_name}
+ * Generated as fallback when AI generation failed
+ */
 
-{chr(92)}* Matter {cluster_name} Cluster Specification
-{chr(92)}* Cluster ID: {cluster_id}
-{chr(92)}* Generated: {model.get("generation_timestamp", "unknown")}
+#define MAX_COMMANDS 5
 
-{chr(92)}* Constants
-CONSTANTS
-    MAX_USERS,           {chr(92)}* Maximum concurrent users
-    MAX_COMMANDS,        {chr(92)}* Maximum pending commands
-    TIMEOUT_DURATION     {chr(92)}* Command timeout duration
+mtype = {{ {", ".join(state_names)} }};
+mtype = {{ {", ".join(clean_commands)} }};
 
-{chr(92)}* Variables
-VARIABLES
-    cluster_state,       {chr(92)}* Current cluster state: {{{", ".join(f'"{s}"' for s in state_names)}}}
-    attribute_values,    {chr(92)}* Attribute value mappings
-    pending_commands,    {chr(92)}* Queue of pending commands
-    user_sessions,       {chr(92)}* Active user sessions
-    event_history,       {chr(92)}* Generated events history
-    error_conditions     {chr(92)}* Current error conditions
+mtype current_state = {initial_state};
+chan command_queue = [MAX_COMMANDS] of {{ mtype }};
+bool processing = false;
 
-{chr(92)}* Type definitions
-ClusterState == {{{", ".join(f'"{s}"' for s in state_names)}}}
-AttributeType == {{{", ".join(f'"{attr}"' for attr in attributes[:10]) if attributes else '"none"'}}}
-CommandType == {{{", ".join(f'"{cmd}"' for cmd in commands[:10]) if commands else '"nop"'}}}
+active proctype {cluster_name.replace(" ", "")}FSM() {{
+    do
+    :: (current_state == {initial_state}) ->
+        command_queue?_;
+        current_state = {state_names[1] if len(state_names) > 1 else initial_state};
+    :: else ->
+        current_state = {initial_state};
+    od
+}}
 
-{chr(92)}* Initial state predicate
-Init ==
-    /\\ cluster_state = "{initial_state}"
-    /\\ attribute_values = [attr \\in AttributeType |-> "default"]
-    /\\ pending_commands = <<>>
-    /\\ user_sessions = {{}}
-    /\\ event_history = <<>>
-    /\\ error_conditions = {{}}
-
+ltl safety {{ [](current_state != {initial_state} -> !processing) }}
+ltl progress {{ []<>(current_state == {initial_state}) }}
 '''
-
-        # Add transition predicates
-        backslash = chr(92)
-        for i, transition in enumerate(transitions[:10]):  # Limit to first 10 transitions
-            from_state = transition.get("from_state", "Unknown")
-            to_state = transition.get("to_state", "Unknown")
-            trigger = transition.get("trigger", f"action{i}")
-            guard = transition.get("guard_condition", "TRUE")
-            actions = transition.get("actions", [])
-            
-            # Handle trigger as list or string
-            if isinstance(trigger, list):
-                trigger_name = "_or_".join([str(t).replace(" ", "") for t in trigger[:3]])  # Limit to first 3
-            else:
-                trigger_name = str(trigger).replace(" ", "")
-            
-            tla_content += f'''{backslash}* Transition: {from_state} -> {to_state}
-{trigger_name}Action ==
-    /\\ cluster_state = "{from_state}"
-    /\\ {str(guard).replace("true", "TRUE").replace("false", "FALSE") if guard and str(guard) != "true" else "TRUE"}
-    /\\ cluster_state' = "{to_state}"
-    /\\ UNCHANGED <<attribute_values, pending_commands, user_sessions, event_history, error_conditions>>
-
-'''
-
-        # Add safety properties
-        tla_content += f'''{backslash}* Safety properties
-TypeInvariant ==
-    /\\ cluster_state \\in ClusterState
-    /\\ {backslash}A attr \\in DOMAIN attribute_values : attr \\in AttributeType
-    /\\ Len(pending_commands) <= MAX_COMMANDS
-
-SafetyInvariant ==
-    /\\ cluster_state \\in ClusterState
-    /\\ (cluster_state = "Error") => (Cardinality(error_conditions) > 0)
-
-{backslash}* Liveness properties
-EventualProgress ==
-    /\\ (cluster_state = "Processing") ~> (cluster_state \\in {{"Ready", "Error"}})
-
-{backslash}* Next state relation
-Next ==
-    {backslash}/ {f" {backslash}/ ".join([
-        f'{str(t.get("trigger", f"action{i}")).replace(" ", "") if isinstance(t.get("trigger"), str) else "_or_".join([str(x).replace(" ", "") for x in t.get("trigger", [f"action{i}"])[:3]])}Action'
-        for i, t in enumerate(transitions[:10])
-    ])}
-
-{backslash}* Specification
-Spec == Init /\\ [][Next]_<<cluster_state, attribute_values, pending_commands, user_sessions, event_history, error_conditions>>
-
-{backslash}* Fairness conditions
-Fairness == WF_<<cluster_state, attribute_values, pending_commands, user_sessions, event_history, error_conditions>>(Next)
-
-====
-'''
-        return tla_content
     
     def _generate_promela_model(self, fsm_model: Dict[str, Any], cluster_name: str) -> str:
         """
-        Generate Promela model for SPIN model checker
+        Generate Promela model for SPIN model checker using AI
         
         Args:
             fsm_model: FSM model dictionary
@@ -592,24 +532,103 @@ Fairness == WF_<<cluster_state, attribute_values, pending_commands, user_session
         Returns:
             Promela model as string
         """
+        try:
+            # Prepare the prompt with FSM model and cluster name
+            prompt = PROMELA_GENERATION_PROMPT_TEMPLATE.format(
+                fsm_model=fsm_model,
+                cluster_name=cluster_name
+            )
+            
+            # Generate Promela model using AI
+            logger.info(f"Generating Promela model for {cluster_name} using AI")
+            
+            # Use the same AI interface as FSM generation
+            llm = GoogleGenerativeAI(
+                model=GEMINI_MODEL,
+                google_api_key=GOOGLE_API_KEY,
+                temperature=GEMINI_TEMPERATURE,
+                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS
+            )
+            
+            response = llm.invoke(prompt)
+            promela_content = response.strip()
+            
+            # Validate that we got Promela content
+            if not promela_content or len(promela_content) < 100:
+                raise ValueError("Generated Promela content is too short or empty")
+            
+            # Basic validation - check for Promela syntax elements
+            required_elements = ["mtype", "proctype", "init"]
+            missing_elements = [elem for elem in required_elements if elem not in promela_content]
+            
+            if missing_elements:
+                logger.warning(f"Generated Promela missing elements: {missing_elements}")
+                # Fall back to template-based generation
+                return self._generate_fallback_promela_model(fsm_model, cluster_name)
+            
+            logger.info(f"Successfully generated AI-based Promela model for {cluster_name}")
+            return promela_content
+            
+        except Exception as e:
+            logger.error(f"Error generating AI-based Promela model for {cluster_name}: {e}")
+            # Fall back to template-based generation
+            return self._generate_fallback_promela_model(fsm_model, cluster_name)
+    
+    def _generate_fallback_promela_model(self, fsm_model: Dict[str, Any], cluster_name: str) -> str:
+        """
+        Generate fallback Promela model using templates (backup method)
+        
+        Args:
+            fsm_model: FSM model dictionary
+            cluster_name: Name of the cluster
+            
+        Returns:
+            Promela model as string
+        """
+        logger.info(f"Using fallback template for Promela model: {cluster_name}")
+        
         model = fsm_model.get("fsm_model", {})
         cluster_id = model.get("cluster_id", "unknown")
         states = model.get("states", [])
         transitions = model.get("transitions", [])
         commands = model.get("commands_handled", [])
         
-        # Flatten commands if they are nested lists
-        flat_commands = []
+        # Clean and prepare commands
+        clean_commands = []
         for cmd in commands[:8]:  # Limit to first 8
             if isinstance(cmd, list):
-                flat_commands.extend([str(c) for c in cmd[:3]])  # Limit nested items
+                clean_commands.extend([str(c) for c in cmd[:3]])
             else:
-                flat_commands.append(str(cmd))
+                clean_commands.append(str(cmd))
         
-        # Generate state enumeration
-        state_names = [state.get("name", f"state{i}").lower().replace(" ", "_") for i, state in enumerate(states)]
-        initial_state = model.get("initial_state", state_names[0] if state_names else "init").lower().replace(" ", "_")
+        # Clean command names for Promela
+        final_commands = []
+        for cmd in clean_commands:
+            if cmd and str(cmd).strip():
+                clean_cmd = str(cmd).lower().replace(" ", "_").replace("-", "_")
+                clean_cmd = "".join(c for c in clean_cmd if c.isalnum() or c == "_")
+                if clean_cmd and not clean_cmd[0].isdigit():
+                    final_commands.append(clean_cmd)
         
+        if not final_commands:
+            final_commands = ["nop"]
+        
+        # Clean state names
+        state_names = []
+        for i, state in enumerate(states):
+            state_name = state.get("name", f"state{i}").lower().replace(" ", "_")
+            state_name = "".join(c for c in state_name if c.isalnum() or c == "_")
+            if state_name and not state_name[0].isdigit():
+                state_names.append(state_name)
+        
+        if not state_names:
+            state_names = ["init", "ready", "error"]
+            
+        initial_state = model.get("initial_state", state_names[0]).lower().replace(" ", "_")
+        initial_state = "".join(c for c in initial_state if c.isalnum() or c == "_")
+        if not initial_state or initial_state[0].isdigit():
+            initial_state = state_names[0]
+
         promela_content = f'''/*
  * Promela Model for Matter {cluster_name} Cluster
  * Cluster ID: {cluster_id}
@@ -620,170 +639,77 @@ Fairness == WF_<<cluster_state, attribute_values, pending_commands, user_session
 #define MAX_USERS 3
 #define MAX_COMMANDS 5
 
-/* Message types */
-mtype = {{ {", ".join(f'{cmd.lower().replace(" ", "_")}' for cmd in flat_commands[:8]) if flat_commands else "nop"} }};
+/* Command types */
+mtype = {{ {", ".join(final_commands[:8])} }};
 
 /* State enumeration */
-mtype = {{ {", ".join(state_names)} }};
+mtype = {{ {", ".join(state_names[:8])} }};
 
 /* Global variables */
 mtype cluster_state = {initial_state};
 byte active_users = 0;
 bool error_condition = false;
 chan user_commands = [MAX_COMMANDS] of {{ mtype, byte }};
-chan cluster_events = [MAX_COMMANDS] of {{ mtype, byte }};
-chan security_alerts = [MAX_COMMANDS] of {{ mtype, byte }};
 
-/* User session structure */
-typedef UserSession {{
-    bool authenticated;
-    byte role;
-    byte session_id;
-}};
-
-UserSession users[MAX_USERS];
-
-/* Security context */
-typedef SecurityContext {{
-    byte threat_level;
-    bool access_granted;
-}};
-
-SecurityContext security;
-
-/* Initialize cluster */
-inline init_cluster() {{
-    cluster_state = {initial_state};
-    error_condition = false;
-    security.threat_level = 0;
-    security.access_granted = true;
-}}
-
-/* Process command with security checks */
-inline process_command(cmd, user_id) {{
-    if
-    :: (users[user_id].authenticated && security.access_granted) ->
-        atomic {{
-            if
-'''
-
-        # Add state transitions
-        for transition in transitions[:8]:  # Limit to first 8 transitions
-            from_state = transition.get("from_state", "unknown").lower().replace(" ", "_")
-            to_state = transition.get("to_state", "unknown").lower().replace(" ", "_")
-            trigger = transition.get("trigger", "unknown")
-            
-            # Handle trigger as list or string
-            if isinstance(trigger, list):
-                trigger_name = "_or_".join([str(t).lower().replace(" ", "_") for t in trigger[:3]])
-            else:
-                trigger_name = str(trigger).lower().replace(" ", "_")
-            
-            promela_content += f'''            :: (cluster_state == {from_state}) ->
-                cluster_state = {to_state};
-                cluster_events ! {trigger_name}, user_id;
-'''
-
-        promela_content += f'''            :: else -> 
-                security_alerts ! error, user_id;
-            fi
-        }}
-        cluster_state = {state_names[1] if len(state_names) > 1 else initial_state};
-        cluster_events ! cmd, user_id;
-    :: else -> 
-        security_alerts ! error, user_id;
-    fi
-}}
-
-/* User authentication process */
-proctype UserAuth(byte uid) {{
-    users[uid].session_id = uid;
-    
-    do
-    :: atomic {{
-        if
-        :: (active_users < MAX_USERS) ->
-            users[uid].authenticated = true;
-            users[uid].role = 1; /* default user role */
-            active_users++;
-            break;
-        :: else ->
-            printf("Max users reached{chr(92)}n");
-            break;
-        fi
-    }}
-    od;
-    
-    /* User activity loop */
-    do
-    :: user_commands ? cmd, _ ->
-        process_command(cmd, uid);
-    :: timeout ->
-        users[uid].authenticated = false;
-        active_users--;
-        break;
-    od
-}}
-
-/* Cluster state machine */
-proctype ClusterStateMachine() {{
+/* Main cluster state machine */
+active proctype ClusterStateMachine() {{
     mtype cmd;
     byte user_id;
     
-    init_cluster();
+    cluster_state = {initial_state};
     
     do
-    :: user_commands ? cmd, user_id ->
-        process_command(cmd, user_id);
-    :: timeout ->
-        if
-        :: (cluster_state == processing) ->
-            cluster_state = error;
-            security_alerts ! timeout, 0;
-        :: else -> skip;
-        fi
-    :: (cluster_state == error) ->
-        cluster_state = {initial_state};
-        printf("Cluster recovered from error{chr(92)}n");
-    od
-}}
+    :: user_commands?cmd, user_id ->
+        atomic {{
+            if'''
 
-/* Security monitor */
-proctype SecurityMonitor() {{
-    mtype alert_type;
-    byte context;
-    
-    do
-    :: security_alerts ? alert_type, context ->
-        security.threat_level++;
-        if
-        :: (security.threat_level > 3) ->
-            printf("CRITICAL SECURITY THREAT DETECTED{chr(92)}n");
-            security.access_granted = false;
-        :: else -> skip;
-        fi
+        # Add basic state transitions
+        for i, transition in enumerate(transitions[:6]):  # Limit transitions
+            from_state = transition.get("from_state", "unknown").lower().replace(" ", "_")
+            to_state = transition.get("to_state", "unknown").lower().replace(" ", "_")
+            
+            # Clean state names
+            from_state = "".join(c for c in from_state if c.isalnum() or c == "_")
+            to_state = "".join(c for c in to_state if c.isalnum() or c == "_")
+            
+            if from_state and to_state and from_state in state_names and to_state in state_names:
+                promela_content += f'''            :: (cluster_state == {from_state} && cmd == {final_commands[i % len(final_commands)]}) ->
+                cluster_state = {to_state};
+                printf("Transition: {from_state} -> {to_state}\\n");
+'''
+
+        promela_content += f'''            :: else ->
+                printf("Invalid transition or command\\n");
+            fi
+        }}
     :: timeout ->
         if
-        :: (security.threat_level > 0) ->
-            security.threat_level--;
-        :: else -> skip;
+        :: (cluster_state != {initial_state}) ->
+            cluster_state = {initial_state};
+            printf("Timeout: returning to initial state\\n");
+        :: else ->
+            skip;
         fi
     od
 }}
 
-/* LTL Properties for verification */
-ltl safety1 {{ [](cluster_state == processing -> <>(cluster_state == {initial_state} || cluster_state == error)) }}
-ltl safety2 {{ []((active_users > 0) -> <>(active_users == 0)) }}
-ltl security1 {{ [](security.threat_level == 4 -> <>security.threat_level < 4) }}
-ltl liveness1 {{ []<>(cluster_state == {initial_state}) }}
+/* User process */
+proctype User(byte uid) {{
+    do
+    :: user_commands!{final_commands[0]}, uid;
+    :: user_commands!{final_commands[1] if len(final_commands) > 1 else final_commands[0]}, uid;
+    :: skip;
+    od
+}}
 
-/* Main process */
+/* LTL properties */
+ltl safety {{ [](cluster_state == {initial_state} || cluster_state == {state_names[1] if len(state_names) > 1 else initial_state}) }}
+ltl liveness {{ []<>(cluster_state == {initial_state}) }}
+
 init {{
     atomic {{
         run ClusterStateMachine();
-        run SecurityMonitor();
-        run UserAuth(0);
-        run UserAuth(1);
+        run User(0);
     }}
 }}
 '''
@@ -989,8 +915,8 @@ def main():
         # Generate FSMs for all clusters
         logger.info("Starting FSM generation for all clusters...")
         results = generator.generate_all_fsms(
-            limit=3,  # Process all clusters - change to number for testing specific amount
-            skip_existing=False  # Skip clusters that already have FSM files
+            limit=5,  # Process all clusters - change to number for testing specific amount
+            skip_existing=True  # Skip clusters that already have FSM files
         )
         
         # Print summary

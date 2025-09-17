@@ -882,6 +882,58 @@ class ClusterFSMGenerator:
                 logger.error(f"  Response length: {len(clean_response)} characters")
                 logger.error(f"  First 500 chars: {clean_response[:500]}")
                 logger.error(f"  Last 500 chars: {clean_response[-500:]}")
+                
+                # Try to find and extract the problematic area around the error
+                try:
+                    lines = clean_response.split('\n')
+                    error_line = e.lineno - 1  # Convert to 0-based index
+                    start_line = max(0, error_line - 3)
+                    end_line = min(len(lines), error_line + 4)
+                    
+                    logger.error(f"  Context around error (lines {start_line + 1}-{end_line}):")
+                    for i in range(start_line, end_line):
+                        if i < len(lines):
+                            marker = " --> " if i == error_line else "     "
+                            logger.error(f"  {marker}Line {i + 1}: {repr(lines[i])}")
+                except Exception as context_error:
+                    logger.error(f"  Could not extract error context: {context_error}")
+                
+                # Try one more time with aggressive JSON repair
+                try:
+                    # Attempt to fix common JSON issues
+                    repaired_response = self._attempt_json_repair(clean_response)
+                    if repaired_response != clean_response:
+                        logger.info(f"Attempting JSON repair for {cluster_name}")
+                        fsm_model = json.loads(repaired_response)
+                        logger.info(f"Successfully repaired and parsed JSON for {cluster_name}")
+                        
+                        # Apply behavioral pattern fixes to improve accuracy
+                        fsm_model = MatterBehavioralPatternRecognizer.apply_all_pattern_fixes(fsm_model)
+                        
+                        # Apply validation and error correction
+                        fsm_model, validation_errors = FSMValidationAndCorrection.apply_validation_and_correction(fsm_model)
+                        
+                        if validation_errors:
+                            logger.warning(f"FSM validation errors for {cluster_name}: {validation_errors}")
+                            # Add validation errors to metadata for debugging
+                            if 'fsm_model' in fsm_model:
+                                fsm_model['fsm_model']['validation_errors'] = validation_errors
+                        
+                        # Add generation metadata
+                        if 'fsm_model' in fsm_model:
+                            fsm_model['fsm_model']['generation_timestamp'] = datetime.now().isoformat()
+                            fsm_model['fsm_model']['source_metadata'] = {
+                                'extraction_method': cluster_info.get('metadata', {}).get('extraction_method', 'Unknown'),
+                                'source_pages': cluster_info.get('metadata', {}).get('source_pages', 'Unknown'),
+                                'section_number': cluster_info.get('metadata', {}).get('section_number', 'Unknown')
+                            }
+                            fsm_model['fsm_model']['json_repaired'] = True
+                        
+                        logger.info(f"Successfully generated FSM for {cluster_name} (with JSON repair)")
+                        return fsm_model
+                except Exception as repair_error:
+                    logger.error(f"JSON repair also failed for {cluster_name}: {repair_error}")
+                
                 return self._create_fallback_fsm(cluster_info)
                 
         except Exception as e:
@@ -968,6 +1020,55 @@ class ClusterFSMGenerator:
                 "generation_error": "FSM generation failed - using fallback model"
             }
         }
+    
+    def _attempt_json_repair(self, json_string: str) -> str:
+        """
+        Attempt to repair common JSON syntax errors
+        
+        Args:
+            json_string: Malformed JSON string
+            
+        Returns:
+            Potentially repaired JSON string
+        """
+        repaired = json_string
+        
+        try:
+            # Fix common issues
+            # 1. Remove trailing commas before closing braces/brackets
+            import re
+            repaired = re.sub(r',(\s*[}\]])', r'\1', repaired)
+            
+            # 2. Fix missing quotes around keys (basic attempt)
+            repaired = re.sub(r'(\w+)(\s*:)', r'"\1"\2', repaired)
+            
+            # 3. Fix single quotes to double quotes
+            repaired = repaired.replace("'", '"')
+            
+            # 4. Fix common escape sequence issues
+            repaired = repaired.replace('\\"', '"')
+            repaired = re.sub(r'(?<!\\)"(?![\s,\]\}:])', r'\\"', repaired)
+            
+            # 5. Ensure proper string escaping
+            repaired = re.sub(r'\\([^"\\bnfrt/])', r'\\\\\\1', repaired)
+            
+            # 6. Fix missing closing braces (basic attempt)
+            open_braces = repaired.count('{')
+            close_braces = repaired.count('}')
+            if open_braces > close_braces:
+                repaired += '}' * (open_braces - close_braces)
+            
+            # 7. Fix missing closing brackets
+            open_brackets = repaired.count('[')
+            close_brackets = repaired.count(']')
+            if open_brackets > close_brackets:
+                repaired += ']' * (open_brackets - close_brackets)
+                
+        except Exception as e:
+            logger.debug(f"JSON repair error: {e}")
+            return json_string  # Return original if repair fails
+            
+        return repaired
     
     def save_fsm_model(self, fsm_model: Dict[str, Any], cluster_name: str, section_number: str = None):
         """

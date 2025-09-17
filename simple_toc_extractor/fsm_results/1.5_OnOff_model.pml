@@ -1,181 +1,129 @@
 /*
- * Promela Model for Matter On/Off Cluster
+ * Promela Model for Matter On/Off Cluster  
  * Cluster ID: 0x0006
- * Generated: 2025-09-03T15:04:29.072397
  * For verification with SPIN model checker
  */
 
 #define MAX_USERS 3
 #define MAX_COMMANDS 5
 
-/* Message types */
-mtype = { on, off, toggle, offwitheffect, onwithrecallglobalscene, onwithtimedoff };
+mtype = { Off, On, TimedOn, DelayedOff };
 
-/* State enumeration */
-mtype = { off, on, timedon, delayedoff };
+mtype = { OffCmd, OnCmd, ToggleCmd, OffWithEffectCmd, OnWithRecallGlobalSceneCmd, OnWithTimedOffCmd, nop };
 
-/* Global variables */
-mtype cluster_state = off;
-byte active_users = 0;
-bool error_condition = false;
-chan user_commands = [MAX_COMMANDS] of { mtype, byte };
-chan cluster_events = [MAX_COMMANDS] of { mtype, byte };
-chan security_alerts = [MAX_COMMANDS] of { mtype, byte };
+/* Global cluster state and attributes */
+mtype cluster_state = Off;
+bool OnOff = FALSE;
+bool GlobalSceneControl = FALSE;
+int OnTime = 0;
+int OffWaitTime = 0;
+bool StartUpOnOff = FALSE;
+chan user_commands = [MAX_COMMANDS] of { mtype, int, int };
 
-/* User session structure */
-typedef UserSession {
-    bool authenticated;
-    byte role;
-    byte session_id;
-};
-
-UserSession users[MAX_USERS];
-
-/* Security context */
-typedef SecurityContext {
-    byte threat_level;
-    bool access_granted;
-};
-
-SecurityContext security;
-
-/* Initialize cluster */
-inline init_cluster() {
-    cluster_state = off;
-    error_condition = false;
-    security.threat_level = 0;
-    security.access_granted = true;
-}
-
-/* Process command with security checks */
-inline process_command(cmd, user_id) {
+/* Command processing functions */
+inline void process_OnWithTimedOff(int onTime, int offWaitTime){
     if
-    :: (users[user_id].authenticated && security.access_granted) ->
-        atomic {
-            if
-            :: (cluster_state == off) ->
-                cluster_state = on;
-                cluster_events ! on, user_id;
-            :: (cluster_state == off) ->
-                cluster_state = on;
-                cluster_events ! toggle, user_id;
-            :: (cluster_state == off) ->
-                cluster_state = off;
-                cluster_events ! off, user_id;
-            :: (cluster_state == on) ->
-                cluster_state = off;
-                cluster_events ! off, user_id;
-            :: (cluster_state == on) ->
-                cluster_state = off;
-                cluster_events ! offwitheffect, user_id;
-            :: (cluster_state == on) ->
-                cluster_state = off;
-                cluster_events ! toggle, user_id;
-            :: (cluster_state == off) ->
-                cluster_state = on;
-                cluster_events ! onwithrecallglobalscene, user_id;
-            :: (cluster_state == on) ->
-                cluster_state = timedon;
-                cluster_events ! onwithtimedoff, user_id;
-            :: else -> 
-                security_alerts ! error, user_id;
-            fi
-        }
-        cluster_state = on;
-        cluster_events ! cmd, user_id;
-    :: else -> 
-        security_alerts ! error, user_id;
-    fi
+    :: cluster_state == Off && OnOff == FALSE && offWaitTime > 0 ->
+        OffWaitTime = min(OffWaitTime, offWaitTime);
+        cluster_state = DelayedOff;
+    :: cluster_state == Off && OnOff == FALSE && OnOffControl.AcceptOnlyWhenOn == 1 ->
+        /*do nothing*/
+    :: cluster_state == Off && OnOff == FALSE ->
+        OnOff = TRUE;
+        OnTime = max(OnTime, onTime);
+        OffWaitTime = offWaitTime;
+        cluster_state = TimedOn;
+    :: cluster_state == On ->
+        OnTime = max(OnTime, onTime);
+        OffWaitTime = offWaitTime;
+        cluster_state = TimedOn;
+    :: cluster_state == TimedOn ->
+        OnTime = max(OnTime, onTime);
+        OffWaitTime = offWaitTime;
+    :: cluster_state == DelayedOff ->
+        OffWaitTime = min(OffWaitTime, offWaitTime);
+    fi;
 }
 
-/* User authentication process */
-proctype UserAuth(byte uid) {
-    users[uid].session_id = uid;
-    
-    do
-    :: atomic {
-        if
-        :: (active_users < MAX_USERS) ->
-            users[uid].authenticated = true;
-            users[uid].role = 1; /* default user role */
-            active_users++;
-            break;
-        :: else ->
-            printf("Max users reached\n");
-            break;
-        fi
-    }
-    od;
-    
-    /* User activity loop */
-    do
-    :: user_commands ? cmd, _ ->
-        process_command(cmd, uid);
-    :: timeout ->
-        users[uid].authenticated = false;
-        active_users--;
-        break;
-    od
-}
 
-/* Cluster state machine */
-proctype ClusterStateMachine() {
+active proctype ClusterStateMachine() {
     mtype cmd;
-    byte user_id;
-    
-    init_cluster();
+    int param1, param2;
     
     do
-    :: user_commands ? cmd, user_id ->
-        process_command(cmd, user_id);
-    :: timeout ->
+    :: user_commands?cmd, param1, param2 ->
         if
-        :: (cluster_state == processing) ->
-            cluster_state = error;
-            security_alerts ! timeout, 0;
-        :: else -> skip;
-        fi
-    :: (cluster_state == error) ->
-        cluster_state = off;
-        printf("Cluster recovered from error\n");
+        :: cmd == OnCmd ->
+            OnOff = TRUE;
+            if
+            :: (OnTime > 0 && OffWaitTime > 0) -> OffWaitTime = 0;
+            fi;
+            cluster_state = On;
+        :: cmd == OffCmd ->
+            OnOff = FALSE;
+            if
+            :: OnTime > 0 -> OnTime = 0;
+            fi;
+            cluster_state = Off;
+        :: cmd == ToggleCmd ->
+            OnOff = !OnOff;
+            if
+            :: OnOff == FALSE && OnTime > 0 -> OnTime = 0;
+            :: OnOff == TRUE && OffWaitTime > 0 -> OffWaitTime = 0;
+            fi;
+            cluster_state = (OnOff ? On : Off);
+        :: cmd == OffWithEffectCmd ->
+            if
+            :: GlobalSceneControl == TRUE ->
+                /*store global scene*/
+                GlobalSceneControl = FALSE;
+                OnOff = FALSE;
+                OnTime = 0;
+            :: else -> OnOff = FALSE;
+            fi;
+            cluster_state = Off;
+        :: cmd == OnWithRecallGlobalSceneCmd ->
+            if
+            :: GlobalSceneControl == FALSE ->
+                /*Scenes cluster recalls global scene*/
+                GlobalSceneControl = TRUE;
+                if
+                :: OnTime == 0 && 1 /*timers supported*/ -> OffWaitTime = 0;
+                fi;
+                OnOff = TRUE;
+                cluster_state = On;
+            fi;
+        :: cmd == OnWithTimedOffCmd -> process_OnWithTimedOff(param1, param2);
+        fi;
+    :: cluster_state == TimedOn && OnTime == 0 ->
+        OnOff = FALSE;
+        cluster_state = DelayedOff;
+    :: cluster_state == DelayedOff && OffWaitTime == 0 ->
+        OffWaitTime = 0;
+        cluster_state = Off;
     od
 }
 
-/* Security monitor */
-proctype SecurityMonitor() {
-    mtype alert_type;
-    byte context;
-    
+proctype User(byte uid) {
     do
-    :: security_alerts ? alert_type, context ->
-        security.threat_level++;
-        if
-        :: (security.threat_level > 3) ->
-            printf("CRITICAL SECURITY THREAT DETECTED\n");
-            security.access_granted = false;
-        :: else -> skip;
-        fi
-    :: timeout ->
-        if
-        :: (security.threat_level > 0) ->
-            security.threat_level--;
-        :: else -> skip;
-        fi
+    :: user_commands!OnCmd, 0, 0;
+    :: user_commands!OffCmd, 0, 0;
+    :: user_commands!ToggleCmd, 0, 0;
+    :: user_commands!OffWithEffectCmd, 0, 0;
+    :: user_commands!OnWithRecallGlobalSceneCmd, 0, 0;
+    :: user_commands!OnWithTimedOffCmd, 10, 5;
     od
 }
 
-/* LTL Properties for verification */
-ltl safety1 { [](cluster_state == processing -> <>(cluster_state == off || cluster_state == error)) }
-ltl safety2 { []((active_users > 0) -> <>(active_users == 0)) }
-ltl security1 { [](security.threat_level == 4 -> <>security.threat_level < 4) }
-ltl liveness1 { []<>(cluster_state == off) }
+ltl properties {
+    G (OnOff == TRUE -> F (OnOff == FALSE));
+    G (OffWaitTime > 0 -> F (OffWaitTime == 0));
+    G (OnTime > 0 -> F (OnTime == 0));
+}
 
-/* Main process */
 init {
     atomic {
         run ClusterStateMachine();
-        run SecurityMonitor();
-        run UserAuth(0);
-        run UserAuth(1);
+        run User(0);
     }
 }

@@ -84,6 +84,605 @@ class FSMModel:
         if self.invariants is None:
             self.invariants = []
 
+class MatterBehavioralPatternRecognizer:
+    """Recognizes and fixes common Matter behavioral patterns to improve FSM accuracy for ALL cluster types"""
+    
+    @staticmethod
+    def fix_on_off_cluster_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix specific On/Off cluster behavioral patterns based on Matter spec"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Fix DelayedOff state semantics - should have OnOff=FALSE
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'DelayedOff':
+                # DelayedOff means device is OFF with countdown timer
+                state['description'] = "Device is off but OffWaitTime timer is counting down. OnOff attribute is FALSE."
+                state['invariants'] = ["OnOff == FALSE", "OffWaitTime > 0"]
+        
+        # Fix TimedOn expiry transition - should go directly to Off, not DelayedOff
+        for transition in fsm_model.get('transitions', []):
+            if (transition.get('from_state') == 'TimedOn' and 
+                transition.get('trigger') == 'OnTime timer expires'):
+                transition['to_state'] = 'Off'
+                transition['actions'] = ["OffWaitTime = 0", "OnOff = FALSE"]
+        
+        # Remove non-existent OFFONLY feature guards - only LT and DF exist
+        for transition in fsm_model.get('transitions', []):
+            guard = transition.get('guard_condition', '')
+            if 'OFFONLY' in guard:
+                transition['guard_condition'] = 'true'
+        
+        # Fix GlobalSceneControl invariants in On state - not always TRUE
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'On':
+                invariants = state.get('invariants', [])
+                state['invariants'] = [inv for inv in invariants if 'GlobalSceneControl == TRUE' not in inv]
+        
+        # Remove DefaultResponse (Interaction Model, not Application Cluster)
+        for transition in fsm_model.get('transitions', []):
+            if transition.get('response_command') == 'DefaultResponse':
+                transition['response_command'] = None
+        
+        return fsm_data
+    
+    @staticmethod
+    def fix_level_control_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix Level Control cluster patterns"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Level Control specific states: Off (CurrentLevel=null), On (Level>0), Moving
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'Off':
+                state['invariants'] = ["CurrentLevel == null", "OnOff == FALSE"]
+            elif state.get('name') == 'Moving':
+                state['description'] = "Level transition in progress with rate control"
+                state['invariants'] = ["transition_active == true", "rate > 0"]
+        
+        # Fix MoveToLevel behaviors with OnOff coupling
+        for transition in fsm_model.get('transitions', []):
+            if 'MoveToLevel' in transition.get('trigger', ''):
+                if 'WithOnOff' in transition.get('trigger', ''):
+                    transition['actions'].append("OnOff = (TargetLevel > 0)")
+        
+        return fsm_data
+    
+    @staticmethod
+    def fix_mode_based_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix Mode-based cluster patterns (Mode Select, operational modes, etc.)"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Mode clusters should have states corresponding to each mode value
+        # Fix startup behavior: should resume previous mode vs default mode
+        for transition in fsm_model.get('transitions', []):
+            if 'ChangeToMode' in transition.get('trigger', ''):
+                # Add mode validation
+                transition['guard_condition'] = 'requested_mode in supported_modes'
+                if 'mode validation' not in transition.get('actions', []):
+                    transition['actions'].append('validate mode is supported')
+        
+        return fsm_data
+    
+    @staticmethod
+    def fix_measurement_cluster_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix measurement/sensing cluster patterns"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Measurement clusters: Calibrating, Measuring, Fault states
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'Calibrating':
+                state['description'] = "Sensor calibration in progress"
+                state['invariants'] = ["calibration_active == true", "measurement_invalid == true"]
+            elif state.get('name') == 'Fault':
+                state['description'] = "Sensor fault detected, measurements invalid"
+                state['invariants'] = ["fault_detected == true", "measurement_valid == false"]
+        
+        return fsm_data
+    
+    @staticmethod
+    def fix_operational_state_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix Operational State cluster patterns"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Operational states: Stopped, Running, Paused, Error
+        standard_operational_states = ['Stopped', 'Running', 'Paused', 'Error']
+        
+        for state in fsm_model.get('states', []):
+            if state.get('name') in standard_operational_states:
+                if state.get('name') == 'Stopped':
+                    state['invariants'] = ["OperationalState == 0x00", "operation_active == false"]
+                elif state.get('name') == 'Running':
+                    state['invariants'] = ["OperationalState == 0x01", "operation_active == true"]
+                elif state.get('name') == 'Paused':
+                    state['invariants'] = ["OperationalState == 0x02", "operation_suspended == true"]
+                elif state.get('name') == 'Error':
+                    state['invariants'] = ["OperationalState == 0x03", "error_condition == true"]
+        
+        return fsm_data
+    
+    @staticmethod
+    def fix_identify_cluster_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix Identify cluster patterns"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Identify cluster: timer-based with 1-second resolution
+        for transition in fsm_model.get('transitions', []):
+            if 'IdentifyTime' in transition.get('trigger', '') and 'timer' in transition.get('trigger', ''):
+                # Identify timer decrements every 1 second (not 1/10 second like OnTime)
+                transition['actions'] = ["IdentifyTime = IdentifyTime - 1", "update identification display"]
+                
+        return fsm_data
+    
+    @staticmethod
+    def fix_door_lock_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix Door Lock cluster patterns"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Door Lock states: Locked, Unlocked, Unlatched, etc.
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'Locked':
+                state['invariants'] = ["LockState == 0x01", "door_locked == true"]
+            elif state.get('name') == 'Unlocked':
+                state['invariants'] = ["LockState == 0x02", "door_locked == false"]
+        
+        # Fix credential-based access
+        for transition in fsm_model.get('transitions', []):
+            if 'Lock' in transition.get('trigger', '') or 'Unlock' in transition.get('trigger', ''):
+                if 'credential validation' not in transition.get('actions', []):
+                    transition['actions'].append('validate credentials')
+        
+        return fsm_data
+    
+    @staticmethod
+    def fix_thermostat_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix Thermostat cluster patterns"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Thermostat modes: Off, Auto, Cool, Heat, etc.
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'Off':
+                state['invariants'] = ["SystemMode == 0x00", "heating_active == false", "cooling_active == false"]
+            elif state.get('name') == 'Heat':
+                state['invariants'] = ["SystemMode == 0x04", "heating_available == true"]
+            elif state.get('name') == 'Cool':
+                state['invariants'] = ["SystemMode == 0x03", "cooling_available == true"]
+        
+        return fsm_data
+    
+    @staticmethod
+    def fix_timer_based_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix timer-based behavioral patterns common across clusters"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Ensure timer attributes have proper resolution and behavior
+        timer_attributes = {
+            'OnTime': '1/10 second resolution, auto-decrements to 0',
+            'OffWaitTime': '1/10 second resolution, auto-decrements to 0', 
+            'IdentifyTime': '1 second resolution, auto-decrements to 0',
+            'DelayTime': '1/10 second resolution, for delayed operations',
+            'TransitionTime': '1/10 second resolution, for gradual changes'
+        }
+        
+        for transition in fsm_model.get('transitions', []):
+            actions = transition.get('actions', [])
+            trigger = transition.get('trigger', '')
+            
+            # Fix timer expiry semantics
+            for timer_attr in timer_attributes:
+                if f'{timer_attr} timer expires' in trigger or f'{timer_attr} == 0' in trigger:
+                    transition['guard_condition'] = f"{timer_attr} == 0"
+                    # Ensure transition happens when timer reaches 0
+                    if f"stop {timer_attr.lower()}" not in actions:
+                        actions.append(f"stop {timer_attr.lower()}")
+                
+                # Fix timer initialization
+                if f'set {timer_attr}' in str(actions).lower():
+                    for i, action in enumerate(actions):
+                        if timer_attr in action and '=' in action:
+                            # Ensure timer values are properly validated
+                            if 'validate' not in action:
+                                actions[i] = f"validate and {action}"
+        
+        return fsm_data
+    
+    @staticmethod
+    def fix_conditional_command_patterns(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Fix conditional command behaviors with proper if/then/else branches"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Look for commands with conditional behaviors and split into multiple transitions
+        commands_with_conditions = ['OffWithEffect', 'OnWithRecallGlobalScene', 'OnWithTimedOff']
+        
+        new_transitions = []
+        transitions_to_remove = []
+        
+        for transition in fsm_model.get('transitions', []):
+            trigger = transition.get('trigger', '')
+            
+            if trigger == 'OffWithEffect':
+                # Split into conditional branches based on GlobalSceneControl
+                transitions_to_remove.append(transition)
+                
+                # Branch 1: GlobalSceneControl == TRUE
+                new_transitions.append({
+                    "from_state": transition['from_state'],
+                    "to_state": "Off",
+                    "trigger": "OffWithEffect",
+                    "guard_condition": "GlobalSceneControl == TRUE",
+                    "actions": [
+                        "store global scene",
+                        "GlobalSceneControl = FALSE", 
+                        "OnOff = FALSE",
+                        "OnTime = 0"
+                    ],
+                    "response_command": None
+                })
+                
+                # Branch 2: GlobalSceneControl == FALSE
+                new_transitions.append({
+                    "from_state": transition['from_state'],
+                    "to_state": "Off", 
+                    "trigger": "OffWithEffect",
+                    "guard_condition": "GlobalSceneControl == FALSE",
+                    "actions": ["OnOff = FALSE"],
+                    "response_command": None
+                })
+            
+            elif trigger == 'OnWithRecallGlobalScene':
+                # Split based on GlobalSceneControl
+                transitions_to_remove.append(transition)
+                
+                # Branch 1: GlobalSceneControl == TRUE (discard command)
+                new_transitions.append({
+                    "from_state": transition['from_state'],
+                    "to_state": transition['from_state'],  # Stay in same state
+                    "trigger": "OnWithRecallGlobalScene",
+                    "guard_condition": "GlobalSceneControl == TRUE",
+                    "actions": ["discard command"],
+                    "response_command": None
+                })
+                
+                # Branch 2: GlobalSceneControl == FALSE (recall scene)
+                new_transitions.append({
+                    "from_state": transition['from_state'],
+                    "to_state": "On",
+                    "trigger": "OnWithRecallGlobalScene", 
+                    "guard_condition": "GlobalSceneControl == FALSE",
+                    "actions": [
+                        "Scenes cluster recalls global scene",
+                        "GlobalSceneControl = TRUE",
+                        "if (OnTime == 0 && timers supported) OffWaitTime = 0"
+                    ],
+                    "response_command": None
+                })
+        
+        # Remove old transitions and add new ones
+        for transition in transitions_to_remove:
+            fsm_model['transitions'].remove(transition)
+        
+        fsm_model['transitions'].extend(new_transitions)
+        
+        return fsm_data
+    
+    @staticmethod
+    def apply_all_pattern_fixes(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply all behavioral pattern fixes to improve accuracy for ALL cluster types"""
+        # Apply universal patterns first
+        fsm_data = MatterBehavioralPatternRecognizer.fix_timer_based_patterns(fsm_data)
+        fsm_data = MatterBehavioralPatternRecognizer.fix_conditional_command_patterns(fsm_data)
+        
+        # Extract cluster type from multiple possible sources
+        cluster_name = ''
+        if 'fsm_model' in fsm_data:
+            cluster_name = fsm_data['fsm_model'].get('cluster_name', '').lower()
+        if not cluster_name and 'cluster_info' in fsm_data:
+            cluster_name = fsm_data['cluster_info'].get('name', '').lower()
+        if not cluster_name and 'cluster_name' in fsm_data:
+            cluster_name = fsm_data['cluster_name'].lower()
+        
+        # Apply cluster-specific fixes based on identified type
+        if 'on/off' in cluster_name or 'onoff' in cluster_name:
+            fsm_data = MatterBehavioralPatternRecognizer.fix_on_off_cluster_patterns(fsm_data)
+        
+        if 'level' in cluster_name and 'control' in cluster_name:
+            fsm_data = MatterBehavioralPatternRecognizer.fix_level_control_patterns(fsm_data)
+        
+        if 'mode' in cluster_name or 'operational' in cluster_name:
+            fsm_data = MatterBehavioralPatternRecognizer.fix_mode_based_patterns(fsm_data)
+            fsm_data = MatterBehavioralPatternRecognizer.fix_operational_state_patterns(fsm_data)
+        
+        if any(keyword in cluster_name for keyword in ['temperature', 'pressure', 'humidity', 'illuminance', 'measurement']):
+            fsm_data = MatterBehavioralPatternRecognizer.fix_measurement_cluster_patterns(fsm_data)
+        
+        if 'identify' in cluster_name:
+            fsm_data = MatterBehavioralPatternRecognizer.fix_identify_cluster_patterns(fsm_data)
+        
+        if 'door' in cluster_name and 'lock' in cluster_name:
+            fsm_data = MatterBehavioralPatternRecognizer.fix_door_lock_patterns(fsm_data)
+        
+        if 'thermostat' in cluster_name:
+            fsm_data = MatterBehavioralPatternRecognizer.fix_thermostat_patterns(fsm_data)
+        
+        return fsm_data
+
+class FSMValidationAndCorrection:
+    """Validates and corrects FSM models to ensure specification compliance"""
+    
+    @staticmethod
+    def validate_fsm_structure(fsm_data: Dict[str, Any]) -> List[str]:
+        """Validate FSM structure and return list of errors"""
+        errors = []
+        
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            errors.append("Missing fsm_model key in FSM data")
+            return errors
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Check required fields
+        required_fields = ['cluster_name', 'cluster_id', 'states', 'transitions', 'initial_state']
+        for field in required_fields:
+            if field not in fsm_model:
+                errors.append(f"Missing required field: {field}")
+        
+        # Validate states
+        states = fsm_model.get('states', [])
+        if not states:
+            errors.append("No states defined")
+        else:
+            state_names = [s.get('name') for s in states]
+            initial_states = [s for s in states if s.get('is_initial', False)]
+            
+            if len(initial_states) != 1:
+                errors.append(f"Must have exactly one initial state, found {len(initial_states)}")
+            
+            if fsm_model.get('initial_state') not in state_names:
+                errors.append(f"Initial state '{fsm_model.get('initial_state')}' not found in states")
+        
+        # Validate transitions
+        transitions = fsm_model.get('transitions', [])
+        for i, transition in enumerate(transitions):
+            from_state = transition.get('from_state')
+            to_state = transition.get('to_state')
+            
+            if from_state not in state_names:
+                errors.append(f"Transition {i}: from_state '{from_state}' not found in states")
+            if to_state not in state_names:
+                errors.append(f"Transition {i}: to_state '{to_state}' not found in states")
+            
+            if not transition.get('trigger'):
+                errors.append(f"Transition {i}: missing trigger")
+        
+        return errors
+    
+    @staticmethod
+    def correct_common_fsm_errors(fsm_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Automatically correct common FSM modeling errors"""
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return fsm_data
+            
+        fsm_model = fsm_data['fsm_model']
+        
+        # Fix missing guard conditions
+        for transition in fsm_model.get('transitions', []):
+            guard_condition = transition.get('guard_condition')
+            # Handle missing, empty, or invalid guard conditions
+            if (not guard_condition or 
+                (isinstance(guard_condition, str) and guard_condition.strip() == '') or
+                (isinstance(guard_condition, bool) and guard_condition is True)):
+                transition['guard_condition'] = 'true'
+            elif isinstance(guard_condition, bool) and guard_condition is False:
+                transition['guard_condition'] = 'false'
+        
+        # Fix missing actions lists
+        for transition in fsm_model.get('transitions', []):
+            if not transition.get('actions'):
+                transition['actions'] = []
+        
+        # Fix missing attributes_monitored lists
+        for state in fsm_model.get('states', []):
+            if not state.get('attributes_monitored'):
+                state['attributes_monitored'] = []
+            if not state.get('invariants'):
+                state['invariants'] = []
+        
+        # Ensure lists instead of None values
+        list_fields = ['attributes_used', 'commands_handled', 'events_generated']
+        for field in list_fields:
+            if fsm_model.get(field) is None:
+                fsm_model[field] = []
+        
+        return fsm_data
+    
+    @staticmethod
+    def validate_matter_semantics(fsm_data: Dict[str, Any]) -> List[str]:
+        """Validate Matter-specific semantic correctness for ALL cluster types"""
+        errors = []
+        
+        if not isinstance(fsm_data, dict) or 'fsm_model' not in fsm_data:
+            return errors
+            
+        fsm_model = fsm_data['fsm_model']
+        cluster_name = fsm_model.get('cluster_name', '').lower()
+        
+        # Validate On/Off cluster semantics
+        if 'on/off' in cluster_name or 'onoff' in cluster_name:
+            errors.extend(FSMValidationAndCorrection._validate_onoff_semantics(fsm_model))
+        
+        # Validate Level Control cluster semantics  
+        if 'level' in cluster_name and 'control' in cluster_name:
+            errors.extend(FSMValidationAndCorrection._validate_level_control_semantics(fsm_model))
+        
+        # Validate Mode-based cluster semantics
+        if 'mode' in cluster_name or 'operational' in cluster_name:
+            errors.extend(FSMValidationAndCorrection._validate_mode_cluster_semantics(fsm_model))
+        
+        # Validate measurement cluster semantics
+        if any(keyword in cluster_name for keyword in ['temperature', 'pressure', 'humidity', 'illuminance', 'measurement']):
+            errors.extend(FSMValidationAndCorrection._validate_measurement_semantics(fsm_model))
+        
+        # Validate Door Lock cluster semantics
+        if 'door' in cluster_name and 'lock' in cluster_name:
+            errors.extend(FSMValidationAndCorrection._validate_door_lock_semantics(fsm_model))
+        
+        # Validate Thermostat cluster semantics
+        if 'thermostat' in cluster_name:
+            errors.extend(FSMValidationAndCorrection._validate_thermostat_semantics(fsm_model))
+        
+        # Validate Identify cluster semantics
+        if 'identify' in cluster_name:
+            errors.extend(FSMValidationAndCorrection._validate_identify_semantics(fsm_model))
+        
+        return errors
+    
+    @staticmethod
+    def _validate_onoff_semantics(fsm_model: Dict[str, Any]) -> List[str]:
+        """Validate On/Off cluster specific semantics"""
+        errors = []
+        
+        # Check DelayedOff state semantics
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'DelayedOff':
+                invariants = state.get('invariants', [])
+                if any('OnOff == TRUE' in inv for inv in invariants):
+                    errors.append("DelayedOff state should have OnOff == FALSE (device is off during countdown)")
+        
+        # Check for non-existent OFFONLY feature
+        for transition in fsm_model.get('transitions', []):
+            guard = transition.get('guard_condition', '')
+            if 'OFFONLY' in guard:
+                errors.append("OFFONLY feature does not exist in On/Off cluster (only LT and DF features)")
+        
+        return errors
+    
+    @staticmethod  
+    def _validate_level_control_semantics(fsm_model: Dict[str, Any]) -> List[str]:
+        """Validate Level Control cluster semantics"""
+        errors = []
+        
+        # Check Off state should have CurrentLevel == null
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'Off':
+                invariants = state.get('invariants', [])
+                if not any('CurrentLevel == null' in inv for inv in invariants):
+                    errors.append("Off state in Level Control should have CurrentLevel == null")
+        
+        return errors
+    
+    @staticmethod
+    def _validate_mode_cluster_semantics(fsm_model: Dict[str, Any]) -> List[str]:
+        """Validate Mode-based cluster semantics"""
+        errors = []
+        
+        # Check that mode values are validated
+        for transition in fsm_model.get('transitions', []):
+            if 'ChangeToMode' in transition.get('trigger', ''):
+                guard = transition.get('guard_condition', '')
+                if 'supported_modes' not in guard and 'validate' not in guard:
+                    errors.append("ChangeToMode should validate mode is supported")
+        
+        return errors
+    
+    @staticmethod
+    def _validate_measurement_semantics(fsm_model: Dict[str, Any]) -> List[str]:
+        """Validate measurement cluster semantics"""
+        errors = []
+        
+        # Check Fault state semantics
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'Fault':
+                invariants = state.get('invariants', [])
+                if not any('measurement_valid == false' in inv for inv in invariants):
+                    errors.append("Fault state should have measurement_valid == false")
+        
+        return errors
+    
+    @staticmethod
+    def _validate_door_lock_semantics(fsm_model: Dict[str, Any]) -> List[str]:
+        """Validate Door Lock cluster semantics"""
+        errors = []
+        
+        # Check credential validation
+        for transition in fsm_model.get('transitions', []):
+            if 'Lock' in transition.get('trigger', '') or 'Unlock' in transition.get('trigger', ''):
+                actions = transition.get('actions', [])
+                if not any('credential' in action for action in actions):
+                    errors.append("Lock/Unlock operations should validate credentials")
+        
+        return errors
+    
+    @staticmethod
+    def _validate_thermostat_semantics(fsm_model: Dict[str, Any]) -> List[str]:
+        """Validate Thermostat cluster semantics"""
+        errors = []
+        
+        # Check that heating/cooling states validate capability
+        for state in fsm_model.get('states', []):
+            if state.get('name') == 'Heat':
+                invariants = state.get('invariants', [])
+                if not any('heating_available' in inv for inv in invariants):
+                    errors.append("Heat state should check heating_available")
+        
+        return errors
+    
+    @staticmethod
+    def _validate_identify_semantics(fsm_model: Dict[str, Any]) -> List[str]:
+        """Validate Identify cluster semantics"""
+        errors = []
+        
+        # Check IdentifyTime timer resolution (1 second, not 1/10 second)
+        for transition in fsm_model.get('transitions', []):
+            actions = transition.get('actions', [])
+            for action in actions:
+                if 'IdentifyTime' in action and '0.1' in action:
+                    errors.append("IdentifyTime uses 1-second resolution, not 1/10 second")
+        
+        return errors
+    
+    @staticmethod
+    def apply_validation_and_correction(fsm_data: Dict[str, Any]) -> tuple[Dict[str, Any], List[str]]:
+        """Apply all validation and correction steps"""
+        # First, correct common structural errors
+        fsm_data = FSMValidationAndCorrection.correct_common_fsm_errors(fsm_data)
+        
+        # Then validate structure
+        structural_errors = FSMValidationAndCorrection.validate_fsm_structure(fsm_data)
+        
+        # Finally validate Matter semantics
+        semantic_errors = FSMValidationAndCorrection.validate_matter_semantics(fsm_data)
+        
+        all_errors = structural_errors + semantic_errors
+        return fsm_data, all_errors
+
 class ClusterFSMGenerator:
     """Generates FSM models for Matter clusters using Gemini AI"""
     
@@ -195,23 +794,38 @@ class ClusterFSMGenerator:
             try:
                 # Clean response by removing code block markers if present
                 clean_response = response.strip()
+                logger.debug(f"Original response length for {cluster_name}: {len(response)} characters")
                 
                 # Handle multiple code block formats
                 if clean_response.startswith('```json'):
                     clean_response = clean_response[7:]  # Remove ```json
+                    logger.debug(f"Removed ```json prefix")
                 elif clean_response.startswith('```'):
                     clean_response = clean_response[3:]  # Remove ```
+                    logger.debug(f"Removed ``` prefix")
                 
                 if clean_response.endswith('```'):
                     clean_response = clean_response[:-3]  # Remove ```
+                    logger.debug(f"Removed ``` suffix")
                 
                 clean_response = clean_response.strip()
+                logger.debug(f"Cleaned response length for {cluster_name}: {len(clean_response)} characters")
                 
                 # Log response length for debugging
-                logger.debug(f"Response length for {cluster_name}: {len(clean_response)} characters")
+                logger.debug(f"Final response length for {cluster_name}: {len(clean_response)} characters")
+                
+                # Additional validation - check if JSON starts correctly
+                if not clean_response.startswith('{'):
+                    logger.error(f"Response does not start with '{{' for {cluster_name}")
+                    logger.error(f"First 200 chars: {repr(clean_response[:200])}")
+                    logger.error(f"Original response first 200 chars: {repr(response[:200])}")
+                    return self._create_fallback_fsm(cluster_info)
                 
                 # Try to find complete JSON if response was truncated
                 if not clean_response.endswith('}'):
+                    logger.warning(f"Response doesn't end with '}}' for {cluster_name}")
+                    logger.debug(f"Last 200 chars: {repr(clean_response[-200:])}")
+                    
                     # Look for the last complete JSON object
                     brace_count = 0
                     last_complete_pos = -1
@@ -227,17 +841,26 @@ class ClusterFSMGenerator:
                     if last_complete_pos > 0:
                         clean_response = clean_response[:last_complete_pos + 1]
                         logger.warning(f"Response was truncated, using partial JSON for {cluster_name}")
+                        logger.debug(f"Truncated to position {last_complete_pos}, new length: {len(clean_response)}")
                     else:
                         logger.error(f"Could not find complete JSON for {cluster_name}")
+                        logger.error(f"Brace analysis failed, last complete position: {last_complete_pos}")
                         return self._create_fallback_fsm(cluster_info)
                 
-                # Additional validation - check if JSON starts correctly
-                if not clean_response.startswith('{'):
-                    logger.error(f"Response does not start with '{{' for {cluster_name}")
-                    logger.error(f"First 200 chars: {clean_response[:200]}")
-                    return self._create_fallback_fsm(cluster_info)
-                
+                logger.debug(f"About to parse JSON for {cluster_name}, final length: {len(clean_response)}")
                 fsm_model = json.loads(clean_response)
+                
+                # Apply behavioral pattern fixes to improve accuracy
+                fsm_model = MatterBehavioralPatternRecognizer.apply_all_pattern_fixes(fsm_model)
+                
+                # Apply validation and error correction
+                fsm_model, validation_errors = FSMValidationAndCorrection.apply_validation_and_correction(fsm_model)
+                
+                if validation_errors:
+                    logger.warning(f"FSM validation errors for {cluster_name}: {validation_errors}")
+                    # Add validation errors to metadata for debugging
+                    if 'fsm_model' in fsm_model:
+                        fsm_model['fsm_model']['validation_errors'] = validation_errors
                 
                 # Add generation metadata
                 if 'fsm_model' in fsm_model:
@@ -252,12 +875,22 @@ class ClusterFSMGenerator:
                 return fsm_model
                 
             except json.JSONDecodeError as e:
-                logger.error(f"JSON parsing error for {cluster_name}: {e}")
-                logger.error(f"LLM response: {response[:500]}...")
+                logger.error(f"JSON parsing error for {cluster_name}:")
+                logger.error(f"  Error: {str(e)}")
+                logger.error(f"  Error position: line {e.lineno}, column {e.colno}")
+                logger.error(f"  Error msg: {e.msg}")
+                logger.error(f"  Response length: {len(clean_response)} characters")
+                logger.error(f"  First 500 chars: {clean_response[:500]}")
+                logger.error(f"  Last 500 chars: {clean_response[-500:]}")
                 return self._create_fallback_fsm(cluster_info)
                 
         except Exception as e:
-            logger.error(f"Error generating FSM for {cluster_name}: {e}")
+            logger.error(f"Error generating FSM for {cluster_name}:")
+            logger.error(f"  Exception type: {type(e).__name__}")
+            logger.error(f"  Exception message: {str(e)}")
+            logger.error(f"  Exception args: {e.args}")
+            import traceback
+            logger.error(f"  Full traceback: {traceback.format_exc()}")
             return self._create_fallback_fsm(cluster_info)
     
     def _create_fallback_fsm(self, cluster_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -371,95 +1004,6 @@ class ClusterFSMGenerator:
             
         except Exception as e:
             logger.error(f"Error saving FSM model for {cluster_name}: {e}")
-    
-    def _generate_promela_model(self, fsm_model: Dict[str, Any], cluster_name: str) -> str:
-        """
-        Generate Promela model for SPIN verification using AI analysis
-        
-        Args:
-            fsm_model: FSM model dictionary
-            cluster_name: Name of the cluster
-            
-        Returns:
-            AI-generated Promela model as string
-        """
-        try:
-            # Convert FSM model to JSON string for AI analysis
-            fsm_json = json.dumps(fsm_model, indent=2, ensure_ascii=False)
-            
-            # AI prompt for Promela generation
-            promela_prompt = f"""
-You are a formal verification expert. Convert this FSM model to a Promela model for SPIN verification.
-
-FSM MODEL:
-{fsm_json}
-
-TASK: Generate a complete Promela model that:
-1. **Models the exact states and transitions** from the FSM
-2. **Implements realistic state behavior** based on cluster functionality
-3. **Includes proper message passing** for commands and events
-4. **Adds verification properties** (safety, liveness)
-5. **Uses proper Promela syntax** for SPIN model checker
-
-EXAMPLE STRUCTURE (adapt to your FSM):
-```promela
-/*
- * Promela Model for {cluster_name}
- */
-
-#define MAX_USERS 3
-#define TIMEOUT 10
-
-mtype = {{ state1, state2, state3 }};  // Your actual states
-mtype = {{ cmd1, cmd2, cmd3 }};        // Your actual commands
-
-// Global variables based on your FSM
-mtype current_state = initial_state;
-chan commands = [5] of {{ mtype }};
-bool attribute_value = false;
-
-// Process modeling the cluster behavior
-active proctype ClusterFSM() {{
-    do
-    :: (current_state == state1) ->
-        if
-        :: commands?cmd1 -> current_state = state2;
-        :: timeout -> // handle timeouts
-        fi
-    :: (current_state == state2) ->
-        // implement other transitions
-    od
-}}
-
-// Verification properties
-ltl safety {{ [](!error_condition) }}
-ltl progress {{ []<>(current_state == target_state) }}
-```
-
-IMPORTANT: Generate the Promela code based on the ACTUAL FSM states, transitions, and behavior above. Do not use generic templates.
-
-Return ONLY the Promela code, no explanations."""
-
-            # Generate Promela using AI
-            response = self.llm.invoke(promela_prompt)
-            
-            # Clean up response (remove markdown if present)
-            promela_code = response.strip()
-            if promela_code.startswith("```"):
-                lines = promela_code.split('\n')
-                # Remove first and last lines if they contain ```
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                promela_code = '\n'.join(lines)
-            
-            return promela_code
-            
-        except Exception as e:
-            logger.warning(f"AI Promela generation failed for {cluster_name}: {e}")
-            # Fallback to basic structure
-            return self._generate_basic_promela_fallback(fsm_model, cluster_name)
     
     def _generate_basic_promela_fallback(self, fsm_model: Dict[str, Any], cluster_name: str) -> str:
         """

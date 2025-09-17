@@ -128,6 +128,7 @@ class ClusterDetailExtractor:
                 google_api_key=GOOGLE_API_KEY
             )
             logger.info("Initialized Gemini LLM and embeddings")
+            # logger.info(f"LLM Model: {GEMINI_MODEL}, API Key: {GOOGLE_API_KEY}, Temperature: {GEMINI_TEMPERATURE}")
         except Exception as e:
             logger.error(f"Error initializing LLM: {e}")
             raise

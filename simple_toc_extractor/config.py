@@ -156,74 +156,7 @@ MANUAL_CLUSTER_DATA = [
 ]
 
 # AI Extraction Prompt Template
-CLUSTER_EXTRACTION_PROMPT = """
-You are extracting Matter IoT cluster information from a table of contents. Extract ALL cluster entries and return ONLY valid JSON.
-
-TASK: Find entries with "Cluster" in the name and extract these 5 fields:
-1. cluster_name (exact name from TOC, remove section number)
-2. section_number (e.g., "1.2", "6.2", "7.3") 
-3. start_page (page number)
-4. end_page (next cluster's start page - 1, or estimate)
-5. category (assign based on section number):
-   - Section 1.x = "General"
-   - Section 2.x = "Measurement and Sensing"
-   - Section 3.x = "Lighting"
-   - Section 4.x = "HVAC"
-   - Section 5.x = "Closures"
-   - Section 6.x = "Media"
-   - Section 7.x = "Robots" 
-   - Section 8.x = "Home Appliances"
-   - Section 9.x = "Energy Management"
-   - Section 10.x = "Network Infrastructure"
-
-EXAMPLE ENTRIES TO FIND:
-- "1.2. Identify Cluster" → extract as cluster
-- "1.5. On/Off Cluster" → extract as cluster  
-- "6.2. Account Login Cluster ... 471" → extract as cluster
-- "8.3. Dishwasher Mode Cluster ... 584" → extract as cluster
-- "9.2. Device Energy Management Cluster ... 613" → extract as cluster
-
-SKIP SUBSECTIONS like:
-- "1.5.1. Revision History" (has 3 levels)
-- "6.2.2. Classification" (has 3 levels)
-
-REQUIRED OUTPUT FORMAT (JSON ONLY, NO EXPLANATIONS):
-{{
-  "clusters": [
-    {{
-      "cluster_name": "Identify Cluster",
-      "section_number": "1.2",
-      "start_page": 26,
-      "end_page": 31,
-      "category": "General"
-    }},
-    {{
-      "cluster_name": "On/Off Cluster",
-      "section_number": "1.5", 
-      "start_page": 60,
-      "end_page": 70,
-      "category": "General"
-    }},
-    {{
-      "cluster_name": "Account Login Cluster",
-      "section_number": "6.2",
-      "start_page": 471,
-      "end_page": 476,
-      "category": "Media"
-    }}
-  ]
-}}
-
-CRITICAL: Return ONLY the JSON object. No explanations, no markdown, no additional text."""
-
-# Human Query Template for RAG extraction
-HUMAN_QUERY_TEMPLATE = """
-Extract Matter cluster information from this table of contents:
-
-{toc_content}
-
-Find ALL cluster entries and return them in the required JSON format.
-"""
+# Manual extraction configuration - no AI prompts needed
 
 # Detailed Cluster Information Extraction Configuration
 CLUSTER_DETAIL_EXTRACTION_PROMPT = """
@@ -671,3 +604,248 @@ init {{
 - Ensure syntactically correct Promela code
 
 Return ONLY the Promela code with proper syntax. No explanations, no markdown blocks, just the .pml model."""
+
+# Section-Based Extraction Prompts
+# Following the same unbiased structure as CLUSTER_DETAIL_EXTRACTION_PROMPT
+
+REVISION_HISTORY_EXTRACTION_PROMPT = """
+You are extracting revision history information from a Matter protocol cluster specification section.
+
+**TASK**: Extract ONLY revision history entries from the provided text and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for revision tables with "Revision" and "Description" columns
+- Extract revision numbers (1, 2, 3, etc.)
+- Extract brief change descriptions 
+- Extract dates if available (often not present)
+- Look for text like "The global ClusterRevision attribute value SHALL be the highest revision number"
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "revision": "1",
+    "description": "brief change summary (max 100 chars)",
+    "date": "date if available or null"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Search for numbered revision entries in tables or lists
+- Keep descriptions concise and factual
+- Use null for missing dates
+- If no revision history found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+FEATURES_EXTRACTION_PROMPT = """
+You are extracting feature information from a Matter protocol cluster specification section.
+
+**TASK**: Extract ONLY cluster features from the provided text and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for feature tables with columns like "Bit", "Code", "Feature", "Summary", "Conformance"
+- Extract bit positions (0-31 for feature flags)
+- Extract feature codes (2-4 character abbreviations like "GN", "OO")
+- Extract full feature names and descriptions
+- Extract conformance requirements (M/O/F/C)
+- Look for feature dependencies if any
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "bit": "bit number (0-31)",
+    "code": "feature code (2-4 chars)",
+    "name": "full feature name",
+    "summary": "brief feature description (max 80 chars)",
+    "conformance": "M/O/F/C conformance",
+    "dependencies": "feature dependencies if any or null"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Look for sections titled "Features" or numbered like "X.Y.3 Features"
+- Extract from feature definition tables completely
+- Capture feature capability descriptions
+- If no features found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+DATA_TYPES_EXTRACTION_PROMPT = """
+You are extracting data type definitions from a Matter protocol cluster specification section.
+
+**TASK**: Extract ONLY custom data types (enums, bitmaps, structures) from the provided text and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- **Enumerations**: Extract enum types with value tables (0x00, 0x01, etc.)
+- **Bitmaps**: Extract bitmap types with bit definitions (bit 0, bit 1, etc.)
+- **Structures**: Extract structure types with field definitions
+- Look for sections like "X.Y.4 Data Types" or "X.Y.5 [TypeName] Type"
+- Extract type names, base types, and all value/field definitions
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "name": "data type name (e.g., IdentifyTypeEnum)",
+    "base_type": "base type (enum8/enum16/map8/map16/struct/etc.)",
+    "constraint": "constraints if any or null",
+    "values": [
+      {
+        "value": "For ENUMS: hex code (0x00), For BITMAPS: bit number (0-7), For STRUCTS: field order",
+        "name": "For ENUMS: enum name, For BITMAPS: bit name, For STRUCTS: field name", 
+        "summary": "description of enum value/bit/field",
+        "conformance": "M/O/F conformance requirement"
+      }
+    ]
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Find all enum, bitmap, and struct type definitions
+- Extract complete value/field tables for each type
+- Preserve hex values exactly as shown (0x00, 0x01, etc.)
+- Include ALL types found in the specification text
+- If no data types found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+ATTRIBUTES_EXTRACTION_PROMPT = """
+You are extracting attribute definitions from a Matter protocol cluster specification section.
+
+**TASK**: Extract ONLY cluster attributes from the provided text and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for attribute tables with columns like "ID | Name | Type | Constraint | Quality | Default | Access | Conformance"
+- Extract hex attribute IDs (0x0000, 0x0001, etc.)
+- Extract attribute names, types, constraints, quality flags
+- Extract default values and access permissions
+- Look for individual attribute descriptions in subsections
+- Extract fabric sensitivity and scene capability information
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "id": "hex attribute ID (0x0000)",
+    "name": "full attribute name",
+    "type": "data type (including custom types)",
+    "constraint": "value constraints, ranges, or 'desc'",
+    "quality": "quality flags (N/S/P/F/X/C)",
+    "default": "default value or 'desc' if varies",
+    "access": "access permissions (R/W/RW, may include F for fabric)",
+    "conformance": "M/O/F conformance requirement",
+    "summary": "brief attribute purpose (max 100 chars)",
+    "fabric_sensitive": true/false,
+    "scene_capable": true/false
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Find attribute definition tables and extract ALL rows
+- Look for detailed attribute descriptions in subsections
+- Extract behavioral descriptions for attribute usage
+- Use exact hex IDs and preserve technical specifications
+- If no attributes found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+COMMANDS_EXTRACTION_PROMPT = """
+You are extracting command definitions with behavioral logic from a Matter protocol cluster specification section.
+
+**TASK**: Extract ONLY cluster commands from the provided text and return valid JSON array with pseudocode.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for command tables with columns like "ID | Name | Direction | Response | Access | Conformance"
+- Extract hex command IDs (0x00, 0x01, etc.)
+- Extract command names, directions, response types
+- Extract command field definitions from payload tables
+- **CRITICAL**: Extract "Effect on Receipt" behavioral logic for PSEUDOCODE generation
+
+**BEHAVIORAL EXTRACTION FOR PSEUDOCODE**:
+Convert "Effect on Receipt" behavioral text into algorithmic pseudocode:
+- **Conditionals**: "if [condition] then [action] else [action]"
+- **Assignments**: "set [attribute] := [value]"
+- **Procedures**: "call [function]([params])"
+- **State changes**: "[object].state := [new_state]"
+- **Timers**: "start_timer([duration])" or "stop_timer()"
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "id": "hex command ID (0x00)",
+    "name": "full command name",
+    "direction": "client ⇒ server or client ⇐ server",
+    "response": "response command name or 'Y'/'N'",
+    "access": "access level and fabric requirements",
+    "conformance": "M/O/F conformance requirement",
+    "summary": "brief command purpose (max 100 chars)",
+    "timing": "timing requirements if specified or null",
+    "fields": [
+      {
+        "id": "field ID or order",
+        "name": "field name",
+        "type": "data type",
+        "constraint": "constraints or ranges",
+        "quality": "quality flags if any",
+        "default": "default value if any",
+        "conformance": "M/O/F for this field",
+        "summary": "brief field description (max 50 chars)"
+      }
+    ],
+    "effect_on_receipt": "Algorithmic pseudocode (max 200 chars): set attr := value; if condition then action else action"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Find command definition tables and extract ALL commands
+- Look for command field tables within command subsections  
+- Extract complete "Effect on Receipt" behavioral text
+- Convert behavioral logic to concise pseudocode format
+- Include both client-to-server and server-to-client commands
+- If no commands found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+EVENTS_EXTRACTION_PROMPT = """
+You are extracting event definitions from a Matter protocol cluster specification section.
+
+**TASK**: Extract ONLY cluster events from the provided text and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for event tables with columns like "ID | Name | Priority | Access | Conformance"
+- Extract hex event IDs (0x00, 0x01, etc.)
+- Extract event names, priority levels, access requirements
+- Extract event field definitions from payload tables
+- Look for sections like "X.Y.8 Events"
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "id": "hex event ID (0x00)",
+    "name": "full event name", 
+    "priority": "event priority (Info/Critical/Debug)",
+    "access": "access requirements",
+    "conformance": "M/O/F conformance",
+    "summary": "event description (max 80 chars)",
+    "fields": [
+      {
+        "id": "field ID",
+        "name": "field name",
+        "type": "data type",
+        "conformance": "field conformance"
+      }
+    ]
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Find event definition tables and sections
+- Extract event field definitions completely
+- Look for event generation conditions and triggers
+- If no events found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""

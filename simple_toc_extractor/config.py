@@ -11,7 +11,7 @@ load_dotenv()
 
 # API Configuration
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_TEMPERATURE = 0.0  # More deterministic for detailed extraction
 GEMINI_MAX_OUTPUT_TOKENS = 32768  # Significantly increased for comprehensive behavioral extraction
 
@@ -21,7 +21,7 @@ PDF_PATH = os.path.join(os.path.dirname(__file__), "..", PDF_FILENAME)
 MAX_TOC_PAGES = 50  # Maximum pages to scan for TOC content
 
 # Vector Store Configuration
-EMBEDDINGS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDINGS_MODEL = "models/embedding-001"
 CHUNK_SIZE = 1500  # Increased for better table capture
 CHUNK_OVERLAP = 500  # More overlap for table continuations
 VECTOR_SEARCH_K = 15  # More documents for comprehensive context

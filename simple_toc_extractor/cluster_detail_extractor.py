@@ -177,8 +177,7 @@ class EnhancedClusterExtractor:
             self.llm = GoogleGenerativeAI(
                 model=GEMINI_MODEL,
                 google_api_key=GOOGLE_API_KEY,
-                temperature=GEMINI_TEMPERATURE,
-                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS
+                temperature=GEMINI_TEMPERATURE
             )
             self.embeddings = GoogleGenerativeAIEmbeddings(
                 model="models/embedding-001",
@@ -308,23 +307,25 @@ class EnhancedClusterExtractor:
             cluster_name = cluster_data.get('cluster_name', 'Unknown')
             
             # Find matching subsection by name
-            for subsection in subsections:
+            logger.debug(f"Looking for {subsection_type} in {len(subsections)} subsections for {cluster_name}")
+            for i, subsection in enumerate(subsections):
                 subsection_name = subsection.get('subsection_name', '')
+                logger.debug(f"  Subsection {i+1}: '{subsection_name}'")
                 if subsection_name.lower() == subsection_type.lower():
                     start_page = subsection.get('start_page')
                     end_page = subsection.get('end_page')
                     
                     if start_page and end_page:
-                        logger.info(f"Extracting {subsection_type} for {cluster_name} from pages {start_page}-{end_page}")
+                        logger.info(f"Found exact match: Extracting {subsection_type} for {cluster_name} from pages {start_page}-{end_page}")
                         return self.extract_subsection_pages(start_page, end_page, f"{cluster_name} - {subsection_type}")
             
             # If exact match not found, try partial matches for common variations
             subsection_variations = {
-                'revision history': ['revision history', 'revision_history'],
+                'revision history': ['revision history', 'revision_history', 'history'],
                 'classification': ['classification'],
-                'cluster id': ['cluster id', 'cluster_id'],
+                'cluster id': ['cluster id', 'cluster_id', 'cluster ids'],
                 'features': ['features', 'feature'],
-                'data types': ['data types', 'data_types'],
+                'data types': ['data types', 'data_types', 'types'],
                 'attributes': ['attributes', 'attribute'],
                 'commands': ['commands', 'command'],
                 'events': ['events', 'event']
@@ -368,11 +369,13 @@ class EnhancedClusterExtractor:
             section_text = self.extract_subsection_text_from_json(cluster_data, section_type)
             
             if not section_text:
-                logger.warning(f"No {section_type} text found for {cluster_name}")
-                return None
+                logger.warning(f"No {section_type} subsection found for {cluster_name}, skipping")
+                return []  # Return empty array when no subsection found
             
             # Use the specialized prompt with section text
-            final_prompt = section_prompt.replace("{cluster_text}", section_text[:8000])  # Increased limit for better context
+            # Add clearer instructions for JSON output
+            section_instruction = f"\n\nEXTRACT FROM THIS {section_type.upper()} SECTION:\n{section_text[:8000]}\n\nReturn ONLY valid JSON array. No explanations, no markdown blocks."
+            final_prompt = section_prompt.replace("{cluster_text}", section_instruction)
             
             logger.info(f"Extracting {section_type} for {cluster_name} using direct PDF text (text length: {len(section_text)})")
             
@@ -384,14 +387,23 @@ class EnhancedClusterExtractor:
                 result = json.loads(response)
                 logger.info(f"Successfully extracted {section_type} for {cluster_name} from direct PDF text")
                 return result
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                # Log the actual response for debugging
+                logger.warning(f"JSON parsing failed for {section_type} in {cluster_name}: {e}")
+                logger.debug(f"Raw response preview: {response[:500]}...")
+                
                 # Try to repair the JSON
-                logger.warning(f"JSON parsing failed for {section_type} in {cluster_name}, attempting repair...")
+                logger.warning(f"Attempting repair for {section_type} in {cluster_name}...")
                 repaired_result = self._attempt_json_repair(response, section_type, cluster_name)
                 if repaired_result:
+                    logger.info(f"Successfully repaired JSON for {section_type} in {cluster_name}")
                     return repaired_result
                 
                 logger.error(f"Failed to parse {section_type} response for {cluster_name}")
+                # Return empty array for list-type sections instead of None
+                if section_type.lower() in ['revision history', 'features', 'data types', 'attributes', 'commands', 'events']:
+                    logger.warning(f"Returning empty array for {section_type} in {cluster_name}")
+                    return []
                 return None
                 
         except Exception as e:
@@ -400,7 +412,7 @@ class EnhancedClusterExtractor:
     
     def _attempt_json_repair(self, response: str, section_type: str, cluster_name: str) -> Optional[Any]:
         """
-        Attempt to repair malformed JSON response (same as original)
+        Attempt to repair malformed JSON response with improved strategies
         
         Args:
             response: Raw LLM response
@@ -411,17 +423,58 @@ class EnhancedClusterExtractor:
             Parsed JSON if repair successful, None otherwise
         """
         try:
+            original_response = response
+            
             # Remove markdown code blocks
             response = re.sub(r'```json\s*', '', response)
             response = re.sub(r'```\s*', '', response)
             
-            # Try to find JSON content
-            json_match = re.search(r'[\[\{].*[\]\}]', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                return json.loads(json_str)
+            # Remove any leading/trailing explanatory text
+            response = response.strip()
+            
+            # Try multiple JSON extraction strategies
+            strategies = [
+                # Strategy 1: Find complete JSON array/object
+                lambda s: re.search(r'(\[.*\])', s, re.DOTALL),
+                lambda s: re.search(r'(\{.*\})', s, re.DOTALL),
+                
+                # Strategy 2: Find JSON starting with array/object
+                lambda s: re.search(r'([\[\{].*)', s, re.DOTALL),
+                
+                # Strategy 3: Look for anything between brackets
+                lambda s: re.search(r'.*?(\[.*\]).*?', s, re.DOTALL),
+                lambda s: re.search(r'.*?(\{.*\}).*?', s, re.DOTALL),
+            ]
+            
+            for i, strategy in enumerate(strategies):
+                try:
+                    match = strategy(response)
+                    if match:
+                        json_str = match.group(1).strip()
+                        
+                        # Try to parse the extracted JSON
+                        result = json.loads(json_str)
+                        logger.info(f"JSON repair successful using strategy {i+1} for {section_type} in {cluster_name}")
+                        return result
+                        
+                except (json.JSONDecodeError, AttributeError) as e:
+                    continue
+            
+            # If all strategies fail, try to parse the entire response
+            try:
+                result = json.loads(response)
+                logger.info(f"JSON repair successful with direct parsing for {section_type} in {cluster_name}")
+                return result
+            except json.JSONDecodeError:
+                pass
+            
+            # Last resort: return empty array for list sections
+            if section_type.lower() in ['data_types', 'attributes', 'commands', 'events', 'features']:
+                logger.warning(f"Returning empty array for {section_type} in {cluster_name} due to JSON repair failure")
+                return []
             
             logger.warning(f"Could not repair JSON for {section_type} in {cluster_name}")
+            logger.debug(f"Original response: {original_response[:1000]}...")
             return None
             
         except Exception as e:
@@ -536,11 +589,11 @@ class EnhancedClusterExtractor:
         
         logger.info(f"Processing cluster: {cluster_name} ({section_number}) pages {start_page}-{end_page}")
         
-        # Extract full cluster text (same as original)
+        # Extract full cluster text for basic info extraction only
         cluster_text = self.extract_cluster_pages(start_page, end_page)
         if not cluster_text:
             logger.error(f"Failed to extract text for {cluster_name}")
-            return self._create_fallback_cluster_info(cluster_name, section_number, category)
+            return None
         
         # No vector store needed - using direct PDF text extraction from subsections
         # Removed RAG approach in favor of direct subsection page extraction based on JSON data
@@ -552,32 +605,32 @@ class EnhancedClusterExtractor:
         # Extract each section using direct PDF text extraction from subsection pages
         revision_history = []
         result = self.extract_section_with_direct_text(cluster_data, REVISION_HISTORY_EXTRACTION_PROMPT, 'Revision History', cluster_name)
-        if result and isinstance(result, list):
+        if result is not None and isinstance(result, list):
             revision_history = result
         
         features = []
         result = self.extract_section_with_direct_text(cluster_data, FEATURES_EXTRACTION_PROMPT, 'Features', cluster_name)
-        if result and isinstance(result, list):
+        if result is not None and isinstance(result, list):
             features = result
         
         data_types = []
         result = self.extract_section_with_direct_text(cluster_data, DATA_TYPES_EXTRACTION_PROMPT, 'Data Types', cluster_name)
-        if result and isinstance(result, list):
+        if result is not None and isinstance(result, list):
             data_types = result
         
         attributes = []
         result = self.extract_section_with_direct_text(cluster_data, ATTRIBUTES_EXTRACTION_PROMPT, 'Attributes', cluster_name)
-        if result and isinstance(result, list):
+        if result is not None and isinstance(result, list):
             attributes = result
         
         commands = []
         result = self.extract_section_with_direct_text(cluster_data, COMMANDS_EXTRACTION_PROMPT, 'Commands', cluster_name)
-        if result and isinstance(result, list):
+        if result is not None and isinstance(result, list):
             commands = result
         
         events = []
         result = self.extract_section_with_direct_text(cluster_data, EVENTS_EXTRACTION_PROMPT, 'Events', cluster_name)
-        if result and isinstance(result, list):
+        if result is not None and isinstance(result, list):
             events = result
         
         # Build final cluster info structure (EXACT same structure as original)
@@ -656,35 +709,7 @@ Return the COMPLETE enhanced cluster JSON structure with the same format.
             logger.error(f"Error in validation enhancement: {e}")
             return cluster_result
     
-    def _create_fallback_cluster_info(self, cluster_name: str, section_number: str, category: str) -> Dict[str, Any]:
-        """Create fallback cluster info when extraction fails (same as original)"""
-        return {
-            "cluster_info": {
-                "cluster_name": cluster_name,
-                "cluster_id": "Unknown",
-                "classification": {
-                    "hierarchy": "Unknown",
-                    "role": "Unknown",
-                    "scope": "Unknown", 
-                    "pics_code": "Unknown"
-                },
-                "revision_history": [],
-                "features": [],
-                "data_types": [],
-                "attributes": [],
-                "commands": [],
-                "events": [],
-                "global_attributes": []
-            },
-            "metadata": {
-                "source_pages": "Unknown",
-                "extraction_method": "fallback",
-                "text_length": 0,
-                "section_number": section_number,
-                "category": category,
-                "error": "Failed to extract cluster text"
-            }
-        }
+
     
     def process_all_clusters(self, limit: Optional[int] = None, resume: bool = True) -> Dict[str, Any]:
         """
@@ -739,6 +764,11 @@ Return the COMPLETE enhanced cluster JSON structure with the same format.
                 # Process cluster using enhanced approach
                 cluster_result = self.process_cluster_enhanced(cluster_data)
                 
+                # Skip if cluster processing failed (returns None)
+                if cluster_result is None:
+                    logger.warning(f"Skipping cluster {section_number} due to processing failure")
+                    continue
+                
                 # Extract full cluster text for final validation
                 start_page = cluster_data.get('start_page', 1)
                 end_page = cluster_data.get('end_page', 1)
@@ -767,14 +797,8 @@ Return the COMPLETE enhanced cluster JSON structure with the same format.
                 break
             except Exception as e:
                 logger.error(f"Error processing cluster {section_number}: {e}")
-                # Add fallback entry
-                fallback_result = self._create_fallback_cluster_info(
-                    cluster_data.get('cluster_name', 'Unknown'),
-                    section_number,
-                    cluster_data.get('category', 'Unknown')
-                )
-                results['clusters'].append(fallback_result)
-                processed_count += 1
+                # Skip failed cluster instead of adding fallback
+                continue
         
         # Final save
         self._save_current_progress()
@@ -818,7 +842,7 @@ def main():
         
         # Process clusters (test with first few)
         logger.info("Starting enhanced cluster extraction with specialized section prompts...")
-        results = extractor.process_all_clusters(limit=3, resume=True)
+        results = extractor.process_all_clusters(limit=2, resume=True)
         
         # Save final results
         extractor.save_results(results, output_path)

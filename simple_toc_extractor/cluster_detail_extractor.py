@@ -25,6 +25,9 @@ from config import (
     ATTRIBUTES_EXTRACTION_PROMPT, COMMANDS_EXTRACTION_PROMPT, EVENTS_EXTRACTION_PROMPT
 )
 
+# Page buffer for subsection extraction (pages before and after subsection boundaries)
+SUBSECTION_PAGE_BUFFER = 1  # Buffer for subsection text extraction
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -259,104 +262,137 @@ class EnhancedClusterExtractor:
             logger.error(f"Error creating vector store: {e}")
             return None
     
-    def extract_section_text_by_number(self, cluster_text: str, section_patterns: List[str], cluster_name: str = "") -> str:
+    def extract_subsection_pages(self, start_page: int, end_page: int, subsection_name: str = "") -> str:
         """
-        Extract section text by identifying section numbers in the cluster text
+        Extract text content from PDF pages for a specific subsection
         
         Args:
-            cluster_text: Full cluster text content
-            section_patterns: List of regex patterns to identify section starts
-            cluster_name: Name of cluster for logging
+            start_page: Starting page number (1-indexed)
+            end_page: Ending page number (1-indexed)
+            subsection_name: Name of subsection for logging
             
         Returns:
-            Extracted section text
+            Extracted subsection text content
         """
         try:
-            section_text = ""
+            # Add buffer pages and convert to 0-indexed for PyMuPDF
+            actual_start = max(0, start_page - 1 - SUBSECTION_PAGE_BUFFER)
+            actual_end = min(len(self.pdf_doc), end_page + SUBSECTION_PAGE_BUFFER)
             
-            for pattern in section_patterns:
-                matches = list(re.finditer(pattern, cluster_text, re.IGNORECASE | re.MULTILINE))
-                
-                for match in matches:
-                    start_pos = match.start()
-                    
-                    # Find the end of this section (start of next section or end of text)
-                    end_pos = len(cluster_text)
-                    
-                    # Look for next section header to determine end
-                    remaining_text = cluster_text[start_pos + len(match.group()):]
-                    next_section_pattern = r'\n\s*\d+\.\d+\.(\d+\.?)*\s+[A-Z]'
-                    next_match = re.search(next_section_pattern, remaining_text)
-                    if next_match:
-                        end_pos = start_pos + len(match.group()) + next_match.start()
-                    
-                    current_section = cluster_text[start_pos:end_pos].strip()
-                    if current_section and len(current_section) > 50:  # Minimum section length
-                        section_text += current_section + "\n\n"
-                        logger.debug(f"Extracted section text: {current_section[:100]}...")
+            text_content = ""
+            for page_num in range(actual_start, actual_end):
+                page = self.pdf_doc.load_page(page_num)
+                text_content += page.get_text()
+                text_content += "\n\n"
             
-            if section_text:
-                logger.info(f"Successfully extracted section text for {cluster_name} (length: {len(section_text)})")
-            else:
-                logger.warning(f"No section text found for {cluster_name}")
-            
-            return section_text.strip()
+            logger.info(f"Extracted {len(text_content)} characters from pages {actual_start+1}-{actual_end} for {subsection_name}")
+            return text_content
             
         except Exception as e:
-            logger.error(f"Error extracting section text for {cluster_name}: {e}")
+            logger.error(f"Error extracting subsection pages {start_page}-{end_page} for {subsection_name}: {e}")
             return ""
     
-    def extract_section_with_rag(self, vector_store: FAISS, section_prompt: str, section_type: str, cluster_name: str = "", cluster_text: str = "") -> Optional[Any]:
+    def extract_subsection_text_from_json(self, cluster_data: Dict[str, Any], subsection_type: str) -> str:
         """
-        Extract section information using section text approach with specialized prompt
+        Extract subsection text based on JSON subsection data
         
         Args:
-            vector_store: FAISS vector store (kept for compatibility, not used)
+            cluster_data: Cluster information from matter_clusters_toc.json
+            subsection_type: Type of subsection to extract (e.g., 'Revision History', 'Features', etc.)
+            
+        Returns:
+            Extracted subsection text
+        """
+        try:
+            subsections = cluster_data.get('subsections', [])
+            cluster_name = cluster_data.get('cluster_name', 'Unknown')
+            
+            # Find matching subsection by name
+            for subsection in subsections:
+                subsection_name = subsection.get('subsection_name', '')
+                if subsection_name.lower() == subsection_type.lower():
+                    start_page = subsection.get('start_page')
+                    end_page = subsection.get('end_page')
+                    
+                    if start_page and end_page:
+                        logger.info(f"Extracting {subsection_type} for {cluster_name} from pages {start_page}-{end_page}")
+                        return self.extract_subsection_pages(start_page, end_page, f"{cluster_name} - {subsection_type}")
+            
+            # If exact match not found, try partial matches for common variations
+            subsection_variations = {
+                'revision history': ['revision history', 'revision_history'],
+                'classification': ['classification'],
+                'cluster id': ['cluster id', 'cluster_id'],
+                'features': ['features', 'feature'],
+                'data types': ['data types', 'data_types'],
+                'attributes': ['attributes', 'attribute'],
+                'commands': ['commands', 'command'],
+                'events': ['events', 'event']
+            }
+            
+            search_terms = subsection_variations.get(subsection_type.lower(), [subsection_type.lower()])
+            
+            for subsection in subsections:
+                subsection_name = subsection.get('subsection_name', '').lower()
+                for term in search_terms:
+                    if term in subsection_name:
+                        start_page = subsection.get('start_page')
+                        end_page = subsection.get('end_page')
+                        
+                        if start_page and end_page:
+                            logger.info(f"Found {subsection_type} match: '{subsection.get('subsection_name')}' for {cluster_name} from pages {start_page}-{end_page}")
+                            return self.extract_subsection_pages(start_page, end_page, f"{cluster_name} - {subsection_type}")
+            
+            logger.warning(f"No {subsection_type} subsection found for {cluster_name}")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error extracting {subsection_type} subsection text: {e}")
+            return ""
+    
+    def extract_section_with_direct_text(self, cluster_data: Dict[str, Any], section_prompt: str, section_type: str, cluster_name: str = "") -> Optional[Any]:
+        """
+        Extract section information using direct PDF text extraction from subsection pages
+        
+        Args:
+            cluster_data: Cluster information from matter_clusters_toc.json
             section_prompt: Specialized prompt for this section type
-            section_type: Type of section being extracted
+            section_type: Type of subsection to extract (e.g., 'Revision History', 'Features', etc.)
             cluster_name: Name of cluster for context
-            cluster_text: Full cluster text to extract section from
             
         Returns:
             Extracted section information
         """
         try:
-            if vector_store:
-                # RAG approach (commented out as requested)
-                section_queries = {
-                    'revision_history': "revision history changes versions ClusterRevision",
-                    'features': "features bit code capabilities GroupNames",
-                    'data_types': "data types enum bitmap struct IdentifyTypeEnum",
-                    'attributes': "attributes ID name type constraint quality default access",
-                    'commands': "commands ID name direction response effect on receipt",
-                    'events': "events ID name priority access conformance"
-                }
-                
-                query = section_queries.get(section_type, f"{section_type} cluster specification")
-                docs = vector_store.similarity_search(query, k=VECTOR_SEARCH_K)
-                context = "\n\n".join([doc.page_content for doc in docs])
-            else:
-                # Section text extraction approach (new method)
-                section_patterns = self.section_patterns.get(section_type, [])
-                context = self.extract_section_text_by_number(cluster_text, section_patterns, cluster_name)
-                
-                if not context:
-                    logger.warning(f"No {section_type} section found for {cluster_name}")
-                    return None
+            # Extract section text directly from PDF pages using JSON subsection data
+            section_text = self.extract_subsection_text_from_json(cluster_data, section_type)
             
-            # Combine prompt with context
-            full_prompt = f"{section_prompt}\n\nSECTION TEXT:\n{context}"
+            if not section_text:
+                logger.warning(f"No {section_type} text found for {cluster_name}")
+                return None
             
-            logger.info(f"Extracting {section_type} for {cluster_name} (context length: {len(context)})")
+            # Use the specialized prompt with section text
+            final_prompt = section_prompt.replace("{cluster_text}", section_text[:8000])  # Increased limit for better context
             
-            response = self.llm.invoke(full_prompt)
+            logger.info(f"Extracting {section_type} for {cluster_name} using direct PDF text (text length: {len(section_text)})")
             
-            # Attempt to parse JSON response
+            # Get LLM response
+            response = self.llm.invoke(final_prompt)
+            
+            # Try to parse JSON response
             try:
-                return json.loads(response)
+                result = json.loads(response)
+                logger.info(f"Successfully extracted {section_type} for {cluster_name} from direct PDF text")
+                return result
             except json.JSONDecodeError:
-                # Try to repair JSON
-                return self._attempt_json_repair(response, section_type, cluster_name)
+                # Try to repair the JSON
+                logger.warning(f"JSON parsing failed for {section_type} in {cluster_name}, attempting repair...")
+                repaired_result = self._attempt_json_repair(response, section_type, cluster_name)
+                if repaired_result:
+                    return repaired_result
+                
+                logger.error(f"Failed to parse {section_type} response for {cluster_name}")
+                return None
                 
         except Exception as e:
             logger.error(f"Error extracting {section_type} for {cluster_name}: {e}")
@@ -506,48 +542,41 @@ class EnhancedClusterExtractor:
             logger.error(f"Failed to extract text for {cluster_name}")
             return self._create_fallback_cluster_info(cluster_name, section_number, category)
         
-        # Save section texts at the start of cluster extraction
-        cluster_sections = self.save_cluster_sections(cluster_text, cluster_name)
-        
-        # Create vector store (same as original RAG approach)
-        # vector_store = self.create_vector_store(cluster_text)
-        # if not vector_store:
-        #     logger.error(f"Failed to create vector store for {cluster_name}")
-        #     return self._create_fallback_cluster_info(cluster_name, section_number, category)
-        vector_store = None
+        # No vector store needed - using direct PDF text extraction from subsections
+        # Removed RAG approach in favor of direct subsection page extraction based on JSON data
         
         # Extract basic info
         cluster_id = self.get_cluster_id_from_text(cluster_text)
         classification = self.get_classification_from_text(cluster_text)
         
-        # Extract each section using specialized prompts with section text
+        # Extract each section using direct PDF text extraction from subsection pages
         revision_history = []
-        result = self.extract_section_with_rag(vector_store, REVISION_HISTORY_EXTRACTION_PROMPT, 'revision_history', cluster_name, cluster_text)
+        result = self.extract_section_with_direct_text(cluster_data, REVISION_HISTORY_EXTRACTION_PROMPT, 'Revision History', cluster_name)
         if result and isinstance(result, list):
             revision_history = result
         
         features = []
-        result = self.extract_section_with_rag(vector_store, FEATURES_EXTRACTION_PROMPT, 'features', cluster_name, cluster_text)
+        result = self.extract_section_with_direct_text(cluster_data, FEATURES_EXTRACTION_PROMPT, 'Features', cluster_name)
         if result and isinstance(result, list):
             features = result
         
         data_types = []
-        result = self.extract_section_with_rag(vector_store, DATA_TYPES_EXTRACTION_PROMPT, 'data_types', cluster_name, cluster_text)
+        result = self.extract_section_with_direct_text(cluster_data, DATA_TYPES_EXTRACTION_PROMPT, 'Data Types', cluster_name)
         if result and isinstance(result, list):
             data_types = result
         
         attributes = []
-        result = self.extract_section_with_rag(vector_store, ATTRIBUTES_EXTRACTION_PROMPT, 'attributes', cluster_name, cluster_text)
+        result = self.extract_section_with_direct_text(cluster_data, ATTRIBUTES_EXTRACTION_PROMPT, 'Attributes', cluster_name)
         if result and isinstance(result, list):
             attributes = result
         
         commands = []
-        result = self.extract_section_with_rag(vector_store, COMMANDS_EXTRACTION_PROMPT, 'commands', cluster_name, cluster_text)
+        result = self.extract_section_with_direct_text(cluster_data, COMMANDS_EXTRACTION_PROMPT, 'Commands', cluster_name)
         if result and isinstance(result, list):
             commands = result
         
         events = []
-        result = self.extract_section_with_rag(vector_store, EVENTS_EXTRACTION_PROMPT, 'events', cluster_name, cluster_text)
+        result = self.extract_section_with_direct_text(cluster_data, EVENTS_EXTRACTION_PROMPT, 'Events', cluster_name)
         if result and isinstance(result, list):
             events = result
         

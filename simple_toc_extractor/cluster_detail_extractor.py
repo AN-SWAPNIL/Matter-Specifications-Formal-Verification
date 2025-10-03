@@ -20,13 +20,9 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from config import (
     GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_TEMPERATURE, GEMINI_MAX_OUTPUT_TOKENS,
-    CLUSTER_PAGE_BUFFER, PDF_PAGE_OFFSET, EMBEDDINGS_MODEL, CHUNK_SIZE, CHUNK_OVERLAP, VECTOR_SEARCH_K,
-    REVISION_HISTORY_EXTRACTION_PROMPT, FEATURES_EXTRACTION_PROMPT, DATA_TYPES_EXTRACTION_PROMPT,
-    ATTRIBUTES_EXTRACTION_PROMPT, COMMANDS_EXTRACTION_PROMPT, EVENTS_EXTRACTION_PROMPT
+    CLUSTER_PAGE_BUFFER, PDF_PAGE_OFFSET, EMBEDDINGS_MODEL, CHUNK_SIZE, CHUNK_OVERLAP, VECTOR_SEARCH_K, SUBSECTION_PAGE_BUFFER,
+    section_prompt_dict
 )
-
-# Page buffer for subsection extraction (pages before and after subsection boundaries)
-SUBSECTION_PAGE_BUFFER = 1  # Buffer for subsection text extraction
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -53,55 +49,6 @@ class EnhancedClusterExtractor:
         self.clusters_data = None
         self.current_results = None
         self.interruption_handler_set = False
-        
-        # Section patterns for identifying cluster sections
-        self.section_patterns = {
-            'revision_history': [
-                r'(\d+\.\d+\.1\.?\s*Revision\s+History)',
-                r'(\d+\.\d+\.1\.?\s*revision\s+history)',
-                r'(Revision\s+History)',
-                r'(revision\s+history)'
-            ],
-            'classification': [
-                r'(\d+\.\d+\.2\.?\s*Classification)',
-                r'(\d+\.\d+\.2\.?\s*classification)',
-                r'(Classification)'
-            ],
-            'cluster_id': [
-                r'(\d+\.\d+\.3\.?\s*Cluster\s+ID)',
-                r'(\d+\.\d+\.3\.?\s*cluster\s+id)',
-                r'(Cluster\s+ID)'
-            ],
-            'features': [
-                r'(\d+\.\d+\.3\.?\d*\s*Features?)',
-                r'(\d+\.\d+\.3\.?\d*\s*features?)',
-                r'(Features?)'
-            ],
-            'data_types': [
-                r'(\d+\.\d+\.[4-5]\.?\d*\s*Data\s+Types?)',
-                r'(\d+\.\d+\.[4-5]\.?\d*\s*data\s+types?)',
-                r'(Data\s+Types?)',
-                r'(\d+\.\d+\.[4-5]\.?\d*\.?\d*\s*\w+\s*Type)',
-                r'(\d+\.\d+\.[4-5]\.?\d*\.?\d*\s*\w+\s*Enum\s*Type)',
-                r'(\d+\.\d+\.[4-5]\.?\d*\.?\d*\s*\w+\s*Bitmap\s*Type)',
-                r'(\d+\.\d+\.[4-5]\.?\d*\.?\d*\s*\w+\s*Struct\s*Type)'
-            ],
-            'attributes': [
-                r'(\d+\.\d+\.6\.?\d*\s*Attributes?)',
-                r'(\d+\.\d+\.6\.?\d*\s*attributes?)',
-                r'(Attributes?)'
-            ],
-            'commands': [
-                r'(\d+\.\d+\.7\.?\d*\s*Commands?)',
-                r'(\d+\.\d+\.7\.?\d*\s*commands?)',
-                r'(Commands?)'
-            ],
-            'events': [
-                r'(\d+\.\d+\.8\.?\d*\s*Events?)',
-                r'(\d+\.\d+\.8\.?\d*\s*events?)',
-                r'(Events?)'
-            ]
-        }
         
         # Initialize components
         self._load_pdf()
@@ -211,7 +158,7 @@ class EnhancedClusterExtractor:
         """
         try:
             # Add buffer pages and convert to 0-indexed for PyMuPDF
-            actual_start = max(0, start_page - 1 - CLUSTER_PAGE_BUFFER)
+            actual_start = max(0, start_page - CLUSTER_PAGE_BUFFER - 1)
             actual_end = min(len(self.pdf_doc), end_page + CLUSTER_PAGE_BUFFER)
             
             text_content = ""
@@ -275,7 +222,7 @@ class EnhancedClusterExtractor:
         """
         try:
             # Add buffer pages and convert to 0-indexed for PyMuPDF
-            actual_start = max(0, start_page - 1 - SUBSECTION_PAGE_BUFFER)
+            actual_start = max(0, start_page - SUBSECTION_PAGE_BUFFER - 1)
             actual_end = min(len(self.pdf_doc), end_page + SUBSECTION_PAGE_BUFFER)
             
             text_content = ""
@@ -283,6 +230,10 @@ class EnhancedClusterExtractor:
                 page = self.pdf_doc.load_page(page_num)
                 text_content += page.get_text()
                 text_content += "\n\n"
+            
+            # # first 5 lines ... last 5 lines print the preview of each section
+            # print_preview = "\n".join(text_content.splitlines()[:5]) + "\n...\n" + "\n".join(text_content.splitlines()[-5:])
+            # logger.info(f"Extracted text preview for {subsection_name}:\n{print_preview}")
             
             logger.info(f"Extracted {len(text_content)} characters from pages {actual_start+1}-{actual_end} for {subsection_name}")
             return text_content
@@ -372,15 +323,23 @@ class EnhancedClusterExtractor:
                 logger.warning(f"No {section_type} subsection found for {cluster_name}, skipping")
                 return []  # Return empty array when no subsection found
             
-            # Use the specialized prompt with section text
-            # Add clearer instructions for JSON output
-            section_instruction = f"\n\nEXTRACT FROM THIS {section_type.upper()} SECTION:\n{section_text[:8000]}\n\nReturn ONLY valid JSON array. No explanations, no markdown blocks."
-            final_prompt = section_prompt.replace("{cluster_text}", section_instruction)
+            # Use the specialized prompt with section text appended at the end
+            # Add section context and cluster information
+            section_context = f"\n\n**SECTION TO EXTRACT FROM:**\n{section_type} section from {cluster_name}\n\n**SECTION TEXT:**\n{section_text}"
+            final_prompt = section_prompt + section_context
             
             logger.info(f"Extracting {section_type} for {cluster_name} using direct PDF text (text length: {len(section_text)})")
             
             # Get LLM response
             response = self.llm.invoke(final_prompt)
+            
+            # Clean up response before JSON parsing
+            # Remove markdown code blocks
+            response = re.sub(r'```json\s*', '', response)
+            response = re.sub(r'```\s*', '', response)
+            
+            # Remove any leading/trailing explanatory text
+            response = response.strip()
             
             # Try to parse JSON response
             try:
@@ -432,14 +391,14 @@ class EnhancedClusterExtractor:
             # Remove any leading/trailing explanatory text
             response = response.strip()
             
-            # Try multiple JSON extraction strategies
+            # Try multiple JSON extraction strategies (reordered by success rate)
             strategies = [
-                # Strategy 1: Find complete JSON array/object
+                # Strategy 1 (previously 2): Find JSON starting with array/object - MOST SUCCESSFUL
+                lambda s: re.search(r'([\[\{].*)', s, re.DOTALL),
+                
+                # Strategy 2 (previously 1): Find complete JSON array/object
                 lambda s: re.search(r'(\[.*\])', s, re.DOTALL),
                 lambda s: re.search(r'(\{.*\})', s, re.DOTALL),
-                
-                # Strategy 2: Find JSON starting with array/object
-                lambda s: re.search(r'([\[\{].*)', s, re.DOTALL),
                 
                 # Strategy 3: Look for anything between brackets
                 lambda s: re.search(r'.*?(\[.*\]).*?', s, re.DOTALL),
@@ -452,6 +411,14 @@ class EnhancedClusterExtractor:
                     if match:
                         json_str = match.group(1).strip()
                         
+                        # Clean up JSON string before parsing
+                        # Remove markdown code blocks
+                        json_str = re.sub(r'```json\s*', '', json_str)
+                        json_str = re.sub(r'```\s*', '', json_str)
+                        
+                        # Remove any leading/trailing explanatory text
+                        json_str = json_str.strip()
+                        
                         # Try to parse the extracted JSON
                         result = json.loads(json_str)
                         logger.info(f"JSON repair successful using strategy {i+1} for {section_type} in {cluster_name}")
@@ -462,7 +429,16 @@ class EnhancedClusterExtractor:
             
             # If all strategies fail, try to parse the entire response
             try:
-                result = json.loads(response)
+                # Clean up response before JSON parsing
+                clean_response = response
+                # Remove markdown code blocks
+                clean_response = re.sub(r'```json\s*', '', clean_response)
+                clean_response = re.sub(r'```\s*', '', clean_response)
+                
+                # Remove any leading/trailing explanatory text
+                clean_response = clean_response.strip()
+                
+                result = json.loads(clean_response)
                 logger.info(f"JSON repair successful with direct parsing for {section_type} in {cluster_name}")
                 return result
             except json.JSONDecodeError:
@@ -481,95 +457,8 @@ class EnhancedClusterExtractor:
             logger.error(f"JSON repair failed for {section_type} in {cluster_name}: {e}")
             return None
     
-    def identify_sections(self, cluster_text: str, cluster_name: str = "") -> Dict[str, List[Tuple[str, int, int]]]:
-        """
-        Identify different sections within the cluster text
-        
-        Args:
-            cluster_text: Full cluster text content
-            cluster_name: Name of the cluster for context
-            
-        Returns:
-            Dictionary mapping section types to list of (section_text, start_pos, end_pos) tuples
-        """
-        sections = {}
-        
-        for section_type, patterns in self.section_patterns.items():
-            sections[section_type] = []
-            
-            for pattern in patterns:
-                matches = re.finditer(pattern, cluster_text, re.IGNORECASE | re.MULTILINE)
-                for match in matches:
-                    start_pos = match.start()
-                    
-                    # Find the end of this section (start of next section or end of text)
-                    end_pos = len(cluster_text)
-                    
-                    # Look for next section header to determine end
-                    remaining_text = cluster_text[start_pos + len(match.group()):]
-                    next_section_pattern = r'\n\s*\d+\.\d+\.\d+'
-                    next_match = re.search(next_section_pattern, remaining_text)
-                    if next_match:
-                        end_pos = start_pos + len(match.group()) + next_match.start()
-                    
-                    section_text = cluster_text[start_pos:end_pos].strip()
-                    if section_text and len(section_text) > 50:  # Minimum section length
-                        sections[section_type].append((section_text, start_pos, end_pos))
-                        logger.debug(f"Found {section_type} section: {section_text[:100]}...")
-        
-        logger.info(f"Identified sections for {cluster_name}: {[f'{k}({len(v)})' for k, v in sections.items() if v]}")
-        return sections
-    
-    def get_cluster_id_from_text(self, cluster_text: str) -> str:
-        """Extract cluster ID from text"""
-        # Look for hex patterns like 0x0003
-        id_match = re.search(r'0x[0-9A-Fa-f]{4}', cluster_text)
-        if id_match:
-            return id_match.group(0)
-        return "Unknown"
-    
-    def get_classification_from_text(self, cluster_text: str) -> Dict[str, str]:
-        """Extract classification info from text"""
-        import re
-        classification = {
-            "hierarchy": "Unknown",
-            "role": "Unknown", 
-            "scope": "Unknown",
-            "pics_code": "Unknown"
-        }
-        
-        # Look for classification table patterns
-        classification_match = re.search(r'Classification.*?Hierarchy\s*Role\s*Scope\s*PICS\s*Code\s*(\w+)\s*(\w+)\s*(\w+)\s*(\w+)', 
-                                        cluster_text, re.IGNORECASE | re.DOTALL)
-        if classification_match:
-            classification["hierarchy"] = classification_match.group(1)
-            classification["role"] = classification_match.group(2)
-            classification["scope"] = classification_match.group(3)
-            classification["pics_code"] = classification_match.group(4)
-        
-        return classification
-    
-    def save_cluster_sections(self, cluster_text: str, cluster_name: str) -> Dict[str, str]:
-        """
-        Save section texts at the start of cluster extraction for reference
-        
-        Args:
-            cluster_text: Full cluster text content
-            cluster_name: Name of cluster for logging
-            
-        Returns:
-            Dictionary mapping section types to their extracted text
-        """
-        cluster_sections = {}
-        
-        for section_type, patterns in self.section_patterns.items():
-            section_text = self.extract_section_text_by_number(cluster_text, patterns, cluster_name)
-            if section_text:
-                cluster_sections[section_type] = section_text
-                logger.debug(f"Saved {section_type} section for {cluster_name}: {len(section_text)} chars")
-        
-        logger.info(f"Saved {len(cluster_sections)} sections for {cluster_name}")
-        return cluster_sections
+
+
 
     def process_cluster_enhanced(self, cluster_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -586,75 +475,198 @@ class EnhancedClusterExtractor:
         start_page = cluster_data.get('start_page', 1)
         end_page = cluster_data.get('end_page', 1)
         category = cluster_data.get('category', 'Unknown')
+        subsections = cluster_data.get('subsections', [])
         
-        logger.info(f"Processing cluster: {cluster_name} ({section_number}) pages {start_page}-{end_page}")
+        logger.info(f"Processing cluster: {cluster_name} ({section_number}) pages {start_page}-{end_page} with {len(subsections)} subsections")
         
-        # Extract full cluster text for basic info extraction only
+        # Extract full cluster text for fallback only
         cluster_text = self.extract_cluster_pages(start_page, end_page)
         if not cluster_text:
             logger.error(f"Failed to extract text for {cluster_name}")
             return None
         
-        # No vector store needed - using direct PDF text extraction from subsections
-        # Removed RAG approach in favor of direct subsection page extraction based on JSON data
-        
-        # Extract basic info
-        cluster_id = self.get_cluster_id_from_text(cluster_text)
-        classification = self.get_classification_from_text(cluster_text)
-        
-        # Extract each section using direct PDF text extraction from subsection pages
-        revision_history = []
-        result = self.extract_section_with_direct_text(cluster_data, REVISION_HISTORY_EXTRACTION_PROMPT, 'Revision History', cluster_name)
-        if result is not None and isinstance(result, list):
-            revision_history = result
-        
-        features = []
-        result = self.extract_section_with_direct_text(cluster_data, FEATURES_EXTRACTION_PROMPT, 'Features', cluster_name)
-        if result is not None and isinstance(result, list):
-            features = result
-        
-        data_types = []
-        result = self.extract_section_with_direct_text(cluster_data, DATA_TYPES_EXTRACTION_PROMPT, 'Data Types', cluster_name)
-        if result is not None and isinstance(result, list):
-            data_types = result
-        
-        attributes = []
-        result = self.extract_section_with_direct_text(cluster_data, ATTRIBUTES_EXTRACTION_PROMPT, 'Attributes', cluster_name)
-        if result is not None and isinstance(result, list):
-            attributes = result
-        
-        commands = []
-        result = self.extract_section_with_direct_text(cluster_data, COMMANDS_EXTRACTION_PROMPT, 'Commands', cluster_name)
-        if result is not None and isinstance(result, list):
-            commands = result
-        
-        events = []
-        result = self.extract_section_with_direct_text(cluster_data, EVENTS_EXTRACTION_PROMPT, 'Events', cluster_name)
-        if result is not None and isinstance(result, list):
-            events = result
-        
-        # Build final cluster info structure (EXACT same structure as original)
+        # Initialize cluster info with default cluster_ids using cluster_name from TOC
+        # This provides fallback cluster name even if Cluster ID extraction fails
         cluster_info = {
-            "cluster_name": cluster_name,
-            "cluster_id": cluster_id,
-            "classification": classification,
-            "revision_history": revision_history,
-            "features": features,
-            "data_types": data_types,
-            "attributes": attributes,
-            "commands": commands,
-            "events": events,
-            "global_attributes": []
+            "Cluster ID": [
+                {
+                    "id": "unknown",
+                    "name": cluster_name,
+                    "summary": "unknown"
+                }
+            ]
         }
+        
+        # Track all references across all sections
+        all_references = []
+        
+        # Dynamically extract all subsections using section_prompt_dict
+        for subsection in subsections:
+            subsection_name = subsection.get('subsection_name', '')
+            
+            # Get the appropriate prompt from section_prompt_dict
+            if subsection_name not in section_prompt_dict:
+                logger.warning(f"No prompt found for subsection '{subsection_name}' in {cluster_name}, skipping")
+                continue
+            
+            section_prompt = section_prompt_dict[subsection_name]
+            
+            # Extract the subsection data
+            result = self.extract_section_with_direct_text(cluster_data, section_prompt, subsection_name, cluster_name)
+
+            """
+            # Log extracted data with safe preview
+            if result:
+                try:
+                    if isinstance(result, (str, list)):
+                        preview = str(result)[0:min(len(str(result)), 100)] + "..." if len(str(result)) > 100 else str(result)
+                    elif isinstance(result, dict):
+                        preview = str(result)[0:min(len(str(result)), 100)] + "..." if len(str(result)) > 100 else str(result)
+                    else:
+                        preview = str(result)[0:min(len(str(result)), 100)] + "..." if len(str(result)) > 100 else str(result)
+                    logger.info(f"Extracted data for subsection '{subsection_name}' in {cluster_name}: {preview}")
+                except Exception as e:
+                    logger.info(f"Extracted data for subsection '{subsection_name}' in {cluster_name}: [Data extracted but preview failed: {e}]")
+            else:
+                logger.info(f"No data extracted for subsection '{subsection_name}' in {cluster_name}")
+            """
+
+            if result is None:
+                continue
+            
+            # Handle different response formats
+            # Special handling for Cluster ID and Classification (combined in CLUSTER_OVERVIEW_EXTRACTION_PROMPT)
+            if subsection_name in ['Cluster ID', 'Classification', 'Cluster IDs']:
+                if isinstance(result, dict):
+                    # Extract cluster_ids array and store in subsection
+                    cluster_ids = result.get('cluster_ids', [])
+                    if cluster_ids:
+                        cluster_info['Cluster ID'] = cluster_ids
+                    
+                    # Extract classifications array and store in subsection
+                    classifications = result.get('classifications', [])
+                    if classifications:
+                        cluster_info['Classification'] = classifications
+                    
+                    # Collect references
+                    all_references.extend(result.get('references', []))
+                else:
+                    # Fallback for old format or unexpected structure
+                    cluster_info[subsection_name] = result
+            
+            # Handle Revision History
+            elif subsection_name == 'Revision History':
+                if isinstance(result, dict):
+                    cluster_info['revision_history'] = result.get('revisions', [])
+                    all_references.extend(result.get('references', []))
+                elif isinstance(result, list):
+                    cluster_info['revision_history'] = result
+                else:
+                    cluster_info['revision_history'] = []
+            
+            # Handle Features
+            elif subsection_name == 'Features':
+                if isinstance(result, dict):
+                    cluster_info['features'] = result.get('features', [])
+                    all_references.extend(result.get('references', []))
+                elif isinstance(result, list):
+                    cluster_info['features'] = result
+                else:
+                    cluster_info['features'] = []
+            
+            # Handle Data Types
+            elif subsection_name == 'Data Types':
+                if isinstance(result, dict):
+                    cluster_info['data_types'] = result.get('data_types', [])
+                    all_references.extend(result.get('references', []))
+                elif isinstance(result, list):
+                    cluster_info['data_types'] = result
+                else:
+                    cluster_info['data_types'] = []
+            
+            # Handle Attributes
+            elif subsection_name == 'Attributes':
+                if isinstance(result, dict):
+                    cluster_info['attributes'] = result.get('attributes', [])
+                    all_references.extend(result.get('references', []))
+                elif isinstance(result, list):
+                    cluster_info['attributes'] = result
+                else:
+                    cluster_info['attributes'] = []
+            
+            # Handle Commands
+            elif subsection_name == 'Commands':
+                if isinstance(result, dict):
+                    cluster_info['commands'] = result.get('commands', [])
+                    all_references.extend(result.get('references', []))
+                elif isinstance(result, list):
+                    cluster_info['commands'] = result
+                else:
+                    cluster_info['commands'] = []
+            
+            # Handle Events
+            elif subsection_name == 'Events':
+                if isinstance(result, dict):
+                    cluster_info['events'] = result.get('events', [])
+                    all_references.extend(result.get('references', []))
+                elif isinstance(result, list):
+                    cluster_info['events'] = result
+                else:
+                    cluster_info['events'] = []
+            
+            # Handle all other subsection types dynamically
+            else:
+                # Store the extracted data using the subsection name as key
+                if isinstance(result, dict):
+                    # Extract references if present
+                    refs = result.get('references', [])
+                    if refs:
+                        all_references.extend(refs)
+                        # Remove references from the main data to avoid duplication
+                        result_copy = result.copy()
+                        result_copy.pop('references', None)
+                        cluster_info[subsection_name] = result_copy
+                    else:
+                        cluster_info[subsection_name] = result
+                else:
+                    # For list or other types, store directly
+                    cluster_info[subsection_name] = result
+            
+            logger.info(f"Successfully extracted '{subsection_name}' for {cluster_name}")
+        
+        # Deduplicate references by name
+        unique_references = {}
+        for ref in all_references:
+            ref_name = ref.get('name', '')
+            if ref_name and ref_name not in unique_references:
+                unique_references[ref_name] = ref
+        
+        # Add references to cluster_info
+        cluster_info['references'] = list(unique_references.values())
+        
+        # Ensure required fields exist with defaults if not extracted
+        if 'revision_history' not in cluster_info:
+            cluster_info['revision_history'] = []
+        if 'features' not in cluster_info:
+            cluster_info['features'] = []
+        if 'data_types' not in cluster_info:
+            cluster_info['data_types'] = []
+        if 'attributes' not in cluster_info:
+            cluster_info['attributes'] = []
+        if 'commands' not in cluster_info:
+            cluster_info['commands'] = []
+        if 'events' not in cluster_info:
+            cluster_info['events'] = []
         
         return {
             "cluster_info": cluster_info,
             "metadata": {
                 "source_pages": f"{start_page}-{end_page}",
-                "extraction_method": "enhanced_section_based",
+                "extraction_method": "enhanced_section_based_dynamic",
                 "text_length": len(cluster_text),
                 "section_number": section_number,
-                "category": category
+                "category": category,
+                "subsections_processed": len([s for s in subsections if s.get('subsection_name') in section_prompt_dict])
             }
         }
     
@@ -678,7 +690,7 @@ You are validating extracted Matter cluster information for accuracy and complet
 {json.dumps(cluster_result, indent=2)}
 
 **FULL CLUSTER TEXT**:
-{full_cluster_text[:8000]}...
+{full_cluster_text}...
 
 **VALIDATION REQUIREMENTS**:
 1. **Accuracy Check**: Verify all extracted information matches the specification
@@ -694,6 +706,14 @@ Return the COMPLETE enhanced cluster JSON structure with the same format.
         
         try:
             response = self.llm.invoke(validation_prompt)
+            
+            # Clean up response before JSON parsing
+            # Remove markdown code blocks
+            response = re.sub(r'```json\s*', '', response)
+            response = re.sub(r'```\s*', '', response)
+            
+            # Remove any leading/trailing explanatory text
+            response = response.strip()
             
             # Try to parse the enhanced result
             try:
@@ -769,6 +789,7 @@ Return the COMPLETE enhanced cluster JSON structure with the same format.
                     logger.warning(f"Skipping cluster {section_number} due to processing failure")
                     continue
                 
+                """
                 # Extract full cluster text for final validation
                 start_page = cluster_data.get('start_page', 1)
                 end_page = cluster_data.get('end_page', 1)
@@ -777,6 +798,7 @@ Return the COMPLETE enhanced cluster JSON structure with the same format.
                 # Final validation and enhancement step
                 if full_cluster_text:
                     cluster_result = self.validate_and_enhance_cluster(cluster_result, full_cluster_text)
+                """
                 
                 # Add to results
                 results['clusters'].append(cluster_result)
@@ -842,7 +864,7 @@ def main():
         
         # Process clusters (test with first few)
         logger.info("Starting enhanced cluster extraction with specialized section prompts...")
-        results = extractor.process_all_clusters(limit=2, resume=True)
+        results = extractor.process_all_clusters(limit=10, resume=True)
         
         # Save final results
         extractor.save_results(results, output_path)

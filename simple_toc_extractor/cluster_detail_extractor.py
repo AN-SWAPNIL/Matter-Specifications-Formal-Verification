@@ -350,6 +350,96 @@ class EnhancedClusterExtractor:
             logger.error(f"Error extracting {subsection_type} subsection text: {e}")
             return ""
     
+    def extract_cluster_overview_combined(self, cluster_data: Dict[str, Any], cluster_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract cluster overview (Cluster ID/IDs + Classification) with a single AI call
+        Combines page ranges from all overview subsections for optimal extraction
+        
+        Args:
+            cluster_data: Cluster information from matter_clusters_toc.json
+            cluster_name: Name of cluster for context
+            
+        Returns:
+            Dict with cluster_ids, classifications, and references or None
+        """
+        try:
+            subsections = cluster_data.get('subsections', [])
+            
+            # Find all cluster overview subsections and collect their page ranges
+            overview_subsections = []
+            for subsection in subsections:
+                subsection_name = subsection.get('subsection_name', '')
+                if subsection_name in ['Cluster ID', 'Cluster IDs', 'Classification']:
+                    start_page = subsection.get('start_page')
+                    end_page = subsection.get('end_page')
+                    if start_page and end_page:
+                        overview_subsections.append({
+                            'name': subsection_name,
+                            'start_page': start_page,
+                            'end_page': end_page
+                        })
+            
+            if not overview_subsections:
+                logger.warning(f"No cluster overview subsections found for {cluster_name}")
+                return None
+            
+            # Calculate combined page range: min(start) to max(end)
+            min_start = min(sub['start_page'] for sub in overview_subsections)
+            max_end = max(sub['end_page'] for sub in overview_subsections)
+            
+            overview_names = [sub['name'] for sub in overview_subsections]
+            logger.info(f"⚡ Extracting cluster overview for {cluster_name} from pages {min_start}-{max_end} (combining: {', '.join(overview_names)})")
+            
+            # Extract text from combined page range
+            section_text = self.extract_subsection_pages(min_start, max_end, f"{cluster_name} - Cluster Overview")
+            
+            if not section_text:
+                logger.warning(f"Failed to extract cluster overview text for {cluster_name}")
+                return None
+            
+            # Use CLUSTER_OVERVIEW_EXTRACTION_PROMPT
+            section_prompt = section_prompt_dict.get('Cluster ID', '')  # All overview types use same prompt
+            if not section_prompt:
+                logger.error(f"No prompt found for cluster overview")
+                return None
+            
+            # Add section context
+            section_context = f"\n\n**SECTION TO EXTRACT FROM:**\nCluster Overview (ID + Classification) from {cluster_name}\n\n**SECTION TEXT:**\n{section_text}"
+            final_prompt = section_prompt + section_context
+            
+            logger.info(f"Making single AI call for cluster overview in {cluster_name} (text length: {len(section_text)})")
+            
+            # Get LLM response
+            response = self.llm.invoke(final_prompt)
+            
+            # Clean up response
+            response = re.sub(r'```json\s*', '', response)
+            response = re.sub(r'```\s*', '', response)
+            response = response.strip()
+            
+            # Try to parse JSON response
+            try:
+                result = json.loads(response)
+                logger.info(f"✓ Successfully extracted cluster overview for {cluster_name} with single AI call")
+                return result
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON parsing failed for cluster overview in {cluster_name}: {e}")
+                logger.debug(f"Raw response preview: {response[:500]}...")
+                
+                # Try to repair the JSON
+                logger.warning(f"Attempting repair for cluster overview in {cluster_name}...")
+                repaired_result = self._attempt_json_repair(response, "Cluster Overview", cluster_name)
+                if repaired_result:
+                    logger.info(f"✓ Successfully repaired JSON for cluster overview in {cluster_name}")
+                    return repaired_result
+                
+                logger.error(f"Failed to parse cluster overview response for {cluster_name}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error extracting cluster overview for {cluster_name}: {e}")
+            return None
+    
     def extract_section_with_direct_text(self, cluster_data: Dict[str, Any], section_prompt: str, section_type: str, cluster_name: str = "") -> Optional[Any]:
         """
         Extract section information using direct PDF text extraction from subsection pages
@@ -640,27 +730,43 @@ class EnhancedClusterExtractor:
         # Track all references across all sections
         all_references = []
         
-        # Track if we've already processed cluster overview (ID + Classification)
-        cluster_overview_processed = False
+        # OPTIMIZATION: Process cluster overview (Cluster ID/IDs + Classification) first with single AI call
+        # This extracts both cluster_ids and classifications from combined page range (min start, max end)
+        logger.info(f"⚡ Preprocessing cluster overview subsections for {cluster_name}")
+        overview_result = self.extract_cluster_overview_combined(cluster_data, cluster_name)
         
-        # Dynamically extract all subsections using section_prompt_dict
+        if overview_result and isinstance(overview_result, dict):
+            # Extract cluster_ids
+            cluster_ids = overview_result.get('cluster_ids', [])
+            if cluster_ids:
+                cluster_info['cluster_id'] = cluster_ids
+                logger.info(f"✓ Extracted {len(cluster_ids)} cluster ID(s) for {cluster_name}")
+            
+            # Extract classifications
+            classifications = overview_result.get('classifications', [])
+            if classifications:
+                cluster_info['classification'] = classifications
+                logger.info(f"✓ Extracted {len(classifications)} classification(s) for {cluster_name}")
+            
+            # Collect references
+            all_references.extend(overview_result.get('references', []))
+        
+        # Create set of already processed subsections
+        processed_subsections = {'Cluster ID', 'Cluster IDs', 'Classification'} if overview_result else set()
+        
+        # Dynamically extract remaining subsections using section_prompt_dict
         for subsection in subsections:
             subsection_name = subsection.get('subsection_name', '')
+            
+            # Skip if already processed in cluster overview
+            if subsection_name in processed_subsections:
+                logger.info(f"⚡ Skipping '{subsection_name}' - already extracted in cluster overview preprocessing")
+                continue
             
             # Get the appropriate prompt from section_prompt_dict
             if subsection_name not in section_prompt_dict:
                 logger.warning(f"No prompt found for subsection '{subsection_name}' in {cluster_name}, skipping")
                 continue
-            
-            # OPTIMIZATION: Cluster ID/IDs and Classification use the same prompt (CLUSTER_OVERVIEW_EXTRACTION_PROMPT)
-            # Make a single AI call for both instead of separate calls
-            if subsection_name in ['Cluster ID', 'Classification', 'Cluster IDs']:
-                if cluster_overview_processed:
-                    logger.info(f"⚡ Skipping '{subsection_name}' - already extracted with cluster overview (single AI call optimization)")
-                    continue
-                else:
-                    logger.info(f"⚡ Processing cluster overview (ID + Classification) with single AI call for {cluster_name}")
-                    cluster_overview_processed = True
             
             section_prompt = section_prompt_dict[subsection_name]
             
@@ -688,30 +794,7 @@ class EnhancedClusterExtractor:
                 continue
             
             # Handle different response formats
-            # Special handling for Cluster ID and Classification (combined in CLUSTER_OVERVIEW_EXTRACTION_PROMPT)
-            if subsection_name in ['Cluster ID', 'Classification', 'Cluster IDs']:
-                if isinstance(result, dict):
-                    # Extract cluster_ids array and store in subsection
-                    cluster_ids = result.get('cluster_ids', [])
-                    if cluster_ids:
-                        cluster_info['cluster_id'] = cluster_ids
-                    
-                    # Extract classifications array and store in subsection
-                    classifications = result.get('classifications', [])
-                    if classifications:
-                        cluster_info['classification'] = classifications
-                    
-                    # Collect references
-                    all_references.extend(result.get('references', []))
-                else:
-                    # Fallback for old format or unexpected structure
-                    # Map old field names to new field names
-                    if subsection_name in ['Cluster ID', 'Cluster IDs']:
-                        cluster_info['cluster_id'] = result
-                    elif subsection_name == 'Classification':
-                        cluster_info['classification'] = result
-                    else:
-                        cluster_info[subsection_name] = result
+            # Note: Cluster ID/IDs and Classification are already handled in preprocessing above
             
             # Handle Revision History
             elif subsection_name == 'Revision History':
@@ -1023,7 +1106,7 @@ def main():
         
         # Process clusters (test with first few)
         logger.info("Starting enhanced cluster extraction with specialized section prompts...")
-        results = extractor.process_all_clusters(limit=1, resume=True)
+        results = extractor.process_all_clusters(limit=4, resume=True)
         
         # Save final results
         extractor.save_results(results, output_path)

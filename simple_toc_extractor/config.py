@@ -11,7 +11,7 @@ load_dotenv()
 
 # API Configuration
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_TEMPERATURE = 0.0  # More deterministic for detailed extraction
 GEMINI_MAX_OUTPUT_TOKENS = 32768  # Significantly increased for comprehensive behavioral extraction
 
@@ -21,7 +21,7 @@ PDF_PATH = os.path.join(os.path.dirname(__file__), "..", PDF_FILENAME)
 MAX_TOC_PAGES = 50  # Maximum pages to scan for TOC content
 
 # Vector Store Configuration
-EMBEDDINGS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDINGS_MODEL = "models/embedding-001"
 CHUNK_SIZE = 1500  # Increased for better table capture
 CHUNK_OVERLAP = 500  # More overlap for table continuations
 VECTOR_SEARCH_K = 15  # More documents for comprehensive context
@@ -34,19 +34,14 @@ OUTPUT_DIRECTORY = os.path.dirname(__file__)
 # Logging Configuration
 LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR
 
-# Cluster Categories for Classification
-CLUSTER_CATEGORIES = [
-    "General",
-    "Measurement and Sensing",
-    "Lighting", 
-    "HVAC",
-    "Closures",
-    "Media",
-    "Robots", 
-    "Home Appliances",
-    "Energy Management",
-    "Network Infrastructure"
-]
+# Page buffer for cluster extraction (pages before and after cluster boundaries)
+CLUSTER_PAGE_BUFFER = 0  # Increased to capture more context and table continuations
+
+# Page offset - number of pages before actual content starts (TOC pages, covers, etc.)
+PDF_PAGE_OFFSET = 4  # Actual content starts at PDF page 5, but TOC refers to logical page 1
+
+# Page buffer for subsection extraction (pages before and after subsection boundaries)
+SUBSECTION_PAGE_BUFFER = 0  # Buffer for subsection text extraction
 
 # TOC Pattern Recognition
 TOC_INDICATORS = [
@@ -157,218 +152,6 @@ MANUAL_CLUSTER_DATA = [
 
 # AI Extraction Prompt Template
 # Manual extraction configuration - no AI prompts needed
-
-# Detailed Cluster Information Extraction Configuration
-CLUSTER_DETAIL_EXTRACTION_PROMPT = """
-You are extracting comprehensive technical information from a Matter protocol cluster specification for formal verification and fuzzing.
-
-**TASK**: Extract all available information from the cluster specification and return valid JSON only.
-
-**EXTRACTION REQUIREMENTS**:
-
-1. **Attributes** (Section X.Y.6):
-   - Extract each attribute with columns: ID, Name, Type, Constraint, Quality, Default, Access, Conformance
-   - Look for tables with headers like "ID | Name | Type | Constraint | Quality | Default | Access | Conformance"
-   - Include attribute descriptions from surrounding text
-
-2. **Commands** (Section X.Y.7):
-   - Extract each command with columns: ID, Name, Direction, Response, Access, Conformance
-   - For each command, extract field definitions from command payload tables
-   - Look for command field tables with headers like "ID | Name | Type | Constraint | Default | Conformance"
-   - Extract "Effect on Receipt" behavioral semantics for every command
-   - Look for normative text starting with "On receipt of [CommandName]:" or "Effect on Receipt:"
-   - Extract conditional logic (if/then/else), attribute assignments, state changes, timer operations
-   - Include behavioral requirements and their conditions
-
-3. **Behavioral State Transitions**:
-   - Extract timer-based state changes and countdown behaviors
-   - Extract attribute-driven state logic (when attributes change, what happens)
-   - Look for state diagrams or state descriptions in the specification
-   - Capture timing requirements and resolution specifications
-   - Extract conditional behavior based on feature flags and capabilities
-
-4. **Data Types** (Sections X.Y.4-5):
-   - **Enumerations**: Extract enum values with hex codes (0x00, 0x01, etc.) and names
-   - **Bitmaps**: Extract bit definitions with bit positions and names  
-   - **Structures**: Extract field definitions with IDs, names, types, conformance
-   - Look for definition tables and include nested structure definitions
-
-5. **Features** (Section X.Y.3):
-   - Extract features with bit positions, codes, names, descriptions
-   - Include feature dependencies and conformance requirements
-
-6. **Events** (if present):
-   - Extract events with IDs, names, priorities, access, conformance
-   - Extract event field definitions for each event
-
-**EXTRACTION STRATEGY**:
-   - Search the entire cluster text for information, not just the beginning
-   - Tables often span multiple pages - capture all rows
-   - Look for continuation markers like "Table X.Y continued"  
-   - Check for embedded definitions within attribute/command descriptions
-   - Extract hex values exactly as shown (0x0000, 0x01, etc.)
-   - Preserve technical abbreviations and codes exactly
-   - If information exists in the specification, extract it - do not leave arrays empty
-   - Extract ALL features with bit positions, codes, names, descriptions
-   - Include feature dependencies and conformance requirements
-
-6. EVENTS (if present):
-   - Extract ALL events with IDs, names, priorities, access, conformance
-   - Extract ALL event field definitions for each event
-**BEHAVIORAL EXTRACTION PATTERNS**:
-
-Extract command behavioral semantics including:
-- **Command conditionals**: "On receipt: if [condition]==TRUE, [action1] → set [attribute]:=FALSE"
-- **Multi-branch logic**: "If [condition1] → [action1]; Else if [condition2] → [action2]; Else → [action3]"
-- **Timer behaviors**: "When [timer]→0, server SHALL set [attribute]:=0"
-- **State transitions**: "Being [state] while [timer]>0 counts down"
-- **Resolution specs**: "Updates happen in [time] steps ([unit] units)"
-- **Attribute lifecycle**: "SHALL be set to [value] after any command causing [condition]"
-
-**JSON OUTPUT FORMAT**:
-{{
-  "cluster_info": {{
-    "cluster_name": "exact cluster name",
-    "cluster_id": "hex ID with 0x prefix",
-    "classification": {{
-      "hierarchy": "hierarchy type (Base/Utility/Application)",
-      "role": "role type (Client/Server/Both)", 
-      "scope": "scope type (Node/Endpoint)",
-      "pics_code": "PICS code for testing"
-    }},
-    "revision_history": [
-      {{
-        "revision": "revision number",
-        "description": "brief change summary (max 100 chars)",
-        "date": "revision date if available"
-      }}
-    ],
-    "features": [
-      {{
-        "bit": "bit number (0-31)",
-        "code": "feature code (2-4 chars)",
-        "name": "full feature name",
-        "summary": "brief feature description (max 80 chars)",
-        "conformance": "M/O/F/C conformance",
-        "dependencies": "feature dependencies if any"
-      }}
-    ],
-    "data_types": [
-      {{
-        "name": "data type name",
-        "base_type": "base type (enum8/enum16/map8/map16/struct/etc.)",
-        "constraint": "constraints if any",
-        "values": [
-          {{
-            "value": "For ENUMS: hex code (0x00), For BITMAPS: bit number (0-7), For STRUCTS: field order (0,1,2...)",
-            "name": "For ENUMS: enum name, For BITMAPS: bit name, For STRUCTS: field name", 
-            "summary": "description of enum value/bit/field",
-            "conformance": "M/O/F conformance requirement"
-          }}
-        ]
-      }}
-    ],
-    "attributes": [
-      {{
-        "id": "hex attribute ID (0x0000)",
-        "name": "full attribute name",
-        "type": "data type (including custom types)",
-        "constraint": "value constraints, ranges, or 'desc'",
-        "quality": "quality flags (N/S/P/F/X/C)",
-        "default": "default value or 'desc' if varies",
-        "access": "access permissions (R/W/RW, may include F for fabric)",
-        "conformance": "M/O/F conformance requirement",
-        "summary": "brief attribute purpose (max 100 chars)",
-        "fabric_sensitive": "true/false if fabric-scoped",
-        "scene_capable": "true/false if supports scenes"
-      }}
-    ],
-    "commands": [
-      {{
-        "id": "hex command ID (0x00)",
-        "name": "full command name",
-        "direction": "client→server or server→client",
-        "response": "response command name or 'DefaultResponse'",
-        "access": "access level (A/V/M/etc.) and fabric requirements",
-        "conformance": "M/O/F conformance requirement",
-        "summary": "brief command purpose (max 100 chars)",
-        "timing": "timing requirements if specified",
-        "fields": [
-          {{
-            "id": "field ID or order",
-            "name": "field name",
-            "type": "data type",
-            "constraint": "constraints or ranges",
-            "quality": "quality flags if any",
-            "default": "default value if any",
-            "conformance": "M/O/F for this field",
-            "summary": "brief field description (max 50 chars)"
-          }}
-        ],
-        "effect_on_receipt": "Concise algorithmic steps (max 200 chars): state changes, attribute updates, conditions. Example: 'if [condition]==TRUE: [action1], set [attribute]:=FALSE, set [other_attribute]:=[value]'"
-      }}
-    ],
-    "events": [
-      {{
-        "id": "hex event ID (0x00)",
-        "name": "full event name", 
-        "priority": "event priority (Info/Critical/Debug)",
-        "access": "access requirements",
-        "conformance": "M/O/F conformance",
-        "summary": "event description",
-        "fields": [
-          {{
-            "id": "field ID",
-            "name": "field name",
-            "type": "data type",
-            "conformance": "field conformance"
-          }}
-        ]
-      }}
-    ],
-    "global_attributes": [
-      {{
-        "id": "global attribute ID",
-        "name": "global attribute name",
-        "conformance": "conformance for this cluster"
-      }}
-    ]
-  }}
-}}
-
-EXTRACTION STRATEGY:
-1. **Section Scanning**: Look for numbered subsections (X.Y.3 Features, X.Y.4 Data Types, X.Y.5 Enums, X.Y.6 Attributes, X.Y.7 Commands)
-2. **Deep Subsection Analysis**: Scan X.Y.Z.1, X.Y.Z.2 subsections for detailed definitions (like "1.10.5.1 ModeTagStruct Type")
-3. **Table Extraction**: Find tables with column headers and extract ALL rows completely
-4. **Structure Field Tables**: Look for field definition tables within structure type subsections
-5. **Enum Value Lists**: Extract complete enum value tables with hex codes and names
-6. **Command Field Definitions**: Find command payload field tables within command subsections
-7. **Status Code Tables**: Extract status code definitions and ranges
-8. **Mode/Tag Namespaces**: Look for value namespace tables with semantic meanings
-9. **Multi-page Continuations**: Handle tables that span multiple pages or sections
-10. **Constraint Details**: Capture detailed constraint specifications (max values, ranges, dependencies)
-
-CRITICAL INSTRUCTIONS:
-1. **NEVER RETURN EMPTY ARRAYS IF DATA EXISTS**: Every enum, bitmap, struct, and command with defined values/fields MUST have populated arrays
-**VALIDATION REQUIREMENTS**:
-- Extract all rows from tables in the specification
-- Extract all enum values with hex codes, names, and descriptions
-- Extract all structure field definitions with IDs, names, types, conformance
-- Extract all command field definitions from command payload tables
-- Extract complete "effect_on_receipt" behavioral text for commands
-- Return valid JSON only - no markdown blocks, no explanations
-- Ensure all JSON strings are properly escaped
-- Use character limits: summaries max 100 chars, effect_on_receipt max 200 chars
-- Close all braces properly - never truncate JSON structure
-
-Extract from the provided cluster specification text and return complete valid JSON only.
-"""
-
-# Page buffer for cluster extraction (pages before and after cluster boundaries)
-CLUSTER_PAGE_BUFFER = 2  # Increased to capture more context and table continuations
-
-# Page offset - number of pages before actual content starts (TOC pages, covers, etc.)
-PDF_PAGE_OFFSET = 4  # Actual content starts at PDF page 5, but TOC refers to logical page 1
 
 # FSM Generation Configuration
 FSM_GENERATION_PROMPT_TEMPLATE = """
@@ -605,116 +388,387 @@ init {{
 
 Return ONLY the Promela code with proper syntax. No explanations, no markdown blocks, just the .pml model."""
 
+# Cluster Categories for Classification
+CLUSTER_CATEGORIES = [
+    "General",
+    "Measurement and Sensing",
+    "Lighting", 
+    "HVAC",
+    "Closures",
+    "Media",
+    "Robots", 
+    "Home Appliances",
+    "Energy Management",
+    "Network Infrastructure"
+]
+
+# Detailed Cluster Information Extraction Configuration
+CLUSTER_DETAIL_EXTRACTION_PROMPT = """
+You are extracting comprehensive technical information from a Matter protocol cluster specification for formal verification and fuzzing.
+
+**TASK**: Extract all available information from the cluster specification and return valid JSON only.
+
+**EXTRACTION REQUIREMENTS**:
+
+1. **Attributes** (Section X.Y.6):
+   - Extract each attribute with columns: ID, Name, Type, Constraint, Quality, Default, Access, Conformance
+   - Look for tables with headers like "ID | Name | Type | Constraint | Quality | Default | Access | Conformance"
+   - Include attribute descriptions from surrounding text
+
+2. **Commands** (Section X.Y.7):
+   - Extract each command with columns: ID, Name, Direction, Response, Access, Conformance
+   - For each command, extract field definitions from command payload tables
+   - Look for command field tables with headers like "ID | Name | Type | Constraint | Default | Conformance"
+   - Extract "Effect on Receipt" behavioral semantics for every command
+   - Look for normative text starting with "On receipt of [CommandName]:" or "Effect on Receipt:"
+   - Extract conditional logic (if/then/else), attribute assignments, state changes, timer operations
+   - Include behavioral requirements and their conditions
+
+3. **Behavioral State Transitions**:
+   - Extract timer-based state changes and countdown behaviors
+   - Extract attribute-driven state logic (when attributes change, what happens)
+   - Look for state diagrams or state descriptions in the specification
+   - Capture timing requirements and resolution specifications
+   - Extract conditional behavior based on feature flags and capabilities
+
+4. **Data Types** (Sections X.Y.4-5):
+   - **Enumerations**: Extract enum values with hex codes (0x00, 0x01, etc.) and names
+   - **Bitmaps**: Extract bit definitions with bit positions and names  
+   - **Structures**: Extract field definitions with IDs, names, types, conformance
+   - Look for definition tables and include nested structure definitions
+
+5. **Features** (Section X.Y.3):
+   - Extract features with bit positions, codes, names, descriptions
+   - Include feature dependencies and conformance requirements
+
+6. **Events** (if present):
+   - Extract events with IDs, names, priorities, access, conformance
+   - Extract event field definitions for each event
+
+**EXTRACTION STRATEGY**:
+   - Search the entire cluster text for information, not just the beginning
+   - Tables often span multiple pages - capture all rows
+   - Look for continuation markers like "Table X.Y continued"  
+   - Check for embedded definitions within attribute/command descriptions
+   - Extract hex values exactly as shown (0x0000, 0x01, etc.)
+   - Preserve technical abbreviations and codes exactly
+   - If information exists in the specification, extract it - do not leave arrays empty
+   - Extract ALL features with bit positions, codes, names, descriptions
+   - Include feature dependencies and conformance requirements
+
+6. EVENTS (if present):
+   - Extract ALL events with IDs, names, priorities, access, conformance
+   - Extract ALL event field definitions for each event
+**BEHAVIORAL EXTRACTION PATTERNS**:
+
+Extract command behavioral semantics including:
+- **Command conditionals**: "On receipt: if [condition]==TRUE, [action1] → set [attribute]:=FALSE"
+- **Multi-branch logic**: "If [condition1] → [action1]; Else if [condition2] → [action2]; Else → [action3]"
+- **Timer behaviors**: "When [timer]→0, server SHALL set [attribute]:=0"
+- **State transitions**: "Being [state] while [timer]>0 counts down"
+- **Resolution specs**: "Updates happen in [time] steps ([unit] units)"
+- **Attribute lifecycle**: "SHALL be set to [value] after any command causing [condition]"
+
+**JSON OUTPUT FORMAT**:
+{{
+  "cluster_info": {{
+    "cluster_name": "exact cluster name",
+    "cluster_id": "hex ID with 0x prefix",
+    "classification": {{
+      "hierarchy": "hierarchy type (Base/Utility/Application)",
+      "role": "role type (Client/Server/Both)", 
+      "scope": "scope type (Node/Endpoint)",
+      "pics_code": "PICS code for testing"
+    }},
+    "revision_history": [
+      {{
+        "revision": "revision number",
+        "description": "detailed change summary with pseudocode if applicable (max 200 chars)",
+        "date": "revision date if available"
+      }}
+    ],
+    "features": [
+      {{
+        "bit": "bit number (0-31)",
+        "code": "feature code (2-4 chars)",
+        "name": "full feature name",
+        "summary": "detailed feature description with pseudocode if applicable (max 200 chars)",
+        "conformance": "M/O/F/C conformance",
+        "dependencies": "feature dependencies if any"
+      }}
+    ],
+    "data_types": [
+      {{
+        "name": "data type name",
+        "base_type": "base type (enum8/enum16/map8/map16/struct/etc.)",
+        "constraint": "constraints if any",
+        "values": [
+          {{
+            "value": "For ENUMS: hex code (0x00), For BITMAPS: bit number (0-7), For STRUCTS: field order (0,1,2...)",
+            "name": "For ENUMS: enum name, For BITMAPS: bit name, For STRUCTS: field name", 
+            "summary": "description of enum value/bit/field",
+            "conformance": "M/O/F conformance requirement"
+          }}
+        ]
+      }}
+    ],
+    "attributes": [
+      {{
+        "id": "hex attribute ID (0x0000)",
+        "name": "full attribute name",
+        "type": "data type (including custom types)",
+        "constraint": "value constraints, ranges, or 'desc'",
+        "quality": "quality flags (N/S/P/F/X/C)",
+        "default": "default value or 'desc' if varies",
+        "access": "access permissions (R/W/RW, may include F for fabric)",
+        "conformance": "M/O/F conformance requirement",
+        "summary": "detailed attribute purpose with pseudocode notation if applicable (max 200 chars)",
+        "fabric_sensitive": "true/false if fabric-scoped",
+        "scene_capable": "true/false if supports scenes"
+      }}
+    ],
+    "commands": [
+      {{
+        "id": "hex command ID (0x00)",
+        "name": "full command name",
+        "direction": "client→server or server→client",
+        "response": "response command name or 'DefaultResponse'",
+        "access": "access level (A/V/M/etc.) and fabric requirements",
+        "conformance": "M/O/F conformance requirement",
+        "summary": "detailed command purpose with pseudocode notation (max 200 chars)",
+        "timing": "timing requirements if specified",
+        "fields": [
+          {{
+            "id": "field ID or order",
+            "name": "field name",
+            "type": "data type",
+            "constraint": "constraints or ranges",
+            "quality": "quality flags if any",
+            "default": "default value if any",
+            "conformance": "M/O/F for this field",
+            "summary": "detailed field description with pseudocode if applicable (max 200 chars)"
+          }}
+        ],
+        "effect_on_receipt": "Detailed algorithmic steps with pseudocode if applicable (max 400 chars): state changes, attribute updates, conditions, loops. Example: 'if [condition]==TRUE: [action1], set [attribute]:=FALSE; for each [item]: update [field]; else [action2]'"
+      }}
+    ],
+    "events": [
+      {{
+        "id": "hex event ID (0x00)",
+        "name": "full event name", 
+        "priority": "event priority (Info/Critical/Debug)",
+        "access": "access requirements",
+        "conformance": "M/O/F conformance",
+        "summary": "event description",
+        "fields": [
+          {{
+            "id": "field ID",
+            "name": "field name",
+            "type": "data type",
+            "conformance": "field conformance"
+          }}
+        ]
+      }}
+    ],
+    "global_attributes": [
+      {{
+        "id": "global attribute ID",
+        "name": "global attribute name",
+        "conformance": "conformance for this cluster"
+      }}
+    ]
+  }}
+}}
+
+EXTRACTION STRATEGY:
+1. **Section Scanning**: Look for numbered subsections (X.Y.3 Features, X.Y.4 Data Types, X.Y.5 Enums, X.Y.6 Attributes, X.Y.7 Commands)
+2. **Deep Subsection Analysis**: Scan X.Y.Z.1, X.Y.Z.2 subsections for detailed definitions (like "1.10.5.1 ModeTagStruct Type")
+3. **Table Extraction**: Find tables with column headers and extract ALL rows completely
+4. **Structure Field Tables**: Look for field definition tables within structure type subsections
+5. **Enum Value Lists**: Extract complete enum value tables with hex codes and names
+6. **Command Field Definitions**: Find command payload field tables within command subsections
+7. **Status Code Tables**: Extract status code definitions and ranges
+8. **Mode/Tag Namespaces**: Look for value namespace tables with semantic meanings
+9. **Multi-page Continuations**: Handle tables that span multiple pages or sections
+10. **Constraint Details**: Capture detailed constraint specifications (max values, ranges, dependencies)
+
+CRITICAL INSTRUCTIONS:
+1. **NEVER RETURN EMPTY ARRAYS IF DATA EXISTS**: Every enum, bitmap, struct, and command with defined values/fields MUST have populated arrays
+**VALIDATION REQUIREMENTS**:
+- Extract all rows from tables in the specification
+- Extract all enum values with hex codes, names, and descriptions
+- Extract all structure field definitions with IDs, names, types, conformance
+- Extract all command field definitions from command payload tables
+- Extract complete "effect_on_receipt" behavioral text for commands
+- Return valid JSON only - no markdown blocks, no explanations
+- Ensure all JSON strings are properly escaped
+- Use character limits: summaries max 200 chars, descriptions max 200 chars, effect_on_receipt max 400 chars
+- Close all braces properly - never truncate JSON structure
+
+Extract from the provided cluster specification text and return complete valid JSON only.
+"""
+
 # Section-Based Extraction Prompts
 # Following the same unbiased structure as CLUSTER_DETAIL_EXTRACTION_PROMPT
 
 REVISION_HISTORY_EXTRACTION_PROMPT = """
 You are extracting revision history information from a Matter protocol cluster specification section.
 
-**TASK**: Extract ONLY revision history entries from the provided text and return valid JSON array.
+**TASK**: Extract ONLY revision history entries from the provided text and return valid JSON object.
 
 **EXTRACTION REQUIREMENTS**:
 - Look for revision tables with "Revision" and "Description" columns
 - Extract revision numbers (1, 2, 3, etc.)
-- Extract brief change descriptions 
+- Extract brief change descriptions with pseudocode notation if applicable
 - Extract dates if available (often not present)
 - Look for text like "The global ClusterRevision attribute value SHALL be the highest revision number"
+- **References**: Extract items MENTIONED but NOT defined in this section
 
 **JSON OUTPUT FORMAT**:
-[
-  {
-    "revision": "1",
-    "description": "brief change summary (max 100 chars)",
-    "date": "date if available or null"
-  }
-]
+{
+  "revisions": [
+    {
+      "revision": "1",
+      "description": "detailed summary with pseudocode if applicable (max 200 chars)",
+      "date": "date if available or null"
+    }
+  ],
+  "references": [
+    {
+      "id": "0xFFFC",
+      "name": "ClusterRevision",
+      "description": "Global attr for cluster version (not defined here)"
+    }
+  ]
+}
+
+**REFERENCES RULES**:
+- Include ONLY items MENTIONED in text but NOT fully defined in this section
+- Use attribute/cluster ID if known, null if external specification
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
+- Examples: ClusterRevision attribute, other clusters mentioned
 
 **EXTRACTION STRATEGY**:
 - Search for numbered revision entries in tables or lists
-- Keep descriptions concise and factual
+- Scan for references to attributes/clusters not defined in this section
+- Keep descriptions concise, add pseudocode for behavioral changes if applicable
 - Use null for missing dates
-- If no revision history found, return empty array []
 
-Return ONLY the JSON array. No explanations, no markdown, no additional text.
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
 """
 
 FEATURES_EXTRACTION_PROMPT = """
 You are extracting feature information from a Matter protocol cluster specification section.
 
-**TASK**: Extract ONLY cluster features from the provided text and return valid JSON array.
+**TASK**: Extract ONLY cluster features from the provided text and return valid JSON object.
 
 **EXTRACTION REQUIREMENTS**:
 - Look for feature tables with columns like "Bit", "Code", "Feature", "Summary", "Conformance"
 - Extract bit positions (0-31 for feature flags)
 - Extract feature codes (2-4 character abbreviations like "GN", "OO")
-- Extract full feature names and descriptions
+- Extract full feature names and descriptions with pseudocode notation
 - Extract conformance requirements (M/O/F/C)
 - Look for feature dependencies if any
+- **References**: Extract items MENTIONED but NOT defined in this section
 
 **JSON OUTPUT FORMAT**:
-[
-  {
-    "bit": "bit number (0-31)",
-    "code": "feature code (2-4 chars)",
-    "name": "full feature name",
-    "summary": "brief feature description (max 80 chars)",
-    "conformance": "M/O/F/C conformance",
-    "dependencies": "feature dependencies if any or null"
-  }
-]
+{
+  "features": [
+    {
+      "bit": "bit number (0-31)",
+      "code": "feature code (2-4 chars)",
+      "name": "full feature name",
+      "summary": "detailed description with pseudocode if applicable (max 200 chars)",
+      "conformance": "M/O/F/C conformance",
+      "dependencies": "feature dependencies if any or null"
+    }
+  ],
+  "references": [
+    {
+      "id": "0xFFFD",
+      "name": "FeatureMap",
+      "description": "Feature bitmap attr (not defined here)"
+    },
+    {
+      "id": "0x0006",
+      "name": "On/Off Cluster",
+      "description": "Dependency cluster (if mentioned)"
+    }
+  ]
+}
+
+**REFERENCES RULES**:
+- Include ONLY items MENTIONED in text but NOT fully defined in this section
+- Use attribute/cluster ID if known, null if external spec
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
+- Examples: FeatureMap attribute, dependent clusters mentioned, related specs
 
 **EXTRACTION STRATEGY**:
 - Look for sections titled "Features" or numbered like "X.Y.3 Features"
-- Extract from feature definition tables completely
-- Capture feature capability descriptions
-- If no features found, return empty array []
+- Scan for references to clusters/attributes not defined here
+- Add pseudocode notation for feature behavior in summaries
 
-Return ONLY the JSON array. No explanations, no markdown, no additional text.
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
 """
 
 DATA_TYPES_EXTRACTION_PROMPT = """
 You are extracting data type definitions from a Matter protocol cluster specification section.
 
-**TASK**: Extract ONLY custom data types (enums, bitmaps, structures) from the provided text and return valid JSON array.
+**TASK**: Extract ONLY custom data types (enums, bitmaps, structures) from the provided text and return valid JSON object.
 
 **EXTRACTION REQUIREMENTS**:
 - **Enumerations**: Extract enum types with value tables (0x00, 0x01, etc.)
 - **Bitmaps**: Extract bitmap types with bit definitions (bit 0, bit 1, etc.)
 - **Structures**: Extract structure types with field definitions
 - Look for sections like "X.Y.4 Data Types" or "X.Y.5 [TypeName] Type"
-- Extract type names, base types, and all value/field definitions
+- Extract type names, base types, and all value/field definitions with pseudocode notation
+- **References**: Extract items MENTIONED but NOT defined in this section
 
 **JSON OUTPUT FORMAT**:
-[
-  {
-    "name": "data type name (e.g., IdentifyTypeEnum)",
-    "base_type": "base type (enum8/enum16/map8/map16/struct/etc.)",
-    "constraint": "constraints if any or null",
-    "values": [
-      {
-        "value": "For ENUMS: hex code (0x00), For BITMAPS: bit number (0-7), For STRUCTS: field order",
-        "name": "For ENUMS: enum name, For BITMAPS: bit name, For STRUCTS: field name", 
-        "summary": "description of enum value/bit/field",
-        "conformance": "M/O/F conformance requirement"
-      }
-    ]
-  }
-]
+{
+  "data_types": [
+    {
+      "name": "data type name (e.g., IdentifyTypeEnum)",
+      "base_type": "base type (enum8/enum16/map8/map16/struct/etc.)",
+      "constraint": "constraints if any or null",
+      "values": [
+        {
+          "value": "For ENUMS: hex (0x00), For BITMAPS: bit (0-7), For STRUCTS: order",
+          "name": "For ENUMS: enum name, For BITMAPS: bit name, For STRUCTS: field name", 
+          "summary": "description with pseudocode if applicable (max 200 chars)",
+          "conformance": "M/O/F conformance requirement"
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "id": null,
+      "name": "Data Model Spec",
+      "description": "Base types (external spec)"
+    }
+  ]
+}
+
+**REFERENCES RULES**:
+- Include ONLY items MENTIONED in text but NOT fully defined in this section
+- Use null for external specs, cluster/attr ID if known
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
+- Examples: Data Model Specification, other clusters using these types
 
 **EXTRACTION STRATEGY**:
 - Find all enum, bitmap, and struct type definitions
-- Extract complete value/field tables for each type
-- Preserve hex values exactly as shown (0x00, 0x01, etc.)
+- Scan for references to external specs or other clusters
+- Add pseudocode notation in summaries if applicable
 - Include ALL types found in the specification text
-- If no data types found, return empty array []
 
-Return ONLY the JSON array. No explanations, no markdown, no additional text.
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
 """
 
 ATTRIBUTES_EXTRACTION_PROMPT = """
 You are extracting attribute definitions from a Matter protocol cluster specification section.
 
-**TASK**: Extract ONLY cluster attributes from the provided text and return valid JSON array.
+**TASK**: Extract ONLY cluster attributes from the provided text and return valid JSON object.
 
 **EXTRACTION REQUIREMENTS**:
 - Look for attribute tables with columns like "ID | Name | Type | Constraint | Quality | Default | Access | Conformance"
@@ -723,45 +777,67 @@ You are extracting attribute definitions from a Matter protocol cluster specific
 - Extract default values and access permissions
 - Look for individual attribute descriptions in subsections
 - Extract fabric sensitivity and scene capability information
+- Include pseudocode notation for behavioral attributes
+- **References**: Extract items MENTIONED but NOT defined in this section
 
 **JSON OUTPUT FORMAT**:
-[
-  {
-    "id": "hex attribute ID (0x0000)",
-    "name": "full attribute name",
-    "type": "data type (including custom types)",
-    "constraint": "value constraints, ranges, or 'desc'",
-    "quality": "quality flags (N/S/P/F/X/C)",
-    "default": "default value or 'desc' if varies",
-    "access": "access permissions (R/W/RW, may include F for fabric)",
-    "conformance": "M/O/F conformance requirement",
-    "summary": "brief attribute purpose (max 100 chars)",
-    "fabric_sensitive": true/false,
-    "scene_capable": true/false
-  }
-]
+{
+  "attributes": [
+    {
+      "id": "hex attribute ID (0x0000)",
+      "name": "full attribute name",
+      "type": "data type (including custom types)",
+      "constraint": "value constraints, ranges, or 'desc'",
+      "quality": "quality flags (N/S/P/F/X/C)",
+      "default": "default value or 'desc' if varies",
+      "access": "access permissions (R/W/RW, may include F for fabric)",
+      "conformance": "M/O/F conformance requirement",
+      "summary": "detailed purpose with pseudocode if applicable (max 250 chars)",
+      "fabric_sensitive": true/false,
+      "scene_capable": true/false
+    }
+  ],
+  "references": [
+    {
+      "id": "0x0005",
+      "name": "Scenes Cluster",
+      "description": "Scene storage for scene attrs (if mentioned)"
+    },
+    {
+      "id": "0xF004",
+      "name": "Binding Cluster",
+      "description": "Attr bindings (if mentioned)"
+    }
+  ]
+}
+
+**REFERENCES RULES**:
+- Include ONLY items MENTIONED in text but NOT fully defined in this section
+- Use cluster/attr ID if known, null if external spec
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
+- Examples: Scenes Cluster (for scene-capable attrs), Binding Cluster, other clusters
 
 **EXTRACTION STRATEGY**:
 - Find attribute definition tables and extract ALL rows
-- Look for detailed attribute descriptions in subsections
-- Extract behavioral descriptions for attribute usage
+- Scan for references to other clusters/specs not defined here
+- Add pseudocode notation for behavioral attributes if applicable
 - Use exact hex IDs and preserve technical specifications
-- If no attributes found, return empty array []
 
-Return ONLY the JSON array. No explanations, no markdown, no additional text.
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
 """
 
 COMMANDS_EXTRACTION_PROMPT = """
 You are extracting command definitions with behavioral logic from a Matter protocol cluster specification section.
 
-**TASK**: Extract ONLY cluster commands from the provided text and return valid JSON array with pseudocode.
+**TASK**: Extract ONLY cluster commands from the provided text and return valid JSON object with pseudocode.
 
 **EXTRACTION REQUIREMENTS**:
 - Look for command tables with columns like "ID | Name | Direction | Response | Access | Conformance"
 - Extract hex command IDs (0x00, 0x01, etc.)
 - Extract command names, directions, response types
-- Extract command field definitions from payload tables
+- Extract command field definitions from payload tables with pseudocode notation
 - **CRITICAL**: Extract "Effect on Receipt" behavioral logic for PSEUDOCODE generation
+- **References**: Extract items MENTIONED but NOT defined in this section
 
 **BEHAVIORAL EXTRACTION FOR PSEUDOCODE**:
 Convert "Effect on Receipt" behavioral text into algorithmic pseudocode:
@@ -772,146 +848,189 @@ Convert "Effect on Receipt" behavioral text into algorithmic pseudocode:
 - **Timers**: "start_timer([duration])" or "stop_timer()"
 
 **JSON OUTPUT FORMAT**:
-[
-  {
-    "id": "hex command ID (0x00)",
-    "name": "full command name",
-    "direction": "client ⇒ server or client ⇐ server",
-    "response": "response command name or 'Y'/'N'",
-    "access": "access level and fabric requirements",
-    "conformance": "M/O/F conformance requirement",
-    "summary": "brief command purpose (max 100 chars)",
-    "timing": "timing requirements if specified or null",
-    "fields": [
-      {
-        "id": "field ID or order",
-        "name": "field name",
-        "type": "data type",
-        "constraint": "constraints or ranges",
-        "quality": "quality flags if any",
-        "default": "default value if any",
-        "conformance": "M/O/F for this field",
-        "summary": "brief field description (max 50 chars)"
-      }
-    ],
-    "effect_on_receipt": "Algorithmic pseudocode (max 200 chars): set attr := value; if condition then action else action"
-  }
-]
+{
+  "commands": [
+    {
+      "id": "hex command ID (0x00)",
+      "name": "full command name",
+      "direction": "client ⇒ server or client ⇐ server",
+      "response": "response command name or 'Y'/'N'",
+      "access": "access level and fabric requirements",
+      "conformance": "M/O/F conformance requirement",
+      "summary": "detailed purpose with pseudocode if applicable (max 250 chars)",
+      "timing": "timing requirements if specified or null",
+      "fields": [
+        {
+          "id": "field ID or order",
+          "name": "field name",
+          "type": "data type",
+          "constraint": "constraints or ranges",
+          "quality": "quality flags if any",
+          "default": "default value if any",
+          "conformance": "M/O/F for this field",
+          "summary": "detailed field description with pseudocode if applicable (max 200 chars)"
+        }
+      ],
+      "effect_on_receipt": "Detailed algorithmic steps with pseudocode if applicable (max 500 chars)"
+    }
+  ],
+  "references": [
+    {
+      "id": null,
+      "name": "Interaction Model",
+      "description": "Command invocation (Core Spec)"
+    },
+    {
+      "id": "0x001F",
+      "name": "Access Control Cluster",
+      "description": "ACL enforcement (if mentioned)"
+    }
+  ]
+}
+
+**REFERENCES RULES**:
+- Include ONLY items MENTIONED in text but NOT fully defined in this section
+- Use cluster ID if known, null if Core/external spec
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
+- Examples: Interaction Model (Core), Access Control Cluster, other clusters interacted with
 
 **EXTRACTION STRATEGY**:
 - Find command definition tables and extract ALL commands
-- Look for command field tables within command subsections  
+- Scan for references to other clusters/specs not defined here
 - Extract complete "Effect on Receipt" behavioral text
-- Convert behavioral logic to concise pseudocode format
-- Include both client-to-server and server-to-client commands
-- If no commands found, return empty array []
+- Convert behavioral logic to concise pseudocode format if applicable
+- Add pseudocode notation to summaries and field descriptions if applicable
 
-Return ONLY the JSON array. No explanations, no markdown, no additional text.
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
 """
 
 EVENTS_EXTRACTION_PROMPT = """
 You are extracting event definitions from a Matter protocol cluster specification section.
 
-**TASK**: Extract ONLY cluster events from the provided text and return valid JSON array.
+**TASK**: Extract ONLY cluster events from the provided text and return valid JSON object.
 
 **EXTRACTION REQUIREMENTS**:
 - Look for event tables with columns like "ID | Name | Priority | Access | Conformance"
 - Extract hex event IDs (0x00, 0x01, etc.)
 - Extract event names, priority levels, access requirements
-- Extract event field definitions from payload tables
+- Extract event field definitions from payload tables with pseudocode notation
 - Look for sections like "X.Y.8 Events"
+- Extract event generation conditions and triggers
+- **References**: Extract items MENTIONED but NOT defined in this section
 
 **JSON OUTPUT FORMAT**:
-[
-  {
-    "id": "hex event ID (0x00)",
-    "name": "full event name", 
-    "priority": "event priority (Info/Critical/Debug)",
-    "access": "access requirements",
-    "conformance": "M/O/F conformance",
-    "summary": "event description (max 80 chars)",
-    "fields": [
-      {
-        "id": "field ID",
-        "name": "field name",
-        "type": "data type",
-        "conformance": "field conformance"
-      }
-    ]
-  }
-]
+{
+  "events": [
+    {
+      "id": "hex event ID (0x00)",
+      "name": "full event name", 
+      "priority": "event priority (Info/Critical/Debug)",
+      "access": "access requirements",
+      "conformance": "M/O/F conformance",
+      "summary": "detailed event description with pseudocode if applicable (max 250 chars)",
+      "fields": [
+        {
+          "id": "field ID",
+          "name": "field name",
+          "type": "data type",
+          "conformance": "field conformance",
+          "summary": "detailed field description with pseudocode if applicable (max 200 chars)"
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "id": null,
+      "name": "Event Model",
+      "description": "Event generation (Core Spec)"
+    },
+    {
+      "id": null,
+      "name": "Interaction Model",
+      "description": "Event subscription (Core Spec)"
+    }
+  ]
+}
+
+**REFERENCES RULES**:
+- Include ONLY items MENTIONED in text but NOT fully defined in this section
+- Use null for Core/external specs, cluster ID if other cluster
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
+- Examples: Event Model (Core), subscription handling, other clusters emitting events
 
 **EXTRACTION STRATEGY**:
 - Find event definition tables and sections
+- Scan for references to Core specs or other clusters
 - Extract event field definitions completely
-- Look for event generation conditions and triggers
-- If no events found, return empty array []
+- Look for event generation conditions and add pseudocode notation if applicable
+- Add pseudocode notation to summaries and field descriptions if applicable
 
-Return ONLY the JSON array. No explanations, no markdown, no additional text.
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
 """
 
-CLUSTER_ID_EXTRACTION_PROMPT = """
-You are extracting cluster identifier definitions from a Matter protocol specification section.
+CLUSTER_OVERVIEW_EXTRACTION_PROMPT = """
+You are extracting cluster overview information (ID and classification) from a Matter protocol specification section.
 
-**TASK**: Extract ONLY cluster ID definitions from the provided text and return valid JSON array.
-
-**EXTRACTION REQUIREMENTS**:
-- Look for cluster ID tables with columns like "ID | Name"
-- Extract hex cluster IDs (0x0000, 0x0001, etc.)
-- Extract full cluster names
-- Capture ID/name mappings only (no attributes, commands, or events here)
-- Include a short summary for each cluster
-
-**JSON OUTPUT FORMAT**:
-[
-  {
-    "id": "hex cluster ID (0x0006)",
-    "name": "full cluster name",
-    "summary": "brief cluster purpose (max 80 chars)"
-  }
-]
-
-**EXTRACTION STRATEGY**:
-- Find cluster ID tables and extract ALL entries
-- Look for sections like "X.Y.Z Cluster ID"
-- Preserve exact hex IDs and names as given
-- If no clusters found, return empty array []
-
-Return ONLY the JSON array. No explanations, no markdown, no additional text.
-"""
-
-CLASSIFICATION_EXTRACTION_PROMPT = """
-You are extracting cluster classification definitions from a Matter protocol specification section.
-
-**TASK**: Extract ONLY cluster classification information and return valid JSON array.
+**TASK**: Extract cluster ID and classification information from the provided text and return valid JSON object.
 
 **EXTRACTION REQUIREMENTS**:
-- Look for classification tables with columns like "Hierarchy | Role | Scope | PICS Code"
+- **Cluster IDs**: Look for cluster ID tables with columns like "ID | Name". Extract hex cluster IDs (0x0000, 0x0001, etc.) and full cluster names. Include brief summary for each. Some clusters have multiple IDs - extract ALL of them as array.
+- **Classification**: Look for classification table with Hierarchy, Role, Scope, PICS Code
 - Extract hierarchy (e.g., Base, Functional, Utility)
 - Extract role (e.g., Application, Aggregator, Utility)
 - Extract scope (e.g., Endpoint, Node, Fabric)
 - Extract PICS code (e.g., OO, OT, LV)
-- Include a short summary for the classification
+- Include brief summary with pseudocode notation if applicable
+- **References**: Extract OTHER clusters/attributes/concepts that are MENTIONED but NOT fully defined in this section
 
 **JSON OUTPUT FORMAT**:
-[
-  {
-    "hierarchy": "Base/Functional/Utility/etc.",
-    "role": "Application/Aggregator/Utility/etc.",
-    "scope": "Endpoint/Node/Fabric/etc.",
-    "pics_code": "PICS short code",
-    "summary": "brief classification purpose (max 80 chars)"
-  }
-]
+{
+  "cluster_ids": [
+    {
+      "id": "hex cluster ID (0x0006)",
+      "name": "full cluster name",
+      "summary": "detailed cluster purpose with pseudocode if applicable (max 200 chars)"
+    }
+  ],
+  "classifications": [
+    {
+      "hierarchy": "Base/Functional/Utility/etc.",
+      "role": "Application/Aggregator/Utility/etc.",
+      "scope": "Endpoint/Node/Fabric/etc.",
+      "pics_code": "PICS short code",
+      "summary": "detailed classification purpose with pseudocode if applicable (max 200 chars)"
+    }
+  ],
+  "references": [
+    {
+      "id": "0xFFFD",
+      "name": "FeatureMap",
+      "description": "Feature bitmap (not defined here)"
+    },
+    {
+      "id": "0xFFFC",
+      "name": "ClusterRevision",
+      "description": "Cluster version (not defined here)"
+    }
+  ]
+}
+
+**REFERENCES RULES**:
+- Include ONLY items MENTIONED in text but NOT fully defined in this section
+- Use cluster ID if known (e.g., "0x0005" for Scenes), null if external spec (e.g., Core Spec)
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
+- Examples: FeatureMap attribute, other clusters referenced, external specifications
 
 **EXTRACTION STRATEGY**:
-- Find classification tables and extract ALL rows
-- Look for sections like "X.Y.Z Classification"
-- Allow flexible interpretation if column names differ (e.g., 'Layer' for 'Hierarchy', 'Domain' for 'Scope')
-- Preserve values exactly as given where possible
-- If no classification found, return empty array []
+- Find cluster ID tables and extract ALL entries as array (some clusters have multiple IDs)
+- Find classification table and extract ALL fields as array (some sections may have multiple classifications)
+- Scan text for references to other clusters/attributes/specs not defined here
+- Add pseudocode notation in summaries where behavioral logic applies if applicable
+- If no cluster IDs found, return empty array [] for cluster_ids
+- If no classification found, return empty array [] for classifications
 
-Return ONLY the JSON array. No explanations, no markdown, no additional text.
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
 """
 
 DERIVED_CLUSTER_NAMESPACE_EXTRACTION_PROMPT = """
@@ -932,13 +1051,13 @@ You are extracting derived cluster namespace definitions from a Matter protocol 
     "category": "status_code",
     "id": "hex code (0x41)",
     "name": "status code name",
-    "summary": "brief purpose (max 100 chars)"
+    "summary": "detailed purpose with pseudocode if applicable (max 200 chars)"
   },
   {
     "category": "mode_tag",
     "id": "hex code (0x4001)",
     "name": "mode tag name",
-    "summary": "brief purpose (max 100 chars)"
+    "summary": "detailed purpose with pseudocode if applicable (max 200 chars)"
   }
 ]
 
@@ -969,9 +1088,8 @@ You are extracting dependency definitions from a Matter protocol cluster specifi
     "title": "short dependency title (e.g., Coupling color temperature to Level Control)",
     "clusters_involved": ["ClusterA (0x0008)", "ClusterB (0x0300)"],
     "trigger_condition": "condition under which dependency applies",
-    "effect": "description of resulting behavior (max 150 chars)",
-    "pseudocode": "if condition then action; else action",
-    "summary": "brief explanation (max 80 chars)"
+    "effect": "description of resulting behavior (max 200 chars)",
+    "summary": "detailed explanation with pseudocode if applicable (max 200 chars)"
   }
 ]
 
@@ -979,7 +1097,7 @@ You are extracting dependency definitions from a Matter protocol cluster specifi
 - Parse numbered dependency subsections
 - Identify involved clusters and attributes
 - Extract both trigger conditions and resulting effects
-- Translate narrative rules into pseudocode with clear IF/THEN/ELSE logic
+- Add pseudocode notation if applicable for clear logic
 - Be tolerant of format variations (bullets, prose, inline text)
 - If no dependencies are found, return empty array []
 
@@ -1008,7 +1126,7 @@ You are extracting mode examples from a Matter protocol cluster specification se
         "name": "tag name (e.g., NoOptimization)"
       }
     ],
-    "summary": "brief description of the example (max 80 chars)"
+    "summary": "detailed description of the example with pseudocode if applicable (max 200 chars)"
   }
 ]
 
@@ -1040,7 +1158,7 @@ You are extracting status code definitions from a Matter protocol cluster specif
   {
     "id": "hex status code value (0x02)",
     "name": "status code name",
-    "summary": "status meaning (max 100 chars)",
+    "summary": "detailed status meaning with pseudocode if applicable (max 200 chars)",
     "conformance": "M/O/F or null"
   }
 ]
@@ -1141,8 +1259,8 @@ You are extracting multi-position switch behavior rules from a Matter protocol s
   {
     "event": "event name (e.g., SwitchLatched)",
     "field": "field name (e.g., NewPosition)",
-    "value_rule": "how value is determined (max 120 chars)",
-    "pseudocode": "event.field := derived_value"
+    "value_rule": "how value is determined (max 200 chars)",
+    "pseudocode": "pseudocode representation if applicable"
   }
 ]
 
@@ -1150,7 +1268,7 @@ You are extracting multi-position switch behavior rules from a Matter protocol s
 - Parse narrative text describing multi-position event rules
 - Group events by which field they set
 - Preserve exact event and field names
-- Translate descriptions into pseudocode assignments
+- Translate descriptions into pseudocode if applicable
 - If no multi-position details found, return empty array []
 
 Return ONLY the JSON array. No explanations, no markdown, no additional text.
@@ -1176,7 +1294,7 @@ You are extracting multi-press sequence behavior rules from a Matter protocol sp
     "condition": "trigger condition for this sequence",
     "events_generated": ["InitialPress", "ShortRelease", "MultiPressOngoing(2)", "MultiPressComplete(2)"],
     "events_suppressed": ["LongPress", "LongRelease"],
-    "pseudocode": "if second_press then emit InitialPress; emit MultiPressOngoing(2); later emit MultiPressComplete(2)"
+    "pseudocode": "pseudocode representation if applicable"
   }
 ]
 
@@ -1185,7 +1303,7 @@ You are extracting multi-press sequence behavior rules from a Matter protocol sp
 - Group scenarios by feature flag context (AS set vs unset)
 - List all events generated in sequence order
 - List explicitly forbidden/suppressed events
-- Translate behavior into short pseudocode (with IF/THEN/ELSE, counters, event.emit)
+- Translate behavior into pseudocode if applicable
 - If no multi-press sequence rules found, return empty array []
 
 Return ONLY the JSON array. No explanations, no markdown, no additional text.
@@ -1209,14 +1327,14 @@ You are extracting MS feature flag case summaries from a Matter protocol specifi
     "feature_flags": ["MS", "!MSR", "!MSM"],
     "outcome": "Every action cycle is only a single InitialPress event",
     "notes": null,
-    "pseudocode": "emit InitialPress"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "case": "MS & MSM",
     "feature_flags": ["MS", "MSM"],
     "outcome": "Ends on LongRelease (if MSL & first press long) or MultiPressComplete",
     "notes": "AS does not change outcome; AS reduces events",
-    "pseudocode": "if (first_press_long & MSL) then emit LongRelease else emit MultiPressComplete"
+    "pseudocode": "pseudocode representation if applicable"
   }
 ]
 
@@ -1293,7 +1411,7 @@ You are extracting state change examples for Lighting feature from a Matter prot
       "physical_device": "Off",
       "output": "Stays off"
     },
-    "summary": "MoveToLevel ignored when Off and EiO=0"
+    "summary": "brief description of the state change with pseudocode if applicable"
   },
   {
     "initial": {
@@ -1309,7 +1427,7 @@ You are extracting state change examples for Lighting feature from a Matter prot
       "physical_device": "On",
       "output": "Turns on at midpoint brightness"
     },
-    "summary": "MoveToLevelWithOnOff turns on device and adjusts brightness"
+    "summary": "brief description of the state change with pseudocode if applicable"
   }
 ]
 
@@ -1373,7 +1491,7 @@ You are extracting event generation sequences from a Matter protocol specificati
 - Parse subsections describing switches with/without MSL/MSR/MSM/AS
 - For each interaction type, list generated events in order
 - Capture events explicitly not generated as suppressed
-- Translate sequence into pseudocode using IF/THEN and event.emit
+- Translate sequence into pseudocode using if applicable notation
 - If no event sequences found, return empty array []
 
 Return ONLY the JSON array. No explanations, no markdown, no additional text.
@@ -1448,7 +1566,7 @@ You are extracting mode usage rules from a Matter protocol specification section
     "from_mode_tag": "Idle",
     "to_mode_tag": "Cleaning",
     "action": "start cleaning cycle",
-    "pseudocode": "if mode changes Idle→Cleaning then start_cleaning()"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "from_mode_tag": "Cleaning",
@@ -1500,7 +1618,7 @@ You are extracting setpoint limit rules from a Matter protocol specification sec
     "category": "device_limit",
     "constraint": "AbsMinHeatSetpointLimit <= MinHeatSetpointLimit <= MaxHeatSetpointLimit <= AbsMaxHeatSetpointLimit",
     "attributes_involved": ["AbsMinHeatSetpointLimit", "MinHeatSetpointLimit", "MaxHeatSetpointLimit", "AbsMaxHeatSetpointLimit"],
-    "pseudocode": "assert AbsMinHeatSetpointLimit <= MinHeatSetpointLimit <= MaxHeatSetpointLimit <= AbsMaxHeatSetpointLimit"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "category": "setpoint_limit",
@@ -1546,7 +1664,7 @@ You are extracting procedural recommendations for user creation from a Matter pr
       "action": "Set user record fields",
       "command": "SetUser",
       "parameters": ["UserIndex", "user record fields"],
-      "pseudocode": "call SetUser(UserIndex, user_fields)"
+      "pseudocode": "pseudocode representation if applicable"
     },
     {
       "order": 2,
@@ -1595,7 +1713,7 @@ You are extracting fabric-scoping handling rules from a Matter protocol specific
   {
     "rule": "Attributes and commands are scoped to accessing fabric only",
     "exception": "SceneValid field of FabricSceneInfo",
-    "pseudocode": "on attribute_read/write: filter by accessing_fabric"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "rule": "Operations without an accessing fabric SHALL fail",
@@ -1739,7 +1857,7 @@ You are extracting guidance for fabrics and commissioners from a Matter protocol
   {
     "topic": "Cluster interaction",
     "guidance": "Fabrics should only use this cluster on endpoints with supported device types (Network Infrastructure Manager, Thread Border Router)",
-    "pseudocode": "if endpoint.device_type not in [NIM, TBR] then reject_interaction()"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "topic": "Network availability",
@@ -1785,7 +1903,7 @@ You are extracting state machine descriptions from a Matter protocol specificati
     "related_command": "OnWithTimedOff",
     "attributes": ["OnTime"],
     "behavior": "OnTime decremented every 1/10s unless 0xFFFF",
-    "pseudocode": "if OnTime != 0xFFFF then every 100ms: OnTime := OnTime - 1"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "state": "Delayed Off",
@@ -1807,43 +1925,43 @@ Return ONLY the JSON array. No explanations, no markdown, no additional text.
 """
 
 
-all_subsection_types = [
-      "Classification",
-      "Revision History",
-      "Cluster ID",
-      "Attributes",
-      "Data Types",
-      "Features",
-      "Commands",
-      "Events",
-      "Derived Cluster Namespace",
-      "Dependencies",
-      "Mode Examples",
-      "Status Codes",
-      "Cluster IDs",
-      "Definitions",
-      "Conversion of Temperature Values for Display",
-      "Multi Position Details",
-      "Sequence of events for MultiPress",
-      "Summary of cases for MS feature flag",
-      "PIN/RFID Code Format",
-      "State Change Table for Lighting",
-      "Sequence of generated events",
-      "The Dimming Light Curve",
-      "Mode Use",
-      "Setpoint Limits",
-      "Recommended steps for creating a new User",
-      "Handling of fabric-scoping",
-      "State Description",
-      "Mode Namespace",
-      "Units of Temperature",
-      "Guidance for Fabrics / Commissioners"
-    ]
+# all_subsection_types = [
+#       "Classification",
+#       "Revision History",
+#       "Cluster ID",
+#       "Attributes",
+#       "Data Types",
+#       "Features",
+#       "Commands",
+#       "Events",
+#       "Derived Cluster Namespace",
+#       "Dependencies",
+#       "Mode Examples",
+#       "Status Codes",
+#       "Cluster IDs",
+#       "Definitions",
+#       "Conversion of Temperature Values for Display",
+#       "Multi Position Details",
+#       "Sequence of events for MultiPress",
+#       "Summary of cases for MS feature flag",
+#       "PIN/RFID Code Format",
+#       "State Change Table for Lighting",
+#       "Sequence of generated events",
+#       "The Dimming Light Curve",
+#       "Mode Use",
+#       "Setpoint Limits",
+#       "Recommended steps for creating a new User",
+#       "Handling of fabric-scoping",
+#       "State Description",
+#       "Mode Namespace",
+#       "Units of Temperature",
+#       "Guidance for Fabrics / Commissioners"
+#     ]
 
 section_prompt_dict = {
-  "Classification" : CLASSIFICATION_EXTRACTION_PROMPT,
+  "Classification" : CLUSTER_OVERVIEW_EXTRACTION_PROMPT,
   "Revision History" : REVISION_HISTORY_EXTRACTION_PROMPT,
-  "Cluster ID" : CLUSTER_ID_EXTRACTION_PROMPT,
+  "Cluster ID" : CLUSTER_OVERVIEW_EXTRACTION_PROMPT,
   "Attributes" : ATTRIBUTES_EXTRACTION_PROMPT,
   "Data Types" : DATA_TYPES_EXTRACTION_PROMPT,
   "Features" : FEATURES_EXTRACTION_PROMPT,
@@ -1853,7 +1971,7 @@ section_prompt_dict = {
   "Dependencies" : DEPENDENCIES_EXTRACTION_PROMPT,
   "Mode Examples" : MODE_EXAMPLES_EXTRACTION_PROMPT,
   "Status Codes" : STATUS_CODES_EXTRACTION_PROMPT,
-  "Cluster IDs" : CLUSTER_ID_EXTRACTION_PROMPT,
+  "Cluster IDs" : CLUSTER_OVERVIEW_EXTRACTION_PROMPT,
   "Definitions" : DEFINITIONS_EXTRACTION_PROMPT,
   "Conversion of Temperature Values for Display" : CONVERSIONS_EXTRACTION_PROMPT,
   "Multi Position Details" : MULTI_POSITION_DETAILS_EXTRACTION_PROMPT,

@@ -1,7 +1,21 @@
 #!/usr/bin/env python3
 """
 Enhanced Matter Cluster Detail Extractor with Section-Based Approach
-Follows existing RAG pattern but uses targeted section extraction for higher accuracy
+Follows existing RAG pattern but uses targeted section extr        try:
+            # Add buffer pages and convert to 0-indexed for PyMuPDF
+            actual_start = max(0, start_page - SUBSECTION_PAGE_BUFFER - 1)
+            actual_end = min(len(self.pdf_doc), end_page + SUBSECTION_PAGE_BUFFER)
+            
+            text_content_parts = []
+            for page_num in range(actual_start, actual_end):
+                page = self.pdf_doc.load_page(page_num)
+                text = page.get_text()
+                # Add page markers for better context tracking
+                text_content_parts.append(f"--- Page {page_num + 1} (Content Page {page_num + 1 - PDF_PAGE_OFFSET}) ---\n{text}")
+            
+            text_content = "\n\n".join(text_content_parts)
+            logger.info(f"Extracted subsection '{subsection_name}' from PDF pages {actual_start+1}-{actual_end} (content pages {start_page}-{end_page}) ({len(text_content)} characters)")
+            return text_contentgher accuracy
 """
 
 import json
@@ -161,13 +175,15 @@ class EnhancedClusterExtractor:
             actual_start = max(0, start_page - CLUSTER_PAGE_BUFFER - 1)
             actual_end = min(len(self.pdf_doc), end_page + CLUSTER_PAGE_BUFFER)
             
-            text_content = ""
+            text_content_parts = []
             for page_num in range(actual_start, actual_end):
                 page = self.pdf_doc.load_page(page_num)
-                text_content += page.get_text()
-                text_content += "\n\n"
+                text = page.get_text()
+                # Add page markers for better context tracking
+                text_content_parts.append(f"--- Page {page_num + 1} (Content Page {page_num + 1 - PDF_PAGE_OFFSET}) ---\n{text}")
             
-            logger.info(f"Extracted {len(text_content)} characters from pages {actual_start+1}-{actual_end}")
+            text_content = "\n\n".join(text_content_parts)
+            logger.info(f"Extracted text from PDF pages {actual_start+1}-{actual_end} (content pages {start_page}-{end_page}) ({len(text_content)} characters)")
             return text_content
             
         except Exception as e:
@@ -185,12 +201,20 @@ class EnhancedClusterExtractor:
             FAISS vector store or None if failed
         """
         try:
-            # Split text into chunks (same as original approach)
+            # Split text into chunks optimized for technical specifications and tables
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=CHUNK_SIZE,
                 chunk_overlap=CHUNK_OVERLAP,
+                separators=[
+                    "\n\n\n\n",  # Major section breaks (multiple newlines)
+                    "\n\n\n",    # Section breaks  
+                    "\n\n",      # Paragraph breaks
+                    "\n",        # Line breaks
+                    ".",         # Sentence breaks
+                    " ",         # Word breaks
+                ],
                 length_function=len,
-                separators=["\n\n", "\n", " ", ""]
+                keep_separator=True  # Keep separators to maintain table structure
             )
             
             chunks = text_splitter.split_text(text_content)
@@ -341,6 +365,11 @@ class EnhancedClusterExtractor:
             # Remove any leading/trailing explanatory text
             response = response.strip()
             
+            # Check if response looks truncated (similar to old implementation)
+            if len(response) > 30000 and not response.endswith(('}', ']')):
+                logger.warning(f"Response for {section_type} in {cluster_name} appears truncated ({len(response)} chars)")
+                # The JSON repair method will handle truncated responses
+            
             # Try to parse JSON response
             try:
                 result = json.loads(response)
@@ -427,6 +456,99 @@ class EnhancedClusterExtractor:
                 except (json.JSONDecodeError, AttributeError) as e:
                     continue
             
+            # If all strategies fail, try advanced repair techniques from old implementation
+            try:
+                # Clean response
+                clean_response = response.strip()
+                if clean_response.startswith('```json'):
+                    clean_response = clean_response[7:]
+                if clean_response.endswith('```'):
+                    clean_response = clean_response[:-3]
+                clean_response = clean_response.strip()
+                
+                # Strategy 1: Find the last complete JSON structure using brace counting
+                brace_count = 0
+                last_valid_pos = 0
+                in_string = False
+                escape_next = False
+                
+                for i, char in enumerate(clean_response):
+                    if escape_next:
+                        escape_next = False
+                        continue
+                        
+                    if char == '\\':
+                        escape_next = True
+                        continue
+                        
+                    if char == '"' and not escape_next:
+                        in_string = not in_string
+                        continue
+                        
+                    if not in_string:
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                last_valid_pos = i + 1
+                                break
+                
+                if last_valid_pos > 0:
+                    truncated_response = clean_response[:last_valid_pos]
+                    logger.info(f"Attempting to parse truncated JSON for {section_type} in {cluster_name} (length: {last_valid_pos})")
+                    result = json.loads(truncated_response)
+                    return result
+                
+                # Strategy 2: Try to close unclosed braces
+                open_braces = clean_response.count('{') - clean_response.count('}')
+                if open_braces > 0:
+                    repaired_response = clean_response + '}' * open_braces
+                    logger.info(f"Attempting to close {open_braces} unclosed braces for {section_type} in {cluster_name}")
+                    result = json.loads(repaired_response)
+                    return result
+                
+                # Strategy 3: For array responses, try to extract complete array
+                if section_type.lower() in ['data_types', 'attributes', 'commands', 'events', 'features']:
+                    bracket_start = clean_response.find('[')
+                    if bracket_start >= 0:
+                        bracket_count = 0
+                        end_pos = bracket_start
+                        in_string = False
+                        escape_next = False
+                        
+                        for i in range(bracket_start, len(clean_response)):
+                            char = clean_response[i]
+                            if escape_next:
+                                escape_next = False
+                                continue
+                                
+                            if char == '\\':
+                                escape_next = True
+                                continue
+                                
+                            if char == '"' and not escape_next:
+                                in_string = not in_string
+                                continue
+                                
+                            if not in_string:
+                                if char == '[':
+                                    bracket_count += 1
+                                elif char == ']':
+                                    bracket_count -= 1
+                                    if bracket_count == 0:
+                                        end_pos = i + 1
+                                        break
+                        
+                        if bracket_count == 0:
+                            array_json = clean_response[bracket_start:end_pos]
+                            logger.info(f"Attempting to extract complete array for {section_type} in {cluster_name}")
+                            result = json.loads(array_json)
+                            return result
+                
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.debug(f"Advanced JSON repair failed for {section_type} in {cluster_name}: {e}")
+            
             # If all strategies fail, try to parse the entire response
             try:
                 # Clean up response before JSON parsing
@@ -485,16 +607,10 @@ class EnhancedClusterExtractor:
             logger.error(f"Failed to extract text for {cluster_name}")
             return None
         
-        # Initialize cluster info with default cluster_ids using cluster_name from TOC
-        # This provides fallback cluster name even if Cluster ID extraction fails
+        # Initialize cluster info with cluster_name from TOC at the top
+        # This provides the cluster name from matter_clusters_toc.json
         cluster_info = {
-            "Cluster ID": [
-                {
-                    "id": "unknown",
-                    "name": cluster_name,
-                    "summary": "unknown"
-                }
-            ]
+            "cluster_name": cluster_name
         }
         
         # Track all references across all sections
@@ -541,18 +657,24 @@ class EnhancedClusterExtractor:
                     # Extract cluster_ids array and store in subsection
                     cluster_ids = result.get('cluster_ids', [])
                     if cluster_ids:
-                        cluster_info['Cluster ID'] = cluster_ids
+                        cluster_info['cluster_id'] = cluster_ids
                     
                     # Extract classifications array and store in subsection
                     classifications = result.get('classifications', [])
                     if classifications:
-                        cluster_info['Classification'] = classifications
+                        cluster_info['classification'] = classifications
                     
                     # Collect references
                     all_references.extend(result.get('references', []))
                 else:
                     # Fallback for old format or unexpected structure
-                    cluster_info[subsection_name] = result
+                    # Map old field names to new field names
+                    if subsection_name in ['Cluster ID', 'Cluster IDs']:
+                        cluster_info['cluster_id'] = result
+                    elif subsection_name == 'Classification':
+                        cluster_info['classification'] = result
+                    else:
+                        cluster_info[subsection_name] = result
             
             # Handle Revision History
             elif subsection_name == 'Revision History':
@@ -864,7 +986,7 @@ def main():
         
         # Process clusters (test with first few)
         logger.info("Starting enhanced cluster extraction with specialized section prompts...")
-        results = extractor.process_all_clusters(limit=10, resume=True)
+        results = extractor.process_all_clusters(limit=3, resume=True)
         
         # Save final results
         extractor.save_results(results, output_path)

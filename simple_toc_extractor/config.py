@@ -11,7 +11,7 @@ load_dotenv()
 
 # API Configuration
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_TEMPERATURE = 0.0  # More deterministic for detailed extraction
 GEMINI_MAX_OUTPUT_TOKENS = 32768  # Significantly increased for comprehensive behavioral extraction
 
@@ -492,7 +492,7 @@ Extract command behavioral semantics including:
         "bit": "bit number (0-31)",
         "code": "feature code (2-4 chars)",
         "name": "full feature name",
-        "summary": "detailed feature description with pseudocode if applicable (max 150 chars)",
+        "summary": "detailed feature description with pseudocode if applicable (max 200 chars)",
         "conformance": "M/O/F/C conformance",
         "dependencies": "feature dependencies if any"
       }}
@@ -546,10 +546,10 @@ Extract command behavioral semantics including:
             "quality": "quality flags if any",
             "default": "default value if any",
             "conformance": "M/O/F for this field",
-            "summary": "detailed field description with pseudocode (max 100 chars)"
+            "summary": "detailed field description with pseudocode if applicable (max 200 chars)"
           }}
         ],
-        "effect_on_receipt": "Detailed algorithmic steps with pseudocode (max 400 chars): state changes, attribute updates, conditions, loops. Example: 'if [condition]==TRUE: [action1], set [attribute]:=FALSE; for each [item]: update [field]; else [action2]'"
+        "effect_on_receipt": "Detailed algorithmic steps with pseudocode if applicable (max 400 chars): state changes, attribute updates, conditions, loops. Example: 'if [condition]==TRUE: [action1], set [attribute]:=FALSE; for each [item]: update [field]; else [action2]'"
       }}
     ],
     "events": [
@@ -619,7 +619,7 @@ You are extracting revision history information from a Matter protocol cluster s
 **EXTRACTION REQUIREMENTS**:
 - Look for revision tables with "Revision" and "Description" columns
 - Extract revision numbers (1, 2, 3, etc.)
-- Extract brief change descriptions with pseudocode notation where applicable
+- Extract brief change descriptions with pseudocode notation if applicable
 - Extract dates if available (often not present)
 - Look for text like "The global ClusterRevision attribute value SHALL be the highest revision number"
 - **References**: Extract items MENTIONED but NOT defined in this section
@@ -629,7 +629,7 @@ You are extracting revision history information from a Matter protocol cluster s
   "revisions": [
     {
       "revision": "1",
-      "description": "detailed summary with pseudocode (max 200 chars); pseudo: if [condition] then [action]; set [var] := [value]",
+      "description": "detailed summary with pseudocode if applicable (max 200 chars)",
       "date": "date if available or null"
     }
   ],
@@ -645,13 +645,13 @@ You are extracting revision history information from a Matter protocol cluster s
 **REFERENCES RULES**:
 - Include ONLY items MENTIONED in text but NOT fully defined in this section
 - Use attribute/cluster ID if known, null if external specification
-- Keep descriptions detailed with pseudocode if applicable (max 100 chars)
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
 - Examples: ClusterRevision attribute, other clusters mentioned
 
 **EXTRACTION STRATEGY**:
 - Search for numbered revision entries in tables or lists
 - Scan for references to attributes/clusters not defined in this section
-- Keep descriptions concise, add pseudocode for behavioral changes
+- Keep descriptions concise, add pseudocode for behavioral changes if applicable
 - Use null for missing dates
 
 Return ONLY the JSON object. No explanations, no markdown, no additional text.
@@ -678,7 +678,7 @@ You are extracting feature information from a Matter protocol cluster specificat
       "bit": "bit number (0-31)",
       "code": "feature code (2-4 chars)",
       "name": "full feature name",
-      "summary": "detailed description with pseudocode (max 200 chars); pseudo: if enabled then [action]; affects [attributes]",
+      "summary": "detailed description with pseudocode if applicable (max 200 chars)",
       "conformance": "M/O/F/C conformance",
       "dependencies": "feature dependencies if any or null"
     }
@@ -700,7 +700,7 @@ You are extracting feature information from a Matter protocol cluster specificat
 **REFERENCES RULES**:
 - Include ONLY items MENTIONED in text but NOT fully defined in this section
 - Use attribute/cluster ID if known, null if external spec
-- Keep descriptions detailed with pseudocode if applicable (max 100 chars)
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
 - Examples: FeatureMap attribute, dependent clusters mentioned, related specs
 
 **EXTRACTION STRATEGY**:
@@ -735,7 +735,7 @@ You are extracting data type definitions from a Matter protocol cluster specific
         {
           "value": "For ENUMS: hex (0x00), For BITMAPS: bit (0-7), For STRUCTS: order",
           "name": "For ENUMS: enum name, For BITMAPS: bit name, For STRUCTS: field name", 
-          "summary": "description with pseudo; pseudo: value = [meaning]",
+          "summary": "description with pseudocode if applicable (max 200 chars)",
           "conformance": "M/O/F conformance requirement"
         }
       ]
@@ -753,13 +753,13 @@ You are extracting data type definitions from a Matter protocol cluster specific
 **REFERENCES RULES**:
 - Include ONLY items MENTIONED in text but NOT fully defined in this section
 - Use null for external specs, cluster/attr ID if known
-- Keep descriptions SHORT (max 50 chars)
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
 - Examples: Data Model Specification, other clusters using these types
 
 **EXTRACTION STRATEGY**:
 - Find all enum, bitmap, and struct type definitions
 - Scan for references to external specs or other clusters
-- Add pseudocode notation in summaries where applicable
+- Add pseudocode notation in summaries if applicable
 - Include ALL types found in the specification text
 
 Return ONLY the JSON object. No explanations, no markdown, no additional text.
@@ -792,7 +792,7 @@ You are extracting attribute definitions from a Matter protocol cluster specific
       "default": "default value or 'desc' if varies",
       "access": "access permissions (R/W/RW, may include F for fabric)",
       "conformance": "M/O/F conformance requirement",
-      "summary": "detailed purpose with pseudocode (max 250 chars); pseudo: if [cond] then attr := [val]; on change: [action]; affects [other attrs]",
+      "summary": "detailed purpose with pseudocode if applicable (max 250 chars)",
       "fabric_sensitive": true/false,
       "scene_capable": true/false
     }
@@ -814,13 +814,13 @@ You are extracting attribute definitions from a Matter protocol cluster specific
 **REFERENCES RULES**:
 - Include ONLY items MENTIONED in text but NOT fully defined in this section
 - Use cluster/attr ID if known, null if external spec
-- Keep descriptions detailed with pseudocode if applicable (max 100 chars)
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
 - Examples: Scenes Cluster (for scene-capable attrs), Binding Cluster, other clusters
 
 **EXTRACTION STRATEGY**:
 - Find attribute definition tables and extract ALL rows
 - Scan for references to other clusters/specs not defined here
-- Add pseudocode notation for behavioral attributes
+- Add pseudocode notation for behavioral attributes if applicable
 - Use exact hex IDs and preserve technical specifications
 
 Return ONLY the JSON object. No explanations, no markdown, no additional text.
@@ -857,7 +857,7 @@ Convert "Effect on Receipt" behavioral text into algorithmic pseudocode:
       "response": "response command name or 'Y'/'N'",
       "access": "access level and fabric requirements",
       "conformance": "M/O/F conformance requirement",
-      "summary": "detailed purpose with pseudocode (max 250 chars); pseudo: call cmd([params]); if [cond] then [action]; affects [attrs]",
+      "summary": "detailed purpose with pseudocode if applicable (max 250 chars)",
       "timing": "timing requirements if specified or null",
       "fields": [
         {
@@ -868,10 +868,10 @@ Convert "Effect on Receipt" behavioral text into algorithmic pseudocode:
           "quality": "quality flags if any",
           "default": "default value if any",
           "conformance": "M/O/F for this field",
-          "summary": "detailed field description with pseudocode (max 120 chars)"
+          "summary": "detailed field description with pseudocode if applicable (max 200 chars)"
         }
       ],
-      "effect_on_receipt": "Detailed algorithmic pseudocode (max 500 chars): if [cond] then set [attr] := [val]; call [func](); for each [item]: update [field]; on error: [action]; else [action]"
+      "effect_on_receipt": "Detailed algorithmic steps with pseudocode if applicable (max 500 chars)"
     }
   ],
   "references": [
@@ -891,15 +891,15 @@ Convert "Effect on Receipt" behavioral text into algorithmic pseudocode:
 **REFERENCES RULES**:
 - Include ONLY items MENTIONED in text but NOT fully defined in this section
 - Use cluster ID if known, null if Core/external spec
-- Keep descriptions detailed with pseudocode if applicable (max 100 chars)
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
 - Examples: Interaction Model (Core), Access Control Cluster, other clusters interacted with
 
 **EXTRACTION STRATEGY**:
 - Find command definition tables and extract ALL commands
 - Scan for references to other clusters/specs not defined here
 - Extract complete "Effect on Receipt" behavioral text
-- Convert behavioral logic to concise pseudocode format
-- Add pseudocode notation to summaries and field descriptions
+- Convert behavioral logic to concise pseudocode format if applicable
+- Add pseudocode notation to summaries and field descriptions if applicable
 
 Return ONLY the JSON object. No explanations, no markdown, no additional text.
 """
@@ -927,14 +927,14 @@ You are extracting event definitions from a Matter protocol cluster specificatio
       "priority": "event priority (Info/Critical/Debug)",
       "access": "access requirements",
       "conformance": "M/O/F conformance",
-      "summary": "detailed event description with pseudocode (max 250 chars); pseudo: emit when [cond]; contains [data]; triggers [action]",
+      "summary": "detailed event description with pseudocode if applicable (max 250 chars)",
       "fields": [
         {
           "id": "field ID",
           "name": "field name",
           "type": "data type",
           "conformance": "field conformance",
-          "summary": "detailed field description with pseudocode (max 120 chars)"
+          "summary": "detailed field description with pseudocode if applicable (max 200 chars)"
         }
       ]
     }
@@ -956,15 +956,15 @@ You are extracting event definitions from a Matter protocol cluster specificatio
 **REFERENCES RULES**:
 - Include ONLY items MENTIONED in text but NOT fully defined in this section
 - Use null for Core/external specs, cluster ID if other cluster
-- Keep descriptions SHORT (max 50 chars)
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
 - Examples: Event Model (Core), subscription handling, other clusters emitting events
 
 **EXTRACTION STRATEGY**:
 - Find event definition tables and sections
 - Scan for references to Core specs or other clusters
 - Extract event field definitions completely
-- Look for event generation conditions and add pseudocode notation
-- Add pseudocode notation to summaries and field descriptions
+- Look for event generation conditions and add pseudocode notation if applicable
+- Add pseudocode notation to summaries and field descriptions if applicable
 
 Return ONLY the JSON object. No explanations, no markdown, no additional text.
 """
@@ -981,7 +981,7 @@ You are extracting cluster overview information (ID and classification) from a M
 - Extract role (e.g., Application, Aggregator, Utility)
 - Extract scope (e.g., Endpoint, Node, Fabric)
 - Extract PICS code (e.g., OO, OT, LV)
-- Include brief summary with pseudocode notation where applicable
+- Include brief summary with pseudocode notation if applicable
 - **References**: Extract OTHER clusters/attributes/concepts that are MENTIONED but NOT fully defined in this section
 
 **JSON OUTPUT FORMAT**:
@@ -990,7 +990,7 @@ You are extracting cluster overview information (ID and classification) from a M
     {
       "id": "hex cluster ID (0x0006)",
       "name": "full cluster name",
-      "summary": "detailed cluster purpose with pseudocode if applicable: if [condition] then [action]; set variable := value; manages [aspects] (max 200 chars)"
+      "summary": "detailed cluster purpose with pseudocode if applicable (max 200 chars)"
     }
   ],
   "classifications": [
@@ -999,7 +999,7 @@ You are extracting cluster overview information (ID and classification) from a M
       "role": "Application/Aggregator/Utility/etc.",
       "scope": "Endpoint/Node/Fabric/etc.",
       "pics_code": "PICS short code",
-      "summary": "detailed classification purpose with pseudocode if applicable: if [condition] then [action]; affects [scope] (max 200 chars)"
+      "summary": "detailed classification purpose with pseudocode if applicable (max 200 chars)"
     }
   ],
   "references": [
@@ -1019,14 +1019,14 @@ You are extracting cluster overview information (ID and classification) from a M
 **REFERENCES RULES**:
 - Include ONLY items MENTIONED in text but NOT fully defined in this section
 - Use cluster ID if known (e.g., "0x0005" for Scenes), null if external spec (e.g., Core Spec)
-- Keep descriptions SHORT (max 50 chars)
+- Keep descriptions detailed with pseudocode if applicable (max 200 chars)
 - Examples: FeatureMap attribute, other clusters referenced, external specifications
 
 **EXTRACTION STRATEGY**:
 - Find cluster ID tables and extract ALL entries as array (some clusters have multiple IDs)
 - Find classification table and extract ALL fields as array (some sections may have multiple classifications)
 - Scan text for references to other clusters/attributes/specs not defined here
-- Add pseudocode notation in summaries where behavioral logic applies
+- Add pseudocode notation in summaries where behavioral logic applies if applicable
 - If no cluster IDs found, return empty array [] for cluster_ids
 - If no classification found, return empty array [] for classifications
 
@@ -1088,9 +1088,8 @@ You are extracting dependency definitions from a Matter protocol cluster specifi
     "title": "short dependency title (e.g., Coupling color temperature to Level Control)",
     "clusters_involved": ["ClusterA (0x0008)", "ClusterB (0x0300)"],
     "trigger_condition": "condition under which dependency applies",
-    "effect": "description of resulting behavior (max 150 chars)",
-    "pseudocode": "if condition then action; else action",
-    "summary": "detailed explanation with pseudocode (max 200 chars)"
+    "effect": "description of resulting behavior (max 200 chars)",
+    "summary": "detailed explanation with pseudocode if applicable (max 200 chars)"
   }
 ]
 
@@ -1098,7 +1097,7 @@ You are extracting dependency definitions from a Matter protocol cluster specifi
 - Parse numbered dependency subsections
 - Identify involved clusters and attributes
 - Extract both trigger conditions and resulting effects
-- Translate narrative rules into pseudocode with clear IF/THEN/ELSE logic
+- Add pseudocode notation if applicable for clear logic
 - Be tolerant of format variations (bullets, prose, inline text)
 - If no dependencies are found, return empty array []
 
@@ -1260,8 +1259,8 @@ You are extracting multi-position switch behavior rules from a Matter protocol s
   {
     "event": "event name (e.g., SwitchLatched)",
     "field": "field name (e.g., NewPosition)",
-    "value_rule": "how value is determined (max 120 chars)",
-    "pseudocode": "event.field := derived_value"
+    "value_rule": "how value is determined (max 200 chars)",
+    "pseudocode": "pseudocode representation if applicable"
   }
 ]
 
@@ -1269,7 +1268,7 @@ You are extracting multi-position switch behavior rules from a Matter protocol s
 - Parse narrative text describing multi-position event rules
 - Group events by which field they set
 - Preserve exact event and field names
-- Translate descriptions into pseudocode assignments
+- Translate descriptions into pseudocode if applicable
 - If no multi-position details found, return empty array []
 
 Return ONLY the JSON array. No explanations, no markdown, no additional text.
@@ -1295,7 +1294,7 @@ You are extracting multi-press sequence behavior rules from a Matter protocol sp
     "condition": "trigger condition for this sequence",
     "events_generated": ["InitialPress", "ShortRelease", "MultiPressOngoing(2)", "MultiPressComplete(2)"],
     "events_suppressed": ["LongPress", "LongRelease"],
-    "pseudocode": "if second_press then emit InitialPress; emit MultiPressOngoing(2); later emit MultiPressComplete(2)"
+    "pseudocode": "pseudocode representation if applicable"
   }
 ]
 
@@ -1304,7 +1303,7 @@ You are extracting multi-press sequence behavior rules from a Matter protocol sp
 - Group scenarios by feature flag context (AS set vs unset)
 - List all events generated in sequence order
 - List explicitly forbidden/suppressed events
-- Translate behavior into short pseudocode (with IF/THEN/ELSE, counters, event.emit)
+- Translate behavior into pseudocode if applicable
 - If no multi-press sequence rules found, return empty array []
 
 Return ONLY the JSON array. No explanations, no markdown, no additional text.
@@ -1328,14 +1327,14 @@ You are extracting MS feature flag case summaries from a Matter protocol specifi
     "feature_flags": ["MS", "!MSR", "!MSM"],
     "outcome": "Every action cycle is only a single InitialPress event",
     "notes": null,
-    "pseudocode": "emit InitialPress"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "case": "MS & MSM",
     "feature_flags": ["MS", "MSM"],
     "outcome": "Ends on LongRelease (if MSL & first press long) or MultiPressComplete",
     "notes": "AS does not change outcome; AS reduces events",
-    "pseudocode": "if (first_press_long & MSL) then emit LongRelease else emit MultiPressComplete"
+    "pseudocode": "pseudocode representation if applicable"
   }
 ]
 
@@ -1412,7 +1411,7 @@ You are extracting state change examples for Lighting feature from a Matter prot
       "physical_device": "Off",
       "output": "Stays off"
     },
-    "summary": "MoveToLevel ignored when Off and EiO=0"
+    "summary": "brief description of the state change with pseudocode if applicable"
   },
   {
     "initial": {
@@ -1428,7 +1427,7 @@ You are extracting state change examples for Lighting feature from a Matter prot
       "physical_device": "On",
       "output": "Turns on at midpoint brightness"
     },
-    "summary": "MoveToLevelWithOnOff turns on device and adjusts brightness"
+    "summary": "brief description of the state change with pseudocode if applicable"
   }
 ]
 
@@ -1492,7 +1491,7 @@ You are extracting event generation sequences from a Matter protocol specificati
 - Parse subsections describing switches with/without MSL/MSR/MSM/AS
 - For each interaction type, list generated events in order
 - Capture events explicitly not generated as suppressed
-- Translate sequence into pseudocode using IF/THEN and event.emit
+- Translate sequence into pseudocode using if applicable notation
 - If no event sequences found, return empty array []
 
 Return ONLY the JSON array. No explanations, no markdown, no additional text.
@@ -1567,7 +1566,7 @@ You are extracting mode usage rules from a Matter protocol specification section
     "from_mode_tag": "Idle",
     "to_mode_tag": "Cleaning",
     "action": "start cleaning cycle",
-    "pseudocode": "if mode changes Idle→Cleaning then start_cleaning()"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "from_mode_tag": "Cleaning",
@@ -1619,7 +1618,7 @@ You are extracting setpoint limit rules from a Matter protocol specification sec
     "category": "device_limit",
     "constraint": "AbsMinHeatSetpointLimit <= MinHeatSetpointLimit <= MaxHeatSetpointLimit <= AbsMaxHeatSetpointLimit",
     "attributes_involved": ["AbsMinHeatSetpointLimit", "MinHeatSetpointLimit", "MaxHeatSetpointLimit", "AbsMaxHeatSetpointLimit"],
-    "pseudocode": "assert AbsMinHeatSetpointLimit <= MinHeatSetpointLimit <= MaxHeatSetpointLimit <= AbsMaxHeatSetpointLimit"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "category": "setpoint_limit",
@@ -1665,7 +1664,7 @@ You are extracting procedural recommendations for user creation from a Matter pr
       "action": "Set user record fields",
       "command": "SetUser",
       "parameters": ["UserIndex", "user record fields"],
-      "pseudocode": "call SetUser(UserIndex, user_fields)"
+      "pseudocode": "pseudocode representation if applicable"
     },
     {
       "order": 2,
@@ -1714,7 +1713,7 @@ You are extracting fabric-scoping handling rules from a Matter protocol specific
   {
     "rule": "Attributes and commands are scoped to accessing fabric only",
     "exception": "SceneValid field of FabricSceneInfo",
-    "pseudocode": "on attribute_read/write: filter by accessing_fabric"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "rule": "Operations without an accessing fabric SHALL fail",
@@ -1858,7 +1857,7 @@ You are extracting guidance for fabrics and commissioners from a Matter protocol
   {
     "topic": "Cluster interaction",
     "guidance": "Fabrics should only use this cluster on endpoints with supported device types (Network Infrastructure Manager, Thread Border Router)",
-    "pseudocode": "if endpoint.device_type not in [NIM, TBR] then reject_interaction()"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "topic": "Network availability",
@@ -1904,7 +1903,7 @@ You are extracting state machine descriptions from a Matter protocol specificati
     "related_command": "OnWithTimedOff",
     "attributes": ["OnTime"],
     "behavior": "OnTime decremented every 1/10s unless 0xFFFF",
-    "pseudocode": "if OnTime != 0xFFFF then every 100ms: OnTime := OnTime - 1"
+    "pseudocode": "pseudocode representation if applicable"
   },
   {
     "state": "Delayed Off",

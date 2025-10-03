@@ -27,6 +27,7 @@ import re
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import fitz  # PyMuPDF
+import pymupdf4llm  # Smart table extraction in Markdown format
 from langchain_google_genai import GoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -159,32 +160,63 @@ class EnhancedClusterExtractor:
             logger.error(f"Error loading clusters data: {e}")
             raise
     
+    def extract_pages_markdown(self, start_page: int, end_page: int, context: str = "") -> str:
+        """
+        Extract PDF pages in Markdown format for better table understanding
+        Uses PyMuPDF4LLM for smart table extraction
+        
+        Args:
+            start_page: Starting page number (0-indexed for PyMuPDF)
+            end_page: Ending page number (0-indexed for PyMuPDF)
+            context: Context description for logging (e.g., cluster name, subsection name)
+            
+        Returns:
+            Extracted text in Markdown format with preserved table structure
+        """
+        try:
+            # Extract pages in Markdown format for better table structure
+            page_list = list(range(start_page, end_page))
+            md_text = pymupdf4llm.to_markdown(
+                self.pdf_path,
+                pages=page_list,
+                page_chunks=False  # Get continuous text
+            )
+            
+            # Add context markers for better tracking
+            text_parts = [
+                f"--- Pages {start_page+1}-{end_page} | Context: {context} ---",
+                "**Tables formatted in Markdown for optimal LLM understanding**\n",
+                md_text
+            ]
+            text_content = "\n\n".join(text_parts)
+            
+            logger.info(f"✓ Extracted Markdown from pages {start_page+1}-{end_page} for '{context}' ({len(text_content)} chars)")
+            return text_content
+            
+        except Exception as e:
+            logger.error(f"Error extracting Markdown from pages {start_page+1}-{end_page} for '{context}': {e}")
+            return ""
+    
     def extract_cluster_pages(self, start_page: int, end_page: int) -> str:
         """
         Extract text content from PDF pages for a specific cluster
+        Uses PyMuPDF4LLM Markdown format for superior table extraction
         
         Args:
             start_page: Starting page number (1-indexed)
             end_page: Ending page number (1-indexed)
             
         Returns:
-            Extracted text content
+            Extracted text content in Markdown format
         """
         try:
             # Add buffer pages and convert to 0-indexed for PyMuPDF
             actual_start = max(0, start_page - CLUSTER_PAGE_BUFFER - 1)
             actual_end = min(len(self.pdf_doc), end_page + CLUSTER_PAGE_BUFFER)
             
-            text_content_parts = []
-            for page_num in range(actual_start, actual_end):
-                page = self.pdf_doc.load_page(page_num)
-                text = page.get_text()
-                # Add page markers for better context tracking
-                text_content_parts.append(f"--- Page {page_num + 1} (Content Page {page_num + 1 - PDF_PAGE_OFFSET}) ---\n{text}")
-            
-            text_content = "\n\n".join(text_content_parts)
-            logger.info(f"Extracted text from PDF pages {actual_start+1}-{actual_end} (content pages {start_page}-{end_page}) ({len(text_content)} characters)")
-            return text_content
+            # Use dedicated Markdown extraction method
+            context = f"Cluster pages {start_page}-{end_page}"
+            return self.extract_pages_markdown(actual_start, actual_end, context)
             
         except Exception as e:
             logger.error(f"Error extracting pages {start_page}-{end_page}: {e}")
@@ -235,6 +267,7 @@ class EnhancedClusterExtractor:
     def extract_subsection_pages(self, start_page: int, end_page: int, subsection_name: str = "") -> str:
         """
         Extract text content from PDF pages for a specific subsection
+        Uses PyMuPDF4LLM Markdown format for superior table extraction
         
         Args:
             start_page: Starting page number (1-indexed)
@@ -242,25 +275,16 @@ class EnhancedClusterExtractor:
             subsection_name: Name of subsection for logging
             
         Returns:
-            Extracted subsection text content
+            Extracted subsection text content in Markdown format
         """
         try:
             # Add buffer pages and convert to 0-indexed for PyMuPDF
             actual_start = max(0, start_page - SUBSECTION_PAGE_BUFFER - 1)
             actual_end = min(len(self.pdf_doc), end_page + SUBSECTION_PAGE_BUFFER)
             
-            text_content = ""
-            for page_num in range(actual_start, actual_end):
-                page = self.pdf_doc.load_page(page_num)
-                text_content += page.get_text()
-                text_content += "\n\n"
-            
-            # # first 5 lines ... last 5 lines print the preview of each section
-            # print_preview = "\n".join(text_content.splitlines()[:5]) + "\n...\n" + "\n".join(text_content.splitlines()[-5:])
-            # logger.info(f"Extracted text preview for {subsection_name}:\n{print_preview}")
-            
-            logger.info(f"Extracted {len(text_content)} characters from pages {actual_start+1}-{actual_end} for {subsection_name}")
-            return text_content
+            # Use dedicated Markdown extraction method
+            context = f"Subsection '{subsection_name}'"
+            return self.extract_pages_markdown(actual_start, actual_end, context)
             
         except Exception as e:
             logger.error(f"Error extracting subsection pages {start_page}-{end_page} for {subsection_name}: {e}")
@@ -601,11 +625,11 @@ class EnhancedClusterExtractor:
         
         logger.info(f"Processing cluster: {cluster_name} ({section_number}) pages {start_page}-{end_page} with {len(subsections)} subsections")
         
-        # Extract full cluster text for fallback only
-        cluster_text = self.extract_cluster_pages(start_page, end_page)
-        if not cluster_text:
-            logger.error(f"Failed to extract text for {cluster_name}")
-            return None
+        # # Extract full cluster text for fallback only
+        # cluster_text = self.extract_cluster_pages(start_page, end_page)
+        # if not cluster_text:
+        #     logger.error(f"Failed to extract text for {cluster_name}")
+        #     return None
         
         # Initialize cluster info with cluster_name from TOC at the top
         # This provides the cluster name from matter_clusters_toc.json
@@ -616,6 +640,9 @@ class EnhancedClusterExtractor:
         # Track all references across all sections
         all_references = []
         
+        # Track if we've already processed cluster overview (ID + Classification)
+        cluster_overview_processed = False
+        
         # Dynamically extract all subsections using section_prompt_dict
         for subsection in subsections:
             subsection_name = subsection.get('subsection_name', '')
@@ -624,6 +651,16 @@ class EnhancedClusterExtractor:
             if subsection_name not in section_prompt_dict:
                 logger.warning(f"No prompt found for subsection '{subsection_name}' in {cluster_name}, skipping")
                 continue
+            
+            # OPTIMIZATION: Cluster ID/IDs and Classification use the same prompt (CLUSTER_OVERVIEW_EXTRACTION_PROMPT)
+            # Make a single AI call for both instead of separate calls
+            if subsection_name in ['Cluster ID', 'Classification', 'Cluster IDs']:
+                if cluster_overview_processed:
+                    logger.info(f"⚡ Skipping '{subsection_name}' - already extracted with cluster overview (single AI call optimization)")
+                    continue
+                else:
+                    logger.info(f"⚡ Processing cluster overview (ID + Classification) with single AI call for {cluster_name}")
+                    cluster_overview_processed = True
             
             section_prompt = section_prompt_dict[subsection_name]
             
@@ -785,7 +822,7 @@ class EnhancedClusterExtractor:
             "metadata": {
                 "source_pages": f"{start_page}-{end_page}",
                 "extraction_method": "enhanced_section_based_dynamic",
-                "text_length": len(cluster_text),
+                # "text_length": len(cluster_text),
                 "section_number": section_number,
                 "category": category,
                 "subsections_processed": len([s for s in subsections if s.get('subsection_name') in section_prompt_dict])
@@ -986,7 +1023,7 @@ def main():
         
         # Process clusters (test with first few)
         logger.info("Starting enhanced cluster extraction with specialized section prompts...")
-        results = extractor.process_all_clusters(limit=3, resume=True)
+        results = extractor.process_all_clusters(limit=1, resume=True)
         
         # Save final results
         extractor.save_results(results, output_path)

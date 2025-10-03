@@ -849,3 +849,1026 @@ You are extracting event definitions from a Matter protocol cluster specificatio
 
 Return ONLY the JSON array. No explanations, no markdown, no additional text.
 """
+
+CLUSTER_ID_EXTRACTION_PROMPT = """
+You are extracting cluster identifier definitions from a Matter protocol specification section.
+
+**TASK**: Extract ONLY cluster ID definitions from the provided text and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for cluster ID tables with columns like "ID | Name"
+- Extract hex cluster IDs (0x0000, 0x0001, etc.)
+- Extract full cluster names
+- Capture ID/name mappings only (no attributes, commands, or events here)
+- Include a short summary for each cluster
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "id": "hex cluster ID (0x0006)",
+    "name": "full cluster name",
+    "summary": "brief cluster purpose (max 80 chars)"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Find cluster ID tables and extract ALL entries
+- Look for sections like "X.Y.Z Cluster ID"
+- Preserve exact hex IDs and names as given
+- If no clusters found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+CLASSIFICATION_EXTRACTION_PROMPT = """
+You are extracting cluster classification definitions from a Matter protocol specification section.
+
+**TASK**: Extract ONLY cluster classification information and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for classification tables with columns like "Hierarchy | Role | Scope | PICS Code"
+- Extract hierarchy (e.g., Base, Functional, Utility)
+- Extract role (e.g., Application, Aggregator, Utility)
+- Extract scope (e.g., Endpoint, Node, Fabric)
+- Extract PICS code (e.g., OO, OT, LV)
+- Include a short summary for the classification
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "hierarchy": "Base/Functional/Utility/etc.",
+    "role": "Application/Aggregator/Utility/etc.",
+    "scope": "Endpoint/Node/Fabric/etc.",
+    "pics_code": "PICS short code",
+    "summary": "brief classification purpose (max 80 chars)"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Find classification tables and extract ALL rows
+- Look for sections like "X.Y.Z Classification"
+- Allow flexible interpretation if column names differ (e.g., 'Layer' for 'Hierarchy', 'Domain' for 'Scope')
+- Preserve values exactly as given where possible
+- If no classification found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+DERIVED_CLUSTER_NAMESPACE_EXTRACTION_PROMPT = """
+You are extracting derived cluster namespace definitions from a Matter protocol specification section.
+
+**TASK**: Extract ONLY derived cluster namespace definitions (status codes and mode tags) and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for tables like "Status Code Value Name" and "Mode Tag Value Name"
+- Extract hex values (0x41, 0x4000, etc.)
+- Extract value names (e.g., Stuck, Cleaning, Mapping)
+- Extract descriptions if subsections provide them
+- Separate entries into categories: "status_code" or "mode_tag"
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "category": "status_code",
+    "id": "hex code (0x41)",
+    "name": "status code name",
+    "summary": "brief purpose (max 100 chars)"
+  },
+  {
+    "category": "mode_tag",
+    "id": "hex code (0x4001)",
+    "name": "mode tag name",
+    "summary": "brief purpose (max 100 chars)"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse ALL rows in status code and mode tag tables
+- Attach descriptive subsections (e.g., Idle Tag, Cleaning Tag, Mapping Tag) to the correct mode tag entries
+- Preserve exact hex IDs and names
+- If no derived namespace definitions are found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+DEPENDENCIES_EXTRACTION_PROMPT = """
+You are extracting dependency definitions from a Matter protocol cluster specification section.
+
+**TASK**: Extract ONLY cluster dependencies (inter-cluster relationships, conditional behaviors, coupling rules) and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Each dependency links two or more clusters, attributes, or commands
+- Capture trigger conditions (e.g., bit values, attribute settings)
+- Capture dependent behavior (what changes, what remains unaffected)
+- Convert narrative logic into concise pseudocode for clarity
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "id": "dependency section number (e.g., 3.2.5.1)",
+    "title": "short dependency title (e.g., Coupling color temperature to Level Control)",
+    "clusters_involved": ["ClusterA (0x0008)", "ClusterB (0x0300)"],
+    "trigger_condition": "condition under which dependency applies",
+    "effect": "description of resulting behavior (max 150 chars)",
+    "pseudocode": "if condition then action; else action",
+    "summary": "brief explanation (max 80 chars)"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse numbered dependency subsections
+- Identify involved clusters and attributes
+- Extract both trigger conditions and resulting effects
+- Translate narrative rules into pseudocode with clear IF/THEN/ELSE logic
+- Be tolerant of format variations (bullets, prose, inline text)
+- If no dependencies are found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+MODE_EXAMPLES_EXTRACTION_PROMPT = """
+You are extracting mode examples from a Matter protocol cluster specification section.
+
+**TASK**: Extract ONLY mode examples with their associated mode tags and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Each example links a mode name to one or more mode tags
+- Extract hex tag values (0x4000, 0x4001, etc.)
+- Extract tag names if provided
+- Mode names must be preserved exactly as written
+- Some examples may include multiple tags
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "mode": "mode name (e.g., No Energy Management)",
+    "tags": [
+      {
+        "id": "hex tag value (0x4000)",
+        "name": "tag name (e.g., NoOptimization)"
+      }
+    ],
+    "summary": "brief description of the example (max 80 chars)"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Look for bullet lists or prose describing mode examples
+- Parse ALL example rows, even if multiple tags are listed
+- Preserve exact mode names and tag names
+- Be tolerant of different structures (inline text, tables, bullets)
+- If no mode examples found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+STATUS_CODES_EXTRACTION_PROMPT = """
+You are extracting status code definitions from a Matter protocol cluster specification section.
+
+**TASK**: Extract ONLY status codes and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for status code tables with columns like "Value | Name | Summary | Conformance"
+- Extract hex values (0x02, 0x03, etc.)
+- Extract status code names (FailureDueToFault, DUPLICATE, OCCUPIED, etc.)
+- Extract summaries (may appear inline in table or in dedicated subsections)
+- Extract conformance (M/O/F) if specified
+- Ensure summaries are concise but preserve meaning
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "id": "hex status code value (0x02)",
+    "name": "status code name",
+    "summary": "status meaning (max 100 chars)",
+    "conformance": "M/O/F or null"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse ALL status code values from tables
+- Attach additional descriptions from subsections to the correct status code entry
+- Preserve exact hex values and names
+- Be tolerant of structural differences (tables, prose, split summaries)
+- If no status codes found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+DEFINITIONS_EXTRACTION_PROMPT = """
+You are extracting cluster definitions from a Matter protocol specification section.
+
+**TASK**: Extract ONLY definition entries (terms with explanations) and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Look for numbered subsections like "9.2.6.1. Power"
+- Extract the term name (e.g., Power, Energy)
+- Extract the core definition text
+- Extract measurement units if specified (e.g., mW, mWh)
+- Capture sign conventions if given (positive/negative meaning)
+- Extract example cases (Solar PV inverter, EVSE, BESS, etc.) if present
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "term": "term name (e.g., Power)",
+    "definition": "main definition text",
+    "units": "measurement units or null",
+    "sign_convention": "positive/negative meaning or null",
+    "examples": [
+      "example description 1",
+      "example description 2"
+    ]
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse all subsections under "Definitions"
+- Consolidate paragraphs into a single clean definition
+- Collect all examples into a list
+- Preserve technical details like units and sign meaning
+- Be tolerant of different structures (inline text, prose, tables)
+- If no definitions found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+CONVERSIONS_EXTRACTION_PROMPT = """
+You are extracting conversion rules from a Matter protocol specification section.
+
+**TASK**: Extract ONLY conversion definitions (e.g., unit conversions, scaling formulas) and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Each entry should specify what is being converted (e.g., Temperature)
+- Capture source and target units (e.g., Fahrenheit ⇔ Celsius)
+- Include formula or reference if available
+- Capture notes such as "see Data Model" or "referenced elsewhere"
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "conversion_for": "what is being converted (e.g., Temperature)",
+    "source_units": "original units (e.g., Fahrenheit)",
+    "target_units": "converted units (e.g., Celsius)",
+    "formula": "formula or reference (e.g., see Data Model section)",
+    "notes": "additional notes if present"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Look for explicit conversion references (temperature, energy, duration, etc.)
+- Extract unit names and relationships
+- If formula is not given, include reference text (e.g., 'see Data Model')
+- Be tolerant of different formats (tables, prose, references)
+- If no conversions found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+MULTI_POSITION_DETAILS_EXTRACTION_PROMPT = """
+You are extracting multi-position switch behavior rules from a Matter protocol specification section.
+
+**TASK**: Extract ONLY multi-position details (event-to-field mappings and behavioral rules) and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture which events are affected (e.g., SwitchLatched, InitialPress, LongPress, MultiPressOngoing, ShortRelease, LongRelease, MultiPressComplete)
+- Capture which field must be set (e.g., NewPosition, PreviousPosition)
+- Capture how the field value is determined (e.g., corresponds to new position, corresponds to previous position)
+- Translate the behavior into short pseudocode
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "event": "event name (e.g., SwitchLatched)",
+    "field": "field name (e.g., NewPosition)",
+    "value_rule": "how value is determined (max 120 chars)",
+    "pseudocode": "event.field := derived_value"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse narrative text describing multi-position event rules
+- Group events by which field they set
+- Preserve exact event and field names
+- Translate descriptions into pseudocode assignments
+- If no multi-position details found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+MULTIPRESS_SEQUENCE_EXTRACTION_PROMPT = """
+You are extracting multi-press sequence behavior rules from a Matter protocol specification section.
+
+**TASK**: Extract ONLY multi-press event sequence definitions and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture feature flags involved (MSM, MSL, MSR, AS)
+- Capture conditions (e.g., first press long, AS set/unset, N > MultiPressMax)
+- Capture event sequences that SHALL be generated (InitialPress, ShortRelease, MultiPressOngoing, MultiPressComplete, LongPress, LongRelease)
+- Capture event suppression rules (events that SHALL NOT be generated)
+- Represent event order as pseudocode sequence or ordered list
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "scenario": "short scenario name (e.g., Double Press with AS unset)",
+    "feature_flags": ["MSM", "MSR"],
+    "condition": "trigger condition for this sequence",
+    "events_generated": ["InitialPress", "ShortRelease", "MultiPressOngoing(2)", "MultiPressComplete(2)"],
+    "events_suppressed": ["LongPress", "LongRelease"],
+    "pseudocode": "if second_press then emit InitialPress; emit MultiPressOngoing(2); later emit MultiPressComplete(2)"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse subsections and bullet cases (single press, double press, triple press, long press, aborted sequence, etc.)
+- Group scenarios by feature flag context (AS set vs unset)
+- List all events generated in sequence order
+- List explicitly forbidden/suppressed events
+- Translate behavior into short pseudocode (with IF/THEN/ELSE, counters, event.emit)
+- If no multi-press sequence rules found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+MS_FEATURE_FLAG_SUMMARY_EXTRACTION_PROMPT = """
+You are extracting MS feature flag case summaries from a Matter protocol specification section.
+
+**TASK**: Extract ONLY summarized case rules for MS feature flag and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture feature flag combinations (e.g., MS & !MSR & !MSM)
+- Capture resulting event outcomes (which events are generated at end of action cycle)
+- Capture any notes about AS feature flag behavior (e.g., backward compatibility, reduced events)
+- Represent rule as pseudocode when possible
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "case": "MS & !MSR & !MSM",
+    "feature_flags": ["MS", "!MSR", "!MSM"],
+    "outcome": "Every action cycle is only a single InitialPress event",
+    "notes": null,
+    "pseudocode": "emit InitialPress"
+  },
+  {
+    "case": "MS & MSM",
+    "feature_flags": ["MS", "MSM"],
+    "outcome": "Ends on LongRelease (if MSL & first press long) or MultiPressComplete",
+    "notes": "AS does not change outcome; AS reduces events",
+    "pseudocode": "if (first_press_long & MSL) then emit LongRelease else emit MultiPressComplete"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse bullet lists describing MS feature flag combinations
+- Map feature flag logic to concise outcomes
+- Add pseudocode representation of event emission rules
+- Include AS-related explanatory notes
+- If no MS feature flag cases found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+PIN_RFID_CODE_FORMAT_EXTRACTION_PROMPT = """
+You are extracting PIN/RFID code format rules from a Matter protocol specification section.
+
+**TASK**: Extract ONLY PIN/RFID code format definitions and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture data type (e.g., octet string)
+- Capture encoding requirements (e.g., ASCII)
+- Capture allowed value types (numbers, characters)
+- Include representation examples (e.g., '1234' → 0x31 0x32 0x33 0x34)
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "type": "OctetString",
+    "encoding": "ASCII",
+    "allowed_values": "numbers and characters",
+    "example": {
+      "input": "1234",
+      "encoded": ["0x31", "0x32", "0x33", "0x34"]
+    },
+    "notes": "All PIN/RFID codes SHALL be ASCII encoded regardless of being numbers or characters"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse narrative text describing PIN/RFID code format
+- Normalize into structured fields: type, encoding, allowed values, example
+- Preserve exact encoding rules and examples
+- Be tolerant of prose vs table style
+- If no PIN/RFID code format found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+STATE_CHANGE_TABLE_LIGHTING_EXTRACTION_PROMPT = """
+You are extracting state change examples for Lighting feature from a Matter protocol specification section.
+
+**TASK**: Extract ONLY state change rules and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture initial conditions: CurrentLevel, EiO, OnOff, PhysicalDevice state
+- Capture command applied (including parameters, duration, rate, etc.)
+- Capture resulting state: CurrentLevel, OnOff, PhysicalDevice, Output level
+- Capture description of effect (e.g., "Stays off", "Turns on and adjusts to half", "Output level adjusts to minimum")
+- Normalize "any" into explicit 'any' value
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "initial": {
+      "current_level": "value or 'any'",
+      "EiO": 0,
+      "onoff": false,
+      "physical_device": "Off"
+    },
+    "command": "MoveToLevel(l=MID, t=2s)",
+    "result": {
+      "current_level": "same",
+      "onoff": false,
+      "physical_device": "Off",
+      "output": "Stays off"
+    },
+    "summary": "MoveToLevel ignored when Off and EiO=0"
+  },
+  {
+    "initial": {
+      "current_level": "any",
+      "EiO": 0,
+      "onoff": false,
+      "physical_device": "Off"
+    },
+    "command": "MoveToLevelWithOnOff(l=MID, t=2s)",
+    "result": {
+      "current_level": "MID",
+      "onoff": true,
+      "physical_device": "On",
+      "output": "Turns on at midpoint brightness"
+    },
+    "summary": "MoveToLevelWithOnOff turns on device and adjusts brightness"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse ALL table rows of state change examples
+- Map "Before/After" state into structured `initial` and `result`
+- Normalize boolean OnOff values into true/false
+- Preserve command parameters exactly as written
+- Add concise summary per rule
+- Be tolerant of formatting differences (line breaks, split words, multi-page tables)
+- If no state change rules found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+SEQUENCE_OF_GENERATED_EVENTS_EXTRACTION_PROMPT = """
+You are extracting event generation sequences from a Matter protocol specification section.
+
+**TASK**: Extract ONLY event generation sequences and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture switch type (feature flag combinations)
+- Capture interaction type (short press, long press, very long press, any press)
+- Capture ordered list of events generated
+- Capture events explicitly not generated (if mentioned)
+- Translate sequence into short pseudocode
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "switch_type": "MS + MSL",
+    "interaction": "short press",
+    "events_generated": ["InitialPress", "ShortRelease (if MSR & !AS)", "MultiPressComplete(1) (if MSM)"],
+    "events_suppressed": [],
+    "pseudocode": "emit InitialPress; if MSR & !AS then emit ShortRelease; if MSM then emit MultiPressComplete(1)"
+  },
+  {
+    "switch_type": "MS + MSL",
+    "interaction": "long/very long press",
+    "events_generated": ["InitialPress", "LongPress", "LongRelease"],
+    "events_suppressed": ["MultiPressComplete(1)"],
+    "pseudocode": "emit InitialPress; emit LongPress; on release emit LongRelease"
+  },
+  {
+    "switch_type": "MS + !MSL",
+    "interaction": "any press length",
+    "events_generated": ["InitialPress", "ShortRelease (if MSR & !AS)", "MultiPressComplete(1) (if MSM)"],
+    "events_suppressed": ["LongPress", "LongRelease"],
+    "pseudocode": "emit InitialPress; if MSR & !AS then emit ShortRelease; if MSM then emit MultiPressComplete(1)"
+  },
+  {
+    "switch_type": "MS only (no MSR, MSL, MSM, AS)",
+    "interaction": "any press length",
+    "events_generated": ["InitialPress"],
+    "events_suppressed": ["ShortRelease", "LongPress", "LongRelease"],
+    "pseudocode": "emit InitialPress only"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse subsections describing switches with/without MSL/MSR/MSM/AS
+- For each interaction type, list generated events in order
+- Capture events explicitly not generated as suppressed
+- Translate sequence into pseudocode using IF/THEN and event.emit
+- If no event sequences found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+DIMMING_LIGHT_CURVE_EXTRACTION_PROMPT = """
+You are extracting dimming light curve definitions from a Matter protocol specification section.
+
+**TASK**: Extract ONLY dimming light curve details and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture the mathematical formula(s)
+- Capture input/output variables and ranges (MinLevel, MaxLevel, CurrentLevel, Level, %Light)
+- Capture special notes/exceptions (e.g., Value 255 not used)
+- Extract example rows from tables into structured JSON
+- Include relationship to attributes (e.g., IntrinsicBallastFactor, BallastFactorAdjustment)
+
+**JSON OUTPUT FORMAT**:
+{
+  "formula": "Level = (MaxLevel – MinLevel) * CurrentLevel / 253 + (254 * MinLevel – MaxLevel) / 253",
+  "variables": {
+    "CurrentLevel": "1..254",
+    "MinLevel": "configured minimum level",
+    "MaxLevel": "configured maximum level",
+    "Level": "derived 8-bit value",
+    "%Light": "percent light output of ballast"
+  },
+  "notes": [
+    "Value 255 is not used",
+    "Output also depends on IntrinsicBallastFactor and BallastFactorAdjustment"
+  ],
+  "examples": [
+    { "MinLevel": 1, "MaxLevel": 254, "CurrentLevel": 1, "Level": 1, "PercentLight": "0.10%" },
+    { "MinLevel": 1, "MaxLevel": 254, "CurrentLevel": 10, "Level": 10, "PercentLight": "0.13%" },
+    { "MinLevel": 1, "MaxLevel": 254, "CurrentLevel": 100, "Level": 100, "PercentLight": "1.49%" },
+    { "MinLevel": 1, "MaxLevel": 254, "CurrentLevel": 254, "Level": 254, "PercentLight": "100%" },
+    { "MinLevel": 170, "MaxLevel": 254, "CurrentLevel": 1, "Level": 170, "PercentLight": "10.1%" },
+    { "MinLevel": 170, "MaxLevel": 254, "CurrentLevel": 10, "Level": 173, "PercentLight": "11.0%" },
+    { "MinLevel": 170, "MaxLevel": 254, "CurrentLevel": 100, "Level": 203, "PercentLight": "24.8%" },
+    { "MinLevel": 170, "MaxLevel": 254, "CurrentLevel": 254, "Level": 254, "PercentLight": "100%" },
+    { "MinLevel": 170, "MaxLevel": 230, "CurrentLevel": 1, "Level": 170, "PercentLight": "10.1%" },
+    { "MinLevel": 170, "MaxLevel": 230, "CurrentLevel": 10, "Level": 172, "PercentLight": "10.7%" },
+    { "MinLevel": 170, "MaxLevel": 230, "CurrentLevel": 100, "Level": 193, "PercentLight": "19.2%" },
+    { "MinLevel": 170, "MaxLevel": 230, "CurrentLevel": 254, "Level": 230, "PercentLight": "51.9%" }
+  ]
+}
+
+**EXTRACTION STRATEGY**:
+- Extract formula text exactly as given
+- Map variables to definitions and ranges
+- Parse ALL example rows into structured JSON
+- Preserve notes and caveats
+- If no dimming curve details found, return empty object {}
+
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
+"""
+
+MODE_USE_EXTRACTION_PROMPT = """
+You are extracting mode usage rules from a Matter protocol specification section.
+
+**TASK**: Extract ONLY mode use definitions (rules about transitions between modes and their meaning) and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture starting mode tag and target mode tag
+- Capture meaning of the transition (e.g., start cleaning cycle, stop cleaning cycle)
+- Indicate if multiple modes per tag are allowed
+- Translate into short pseudocode
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "from_mode_tag": "Idle",
+    "to_mode_tag": "Cleaning",
+    "action": "start cleaning cycle",
+    "pseudocode": "if mode changes Idle→Cleaning then start_cleaning()"
+  },
+  {
+    "from_mode_tag": "Cleaning",
+    "to_mode_tag": "Idle",
+    "action": "stop cleaning cycle",
+    "pseudocode": "if mode changes Cleaning→Idle then stop_cleaning()"
+  },
+  {
+    "from_mode_tag": "Idle",
+    "to_mode_tag": "Mapping",
+    "action": "start mapping cycle",
+    "pseudocode": "if mode changes Idle→Mapping then start_mapping()"
+  },
+  {
+    "from_mode_tag": "Mapping",
+    "to_mode_tag": "Idle",
+    "action": "stop mapping cycle",
+    "pseudocode": "if mode changes Mapping→Idle then stop_mapping()"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse narrative text and bullet lists describing mode transitions
+- Normalize each transition into from → to mapping
+- Translate behavioral rule into pseudocode form
+- Capture optional allowance of multiple modes with same tag
+- If no mode use rules found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+SETPOINT_LIMITS_EXTRACTION_PROMPT = """
+You are extracting setpoint limit rules from a Matter protocol specification section.
+
+**TASK**: Extract ONLY setpoint constraints and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture each constraint equation exactly
+- Group constraints by category:
+  • Device/user limit constraints
+  • Setpoint-to-limit constraints
+  • Auto feature (deadband) constraints
+- Extract involved attributes (e.g., MinHeatSetpointLimit, AbsMaxCoolSetpointLimit)
+- Provide short pseudocode for enforcement
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "category": "device_limit",
+    "constraint": "AbsMinHeatSetpointLimit <= MinHeatSetpointLimit <= MaxHeatSetpointLimit <= AbsMaxHeatSetpointLimit",
+    "attributes_involved": ["AbsMinHeatSetpointLimit", "MinHeatSetpointLimit", "MaxHeatSetpointLimit", "AbsMaxHeatSetpointLimit"],
+    "pseudocode": "assert AbsMinHeatSetpointLimit <= MinHeatSetpointLimit <= MaxHeatSetpointLimit <= AbsMaxHeatSetpointLimit"
+  },
+  {
+    "category": "setpoint_limit",
+    "constraint": "MinHeatSetpointLimit <= OccupiedHeatingSetpoint <= MaxHeatSetpointLimit",
+    "attributes_involved": ["MinHeatSetpointLimit", "OccupiedHeatingSetpoint", "MaxHeatSetpointLimit"],
+    "pseudocode": "assert MinHeatSetpointLimit <= OccupiedHeatingSetpoint <= MaxHeatSetpointLimit"
+  },
+  {
+    "category": "auto_deadband",
+    "constraint": "OccupiedHeatingSetpoint <= (OccupiedCoolingSetpoint - MinSetpointDeadBand)",
+    "attributes_involved": ["OccupiedHeatingSetpoint", "OccupiedCoolingSetpoint", "MinSetpointDeadBand"],
+    "pseudocode": "assert OccupiedHeatingSetpoint <= (OccupiedCoolingSetpoint - MinSetpointDeadBand)"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse bullet lists of inequalities into constraints
+- Categorize each constraint by its type
+- List all attributes referenced in each constraint
+- Provide pseudocode `assert` statements to enforce constraints
+- If no setpoint limit rules found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+USER_CREATION_STEPS_EXTRACTION_PROMPT = """
+You are extracting procedural recommendations for user creation from a Matter protocol specification section.
+
+**TASK**: Extract ONLY recommended steps for creating a new user and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture overall recommendation (e.g., query for available UserIndex first)
+- Capture each step in correct order
+- Capture command names and parameters (e.g., UserIndex)
+- Provide pseudocode workflow
+
+**JSON OUTPUT FORMAT**:
+{
+  "precondition": "Administrator queries door lock with GetUser to find available UserIndex",
+  "steps": [
+    {
+      "order": 1,
+      "action": "Set user record fields",
+      "command": "SetUser",
+      "parameters": ["UserIndex", "user record fields"],
+      "pseudocode": "call SetUser(UserIndex, user_fields)"
+    },
+    {
+      "order": 2,
+      "action": "Add one or more credentials",
+      "command": "SetCredential",
+      "parameters": ["UserIndex", "credentials"],
+      "pseudocode": "call SetCredential(UserIndex, credential_list)"
+    },
+    {
+      "order": 3,
+      "action": "Add one or more schedule restrictions",
+      "command": "SetWeekDaySchedule or SetYearDaySchedule",
+      "parameters": ["UserIndex", "schedule"],
+      "pseudocode": "call SetWeekDaySchedule(UserIndex, schedule) OR call SetYearDaySchedule(UserIndex, schedule)"
+    }
+  ]
+}
+
+**EXTRACTION STRATEGY**:
+- Extract the initial recommendation/precondition
+- Parse enumerated steps (1, 2, 3, …)
+- Normalize each into action, command, parameters
+- Provide pseudocode for automation
+- If no user creation steps found, return empty object {}
+
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
+"""
+
+FABRIC_SCOPING_EXTRACTION_PROMPT = """
+You are extracting fabric-scoping handling rules from a Matter protocol specification section.
+
+**TASK**: Extract ONLY rules and constraints related to fabric scoping and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture scope rule (e.g., attributes/commands are scoped per fabric)
+- Capture exceptions (e.g., SceneValid Field of FabricSceneInfo)
+- Capture specific constraints:
+  • Behavior when no fabric is available
+  • Handling of duplicate Group ID/Scene ID across fabrics
+  • Behavior when leaving a fabric
+  • Scene Table capacity limits
+- Provide pseudocode representation of each rule
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "rule": "Attributes and commands are scoped to accessing fabric only",
+    "exception": "SceneValid field of FabricSceneInfo",
+    "pseudocode": "on attribute_read/write: filter by accessing_fabric"
+  },
+  {
+    "rule": "Operations without an accessing fabric SHALL fail",
+    "status_code": "UNSUPPORTED_ACCESS",
+    "pseudocode": "if accessing_fabric == null then return UNSUPPORTED_ACCESS"
+  },
+  {
+    "rule": "Scenes with same Group ID + Scene ID across fabrics are fabric-isolated",
+    "pseudocode": "lookup_scene := scene_table[accessing_fabric][group_id][scene_id]"
+  },
+  {
+    "rule": "Removing a fabric clears associated scenes",
+    "trigger": "RemoveFabric command (Operational Credentials Cluster)",
+    "pseudocode": "on RemoveFabric(fabric): delete scene_table[fabric]"
+  },
+  {
+    "rule": "Scene Table capacity per fabric < half of SceneTableSize (max 253)",
+    "pseudocode": "if scene_table[fabric].count >= floor(SceneTableSize/2) or > 253 then apply resource_exhaustion_behavior()"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse narrative rules into normalized JSON entries
+- Capture exceptions separately
+- Provide short pseudocode for each constraint
+- Include status codes where mentioned
+- If no fabric-scoping rules found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+MODE_NAMESPACE_EXTRACTION_PROMPT = """
+You are extracting mode namespace definitions from a Matter protocol specification section.
+
+**TASK**: Extract ONLY mode namespace definitions and return valid JSON object.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture mode tag ranges (value range, name, summary)
+- Capture common standard mode tag values with names and descriptions
+- Ensure derived and manufacturer-specific tags are included as ranges
+- Provide brief summaries for each tag definition
+
+**JSON OUTPUT FORMAT**:
+{
+  "ranges": [
+    {
+      "range": "0x0000-0x3FFF",
+      "name": "CommonTags",
+      "summary": "Common standard values defined in this cluster specification"
+    },
+    {
+      "range": "0x4000-0x7FFF",
+      "name": "DerivedClusterTags",
+      "summary": "Derived cluster-specific standard values"
+    },
+    {
+      "range": "0x8000-0xBFFF",
+      "name": "MfgTags",
+      "summary": "Manufacturer-specific values (or under derived cluster)"
+    }
+  ],
+  "common_tags": [
+    { "id": "0x0000", "name": "Auto", "summary": "Device decides options, features and settings" },
+    { "id": "0x0001", "name": "Quick", "summary": "Optimizes for faster completion" },
+    { "id": "0x0002", "name": "Quiet", "summary": "Silent or barely audible operation" },
+    { "id": "0x0003", "name": "LowNoise", "summary": "Mode is low-noise or optimizes for that" },
+    { "id": "0x0004", "name": "LowEnergy", "summary": "Optimizes for lower energy usage (Eco mode)" },
+    { "id": "0x0005", "name": "Vacation", "summary": "Suitable for use during vacations/absences" },
+    { "id": "0x0006", "name": "Min", "summary": "Uses the lowest available setting value" },
+    { "id": "0x0007", "name": "Max", "summary": "Uses the highest available setting value" },
+    { "id": "0x0008", "name": "Night", "summary": "Recommended for use during night time" },
+    { "id": "0x0009", "name": "Day", "summary": "Recommended for use during day time" }
+  ]
+}
+
+**EXTRACTION STRATEGY**:
+- Extract mode tag ranges table
+- Extract all standard/common tag values and their textual descriptions
+- Normalize into `ranges` and `common_tags`
+- Summarize each description in ≤ 15 words
+- If no mode namespace found, return empty object {}
+
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
+"""
+
+UNITS_OF_TEMPERATURE_EXTRACTION_PROMPT = """
+You are extracting temperature unit and data type rules from a Matter protocol specification section.
+
+**TASK**: Extract ONLY temperature unit and data type definitions, rules, and cautions, and return a valid JSON object.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture canonical unit of measurement
+- Capture defined temperature-related data types
+- Capture transfer vs display rules
+- Capture cautions for calculations/comparisons
+- Provide short pseudocode if calculation normalization is required
+
+**JSON OUTPUT FORMAT**:
+{
+  "unit": "Celsius",
+  "data_types": [
+    "TemperatureDifference",
+    "SignedTemperature",
+    "UnsignedTemperature"
+  ],
+  "transfer_rule": "Temperature values MUST be transferred using these types",
+  "display_rule": "Thermostats may display/store in other formats; SHOULD follow Conversion of Temperature Values for Display",
+  "calculation_caution": "Convert to common type before calculations; integer scaling differs",
+  "pseudocode": "convert_to_celsius(value, type) before compare_or_calculate()"
+}
+
+**EXTRACTION STRATEGY**:
+- Extract canonical unit explicitly (e.g., °C)
+- List all defined data types
+- Separate transfer, display, and calculation rules
+- Provide one pseudocode snippet for normalization
+- If no temperature rules found, return empty object {}
+
+Return ONLY the JSON object. No explanations, no markdown, no additional text.
+"""
+
+FABRICS_COMMISSIONERS_GUIDANCE_EXTRACTION_PROMPT = """
+You are extracting guidance for fabrics and commissioners from a Matter protocol specification section.
+
+**TASK**: Extract ONLY rules, recommendations, and best practices for fabrics/commissioners and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture purpose of the cluster (collaborative directory of ThreadNetworks, PreferredExtendedPanID)
+- Capture recommendations for cluster interaction (which device types are valid)
+- Capture rules for determining preferred networks (precedence order, primary gateway devices)
+- Capture guidance on sensitive data handling (Thread credentials, user consent, contribution restrictions)
+- Provide pseudocode for key decision logic
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "topic": "Cluster purpose",
+    "guidance": "Allows fabrics to share/manage ThreadNetworks and set PreferredExtendedPanID",
+    "pseudocode": null
+  },
+  {
+    "topic": "Cluster interaction",
+    "guidance": "Fabrics should only use this cluster on endpoints with supported device types (Network Infrastructure Manager, Thread Border Router)",
+    "pseudocode": "if endpoint.device_type not in [NIM, TBR] then reject_interaction()"
+  },
+  {
+    "topic": "Network availability",
+    "guidance": "Networks from ThreadNetworks list and Active Dataset from Thread Border Router should be considered available",
+    "pseudocode": null
+  },
+  {
+    "topic": "Preferred network precedence",
+    "guidance": "Directory on a Network Infrastructure Manager takes precedence; if multiple exist, prefer the one acting as primary Internet gateway",
+    "pseudocode": "if multiple NIM: select primary_gateway.NIM as preferred_source"
+  },
+  {
+    "topic": "User consent",
+    "guidance": "Obtain user consent before contributing credentials; only contribute reachable networks",
+    "pseudocode": "if not user_consent: deny_credential_contribution()"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Parse narrative text into structured guidance items
+- Normalize each into `topic`, `guidance`, and optional `pseudocode`
+- Include precedence and user consent handling explicitly
+- If no guidance found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+STATE_DESCRIPTION_EXTRACTION_PROMPT = """
+You are extracting state machine descriptions from a Matter protocol specification section.
+
+**TASK**: Extract ONLY state description rules and return valid JSON array.
+
+**EXTRACTION REQUIREMENTS**:
+- Capture involved states (e.g., Timed On, Delayed Off)
+- Capture relevant attributes and how they change over time
+- Capture exceptions (e.g., value = 0xFFFF means no decrement)
+- Provide short pseudocode representation of state behavior
+
+**JSON OUTPUT FORMAT**:
+[
+  {
+    "state": "Timed On",
+    "related_command": "OnWithTimedOff",
+    "attributes": ["OnTime"],
+    "behavior": "OnTime decremented every 1/10s unless 0xFFFF",
+    "pseudocode": "if OnTime != 0xFFFF then every 100ms: OnTime := OnTime - 1"
+  },
+  {
+    "state": "Delayed Off",
+    "related_command": "OnWithTimedOff",
+    "attributes": ["OffWaitTime"],
+    "behavior": "OffWaitTime decremented every 1/10s unless 0xFFFF",
+    "pseudocode": "if OffWaitTime != 0xFFFF then every 100ms: OffWaitTime := OffWaitTime - 1"
+  }
+]
+
+**EXTRACTION STRATEGY**:
+- Identify state names and their triggers (commands)
+- Extract attribute update rules
+- Capture exceptions explicitly (0xFFFF)
+- Represent behavior as concise pseudocode
+- If no state descriptions found, return empty array []
+
+Return ONLY the JSON array. No explanations, no markdown, no additional text.
+"""
+
+
+all_subsection_types = [
+      "Classification",
+      "Revision History",
+      "Cluster ID",
+      "Attributes",
+      "Data Types",
+      "Features",
+      "Commands",
+      "Events",
+      "Derived Cluster Namespace",
+      "Dependencies",
+      "Mode Examples",
+      "Status Codes",
+      "Cluster IDs",
+      "Definitions",
+      "Conversion of Temperature Values for Display",
+      "Multi Position Details",
+      "Sequence of events for MultiPress",
+      "Summary of cases for MS feature flag",
+      "PIN/RFID Code Format",
+      "State Change Table for Lighting",
+      "Sequence of generated events",
+      "The Dimming Light Curve",
+      "Mode Use",
+      "Setpoint Limits",
+      "Recommended steps for creating a new User",
+      "Handling of fabric-scoping",
+      "State Description",
+      "Mode Namespace",
+      "Units of Temperature",
+      "Guidance for Fabrics / Commissioners"
+    ]
+
+section_prompt_dict = {
+  "Classification" : CLASSIFICATION_EXTRACTION_PROMPT,
+  "Revision History" : REVISION_HISTORY_EXTRACTION_PROMPT,
+  "Cluster ID" : CLUSTER_ID_EXTRACTION_PROMPT,
+  "Attributes" : ATTRIBUTES_EXTRACTION_PROMPT,
+  "Data Types" : DATA_TYPES_EXTRACTION_PROMPT,
+  "Features" : FEATURES_EXTRACTION_PROMPT,
+  "Commands" : COMMANDS_EXTRACTION_PROMPT,
+  "Events" : EVENTS_EXTRACTION_PROMPT,
+  "Derived Cluster Namespace" : DERIVED_CLUSTER_NAMESPACE_EXTRACTION_PROMPT,
+  "Dependencies" : DEPENDENCIES_EXTRACTION_PROMPT,
+  "Mode Examples" : MODE_EXAMPLES_EXTRACTION_PROMPT,
+  "Status Codes" : STATUS_CODES_EXTRACTION_PROMPT,
+  "Cluster IDs" : CLUSTER_ID_EXTRACTION_PROMPT,
+  "Definitions" : DEFINITIONS_EXTRACTION_PROMPT,
+  "Conversion of Temperature Values for Display" : CONVERSIONS_EXTRACTION_PROMPT,
+  "Multi Position Details" : MULTI_POSITION_DETAILS_EXTRACTION_PROMPT,
+  "Sequence of events for MultiPress" : MULTIPRESS_SEQUENCE_EXTRACTION_PROMPT,
+  "Summary of cases for MS feature flag" : MS_FEATURE_FLAG_SUMMARY_EXTRACTION_PROMPT,
+  "PIN/RFID Code Format" : PIN_RFID_CODE_FORMAT_EXTRACTION_PROMPT,
+  "State Change Table for Lighting" : STATE_CHANGE_TABLE_LIGHTING_EXTRACTION_PROMPT,
+  "Sequence of generated events" : SEQUENCE_OF_GENERATED_EVENTS_EXTRACTION_PROMPT,
+  "The Dimming Light Curve" : DIMMING_LIGHT_CURVE_EXTRACTION_PROMPT,
+  "Mode Use" : MODE_USE_EXTRACTION_PROMPT,
+  "Setpoint Limits" : SETPOINT_LIMITS_EXTRACTION_PROMPT,
+  "Recommended steps for creating a new User" : USER_CREATION_STEPS_EXTRACTION_PROMPT,
+  "Handling of fabric-scoping" : FABRIC_SCOPING_EXTRACTION_PROMPT,
+  "State Description" : STATE_DESCRIPTION_EXTRACTION_PROMPT,
+  "Mode Namespace" : MODE_NAMESPACE_EXTRACTION_PROMPT,
+  "Units of Temperature" : UNITS_OF_TEMPERATURE_EXTRACTION_PROMPT,
+  "Guidance for Fabrics / Commissioners" : FABRICS_COMMISSIONERS_GUIDANCE_EXTRACTION_PROMPT
+}

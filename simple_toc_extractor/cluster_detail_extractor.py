@@ -10,6 +10,7 @@ import os
 import sys
 import signal
 import re
+import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import fitz  # PyMuPDF
@@ -335,6 +336,7 @@ class EnhancedClusterExtractor:
             
             # Get LLM response
             response = self.llm.invoke(final_prompt)
+            time.sleep(30)
             
             # Clean up response
             response = re.sub(r'```json\s*', '', response)
@@ -392,6 +394,7 @@ class EnhancedClusterExtractor:
             
             # Get LLM response
             response = self.llm.invoke(final_prompt)
+            time.sleep(30)
             
             # Clean up response before JSON parsing
             # Remove markdown code blocks

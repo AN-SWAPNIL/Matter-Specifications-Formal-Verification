@@ -7,6 +7,7 @@ Generates Finite State Machine models with iterative refinement based on judge f
 import os
 import json
 import logging
+import time
 from typing import Dict, Any, Optional
 from datetime import datetime
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
@@ -107,6 +108,8 @@ User Input: {user_input}
 """
     try:
         response = judge.invoke(prompt)
+        time.sleep(30)
+        
         return response.content
     except Exception as e:
         logger.error(f"Error during judge evaluation: {e}")
@@ -157,6 +160,7 @@ Please correct the FSM based on this feedback and generate an improved version.
         try:
             # Generate FSM
             response = fsm_generator.invoke(prompt)
+            time.sleep(30)
             
             # Clean the response to remove markdown code blocks
             clean_response = clean_json_response(response.content, cluster_name)

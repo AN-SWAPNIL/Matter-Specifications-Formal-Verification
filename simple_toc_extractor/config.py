@@ -11,7 +11,7 @@ load_dotenv()
 
 # API Configuration
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.5-pro"
 GEMINI_TEMPERATURE = 0.0  # More deterministic for detailed extraction
 GEMINI_MAX_OUTPUT_TOKENS = 32768  # Significantly increased for comprehensive behavioral extraction
 

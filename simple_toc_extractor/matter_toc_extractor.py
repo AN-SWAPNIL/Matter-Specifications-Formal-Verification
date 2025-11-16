@@ -59,25 +59,19 @@ class ManualTOCExtractor:
         
     def extract_toc_from_pdf(self) -> str:
         """Extract table of contents from PDF"""
-        self.logger.info("Extracting TOC from PDF...")
-        
         try:
             doc = fitz.open(self.pdf_path)
             self.total_pdf_pages = len(doc)
-            self.logger.info(f"PDF has {self.total_pdf_pages} pages")
             
             toc_content = ""
             
             # Get TOC from PDF metadata if available
             toc = doc.get_toc()
             if toc:
-                self.logger.info(f"Found TOC with {len(toc)} entries")
                 for level, title, page in toc:
                     indent = "  " * (level - 1)
                     toc_content += f"{indent}{title} ... {page}\n"
             else:
-                # Extract from first pages (usually TOC is in first 50 pages)
-                self.logger.info("No TOC metadata found, extracting from text...")
                 toc_content = self._extract_toc_from_text(doc)
             
             doc.close()
@@ -122,10 +116,7 @@ class ManualTOCExtractor:
     
     def extract_clusters_from_toc(self) -> Dict[str, ClusterInfo]:
         """Extract clusters and subsections from TOC content"""
-        self.logger.info("Extracting clusters from TOC...")
-        
         if not self.toc_content:
-            self.logger.info("No TOC content found, extracting from PDF first...")
             self.extract_toc_from_pdf()
         
         if not self.toc_content:

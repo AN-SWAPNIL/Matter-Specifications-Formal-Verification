@@ -45,7 +45,6 @@ try:
         model_provider=MODEL_PROVIDER,
         temperature=GEMINI_TEMPERATURE
     )
-    logger.info(f"Initialized models: {MODEL_NAME} from {MODEL_PROVIDER}")
 except Exception as e:
     logger.error(f"Error initializing models: {e}")
     raise
@@ -53,7 +52,6 @@ except Exception as e:
 def clean_json_response(response: str, cluster_name: str = "Unknown") -> str:
     """
     Clean JSON response by removing markdown code blocks and extra whitespace.
-    Based on cluster_fsm_generator_old.py implementation.
     
     Args:
         response: Raw LLM response
@@ -64,16 +62,22 @@ def clean_json_response(response: str, cluster_name: str = "Unknown") -> str:
     """
     clean_response = response.strip()
     
-    # Handle multiple code block formats
+    # Remove code block markers
     if clean_response.startswith('```json'):
-        clean_response = clean_response[7:]  # Remove ```json
+        clean_response = clean_response[7:]
     elif clean_response.startswith('```'):
-        clean_response = clean_response[3:]  # Remove ```
+        clean_response = clean_response[3:]
     
     if clean_response.endswith('```'):
-        clean_response = clean_response[:-3]  # Remove ```
+        clean_response = clean_response[:-3]
     
     clean_response = clean_response.strip()
+    
+    # Validate JSON structure
+    if not clean_response.startswith('{'):
+        logger.warning(f"Invalid FSM response format for cluster {cluster_name}")
+        return ""
+    
     return clean_response
 
 def judge_fsm(fsm: str, user_input: str) -> str:
@@ -103,7 +107,7 @@ User Input: {user_input}
         response = judge.invoke(prompt)
         return response.content
     except Exception as e:
-        logger.error(f"Error during judge evaluation: {e}")
+        logger.error(f"Judge evaluation error: {str(e)}")
         return json.dumps({"correct": False, "explanation": f"Judge error: {str(e)}"})
 
 def generate_fsm(cluster_info: Dict[str, Any], max_retries: int = 10) -> Optional[Dict[str, Any]]:
@@ -117,64 +121,53 @@ def generate_fsm(cluster_info: Dict[str, Any], max_retries: int = 10) -> Optiona
     Returns:
         Generated FSM model as dictionary, or None if failed
     """
-    # Extract cluster name for logging
+    import time
+    
     cluster_name = "Unknown"
     if isinstance(cluster_info, dict):
         cluster_name = cluster_info.get('cluster_info', {}).get('cluster_name', 'Unknown')
     
-    logger.info(f"Generating FSM for cluster: {cluster_name}")
-    
-    # Convert cluster_info to JSON string for prompt
     cluster_info_str = json.dumps(cluster_info, indent=2, ensure_ascii=False) if isinstance(cluster_info, dict) else str(cluster_info)
-    
-    # Use prompt template from config.py
     base_prompt = FSM_GENERATION_PROMPT_TEMPLATE.format(cluster_info=cluster_info_str)
     
     feedback = None
+    retry_delay = 1  # Initial retry delay in seconds
 
     for attempt in range(max_retries):
-        # Build prompt with feedback if available
         if feedback:
-            feedback_section = f"""
+            prompt = base_prompt + f"""
 
 The previously generated FSM was judged incorrect. Here is the feedback from the judge:
 {feedback}
 
 Please correct the FSM based on this feedback and generate an improved version.
 """
-            prompt = base_prompt + feedback_section
         else:
             prompt = base_prompt
         
-        logger.info(f"Attempt {attempt + 1}/{max_retries}")
-        
         try:
-            # Generate FSM
             response = fsm_generator.invoke(prompt)
-            
-            # Clean the response to remove markdown code blocks
             clean_response = clean_json_response(response.content, cluster_name)
             
-            # Additional validation - check if JSON starts correctly
-            if not clean_response.startswith('{'):
+            if not clean_response:
                 logger.warning(f"Invalid response format, retrying...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 10)  # Exponential backoff, max 10s
                 continue
             
-            # Parse JSON to validate structure
             try:
                 fsm_data = json.loads(clean_response)
             except json.JSONDecodeError as json_error:
                 logger.warning(f"JSON parse error: {json_error}, retrying...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 10)
                 continue
             
-            # Judge the FSM
             judge_response = judge_fsm(clean_response, cluster_info_str)
             
-            # Check judge verdict
             if '"correct": true' in judge_response.lower():
                 logger.info(f"✓ FSM approved (attempt {attempt + 1})")
                 
-                # Add generation metadata
                 if 'fsm_model' in fsm_data:
                     fsm_data['fsm_model']['generation_timestamp'] = datetime.now().isoformat()
                     fsm_data['fsm_model']['generation_attempts'] = attempt + 1
@@ -182,11 +175,12 @@ Please correct the FSM based on this feedback and generate an improved version.
                 
                 return fsm_data
             else:
-                logger.warning(f"✗ Rejected, retrying with feedback...")
                 feedback = judge_response
                 
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error(f"Generation error (attempt {attempt + 1}): {e}")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 10)
     
     logger.error(f"Failed to generate approved FSM for {cluster_name} after {max_retries} attempts")
     return None
@@ -195,7 +189,7 @@ if __name__ == "__main__":
     import sys
     
     # Default paths matching cluster_fsm_generator_old.py structure
-    input_file = "cluster_info.json"
+    input_file = "cluster_details/1.5_OnOff_Cluster_detail.json"
     output_dir = "fsm_models"  # Output directory like cluster_fsm_generator_old.py
     
     # Check for command line arguments
@@ -207,15 +201,9 @@ if __name__ == "__main__":
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    logger.info(f"Loading cluster information from: {input_file}")
-    logger.info(f"Output directory: {output_dir}")
-    
     try:
-        # Load cluster information
         with open(input_file, "r", encoding='utf-8') as f:
             cluster_info = json.load(f)
-        
-        logger.info("Cluster information loaded successfully")
         
         # Generate FSM with judge feedback loop
         fsm_data = generate_fsm(cluster_info)

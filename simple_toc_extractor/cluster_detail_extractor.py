@@ -722,142 +722,70 @@ class EnhancedClusterExtractor:
             }
         }
     
-    def process_all_clusters(self, limit: Optional[int] = None, resume: bool = True) -> Dict[str, Any]:
+    def process_cluster_by_number(self, cluster_number: int):
         """
-        Process all clusters using enhanced section-based extraction
+        Process a single cluster by its index number
         
         Args:
-            limit: Maximum number of clusters to process (None for all)
-            resume: Whether to resume from existing results
-            
-        Returns:
-            Complete extraction results
+            cluster_number: Cluster index (1-based)
         """
-        # Load existing results if resuming (same as original logic)
-        existing_results = None if not resume else self.load_existing_results()
-        processed_sections = set() if not existing_results else self.get_processed_section_numbers(existing_results)
+        clusters_list = list(self.clusters_data.get('clusters', {}).items())
         
-        # Initialize results structure (same as original)
-        if existing_results and resume:
-            results = existing_results
-        else:
-            results = {
-                "extraction_info": {
-                    "total_clusters": 0,
-                    "pdf_source": self.pdf_path,
-                    "extraction_timestamp": datetime.now().isoformat(),
-                    "extraction_method": "enhanced_section_based"
-                },
-                "clusters": []
-            }
+        if cluster_number < 1 or cluster_number > len(clusters_list):
+            logger.error(f"Invalid cluster number: {cluster_number}. Valid range: 1-{len(clusters_list)}")
+            return
         
-        self.current_results = results
+        cluster_key, cluster_data = clusters_list[cluster_number - 1]
+        section_number = cluster_data.get('section_number', cluster_key)
+        cluster_name = cluster_data.get('cluster_name', 'Unknown')
         
-        clusters_to_process = list(self.clusters_data.get('clusters', {}).items())
-        total_clusters = len(clusters_to_process)
-        
-        if limit:
-            clusters_to_process = clusters_to_process[:limit]
-        
-        logger.info(f"Processing {len(clusters_to_process)} clusters out of {total_clusters}")
-        
-        processed_count = 0
-        failed_count = 0
-        skipped_count = 0
-        
-        for cluster_key, cluster_data in clusters_to_process:
-            section_number = cluster_data.get('section_number', cluster_key)
-            cluster_name = cluster_data.get('cluster_name', 'Unknown')
+        try:
+            logger.info(f"{'='*80}")
+            logger.info(f"Processing cluster {cluster_number}: {cluster_name}")
             
-            # Skip if already processed
-            if resume and section_number in processed_sections:
-                
-                skipped_count += 1
-                continue
+            cluster_result = self.process_cluster_enhanced(cluster_data)
             
-            try:
+            if cluster_result is None:
+                logger.warning(f"✗ Failed: {cluster_name}")
+                return
+            
+            if self.save_cluster_to_file(cluster_result, cluster_name, section_number):
+                logger.info(f"✓ Successfully processed cluster {cluster_number}")
+            else:
+                logger.warning(f"✗ Failed to save cluster {cluster_number}")
                 
-                
-                logger.info(f"{'='*80}")
-                
-                # Process cluster using enhanced approach
-                cluster_result = self.process_cluster_enhanced(cluster_data)
-                
-                # Skip if cluster processing failed (returns None)
-                if cluster_result is None:
-                    logger.warning(f"✗ Skipping cluster {section_number} due to processing failure")
-                    failed_count += 1
-                    continue
-                
-                # Save cluster to individual file
-                saved_path = self.save_cluster_to_file(cluster_result, cluster_name, section_number)
-                
-                if saved_path:
-                    processed_count += 1
-                    
-                else:
-                    failed_count += 1
-                    
-                
-            except KeyboardInterrupt:
-                logger.warning("Processing interrupted by user")
-                break
-            except Exception as e:
-                logger.error(f"✗ Error processing cluster {section_number}: {e}")
-                failed_count += 1
-                continue
-        
-        logger.info(f"Summary: {processed_count} processed, {skipped_count} skipped, {failed_count} failed")
+        except Exception as e:
+            logger.error(f"✗ Error processing cluster {cluster_number}: {e}")
+            raise
 
 
 def main():
     """Main function"""
-    # File paths - PDF is in parent directory
     pdf_path = os.path.join("..", "Matter-1.4-Application-Cluster-Specification.pdf")
     clusters_json_path = "matter_clusters_toc.json"
-    output_dir = "cluster_details"  # Output directory for individual cluster files
+    output_dir = "cluster_details"
     
-    # Check if files exist
+    # Check files exist
     if not os.path.exists(clusters_json_path):
         logger.error(f"Clusters JSON file not found: {clusters_json_path}")
-        logger.info("Please run the TOC extractor first to generate the clusters JSON file")
         return
     
-    # Check if PDF exists
     if not os.path.exists(pdf_path):
         logger.error(f"PDF file not found: {pdf_path}")
-        logger.info("Please ensure the Matter-1.4-Application-Cluster-Specification.pdf is in the parent directory")
         return
     
     try:
-        # Initialize enhanced extractor
-        logger.info("Initializing Enhanced Cluster Extractor with section-based approach...")
         extractor = EnhancedClusterExtractor(pdf_path, clusters_json_path, output_dir)
         
-        # Process clusters with simple start/end limits
-        # start=1, end=4 means process first 4 clusters
-        # start=1, end=None means process all clusters
-        logger.info("Starting enhanced cluster extraction with specialized section prompts...")
-        results = extractor.process_all_clusters(start=1, end=4)
+        # Process specific cluster by number (1-based index)
+        extractor.process_cluster_by_number(cluster_number=4)
         
-        logger.info("\n" + "="*80)
-        logger.info("Enhanced cluster extraction completed successfully!")
-        logger.info(f"Output directory: {os.path.abspath(output_dir)}")
-        logger.info(f"Each cluster saved to separate JSON files")
-        logger.info("="*80)
-        
-    except ImportError as e:
-        logger.error(f"Missing dependencies: {e}")
-        logger.info("Please install required packages: pip install PyMuPDF langchain langchain-google-genai faiss-cpu sentence-transformers")
     except KeyboardInterrupt:
         logger.warning("Extraction interrupted by user")
     except Exception as e:
         logger.error(f"Extraction failed: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
-    
-    finally:
-        logger.info("Enhanced cluster extraction finished")
         
         
 if __name__ == "__main__":

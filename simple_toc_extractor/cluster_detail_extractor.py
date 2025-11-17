@@ -15,10 +15,10 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 import fitz  # PyMuPDF
 import pymupdf4llm  # Smart table extraction in Markdown format
-from langchain_google_genai import GoogleGenerativeAI
+from langchain.chat_models import init_chat_model
 from config import (
-    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_TEMPERATURE, CLUSTER_PAGE_BUFFER, SUBSECTION_PAGE_BUFFER,
-    section_prompt_dict
+    API_KEY, LLM_MODEL, MODEL_PROVIDER, LLM_TEMPERATURE, LLM_MAX_OUTPUT_TOKENS,
+    CLUSTER_PAGE_BUFFER, SUBSECTION_PAGE_BUFFER, section_prompt_dict
 )
 
 # Configure logging
@@ -113,13 +113,17 @@ class EnhancedClusterExtractor:
     
     def _init_llm(self):
         """Initialize the language model"""
+        if not os.environ.get("OPENAI_API_KEY"):
+            os.environ["OPENAI_API_KEY"] = API_KEY
+        
         try:
-            self.llm = GoogleGenerativeAI(
-                model=GEMINI_MODEL,
-                google_api_key=GOOGLE_API_KEY,
-                temperature=GEMINI_TEMPERATURE
+            self.llm = init_chat_model(
+                LLM_MODEL,
+                model_provider=MODEL_PROVIDER,
+                temperature=LLM_TEMPERATURE,
+                max_tokens=LLM_MAX_OUTPUT_TOKENS
             )
-            logger.info("Initialized Gemini LLM")
+            logger.info(f"Initialized LLM: {LLM_MODEL} from {MODEL_PROVIDER}")
         except Exception as e:
             logger.error(f"Error initializing LLM: {e}")
             raise
@@ -336,25 +340,26 @@ class EnhancedClusterExtractor:
             
             # Get LLM response
             response = self.llm.invoke(final_prompt)
-            time.sleep(30)
+            # time.sleep(30)
             
             # Clean up response
-            response = re.sub(r'```json\s*', '', response)
-            response = re.sub(r'```\s*', '', response)
-            response = response.strip()
+            response_text = response.content if hasattr(response, 'content') else str(response)
+            response_text = re.sub(r'```json\s*', '', response_text)
+            response_text = re.sub(r'```\s*', '', response_text)
+            response_text = response_text.strip()
             
             # Try to parse JSON response
             try:
-                result = json.loads(response)
+                result = json.loads(response_text)
                 logger.info(f"✓ Successfully extracted cluster overview for {cluster_name} with single AI call")
                 return result
             except json.JSONDecodeError as e:
                 logger.warning(f"JSON parsing failed for cluster overview in {cluster_name}: {e}")
-                logger.debug(f"Raw response preview: {response[:500]}...")
+                logger.debug(f"Raw response preview: {response_text[:500]}...")
                 
                 # Try to repair the JSON
                 logger.warning(f"Attempting repair for cluster overview in {cluster_name}...")
-                repaired_result = self._attempt_json_repair(response, "Cluster Overview", cluster_name)
+                repaired_result = self._attempt_json_repair(response_text, "Cluster Overview", cluster_name)
                 if repaired_result:
                     logger.info(f"✓ Successfully repaired JSON for cluster overview in {cluster_name}")
                     return repaired_result
@@ -394,34 +399,30 @@ class EnhancedClusterExtractor:
             
             # Get LLM response
             response = self.llm.invoke(final_prompt)
-            time.sleep(30)
+            # time.sleep(30)
             
             # Clean up response before JSON parsing
-            # Remove markdown code blocks
-            response = re.sub(r'```json\s*', '', response)
-            response = re.sub(r'```\s*', '', response)
+            response_text = response.content if hasattr(response, 'content') else str(response)
+            response_text = re.sub(r'```json\s*', '', response_text)
+            response_text = re.sub(r'```\s*', '', response_text)
+            response_text = response_text.strip()
             
-            # Remove any leading/trailing explanatory text
-            response = response.strip()
-            
-            # Check if response looks truncated (similar to old implementation)
-            if len(response) > 30000 and not response.endswith(('}', ']')):
-                logger.warning(f"Response for {section_type} in {cluster_name} appears truncated ({len(response)} chars)")
-                # The JSON repair method will handle truncated responses
+            # Check if response looks truncated
+            if len(response_text) > 30000 and not response_text.endswith(('}', ']')):
+                logger.warning(f"Response for {section_type} in {cluster_name} appears truncated ({len(response_text)} chars)")
             
             # Try to parse JSON response
             try:
-                result = json.loads(response)
+                result = json.loads(response_text)
                 logger.info(f"Successfully extracted {section_type} for {cluster_name} from direct PDF text")
                 return result
             except json.JSONDecodeError as e:
-                # Log the actual response for debugging
                 logger.warning(f"JSON parsing failed for {section_type} in {cluster_name}: {e}")
-                logger.debug(f"Raw response preview: {response[:500]}...")
+                logger.debug(f"Raw response preview: {response_text[:500]}...")
                 
                 # Try to repair the JSON
                 logger.warning(f"Attempting repair for {section_type} in {cluster_name}...")
-                repaired_result = self._attempt_json_repair(response, section_type, cluster_name)
+                repaired_result = self._attempt_json_repair(response_text, section_type, cluster_name)
                 if repaired_result:
                     logger.info(f"Successfully repaired JSON for {section_type} in {cluster_name}")
                     return repaired_result

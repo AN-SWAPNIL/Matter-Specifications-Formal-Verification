@@ -10,10 +10,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # API Configuration
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-GEMINI_MODEL = "gemini-2.5-pro"
-GEMINI_TEMPERATURE = 0.0  # More deterministic for detailed extraction
-GEMINI_MAX_OUTPUT_TOKENS = 32768  # Significantly increased for comprehensive behavioral extraction
+API_KEY = os.getenv('OPENAI_API_KEY')  # Can be any provider's API key
+LLM_MODEL = "gpt-5.1"  # Model name (e.g., "gpt-4", "claude-3-5-sonnet", "gemini-2.5-pro")
+MODEL_PROVIDER = "openai"  # LangChain model provider (e.g., "openai", "anthropic", "google_genai")
+LLM_TEMPERATURE = 0.0  # More deterministic for detailed extraction
+LLM_MAX_OUTPUT_TOKENS = 16384  # Significantly increased for comprehensive behavioral extraction
 
 # PDF Processin**STEP 4:**STEP 5: FEATURE VALIDATION**EMANTICS**ation
 PDF_FILENAME = "Matter-1.4-Application-Cluster-Specification.pdf"
@@ -238,10 +239,11 @@ Apply feature constraints correctly:
       {{
         "from_state": "[source state]",
         "to_state": "[target state]",
-        "trigger": "[command name or timer/event]",
+        "trigger": "[command name or timer/event trigger]",
         "guard_condition": "[boolean condition with data type constraints]",
         "actions": ["[attribute updates]", "[event generation if applicable]"],
-        "response_command": null
+        "response_command": null,
+        "timing_requirements": "[timing constraints if applicable or null]"
       }}
     ],
     "initial_state": "[appropriate default state]",
@@ -250,9 +252,24 @@ Apply feature constraints correctly:
     "events_generated": ["[cluster events from specification]"],
     "data_types_used": ["[enums, bitmaps, structures referenced]"],
     "scene_behaviors": ["[scene store/recall actions if applicable]"],
-    "generation_timestamp": "[current timestamp]",
-    "source_metadata": {{
-      "extraction_method": "AI_behavioral_analysis",
+    "definitions": [
+      {{
+        "term": "[technical term, function, or concept]",
+        "definition": "[clear explanation of meaning and purpose]",
+        "usage_context": "[where/how it appears in FSM - states/transitions/actions]"
+      }}
+    ],
+    "references": [
+      {{
+        "id": "[cluster/attr ID or null if external spec]",
+        "name": "[referenced cluster/attribute/specification]",
+        "description": "[why referenced - dependency/interaction/constraint]"
+      }}
+    ],
+    "metadata": {{
+      "generation_timestamp": "[ISO 8601 timestamp]",
+      "generation_attempts": "[number of iterations]",
+      "judge_approved": true/false,
       "source_pages": "[from cluster_info]",
       "section_number": "[from cluster_info]"
     }}
@@ -271,8 +288,26 @@ Apply feature constraints correctly:
 9. **Model scene behaviors**: Include scene store/recall for scene-capable attributes
 10. **Add stay transitions**: Include state continuation for timer extensions and command repetitions
 11. **Enforce feature constraints**: Add guard conditions that block prohibited commands
-12. Validate against specification features and constraints
-13. Ensure complete coverage of commands, events, and data type interactions
+12. **Create definitions**: Document all technical terms, functions, and domain-specific concepts
+13. Validate against specification features and constraints
+14. Ensure complete coverage of commands, events, and data type interactions
+
+**DEFINITIONS REQUIREMENTS:**
+Define cluster-specific terms, functions used in actions, feature flags, data type enums, attribute behaviors, and guard condition terms to reduce verbosity and improve clarity.
+- **Cluster-specific terms**: Domain concepts
+- **Functions/procedures**: Operations used in actions
+- **Feature flags**: Feature abbreviations and their meanings
+- **Data type enums**: Enum values and their behavioral implications
+- **Attribute concepts**: Complex attribute behaviors
+- **Guard condition terms**: Special conditions used in transitions
+Definitions are optional but encouraged for clarity and to simplify actions/guards by referencing defined terms.
+
+**REFERENCES REQUIREMENTS:**
+Document external dependencies and interactions:
+- **Other clusters**: Clusters referenced but not defined
+- **Core specifications**: Matter Core Spec concepts
+- **Shared attributes**: Global attributes
+Use hex IDs when known, null for external specifications.
 
 **CRITICAL ACCURACY REQUIREMENTS:**
 - States reflect actual device behavior from specification
@@ -284,6 +319,8 @@ Apply feature constraints correctly:
 - Include both state-changing and stay transitions where appropriate
 - Model timer reset and extension behaviors correctly
 - Use null for response_command in Application Clusters
+- **Definitions are clear and helpful**: Each definition explains what the term means in the FSM context
+- **Metadata is properly nested**: All generation metadata goes under "metadata" object
 
 Focus on Matter specification accuracy over generic patterns. Generate FSM by analyzing the provided cluster specification systematically.
 

@@ -10,15 +10,15 @@ import logging
 import time
 from typing import Dict, Any, Optional
 from datetime import datetime
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain.chat_models import init_chat_model
 
 # Configuration imports
 from config import (
-    GOOGLE_API_KEY,
-    GEMINI_MODEL,
-    GEMINI_TEMPERATURE,
-    GEMINI_MAX_OUTPUT_TOKENS,
+    API_KEY,
+    LLM_MODEL,
+    MODEL_PROVIDER,
+    LLM_TEMPERATURE,
+    LLM_MAX_OUTPUT_TOKENS,
     FSM_GENERATION_PROMPT_TEMPLATE
 )
 
@@ -27,26 +27,33 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Set API key from config
-if not os.environ.get("GOOGLE_API_KEY"):
-    os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+if not os.environ.get("OPENAI_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = API_KEY
 
 # Initialize models with config settings
-MODEL_NAME = GEMINI_MODEL  # Use from config.py
-MODEL_PROVIDER = "google_genai"
-
 try:
     fsm_generator = init_chat_model(
-        MODEL_NAME,
+        LLM_MODEL,
         model_provider=MODEL_PROVIDER,
-        temperature=GEMINI_TEMPERATURE,
-        max_tokens=GEMINI_MAX_OUTPUT_TOKENS
+        temperature=LLM_TEMPERATURE,
+        max_tokens=LLM_MAX_OUTPUT_TOKENS
     )
     judge = init_chat_model(
-        MODEL_NAME,
+        LLM_MODEL,
         model_provider=MODEL_PROVIDER,
-        temperature=GEMINI_TEMPERATURE
+        temperature=LLM_TEMPERATURE
     )
-    logger.info(f"Initialized models: {MODEL_NAME} from {MODEL_PROVIDER}")
+    # fsm_generator = ChatOpenAI(
+    #     api_key="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",
+    #     base_url="https://openrouter.ai/api/v1",
+    #     model="openai/gpt-5.1-chat"
+    # )
+    # judge = ChatOpenAI(
+    #     api_key="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",
+    #     base_url="https://openrouter.ai/api/v1",
+    #     model="openai/gpt-5.1-chat"
+    # )
+    logger.info(f"Initialized models: {LLM_MODEL} from {MODEL_PROVIDER}")
 except Exception as e:
     logger.error(f"Error initializing models: {e}")
     raise
@@ -108,7 +115,7 @@ User Input: {user_input}
 """
     try:
         response = judge.invoke(prompt)
-        time.sleep(30)
+        # time.sleep(30)
         
         return response.content
     except Exception as e:
@@ -160,7 +167,7 @@ Please correct the FSM based on this feedback and generate an improved version.
         try:
             # Generate FSM
             response = fsm_generator.invoke(prompt)
-            time.sleep(30)
+            # time.sleep(30)
             
             # Clean the response to remove markdown code blocks
             clean_response = clean_json_response(response.content, cluster_name)
@@ -184,11 +191,13 @@ Please correct the FSM based on this feedback and generate an improved version.
             if '"correct": true' in judge_response.lower():
                 logger.info(f"✓ FSM approved (attempt {attempt + 1})")
                 
-                # Add generation metadata
-                if 'fsm_model' in fsm_data:
-                    fsm_data['fsm_model']['generation_timestamp'] = datetime.now().isoformat()
-                    fsm_data['fsm_model']['generation_attempts'] = attempt + 1
-                    fsm_data['fsm_model']['judge_approved'] = True
+                # Add generation metadata to metadata object
+                if 'metadata' not in fsm_data['fsm_model']:
+                    fsm_data['fsm_model']['metadata'] = {}
+                
+                fsm_data['fsm_model']['metadata']['generation_timestamp'] = datetime.now().isoformat()
+                fsm_data['fsm_model']['metadata']['generation_attempts'] = attempt + 1
+                fsm_data['fsm_model']['metadata']['judge_approved'] = True
                 
                 return fsm_data
             else:
@@ -269,10 +278,17 @@ if __name__ == "__main__":
             if section_number:
                 print(f"Section: {section_number}")
             if 'fsm_model' in fsm_data:
-                print(f"States: {len(fsm_data['fsm_model'].get('states', []))}")
-                print(f"Transitions: {len(fsm_data['fsm_model'].get('transitions', []))}")
-                print(f"Commands: {len(fsm_data['fsm_model'].get('commands_handled', []))}")
-                print(f"Generation attempts: {fsm_data['fsm_model'].get('generation_attempts', 'N/A')}")
+                fsm = fsm_data['fsm_model']
+                print(f"States: {len(fsm.get('states', []))}")
+                print(f"Transitions: {len(fsm.get('transitions', []))}")
+                print(f"Commands: {len(fsm.get('commands_handled', []))}")
+                print(f"Definitions: {len(fsm.get('definitions', []))}")
+                print(f"References: {len(fsm.get('references', []))}")
+                
+                # Get metadata from nested structure
+                metadata = fsm.get('metadata', {})
+                print(f"Generation attempts: {metadata.get('generation_attempts', 'N/A')}")
+                print(f"Judge approved: {metadata.get('judge_approved', 'N/A')}")
             print(f"Output file: {json_output}")
             print(f"Output directory: {os.path.abspath(output_dir)}")
             print("="*80 + "\n")

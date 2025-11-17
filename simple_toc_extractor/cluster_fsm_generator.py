@@ -44,12 +44,12 @@ try:
         temperature=LLM_TEMPERATURE
     )
     # fsm_generator = ChatOpenAI(
-    #     api_key="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",
+    #     api_key="sk-or-v1-",
     #     base_url="https://openrouter.ai/api/v1",
     #     model="openai/gpt-5.1-chat"
     # )
     # judge = ChatOpenAI(
-    #     api_key="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",
+    #     api_key="sk-or-v1-",
     #     base_url="https://openrouter.ai/api/v1",
     #     model="openai/gpt-5.1-chat"
     # )

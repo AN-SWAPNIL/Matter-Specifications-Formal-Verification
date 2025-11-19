@@ -113,8 +113,8 @@ class EnhancedClusterExtractor:
     
     def _init_llm(self):
         """Initialize the language model"""
-        if not os.environ.get("OPENAI_API_KEY"):
-            os.environ["OPENAI_API_KEY"] = API_KEY
+        if not os.environ.get("GOOGLE_API_KEY"):
+            os.environ["GOOGLE_API_KEY"] = API_KEY
         
         try:
             self.llm = init_chat_model(
@@ -340,7 +340,7 @@ class EnhancedClusterExtractor:
             
             # Get LLM response
             response = self.llm.invoke(final_prompt)
-            # time.sleep(30)
+            time.sleep(30)
             
             # Clean up response
             response_text = response.content if hasattr(response, 'content') else str(response)
@@ -399,7 +399,7 @@ class EnhancedClusterExtractor:
             
             # Get LLM response
             response = self.llm.invoke(final_prompt)
-            # time.sleep(30)
+            time.sleep(30)
             
             # Clean up response before JSON parsing
             response_text = response.content if hasattr(response, 'content') else str(response)

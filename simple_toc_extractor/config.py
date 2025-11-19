@@ -10,9 +10,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # API Configuration
-API_KEY = os.getenv('OPENAI_API_KEY')  # Can be any provider's API key
-LLM_MODEL = "gpt-5.1"  # Model name (e.g., "gpt-4", "claude-3-5-sonnet", "gemini-2.5-pro")
-MODEL_PROVIDER = "openai"  # LangChain model provider (e.g., "openai", "anthropic", "google_genai")
+API_KEY = os.getenv('GOOGLE_API_KEY')  # Can be any provider's API key
+LLM_MODEL = "gemini-3-pro-preview"  # Model name (e.g., "gpt-4", "claude-3-5-sonnet", "gemini-2.5-pro")
+MODEL_PROVIDER = "google_genai"  # LangChain model provider (e.g., "openai", "anthropic", "google_genai")
 LLM_TEMPERATURE = 0.0  # More deterministic for detailed extraction
 LLM_MAX_OUTPUT_TOKENS = 16384  # Significantly increased for comprehensive behavioral extraction
 

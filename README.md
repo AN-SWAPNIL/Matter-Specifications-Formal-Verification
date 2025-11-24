@@ -62,7 +62,7 @@ source venv/bin/activate  # Linux/Mac
 .\venv\Scripts\activate   # Windows
 
 # Install dependencies
-python -m pip install -r simple_toc_extractor/requirements.txt
+python -m pip install -r codes/requirements.txt
 ```
 
 ### Configuration
@@ -87,7 +87,7 @@ LLM_MAX_OUTPUT_TOKENS = 32768
 #### Step 0: Extract TOC (One-time setup)
 
 ```bash
-cd simple_toc_extractor
+cd codes
 python matter_toc_extractor.py
 ```
 
@@ -146,7 +146,7 @@ python cluster_fsm_generator.py
 
 ```
 FSM_Generator/
-├── simple_toc_extractor/
+├── codes/
 │   ├── matter_toc_extractor.py        # Extract TOC from PDF (manual parsing)
 │   ├── cluster_detail_extractor.py    # Extract cluster specifications (LLM)
 │   ├── cluster_fsm_generator.py       # Generate FSMs with judge (LLM)

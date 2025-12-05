@@ -782,7 +782,7 @@ def main():
         extractor = EnhancedClusterExtractor(pdf_path, clusters_json_path, output_dir)
         
         # Process specific cluster by number (1-based index)
-        extractor.process_cluster_by_number(cluster_number=4)
+        extractor.process_cluster_by_number(cluster_number=5)
         
     except KeyboardInterrupt:
         logger.warning("Extraction interrupted by user")

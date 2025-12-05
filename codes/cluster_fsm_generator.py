@@ -264,7 +264,7 @@ Please correct the FSM based on this feedback and generate an improved version.
 
 
 def main():
-    input_file = "cluster_details/1.5_OnOff_Cluster_detail.json"
+    input_file = "cluster_details/1.6_Level_Control_Cluster_detail.json"
     output_dir = "fsm_models"
     if len(sys.argv) > 1:
         input_file = sys.argv[1]

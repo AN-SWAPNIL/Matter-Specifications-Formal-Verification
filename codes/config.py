@@ -2032,678 +2032,914 @@ section_prompt_dict = {
 # TAMARIN PROVER MODEL GENERATION CONFIGURATION
 # ==============================================================================
 
-# Tamarin Generation Prompt Template (Direct from Cluster Details)
-TAMARIN_GENERATION_PROMPT_TEMPLATE = """
-You are a formal verification expert who generates Tamarin prover models from Matter IoT protocol cluster specifications.
+# # Tamarin Generation Prompt Template (Direct from Cluster Details)
+# TAMARIN_GENERATION_PROMPT_TEMPLATE = """
+# # MATTER CLUSTER TO TAMARIN CONVERSION
 
-CLUSTER SPECIFICATION TO ANALYZE:
-{cluster_info}
+# You are a formal verification expert converting Matter protocol cluster specifications to Tamarin prover theories. Focus on **termination, efficiency, and correctness**.
 
-**TAMARIN PROVER OVERVIEW:**
+# CLUSTER SPECIFICATION:
+# {cluster_info}
 
-**File Structure:**
-theory TheoryName begin
-  // 1. Builtins (optional)
-  builtins: hashing, symmetric-encryption
-  
-  // 2. Functions and equations (optional)
-  functions: f/1, g/2
-  equations: f(g(x, y)) = x
-  
-  // 3. Rules (protocol model)
-  rule RuleName:
-    let var = expr in
-    [ Premise_Facts ]
-  --[ Action_Facts ]->
-    [ Conclusion_Facts ]
-  
-  // 4. Restrictions (optional)
-  restriction name: "formula"
-  
-  // 5. Lemmas (properties to verify)
-  lemma property_name [attributes]:
-    "formula"
-end
+# ---
+# ## CORE PRINCIPLES
 
-**Syntax Rules:**
-- **Fresh variables**: Prefix with ~ (e.g., ~tid, ~nonce, ~key)
-- **Persistent facts**: Prefix with ! (e.g., !Pk(~ltk)) - never consumed
-- **Linear facts**: Default, consumed when used
-- **Comments**: C-style (// or /* */)
-- **Case-sensitive**: Identifiers are case-sensitive
-- **Quoted numerals**: Use '0', '1', '2' for constants
-- **Adversary model**: Dolev-Yao (controls network, can read/compose/inject)
+# 1. **Termination First**: Tamarin uses backwards search. Avoid looping rules, unbounded state explosion, missing sources lemmas.
+# 2. **Efficiency**: Minimize rules via pattern matching, use persistent facts (`!Fact`) for config, abstract numeric values.
+# 3. **Correctness**: Every FSM transition needs a rule, guards faithfully encoded, state invariants preserved.
 
-**Rule Syntax:**
-rule Name:
-  let
-    // Variable bindings (bottom-up evaluation)
-    var1 = expr1
-    var2 = expr2
-  in
-  [ Premises ]         // Linear/persistent facts consumed
---[ Actions ]->
-    [ Conclusions ]      // Facts produced
+# ---
+# ## TAMARIN SYNTAX RULES (CRITICAL - MEMORIZE THESE)
 
-**Lemma Syntax:**
-lemma name [attributes]:
-  [trace_quantifier]
-  "All/Ex vars #i #j. 
-     Fact@i & Fact@j ==> 
-     conditions"
+# ### Rule Premises Can ONLY Contain:
+# 1. **Linear facts**: `St(~tid, state, attr1, attr2, ...)`
+# 2. **Persistent facts**: `!Config(~tid, f1, f2, ...)`
+# 3. **Fresh facts**: `Fr(~tid)`
+# 4. **Input facts**: `In(x)`
+# 5. **Let bindings**: `let x = term in`
 
-**Trace quantifiers:**
-- **all-traces** (default): Property must hold for ALL traces
-- **exists-trace**: Property must hold for SOME trace
+# ### Rule Premises CANNOT Contain (PARSING ERRORS):
+# - ❌ `not (x = y)` - NO negation
+# - ❌ `x = y` - NO equality tests  
+# - ❌ `Fact1 | Fact2` - NO disjunctions
+# - ❌ `_` - NO underscore wildcards
+# - ❌ Any logical operators or conditions
 
-**Lemma attributes:** typing, reuse, use_induction, sources
+# ### Where Logical Operators ARE Allowed:
+# - ✅ **Restrictions**: `restriction name: "All x #i. ... ==> not (x = y)"`
+# - ✅ **Lemmas**: `lemma name: "All x #i. ... ==> ..."`
 
-**Temporal operators:**
-- @i - fact occurs at timepoint i
-- #i < #j - timepoint ordering
-- All, Ex - quantifiers over messages/timepoints
+# ---
+# ## ✅ VALID Tamarin Syntax
 
-**Fact Types:**
-- **Linear facts**: St_Cluster(...), most common, consumed when used
-- **Persistent facts**: !Pk(...), never consumed
-- **Fresh facts**: Fr(~x), for fresh value generation
-- **Action facts**: Only in --[Actions]-> for lemma observability, NOT for state transitions
+# ```tamarin
+# // Single functions block (MUST be exactly ONE block)
+# functions: b_true/0, b_false/0, st_Off/0, st_On/0, tv_zero/0, tv_pos/0, tv_ffff/0
 
-**TAMARIN MODEL GENERATION APPROACH:**
+# // Rule with only facts in premises (CORRECT)
+# rule ValidRule:
+#   let var1 = term1 in
+#   [ Fr(~tid), !Config(~tid, f1, f2), St(~tid, state, attr1, attr2) ]
+# --[ Action(~tid) ]->
+#   [ St(~tid, new_state, new_attr1, new_attr2) ]
 
-**STEP 1: CLUSTER BEHAVIORAL ANALYSIS**
-Analyze the cluster specification to determine behavioral patterns:
-- **Attribute-driven states**: States correspond to meaningful attribute value combinations
-- **Command semantics**: Extract behavioral logic from "effect_on_receipt" descriptions
-- **Timer-based transitions**: Identify countdown timers and automatic state changes with correct resolution
-- **Conditional logic**: Commands with if/then/else branches require multiple rules with guards
-- **Feature constraints**: Only use features defined in the specification, model as rule guards
-- **Data type constraints**: Apply enum values, bitmap flags, and structure constraints
-- **Event generation**: Model events as action facts when triggered by commands/states
-- **Scene behaviors**: Include scene store/recall if scene-capable attributes exist
-- **Fabric sensitivity**: Handle fabric-scoped attribute access patterns
-- **Quality flags**: Distinguish read-only vs read-write attribute behaviors
+# // Variable prefixes
+# [ Fr(~tid) ]  // ~ = fresh (for new values)
+# [ In($A) ]    // $ = public (for attacker-known values)
 
-**STEP 2: STATE IDENTIFICATION**
-Define states based on cluster attributes and operational conditions:
-- States represent actual device behavior, not internal processing
-- Use attribute values to determine state invariants
-- Include timer states if countdown attributes exist
-- Model fault/error states if specified in cluster
-- Ensure states reflect physical/logical device condition
-- Consider data type enums for state values
+# // Negation ONLY in restrictions/lemmas
+# restriction no_double_init:
+#   "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
 
-**STEP 3: TRANSITION MODELING**
-Create rules from command specifications:
-- Parse "effect_on_receipt" for exact behavioral steps
-- Split conditional commands into multiple guarded rules
-- Model timer expiry as automatic transitions
-- Include proper guard conditions for all branching logic
-- Model event generation in action facts when specified
-- Use data type constraints in let blocks and guards
-- Handle scene behaviors for scene-capable attributes
-- Include stay transitions for commands that extend/reset timers
-- Enforce feature constraints by blocking commands when features prohibit execution
+# restriction inequality_example:
+#   "All x y #i. SomeFact(x, y)@i ==> not (x = y)"
+# ```
 
-**STEP 4: DEFINE TAMARIN STRUCTURE**
-theory [ClusterName]_Matter
-begin
-  // Builtins (if cryptography needed)
-  builtins: hashing, symmetric-encryption
-  
-  // Functions for data types and operations
-  functions: f/1, g/2
-  equations: f(g(x, y)) = x
-  
-  // State facts (UNIFIED to prevent arity errors)
-  // St_Cluster(~tid, state_enum, attr1, attr2, timer, ...)
-  
-  // Rules for each command/transition
-  // rule <CommandName>_<FromState>_to_<ToState>:
-  //   let
-  //     // Guard conditions with data type checks
-  //   in
-  //   [ St_Cluster(~tid, 'from_state', attrs...) ]
-  // --[ Command(~tid, '<CommandName>'),
-  //     StateChange(~tid, 'from_state', 'to_state'),
-  //     // Event generation, attribute updates
-  //   ]->
-  //   [ St_Cluster(~tid, 'to_state', updated_attrs...) ]
-  
-  // Timer rules (abstract symbolic)
-  // Event generation rules
-  // Lemmas for properties
-end
+# ---
+# ## ❌ INVALID Patterns (WILL CAUSE PARSING ERRORS)
 
-**STEP 3: MODEL STATES AS FACTS (UNIFIED)**
-- **CRITICAL**: Use a SINGLE fact name St_Cluster for entire cluster to prevent arity errors
-- Structure: St_Cluster(~tid, state_enum, attr1, attr2, timer_val, ...)
-- First parameter after ~tid MUST be state identifier (quoted: 'st_off', 'st_on', 'st_delayed')
-- Ensure SAME NUMBER of attributes in EVERY rule (add placeholders if needed)
-- Example: St_Cluster(~tid, 'st_off', onoff:'0', ontime:'0', offwait:'0')
-- Pattern match on state enum in premises: St_Cluster(~tid, 'st_off', attrs...)
+# ```tamarin
+# // WRONG: Multiple function blocks
+# functions: b_true/0
+# functions: b_false/0  // ERROR! Combine into single block
 
-**STEP 5: MODEL TRANSITIONS AS RULES**
-For each command/transition:
-rule CommandName_FromState_to_ToState:
-  let
-    // Variable bindings (bottom-up evaluation)
-    // Guard conditions with data type checks
-  in
-  [ St_Cluster(~tid, 'st_from', attrs...) ]
---[ Command(~tid, 'CommandName'),
-    StateChange(~tid, 'st_from', 'st_to'),
-    // Additional action facts for observability
-  ]->
-  [ St_Cluster(~tid, 'st_to', updated_attrs...) ]
+# // WRONG: Negation in premises
+# rule Bad1: [ St(~tid, s, x), not (x = tv_ffff) ] --> ...  // PARSE ERROR!
 
-**STEP 6: MODEL GUARDS AND CONDITIONS**
-- Use 'let' blocks for conditional logic (variables defined later can be used earlier)
-- Use pattern matching on state enum and attributes in premises
-- Model feature checks with let conditions or separate rules
-- Use quoted constants: 'disabled', 'enabled', '0', '1'
-- NO arithmetic on timer values (causes parse errors)
+# // WRONG: Equality test in premises  
+# rule Bad2: [ St(~tid, s, x), x = tv_zero ] --> ...  // PARSE ERROR!
 
-**STEP 7: MODEL TIMERS (ABSTRACT SYMBOLIC)**
-**CRITICAL**: DO NOT use arithmetic (e.g., "timer - '1'") as it causes parse errors
-Model timers using abstract symbolic values:
+# // WRONG: Disjunction in premises
+# rule Bad3: [ St(~tid, s1, x) | St(~tid, s2, x) ] --> ...  // PARSE ERROR!
 
-// Timer start (set to active)
-rule Timer_Start:
-  [ St_Cluster(~tid, state, 'timer_off', attrs...) ]
---[ TimerStarted(~tid) ]->
-  [ St_Cluster(~tid, state, 'timer_active', attrs...) ]
+# // WRONG: Underscore wildcard
+# rule Bad4: [ St(~tid, _, attr) ] --> ...  // PARSE ERROR!
 
-// Timer expiry (transition from active to expired)
-rule Timer_Expire:
-  [ St_Cluster(~tid, state, 'timer_active', attrs...) ]
---[ TimerExpired(~tid) ]->
-  [ St_Cluster(~tid, state, 'timer_expired', attrs...) ]
+# // WRONG: Inconsistent fact arity
+# rule Bad5: [ St(~tid, s, a1, a2, a3) ] --> [ St(~tid, s, a1, a2) ]  // 5 vs 4 = ERROR!
+# ```
 
-// State change on timer expiry
-rule Timer_Expiry_Transition:
-  [ St_Cluster(~tid, 'st_timed', 'timer_expired', attrs...) ]
---[ StateChange(~tid, 'st_timed', 'st_next') ]->
-  [ St_Cluster(~tid, 'st_next', 'timer_off', attrs...) ]
+# ---
+# ## HOW TO HANDLE GUARDS WITHOUT NEGATION
 
-**Timer modeling approach:**
-- Use symbolic values: 'timer_off', 'timer_active', 'timer_expired'
-- For disabled timers: Use 'timer_disabled' (never transitions)
-- Add comments explaining timer resolution from specification
+# Since you CANNOT use `not`, `=`, or conditions in premises, use these patterns:
 
-**STEP 8: MODEL EVENTS**
-**CRITICAL**: Action facts are ONLY for lemma observability, NOT state transitions
+# ### Pattern 1: Equality Guard → Direct Pattern Matching
+# FSM: `guard: OnOff == TRUE`
+# ```tamarin
+# // Match the specific value directly
+# rule Cmd_When_OnOff_True:
+#   [ St(~tid, state, b_true, other_attrs...) ]  // b_true matched directly
+# --[ Command(~tid, 'Cmd') ]->
+#   [ St(~tid, new_state, b_true, other_attrs...) ]
+# ```
 
-rule Generate_EventName:
-  [ St_Cluster(~tid, state, attrs...) ]
---[ EventGenerated(~tid, 'EventName', <event_params>),
-    // Include event priority in comments (Info/Critical/Debug)
-  ]->
-  [ St_Cluster(~tid, state, attrs...), Out('EventName') ]
+# ### Pattern 2: Inequality Guard → Enumerate Allowed Values
+# FSM: `guard: OnTime != 0xFFFF`
+# ```tamarin
+# // Create separate rules for each ALLOWED value, omit the excluded value
+# rule Cmd_When_OnTime_Zero:
+#   [ St(~tid, state, tv_zero, ow) ]  // OnTime = 0 (allowed)
+# --[ Command(~tid, 'Cmd') ]->
+#   [ St(~tid, new_state, tv_zero, ow) ]
 
-**Model event-driven transitions:** If events trigger state changes, create rules
+# rule Cmd_When_OnTime_Pos:
+#   [ St(~tid, state, tv_pos, ow) ]   // OnTime > 0 and < 0xFFFF (allowed)
+# --[ Command(~tid, 'Cmd') ]->
+#   [ St(~tid, new_state, tv_pos, ow) ]
 
-**STEP 9: ADD LEMMAS FOR VERIFICATION**
-Define security/safety/liveness properties with proper syntax:
+# // NO rule for tv_ffff - this excludes OnTime == 0xFFFF
+# ```
 
-// Safety: No invalid state transitions (all-traces is default)
-lemma state_consistency:
-  "All tid s1 s2 #i #j.
-    StateChange(tid, s1, s2) @i & StateChange(tid, s1, s2) @j ==> #i = #j"
+# ### Pattern 3: OR Guard → Separate Rules
+# FSM: `guard: state == OffIdle OR state == OnIdle`
+# ```tamarin
+# rule Cmd_From_OffIdle:
+#   [ St(~tid, st_OffIdle, attrs...) ]
+# --[ Command(~tid, 'Cmd') ]->
+#   [ St(~tid, target, attrs...) ]
 
-// Safety: State invariants hold
-lemma state_invariants:
-  "All tid s #i.
-    StateChange(tid, 'st_old', s) @i ==>
-    // Invariant conditions from cluster spec
-    (s = 'st_valid1' | s = 'st_valid2')"
+# rule Cmd_From_OnIdle:
+#   [ St(~tid, st_OnIdle, attrs...) ]
+# --[ Command(~tid, 'Cmd') ]->
+#   [ St(~tid, target, attrs...) ]
+# ```
 
-// Liveness: Eventually reach target state (exists-trace)
-lemma reachability:
-  exists-trace
-  "Ex tid #i. StateChange(tid, 'st_init', 'st_target') @i"
+# ### Pattern 4: AND Guard → Same Rule with Multiple Patterns
+# FSM: `guard: OnOff == TRUE AND OnTime > 0`
+# ```tamarin
+# rule Cmd_When_On_And_TimerActive:
+#   [ St(~tid, state, b_true, tv_pos, ow) ]  // Both conditions in pattern
+# --[ Command(~tid, 'Cmd') ]->
+#   [ St(~tid, new_state, b_true, tv_pos, ow) ]
+# ```
 
-// Feature enforcement: Commands blocked when features prohibit
-lemma feature_constraints:
-  "All tid cmd #i.
-    Command(tid, cmd) @i ==>
-    // Feature availability conditions
-    Ex #j. FeatureEnabled(tid) @j & #j < #i"
+# ### Pattern 5: Complex Inequality → Full Enumeration
+# FSM: `guard: TimerState != ts_idle AND OnTime != tv_ffff`
+# ```tamarin
+# // Enumerate all valid combinations
+# rule Case_Timed_OT_Zero:
+#   [ St(~tid, state, tv_zero, ow, ts_timed) ]
+# --[ ... ]->
+#   [ ... ]
 
-// Timer correctness: Timers eventually expire or reset
-lemma timer_progress [reuse]:
-  "All tid #i. TimerStarted(tid) @i ==>
-    (Ex #j. TimerExpired(tid) @j & #i < #j) |
-    (Ex #k. TimerStarted(tid) @k & #i < #k)"
+# rule Case_Timed_OT_Pos:
+#   [ St(~tid, state, tv_pos, ow, ts_timed) ]
+# --[ ... ]->
+#   [ ... ]
 
-**Lemma attributes:**
-- [typing]: For type assertions
-- [reuse]: Lemma can be reused by prover
-- [use_induction]: Enable induction
-- [sources]: Track message sources
+# rule Case_Delayed_OT_Zero:
+#   [ St(~tid, state, tv_zero, ow, ts_delayed) ]
+# --[ ... ]->
+#   [ ... ]
 
-**STEP 10: ADD DEFINITIONS AND REFERENCES**
-// Add C-style comments explaining:
-// - Technical terms from cluster specification
-// - Feature flags and their meanings (use persistent facts !Feature(...) if needed)
-// - Data type enums and their behavioral implications (quoted: 'enum_value')
-// - Timer resolution and units (abstract symbolic, not arithmetic)
-// - References to other clusters or specifications
-// - Restrictions on valid traces (use restriction keyword)
+# rule Case_Delayed_OT_Pos:
+#   [ St(~tid, state, tv_pos, ow, ts_delayed) ]
+# --[ ... ]->
+#   [ ... ]
 
-**REQUIRED TAMARIN STRUCTURE:**
-theory ClusterName_Matter
-begin
+# // ts_idle excluded, tv_ffff excluded by not having rules for them
+# ```
 
-// Cluster: [ClusterName]
-// Cluster ID: [0xHEX]
-// Generated from Matter cluster specification
+# ---
+# ## OPTIMIZATION STRATEGIES
 
-builtins: hashing
+# ### 1. Separate Config from State
+# ```tamarin
+# !Config(tid, SupportsLT, SupportsDF, OffOnly)  // Persistent - set once
+# St(tid, FSMState, OnOff, GSC, OnTime, OffWaitTime)  // Linear - changes
+# ```
+# Reduces O(states × features × commands) → O(states × commands) rules.
 
-// Functions for cluster operations (if needed)
-functions: f/1, g/2
-equations: f(g(x, y)) = x
+# ### 2. Abstract Numeric Domains
+# ```tamarin
+# functions: tv_zero/0, tv_pos/0, tv_ffff/0  // 0, 1..0xFFFE, 0xFFFF
+# // Timer: tv_pos → tv_zero (expiry), tv_ffff stays (disabled)
+# ```
 
-// Initial state rule with fresh thread ID
-rule Init_Cluster:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St_Cluster(~tid, 'st_initial', default_attr1, default_attr2, 'timer_off') ]
+# ### 3. Explicit State Constants
+# ```tamarin
+# functions: st_OffIdle/0, st_OnIdle/0, st_TimedOn/0, st_DelayedOff/0
+# St(tid, FSMState, ...)  // FSMState = st_* constant
+# ```
 
-// Command rules (unified state fact to prevent arity errors)
-rule Command_Name:
-  let
-    // Variable bindings for guards (bottom-up evaluation)
-  in
-  [ St_Cluster(~tid, 'st_from', attrs...) ]
---[ Command(~tid, 'CommandName'),
-    StateChange(~tid, 'st_from', 'st_to')
-  ]->
-  [ St_Cluster(~tid, 'st_to', new_attrs...) ]
+# ### 4. Sources Lemma (CRITICAL for termination)
+# ```tamarin
+# lemma sources [sources]:
+#   "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i ==>
+#      (Ex #j. ClusterInit(tid)@j & #j < #i)"
+# ```
 
-// Timer rules (abstract symbolic - NO arithmetic)
-rule Timer_Expire:
-  [ St_Cluster(~tid, state, 'timer_active', attrs...) ]
---[ TimerExpired(~tid) ]->
-  [ St_Cluster(~tid, state, 'timer_expired', attrs...) ]
+# ### 5. Restrictions (for constraints that span rules)
+# ```tamarin
+# restriction unique_init:
+#   "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
 
-// Event generation rules (action facts for observability)
-rule Generate_Event:
-  [ St_Cluster(~tid, state, attrs...) ]
---[ EventGenerated(~tid, 'EventName', params) ]->
-  [ St_Cluster(~tid, state, attrs...), Out('EventName') ]
+# restriction single_timer_lifecycle:
+#   "All tid kind #i #j. TimerStarted(tid, kind)@i & TimerStarted(tid, kind)@j ==> #i = #j"
 
-// Restrictions (optional - constrain valid traces)
-restriction valid_transitions:
-  "All tid s1 s2 #i. StateChange(tid, s1, s2) @i ==>
-    // Define valid state transitions
-    (s1 = 'st_init' & s2 = 'st_active') |
-    (s1 = 'st_active' & s2 = 'st_off')"
+# restriction timer_causality:
+#   "All tid kind #j. TimerExpired(tid, kind)@j ==>
+#      Ex #i. TimerStarted(tid, kind)@i & #i < #j"
+# ```
 
-// Lemmas (properties to verify)
-lemma safety_no_invalid_transitions:
-  "All tid s1 s2 #i. StateChange(tid, s1, s2) @i ==>
-    (s1 = 'st_init' & s2 = 'st_active') |
-    (s1 = 'st_active' & s2 = 'st_off')"
+# ---
+# ## CONVERSION WORKFLOW
 
-lemma liveness_reachable:
-  exists-trace
-  "Ex tid #i. StateChange(tid, 'st_init', 'st_target') @i"
+# ### Step 1: Extract from FSM
+# - **States** → `st_StateName/0` constants
+# - **Transitions** → Rules (split by guards)
+# - **Guards** → Pattern matching (enumerate allowed values)
+# - **Actions** → State changes + action facts
+# - **Attributes** → Config (immutable) vs State (mutable)
 
-end
+# ### Step 2: State Representation
+# ```
+# St(tid, FSMState, Attr1, Attr2, ..., TimerState)  // Arity = 2 + |MutableAttrs| + TimerState
+# !Config(tid, Feature1, Feature2, ..., StartupConfig)  // Persistent
+# ```
 
-**CRITICAL ACCURACY REQUIREMENTS:**
-1. **Syntactically valid Tamarin**: Must parse without errors using Tamarin parser
-2. **Unified state facts**: Use SINGLE fact St_Cluster(~tid, state_enum, attrs...) to prevent arity errors
-3. **Consistent arity**: SAME NUMBER of parameters in every St_Cluster fact across all rules
-4. **Action facts**: Only in --[Actions]-> for observability, NOT for state transitions
-5. **Rules**: Model all commands, automatic transitions, timer behaviors, stay transitions
-6. **Lemmas**: Meaningful safety (all-traces) and liveness (exists-trace) properties
-7. **C-style comments**: Use // or /* */ for explanations
-8. **Fresh variables**: Prefix with ~ (e.g., ~tid, ~nonce, ~key)
-9. **Quoted constants**: Use 'st_off', 'timer_active', '0', '1' for symbolic values
-10. **NO arithmetic**: Never use timer - '1' or similar (causes parse errors)
-11. **Let blocks**: Bottom-up evaluation, variables defined later can be used earlier
-12. **Pattern matching**: Match on quoted state enums in premises
-13. **Correct arrow syntax**: Use --[Actions]-> for rules with actions
-14. **Timer modeling**: Abstract symbolic ('timer_off', 'timer_active', 'timer_expired')
-15. **Feature facts**: Use persistent !Feature(...) if features are global
-16. **Event generation**: Action facts for observability, Out(...) for external messages
-17. **Restrictions**: Use restriction keyword to constrain valid traces
-18. **Lemma attributes**: Use [typing], [reuse], [use_induction] when appropriate
-19. **Dolev-Yao adversary**: Network-controlled adversary reads/composes/injects messages
-20. **Temporal operators**: Use @i for timepoints, #i < #j for ordering
+# ### Step 3: Init Rules (one per feature combo)
+# ```tamarin
+# rule Init_Base:
+#   [ Fr(~tid) ]
+# --[ ClusterInit(~tid) ]->
+#   [ !Config(~tid, b_false, b_false, startup_previous),
+#     St(~tid, st_Initial, b_false, tv_zero, tv_zero, ts_idle) ]
+# ```
 
-**ANALYSIS STRATEGY:**
-1. Extract cluster states from attributes and behaviors
-2. Map each command to transition rules
-3. Model attribute updates in rule conclusions
-4. Add action facts for observability
-5. Include timer decrement and expiry rules if timers exist
-6. Model event generation with action facts
-7. Add lemmas for key safety/liveness properties
-8. Ensure all state transitions are covered
+# ### Step 4: Transition Rules (enumerate guard combinations)
+# ```tamarin
+# // For guard "OnTime != tv_ffff", create rules for tv_zero and tv_pos only
+# rule Cmd_Name_OT_Zero:
+#   [ !Config(~tid, F1, F2, SUO), St(~tid, st_From, tv_zero, OW, TS) ]
+# --[ Command(~tid, 'CmdName'), StateTransition(~tid, st_From, st_To) ]->
+#   [ St(~tid, st_To, tv_zero, OW, NewTS) ]
 
-Focus on accurate Tamarin syntax and faithful representation of cluster behavior.
+# rule Cmd_Name_OT_Pos:
+#   [ !Config(~tid, F1, F2, SUO), St(~tid, st_From, tv_pos, OW, TS) ]
+# --[ Command(~tid, 'CmdName'), StateTransition(~tid, st_From, st_To) ]->
+#   [ St(~tid, st_To, tv_pos, OW, NewTS) ]
+# ```
 
-Return ONLY the Tamarin theory code. No explanations, no markdown blocks (except the theory itself), no additional text.
-"""
+# ### Step 5: Timer Rules
+# ```tamarin
+# rule Timer_Expire_Kind:
+#   [ !Config(~tid, b_true, F2, SUO), St(~tid, st_Timed, A1, tv_pos, ts_timed) ]
+# --[ TimerExpired(~tid, 'Kind'), StateTransition(~tid, st_Timed, st_Final) ]->
+#   [ St(~tid, st_Final, A1, tv_zero, ts_idle) ]
+# ```
+
+# ---
+# ## GUARD → PATTERN MAPPING
+
+# | FSM Guard | Tamarin Pattern |
+# |-----------|-----------------|
+# | `Attr == TRUE` | `b_true` in position |
+# | `Attr == FALSE` | `b_false` in position |
+# | `Attr == 0` | `tv_zero` in position |
+# | `Attr > 0 AND != 0xFFFF` | `tv_pos` in position |
+# | `Attr == 0xFFFF` | `tv_ffff` in position |
+# | `Attr != value` | **Split into rules for each ALLOWED value (omit excluded)** |
+# | `feature(X) == TRUE` | `b_true` in !Config position |
+# | `feature(X) == FALSE` | `b_false` in !Config position |
+# | `timer_active` | `ts_timed` or `ts_delayed` |
+# | `!timer_active` | `ts_idle` |
+# | `EnumAttr == VAL` | `enum_val/0` constant |
+# | `G1 AND G2` | Both patterns in same rule |
+# | `G1 OR G2` | **Split into separate rules** |
+
+# **⚠️ NEVER use `not()` in premises - split into separate rules instead!**
+
+# ## ACTION → EFFECT MAPPING
+
+# | FSM Action | Tamarin Effect |
+# |------------|----------------|
+# | `Attr := TRUE` | `b_true` in conclusion |
+# | `Attr := FALSE` | `b_false` in conclusion |
+# | `Attr := 0` | `tv_zero` in conclusion |
+# | `Attr := val (>0)` | `tv_pos` in conclusion |
+# | `Attr := 0xFFFF` | `tv_ffff` in conclusion |
+# | `timer_start(kind)` | `TimerStarted(tid, 'kind')` action fact |
+# | `timer_stop()` | `ts_idle` in conclusion |
+# | `send_status(OK)` | `CmdSucceeded(tid, 'Cmd')` action |
+# | `send_status(UNSUP)` | `CmdRejected(tid, 'Cmd', 'UNSUPPORTED')` |
+# | `if X then A else B` | **Split into separate rules** |
+
+# ---
+# ## COMPLETE TEMPLATE
+
+# ```tamarin
+# theory {{ClusterName}}_Matter
+# begin
+
+# builtins: hashing
+
+# functions:
+#   b_true/0, b_false/0,
+#   st_State1/0, st_State2/0, st_State3/0,
+#   tv_zero/0, tv_pos/0, tv_ffff/0,
+#   ts_idle/0, ts_timed/0, ts_delayed/0,
+#   startup_off/0, startup_on/0, startup_previous/0
+
+# /* !Config(tid, Feature1, Feature2, StartupOnOff) - PERSISTENT */
+# /* St(tid, FSMState, Attr1, Attr2, TimerAttr, TimerState) - LINEAR */
+# /* CRITICAL: All St facts MUST have same arity in ALL rules! */
+
+# rule Init_Base:
+#   [ Fr(~tid) ]
+# --[ ClusterInit(~tid) ]->
+#   [ !Config(~tid, b_false, b_false, startup_previous),
+#     St(~tid, st_State1, b_false, tv_zero, tv_zero, ts_idle) ]
+
+# rule Cmd_Name_FromState:
+#   [ !Config(~tid, F1, F2, SUO), St(~tid, st_From, A1, A2, A3, TS) ]
+# --[ Command(~tid, 'CmdName'), CmdName(~tid), StateTransition(~tid, st_From, st_To) ]->
+#   [ St(~tid, st_To, NewA1, NewA2, NewA3, NewTS) ]
+
+# rule Timer_Expire:
+#   [ !Config(~tid, b_true, F2, SUO), St(~tid, st_Timed, A1, tv_pos, A3, ts_timed) ]
+# --[ TimerExpired(~tid, 'Kind'), StateTransition(~tid, st_Timed, st_Final) ]->
+#   [ St(~tid, st_Final, A1, tv_zero, A3, ts_idle) ]
+
+# restriction unique_init:
+#   "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
+
+# restriction single_timer:
+#   "All tid k #i #j. TimerStarted(tid, k)@i & TimerStarted(tid, k)@j ==> #i = #j"
+
+# restriction timer_causality:
+#   "All tid k #j. TimerExpired(tid, k)@j ==> Ex #i. TimerStarted(tid, k)@i & #i < #j"
+
+# lemma sources [sources]:
+#   "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i ==>
+#      Ex #j. ClusterInit(tid)@j & #j < #i"
+
+# lemma exec_init: exists-trace "Ex tid #i. ClusterInit(tid)@i"
+# lemma exec_cmd: exists-trace "Ex tid #i. CmdName(tid)@i"
+
+# end
+# ```
+
+# ---
+# ## VALIDATION CHECKLIST
+
+# Before output, verify:
+# - [ ] Single `functions:` block
+# - [ ] No `_` wildcards in premises
+# - [ ] No `|` disjunctions in premises
+# - [ ] **No `not()` or negation in premises** (split into separate rules!)
+# - [ ] All rules: same St fact arity
+# - [ ] Fresh vars use `~`, public use `$`
+# - [ ] `not (x = y)` ONLY in formulas (lemmas/restrictions), NEVER in rule premises
+# - [ ] Lemmas use `[sources]` not `[typing]`
+# - [ ] Every FSM state → `st_*/0` constant
+# - [ ] Every transition → rule(s)
+# - [ ] Config facts: `!` persistent
+# - [ ] Sources lemma present
+
+# ---
+# ## TROUBLESHOOTING
+
+# - **Parse error "unexpected ("**: You used `not()` in premises - split into separate rules instead!
+# - **Non-termination**: Add sources lemma, check for cycles, use `--precompute-only`
+# - **Partial deconstructions**: Add sources lemma, try `--auto-sources`
+# - **Rule not firing**: Check pattern matching, verify init creates needed facts
+# - **Memory issues**: Reduce feature combos, use `--heuristic=s`
+
+# ---
+# ## TYPE MAPPINGS
+
+# | FSM Type | Tamarin Constants |
+# |----------|-------------------|
+# | `bool` | `b_true/0`, `b_false/0` |
+# | `uint8/16/32` | `tv_zero/0`, `tv_pos/0`, `tv_max/0` |
+# | `enum` | `{{attr}}_{{value}}/0` per value |
+# | `string/list/struct` | Abstract or ignore |
+
+# ---
+# ## FEATURE COMBINATION GENERATION
+
+# For N boolean features, generate 2^N init rules:
+# ```python
+# def generate_feature_combinations(features: list[str]) -> list[dict]:
+#     combinations = []
+#     for i in range(2 ** len(features)):
+#         combo = {{}}
+#         for j, feature in enumerate(features):
+#             combo[feature] = bool((i >> j) & 1)
+#         combinations.append(combo)
+#     return combinations
+# # Example: ['LT', 'DF', 'OffOnly'] → 8 combinations
+# ```
+
+# ---
+# ## CROSS-CLUSTER DEPENDENCIES
+
+# Some clusters depend on others (e.g., LevelControl depends on OnOff):
+# ```tamarin
+# rule Cmd_MoveToLevel_RequiresOnOff:
+#   [ !Config_LevelControl(~tid, ...),
+#     St_LevelControl(~tid, level, ...),
+#     St_OnOff(~tid, b_true, ...) ]  // OnOff must be ON
+# --[ Command(~tid, 'MoveToLevel') ]->
+#   [ St_LevelControl(~tid, newLevel, ...),
+#     St_OnOff(~tid, b_true, ...) ]  // Preserve OnOff
+# ```
+# Options: Full modeling | Interface abstraction | Assume independence
+
+# ---
+# ## COMMAND PARAMETERS
+
+# For commands with parameters (e.g., `MoveToLevel(level, time)`):
+# ```tamarin
+# functions: param_low/0, param_mid/0, param_high/0, param_max/0
+
+# rule Cmd_MoveToLevel_Low:
+#   [ St(~tid, state, level, ...), In(<param_low, time>) ]
+# --[ Command(~tid, 'MoveToLevel'), ParamUsed(~tid, param_low) ]->
+#   [ St(~tid, state, param_low, ...) ]
+# ```
+
+# ---
+# ## TIMER STATE INVARIANT
+
+# ```tamarin
+# restriction timer_state_invariant:
+#   "All tid state a1 a2 timerAttr delayAttr timerState #i.
+#      St(tid, state, a1, a2, timerAttr, delayAttr, timerState)@i ==>
+#        ((timerState = ts_idle) |
+#         (timerState = ts_timed & timerAttr = tv_pos) |
+#         (timerState = ts_delayed & delayAttr = tv_pos))"
+# ```
+
+# ---
+# ## FSM INPUT FORMAT (JSON Schema)
+
+# ```json
+# {{
+#   "fsm_model": {{
+#     "cluster_name": "string",
+#     "cluster_id": "hex_string",
+#     "spec_version": "string",
+#     "features": [
+#       {{ "name": "string", "code": "string", "affects_attributes": [], "affects_commands": [] }}
+#     ],
+#     "states": [
+#       {{ "name": "string", "is_initial": bool, "invariants": [], "attributes_monitored": [] }}
+#     ],
+#     "transitions": [
+#       {{ "from_state": "string", "to_state": "string", "trigger": "string",
+#          "guard_condition": "string", "actions": [], "feature_required": "string" }}
+#     ],
+#     "attributes": [
+#       {{ "name": "string", "type": "string", "default": "value", "mutable": bool,
+#          "feature_required": "string", "enum_values": [] }}
+#     ],
+#     "commands": [
+#       {{ "name": "string", "code": "hex", "feature_required": "string", "parameters": [] }}
+#     ],
+#     "timers": [
+#       {{ "name": "string", "trigger_attribute": "string",
+#          "expiry_transition": {{ "from_state": "string", "to_state": "string" }} }}
+#     ],
+#     "cross_cluster_dependencies": [
+#       {{ "cluster": "string", "dependency_type": "requires|modifies|observes" }}
+#     ]
+#   }}
+# }}
+# ```
+
+# ---
+# ## CLUSTER-SPECIFIC EXAMPLES
+
+# **OnOff (0x0006)**: Features: LT, DF, OffOnly | States: OffIdle, OnIdle, TimedOn, DelayedOff | Attrs: OnOff, OnTime, OffWaitTime, GlobalSceneControl | Commands: Off, On, Toggle, OffWithEffect, OnWithRecallGlobalScene, OnWithTimedOff
+
+# **LevelControl (0x0008)**: Features: OO, LT, FQ | States: Idle, Moving, Transitioning | Attrs: CurrentLevel, OnLevel, RemainingTime | Commands: MoveToLevel, Move, Step, Stop
+
+# **DoorLock (0x0101)**: Features: PIN, RID, FGP, LOG, USR | States: Locked, Unlocked, PartiallyLocked | Attrs: LockState, LockType, ActuatorEnabled | Commands: LockDoor, UnlockDoor, UnlockWithTimeout, SetCredential
+
+# ---
+# ## OUTPUT REQUIREMENTS
+
+# Return ONLY valid Tamarin theory code:
+# - No markdown code blocks
+# - No explanatory text
+# - Directly parseable by: `tamarin-prover --parse-only <file>.spthy`
+# """
 
 # FSM to Tamarin Conversion Prompt Template
 FSM_TO_TAMARIN_PROMPT_TEMPLATE = """
-You are a formal verification expert who converts FSM JSON models to Tamarin prover theories.
+# MATTER FSM TO TAMARIN - COMPACT REFERENCE
 
-FSM MODEL TO CONVERT:
-{fsm_json}
+Expert converter for Matter FSM → Tamarin theories. Focus: **termination, efficiency, correctness**.
 
-**CONVERSION OBJECTIVE:**
-Transform the FSM JSON structure into a syntactically valid Tamarin theory that preserves all states, transitions, guards, actions, and properties.
+**FSM INPUT**: {fsm_json}
 
-**TAMARIN PROVER SYNTAX REFERENCE:**
+---
+## CORE PRINCIPLES
 
-**Theory Structure:**
-theory [ClusterName]_Matter
-begin
-  builtins: <cryptographic primitives>
-  functions: <user-defined functions>
-  // Rules
-  // Lemmas
-end
+1. **Termination First**: Avoid looping rules, state explosion, missing sources.
+2. **Efficiency**: Minimize rules, use persistent facts (`!Fact`), abstract timers.
+3. **Correctness**: Every FSM transition → rule, faithful guards, preserved invariants.
 
-**Rules (Multiset Rewriting):**
-rule <RuleName>:
-  let
-    <variable bindings>
-  in
-  [ <Premise Facts> ]
---[ <Action Facts> ]->
-  [ <Conclusion Facts> ]
+---
+## CRITICAL TAMARIN SYNTAX
 
-**Facts:**
-- State facts: St_<StateName>(~tid, params...)
-- In/Out facts: In(msg), Out(msg)
-- Fresh names: Fr(~name)
-- Action facts (for lemmas): Custom(params...)
+### ✅ VALID Patterns
+```tamarin
+// Single functions block
+functions: b_true/0, b_false/0, st_Off/0, st_On/0, tv_zero/0, tv_pos/0, tv_ffff/0
 
-**Lemmas:**
-lemma <name>:
-  "<first-order logic formula>"
+// Rule structure - premises are ONLY facts, no logic operators
+rule RuleName:
+  let var1 = term1 in
+  [ Premise(x), !Config(tid, f) ]
+--[ Action(x) ]->
+  [ Conclusion(z) ]
 
-lemma <name>:
-  exists-trace
-  "<first-order logic formula>"
+// Persistent config: !Config(tid, feature1, feature2)
+// Fresh vars: Fr(~tid), Public vars: In($A)
+// Inequality ONLY in formulas: restriction ex: "not (x = y)"
+```
 
-**CONVERSION STRATEGY:**
+### ❌ INVALID Patterns (PARSING ERRORS)
+```tamarin
+functions: true/0
+functions: false/0   // WRONG: multiple blocks
 
-**STEP 1: EXTRACT FSM METADATA**
-- Cluster name → theory name
-- Cluster ID → comment
-- Category → comment
-- Initial state → Init rule target
-- Metadata (timestamps, attempts, source pages) → comments
-- Definitions[] → explanatory comments in theory
-- References[] → dependency comments
+[ St(tid, s1) | St(tid, s2) ]  // WRONG: disjunctions in premises
+[ St(~tid, _, GSC) ]           // WRONG: underscore wildcards
+lemma test [typing]:           // WRONG: use [sources]
 
-**STEP 2: MAP STATES TO FACTS**
-For each FSM state:
-- State name → St_<StateName>(~tid, ...)
-- Invariants[] → guard conditions in rules or lemma formulas
-- Attributes_monitored[] → fact parameters (match FSM attributes_used[])
-- Description → comment above state first usage
-- Is_initial → determines Init rule target
+// CRITICAL ERROR - not() in premises:
+[ St(~tid, S, X), not (X = tv_ffff) ]  // WRONG: WILL NOT PARSE!
+```
 
-**STEP 3: CONVERT TRANSITIONS TO RULES**
-For each FSM transition:
-rule <Trigger>_<FromState>_to_<ToState>:
-  let
-    // Guard condition logic from FSM
-  in
-  [ St_<FromState>(~tid, attrs) ]
---[ Command(~tid, '<Trigger>'),
-    StateChange(~tid, '<FromState>', '<ToState>'),
-    // Additional facts from FSM actions
-  ]->
-  [ St_<ToState>(~tid, updated_attrs) ]
+### ⚠️ HANDLING "NOT EQUAL" GUARDS (CRITICAL)
+**You CANNOT use `not`, negation, or inequality in rule PREMISES - only in formulas.**
 
-**STEP 4: MODEL FSM GUARDS**
-- Boolean conditions → let bindings (bottom-up evaluation)
-- Feature checks (bitmap flags) → let conditions or persistent !Feature(...) facts
-- Timer checks → pattern matching on symbolic values ('timer_active', 'timer_off')
-- Enum value checks → pattern matching on quoted state enum in premises
-- Data type constraints → let block validation with quoted constants
-- Conditional branches (if/then/else) → separate rules with complementary guards
-- Use quoted constants: 'disabled', 'enabled', 'st_off', 'st_on'
+FSM guard `X != value` must be modeled by **splitting into separate rules**:
+```tamarin
+// FSM says: "guard: OnTime != 0xFFFF" 
+// WRONG - parsing error:
+rule Bad: [ St(~tid, s, OT), not (OT = tv_ffff) ] --> [ St(~tid, s2, OT) ]
 
-**STEP 5: MODEL FSM ACTIONS**
-For each action in transition.actions[]:
-- Attribute updates → new state fact parameters with updated values
-- Event generation → EventGenerated action facts (observability only)
-- Timer operations → symbolic state changes ('timer_off', 'timer_active', 'timer_expired')
-- Scene store/recall → SceneStored/SceneRecalled action facts
-- Feature validation → FeatureChecked action facts or persistent !Feature(...)
-- Attribute read/write → AttributeAccessed action facts
+// CORRECT - create rules for each ALLOWED value only:
+rule Case_OT_zero: [ St(~tid, s, tv_zero, OW) ] --> [ St(~tid, s2, tv_zero, OW) ]
+rule Case_OT_pos:  [ St(~tid, s, tv_pos, OW) ]  --> [ St(~tid, s2, tv_pos, OW) ]
+// tv_ffff excluded by simply NOT having a rule for it
+```
 
-**STEP 6: HANDLE TIMING REQUIREMENTS (ABSTRACT SYMBOLIC)**
-**CRITICAL**: NO arithmetic on timer values (causes parse errors)
-If timing_requirements field is not null:
-- Parse resolution (100ms, 1s, etc.) → add C-style comment explaining units
-- Model timer as symbolic: 'timer_off', 'timer_active', 'timer_expired', 'timer_disabled'
-- Timer start → transition to 'timer_active'
-- Timer expiry → transition from 'timer_active' to 'timer_expired'
-- Timer reset → transition from any state back to 'timer_active'
-- Use action facts: TimerStarted, TimerExpired (for lemma observability)
-- Disabled timers (0xFFFF) → use 'timer_disabled' (never transitions)
+---
+## OPTIMIZATION STRATEGIES
 
-**STEP 7: MODEL STAY TRANSITIONS**
-For transitions where from_state == to_state:
-- These are stay transitions (state continuation)
-- Model timer extensions, attribute updates without state change
-- Include appropriate action facts (TimerReset, AttributeUpdated)
+### Strategy 1: Unified State Fact
+```tamarin
+// Single fact type for all cluster state
+St(~tid, state_enum, attr1, attr2, ...)
+// Examples:
+St(~tid, st_OffIdle, GSC, OT, OW)      // OnOff
+St(~tid, st_Idle, Level, RT, SOL)       // LevelControl
+St(~tid, st_Locked, LockState, AutoRT)  // DoorLock
+```
 
-**STEP 8: MODEL FSM EVENTS**
-For each event in events_generated[]:
-- Create EventGenerated action facts with event name and parameters
-- If event triggers transitions, model as separate rules
-- Use Out(<EventName>) facts for external observability
-- Include event priority in comments (Info/Critical/Debug)
+### Strategy 2: Abstract Timers (NO ARITHMETIC)
+```tamarin
+functions: tv_zero/0, tv_pos/0, tv_ffff/0
 
-**STEP 9: INTEGRATE FSM DATA TYPES**
-For each data type in data_types_used[]:
-- Enums → pattern matching on specific values in let blocks
-- Bitmaps → feature flag checks in guards
-- Structures → nested parameters in state facts
-- Add comments explaining enum meanings and bitmap flags
+// Timer conditions via pattern matching:
+[ St(~tid, st_OnIdle, tv_pos) ]  // OnTime > 0
+[ St(~tid, st_OnIdle, tv_zero) ] // OnTime == 0
+```
 
-**STEP 10: MODEL SCENE BEHAVIORS**
-For each scene behavior in scene_behaviors[]:
-- Create SceneStored/SceneRecalled action facts
-- Model scene-capable attribute store/recall transitions
-- Link to scene cluster if referenced
-
-**STEP 11: ADD DEFINITIONS AND REFERENCES**
-From FSM definitions[] and references[]:
-- Add comments explaining technical terms and functions
-- Document feature flags and their meanings
-- Explain data type enums and behavioral implications
-- Document timer resolution and units
-- Add comments for referenced clusters/specifications
-
-**STEP 12: GENERATE LEMMAS FROM FSM**
-- From state.invariants[] → safety lemmas (state_invariants)
-- From reachability goals → exists-trace lemmas (state_reachability)
-- From commands_handled[] → command validity lemmas
-- From timing_requirements → timer progress lemmas
-- From feature constraints → feature enforcement lemmas
-- From definitions[] → explanatory comments in lemmas
-- From events_generated[] → event generation lemmas
-- From scene_behaviors[] → scene capability lemmas
-
-**FSM TO TAMARIN MAPPING:**
-
-| FSM Element | Tamarin Equivalent |
-|-------------|-------------------|
-| states[] | St_Cluster(~tid, 'state_enum', attrs...) unified fact |
-| transitions[] | rule Name: [...] --[Actions]-> [...] |
-| initial_state | Init rule → St_Cluster(~tid, 'st_initial', ...) |
-| guard_condition | let blocks (bottom-up), pattern matching on quoted values |
-| actions[] | Conclusion facts, action facts (observability only) |
-| events_generated[] | Action facts: EventGenerated(...), Out('event') |
-| attributes_used[] | State fact parameters (SAME arity in all rules) |
-| commands_handled[] | Rule names/triggers, Command action facts |
-| definitions[] | C-style comments (// or /* */) throughout theory |
-| timing_requirements | Abstract symbolic timers (NO arithmetic) |
-| data_types_used[] | Quoted enum patterns, feature guards |
-| scene_behaviors[] | SceneStored/SceneRecalled action facts |
-| references[] | Dependency comments, persistent !Facts if needed |
-| invariants[] | Safety lemmas (all-traces), restrictions |
-| is_initial flag | Target of Init rule |
-| metadata | Comments with generation info |
-| definitions[] | Explanatory comments throughout theory |
-| timing_requirements | Timer decrement/expiry/reset rules, comments |
-| data_types_used[] | Enum patterns, bitmap guards, structure parameters |
-| scene_behaviors[] | SceneStored/SceneRecalled action facts |
-| references[] | Dependency comments, related cluster notes |
-| invariants[] | Safety lemmas, state_invariants formulas |
-| is_initial flag | Target of Init rule |
-| metadata | Comments with generation info |
-
-**REQUIRED TAMARIN OUTPUT:**
-
-theory {cluster_name}_Matter
-begin
-
-// Cluster: {cluster_name}
-// Cluster ID: {cluster_id}
-// Source: FSM JSON model
-// Generated: {generation_timestamp}
-
-builtins: hashing
-
-// Functions for operations (if needed)
-functions: f/1
-
-// === INITIALIZATION ===
-rule Init_{cluster_name}:
+### Strategy 3: Feature Combinations via Config
+```tamarin
+// At init, create ONE config fact for all features
+rule Init_LT_DF:
   [ Fr(~tid) ]
 --[ ClusterInit(~tid) ]->
-  [ St_Cluster(~tid, 'st_{initial_state}', <initial_attribute_values>) ]
+  [ St(~tid, st_OffIdle, b_true, tv_zero, tv_zero),
+    !Config(~tid, f_LT, f_DF) ]
 
-// === STATE TRANSITIONS (from FSM transitions[]) ===
-// CRITICAL: Use unified St_Cluster fact with SAME arity in all rules
-// For each transition in FSM:
-rule {trigger}_{from_state}_to_{to_state}:
-  let
-    // Guard condition from FSM guard_condition (bottom-up evaluation)
-    // Use quoted constants: 'value', 'st_name'
-  in
-  [ St_Cluster(~tid, 'st_{from_state}', {attributes}) ]
---[ Command(~tid, '{trigger}'),
-    StateChange(~tid, 'st_{from_state}', 'st_{to_state}'),
-    // Action facts from FSM actions[] (observability only)
-  ]->
-  [ St_Cluster(~tid, 'st_{to_state}', {updated_attributes}) ]
+// Rules check config
+rule Cmd_On [requires LT]:
+  [ St(~tid, st_OffIdle, GSC, OT, OW), !Config(~tid, f_LT, DF) ]
+--[ Command(~tid, 'On') ]->
+  [ St(~tid, st_OnIdle, GSC, OT, OW) ]
+```
 
-// === TIMER BEHAVIORS (ABSTRACT SYMBOLIC - NO ARITHMETIC) ===
-rule Timer_Start:
-  [ St_Cluster(~tid, state, 'timer_off', attrs...) ]
---[ TimerStarted(~tid) ]->
-  [ St_Cluster(~tid, state, 'timer_active', attrs...) ]
+### Strategy 4: Minimal State Tracking
+Track ONLY attributes that affect transitions:
+- OnOff: GlobalSceneControl, OnTime, OffWaitTime
+- LevelControl: CurrentLevel, RemainingTime
+- DoorLock: LockState, AutoRelockTime
 
-rule Timer_Expire:
-  [ St_Cluster(~tid, state, 'timer_active', attrs...) ]
---[ TimerExpired(~tid) ]->
-  [ St_Cluster(~tid, state, 'timer_expired', attrs...) ]
+### Strategy 5: Guard Consolidation
+```tamarin
+// GOOD: Separate rules for different guards
+rule Cmd_Toggle_WhenOff:
+  [ St(~tid, st_Off) ] --[ ]-> [ St(~tid, st_On) ]
 
-rule Timer_Expiry_Transition:
-  [ St_Cluster(~tid, 'st_{timed_state}', 'timer_expired', attrs...) ]
---[ StateChange(~tid, 'st_{timed_state}', 'st_{next_state}') ]->
-  [ St_Cluster(~tid, 'st_{next_state}', 'timer_off', attrs...) ]
+rule Cmd_Toggle_WhenOn:
+  [ St(~tid, st_On) ] --[ ]-> [ St(~tid, st_Off) ]
 
-// === EVENT GENERATION (from FSM events_generated[]) ===
-// Action facts are ONLY for observability in lemmas
-rule Generate_{event_name}:
-  [ St_Cluster(~tid, state, attrs...) ]
---[ EventGenerated(~tid, '{event_name}', <params>) ]->
-  [ St_Cluster(~tid, state, attrs...), Out('{event_name}') ]
+// BAD: Complex conditionals in single rule
+```
 
-// === RESTRICTIONS (optional - constrain valid traces) ===
-restriction valid_state_transitions:
-  "All tid s1 s2 #i. StateChange(tid, s1, s2) @i ==>
-    // Define valid transitions from FSM
-    (s1 = 'st_init' & s2 = 'st_active') |
-    (s1 = 'st_active' & s2 = 'st_off')"
+### Strategy 6: Sources Lemma (REQUIRED)
+```tamarin
+lemma sources [sources]:
+  "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i ==>
+     Ex #j. ClusterInit(tid)@j & #j < #i"
+```
 
-// === LEMMAS (derived from FSM invariants and properties) ===
+---
+## GUARD → PATTERN MAPPING
 
-// Safety: State invariants preserved (all-traces default)
-lemma state_invariants:
-  "All tid s #i. StateChange(tid, 'st_old', s) @i ==>
-    // Derived from FSM state invariants[]
-    (s = 'st_valid1' | s = 'st_valid2')"
+| Guard Condition | Tamarin Pattern |
+|----------------|-----------------|
+| `OnOff == true` | `St(~tid, State, b_true, ...)` |
+| `OnOff == false` | `St(~tid, State, b_false, ...)` |
+| `OnTime > 0` | `St(~tid, State, tv_pos, ...)` |
+| `OnTime == 0` | `St(~tid, State, tv_zero, ...)` |
+| `OnTime != 0xFFFF` | **Create rules for tv_zero and tv_pos only (omit tv_ffff rule)** |
+| `feature_LT` | `!Config(~tid, f_LT, ...)` |
+| `state == OffIdle` | `St(~tid, st_OffIdle, ...)` |
+| `X OR Y` | **Split into separate rules** |
+| `X != value` | **Split into rules for allowed values only** |
 
-// Liveness: All states reachable (exists-trace)
-lemma state_reachability:
+**⚠️ NEVER use `not()` in premises - Tamarin cannot parse it!**
+
+---
+## ACTION → STATE EFFECT MAPPING
+
+| Action | Tamarin Effect |
+|--------|----------------|
+| `set OnOff := true` | `St(..., b_true, ...)` |
+| `set OnOff := false` | `St(..., b_false, ...)` |
+| `start timer(OnTime)` | `St(..., tv_pos, ...)` |
+| `stop timer` | `St(..., tv_zero, ...)` |
+| `timer expires` | Separate rule with `tv_zero` |
+
+---
+## COMPLETE TEMPLATE
+
+```tamarin
+theory {{ClusterName}}_Matter_FSM
+begin
+
+/* 
+ * {{CLUSTER_NAME}} Cluster ({{CLUSTER_ID}})
+ * Features: {{FEATURES}}
+ * Auto-generated from FSM
+ */
+
+//========================================
+// SECTION 1: Function Declarations (SINGLE BLOCK)
+//========================================
+functions:
+  // Boolean values
+  b_true/0, b_false/0,
+  // State enumerations
+  st_State1/0, st_State2/0, ...,
+  // Abstract timer values
+  tv_zero/0, tv_pos/0, tv_ffff/0,
+  // Feature flags
+  f_Feature1/0, f_Feature2/0
+
+//========================================
+// SECTION 2: Initialization Rules
+//========================================
+rule Init_FeatureCombo:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_InitialState, initial_attrs...),
+    !Config(~tid, features...) ]
+
+//========================================
+// SECTION 3: Command Rules
+//========================================
+rule Cmd_CommandName_GuardVariant:
+  [ St(~tid, st_SourceState, attrs...), !Config(~tid, features...) ]
+--[ Command(~tid, 'CommandName'), StateTransition(~tid, st_Source, st_Target) ]->
+  [ St(~tid, st_TargetState, new_attrs...) ]
+
+//========================================
+// SECTION 4: Timer Rules
+//========================================
+rule Timer_Expires_StateName:
+  [ St(~tid, st_TimedState, tv_zero, other_attrs...) ]
+--[ TimerExpired(~tid), StateTransition(~tid, st_Timed, st_Next) ]->
+  [ St(~tid, st_NextState, updated_attrs...) ]
+
+//========================================
+// SECTION 5: Restrictions
+//========================================
+restriction unique_init:
+  "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
+
+//========================================
+// SECTION 6: Source Lemmas (REQUIRED)
+//========================================
+lemma sources [sources]:
+  "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i ==>
+     Ex #j. ClusterInit(tid)@j & #j < #i"
+
+//========================================
+// SECTION 7: Verification Lemmas
+//========================================
+lemma exec_command_name:
   exists-trace
-  "Ex tid #i. StateChange(tid, 'st_init', 'st_{target_state}') @i"
+  "Ex tid #i. Command(tid, 'CommandName')@i"
 
-// Command execution: Commands only in valid states
-lemma command_validity:
-  "All tid cmd state #i #j.
-    Command(tid, cmd) @i & StateChange(tid, state, 'st_any') @j & #j < #i ==>
-    // Commands only execute from valid states per FSM
-    (state = 'st_valid1' | state = 'st_valid2')"
-
-// Timer progress: Timers eventually expire or reset
-lemma timer_progress [reuse]:
-  "All tid #i. TimerStarted(tid) @i ==>
-    (Ex #j. TimerExpired(tid) @j & #i < #j) |
-    (Ex #k. TimerStarted(tid) @k & #i < #k)"
+lemma state_reachable:
+  exists-trace
+  "Ex tid #i. StateTransition(tid, st_Source, st_Target)@i"
 
 end
+```
 
-**CONVERSION CHECKLIST:**
-✓ Theory name matches cluster name
-✓ Unified state fact: St_Cluster(~tid, state_enum, attrs...) used throughout
-✓ Consistent arity: SAME number of parameters in all St_Cluster facts
-✓ All FSM states converted with quoted enums ('st_off', 'st_on')
-✓ All FSM transitions converted to rules (including stay transitions)
-✓ Guard conditions use let blocks (bottom-up evaluation) and pattern matching
-✓ Actions mapped to conclusion facts and action facts (observability only)
-✓ Timer behaviors use abstract symbolic values (NO arithmetic)
-✓ Events captured as EventGenerated action facts and Out('event') facts
-✓ Data types integrated with quoted enum patterns and feature guards
-✓ Scene behaviors modeled (store/recall if applicable)
-✓ Feature constraints use persistent !Feature(...) or let conditions
-✓ Lemmas derive from FSM properties with proper syntax
-✓ Definitions and references documented in C-style comments
-✓ Syntactically valid Tamarin code (parseable with Tamarin tool)
-✓ Fresh variables consistently use ~ prefix (~tid, ~nonce)
-✓ Comments explain FSM-to-Tamarin mappings and complex logic
-✓ Stay transitions included where from_state == to_state
-✓ Conditional branches (if/then/else) split into separate rules
-✓ Metadata preserved in theory header comments
-✓ Restrictions added to constrain valid traces (if needed)
-✓ Lemma attributes used appropriately ([typing], [reuse], etc.)
+---
+## VALIDATION CHECKLIST
 
-**CRITICAL REQUIREMENTS:**
-1. **Preserve FSM semantics**: Exact behavioral equivalence between FSM and Tamarin
-2. **Valid Tamarin syntax**: Must parse without errors using Tamarin parser
-3. **Complete coverage**: All FSM elements mapped (states, transitions, events, data types)
-4. **Correct guards**: Conditional logic faithfully translated with data type checks
-5. **Action facts**: Observable events captured (commands, state changes, events, timers)
-6. **Meaningful lemmas**: Verify key properties from FSM invariants and requirements
-7. **Documentation**: Comments explain FSM-to-Tamarin mappings, definitions, references
-8. **Timer semantics**: Decrement, expiry, reset, extension correctly modeled with resolution
-9. **Feature enforcement**: Feature constraints from FSM enforced in rule guards
-10. **Event generation**: All FSM events_generated[] mapped to action facts
-11. **Data type integration**: Enums, bitmaps, structures properly handled in guards/parameters
-12. **Scene behaviors**: Scene store/recall modeled if scene_behaviors[] present
-13. **Stay transitions**: State continuation (from_state==to_state) modeled for timers/attributes
-14. **Conditional branches**: If/then/else logic split into separate guarded rules
-15. **Thread isolation**: Consistent use of thread IDs (~tid) for independent instances
+- [ ] Single `functions:` block
+- [ ] No underscore `_` wildcards
+- [ ] No `|` disjunctions in premises
+- [ ] **No `not()` or negation in PREMISES** (split into separate rules instead!)
+- [ ] All rules: same St fact arity
+- [ ] Fresh vars: `~`, public: `$`
+- [ ] Inequality only in FORMULAS: `not (x = y)` - NEVER in premises!
+- [ ] Lemmas use `[sources]` not `[typing]`
+- [ ] Every FSM state → `st_*/0` constant
+- [ ] Every transition → rule(s)
+- [ ] Config facts: `!` persistent
+- [ ] Sources lemma present
+- [ ] `X != value` guards → split into rules for allowed values only
 
-Analyze the FSM JSON systematically and generate the corresponding Tamarin theory.
+---
+## TROUBLESHOOTING
 
-Return ONLY the Tamarin theory code. No explanations, no markdown blocks (except the theory), no additional text.
+- **Parse error "unexpected ("**: You used `not()` in rule PREMISES - split into separate rules instead!
+- **Parse error "facts must start with upper-case"**: Same cause - `not()` in premises is invalid
+- **Non-termination**: Add sources lemma, check cycles, use `--precompute-only`
+- **Partial deconstructions**: Add sources lemma, try `--auto-sources`
+- **Rule not firing**: Check pattern matching, verify init creates needed facts
+- **Memory issues**: Reduce feature combos, use `--heuristic=s`
+
+---
+## FSM INPUT FORMAT (JSON Schema)
+
+```json
+{{
+  "cluster_name": "string",
+  "cluster_id": "hex_string",
+  "features": ["feature_list"],
+  "states": [
+    {{
+      "name": "state_name",
+      "description": "string",
+      "attributes": {{
+        "attr_name": {{ "type": "type", "value": "value" }}
+      }}
+    }}
+  ],
+  "transitions": [
+    {{
+      "id": "transition_id",
+      "source": "source_state",
+      "target": "target_state",
+      "trigger": {{ "type": "command|timer|internal", "name": "trigger_name" }},
+      "guards": [{{ "condition": "expression", "description": "string" }}],
+      "actions": [{{ "type": "action_type", "target": "target", "value": "value" }}]
+    }}
+  ]
+}}
+```
+
+---
+## FEATURE COMBINATION GENERATION
+
+For N boolean features, generate 2^N init rules:
+```python
+def generate_feature_combinations(features: list[str]) -> list[dict]:
+    combinations = []
+    for i in range(2 ** len(features)):
+        combo = {{}}
+        for j, feature in enumerate(features):
+            combo[feature] = bool((i >> j) & 1)
+        combinations.append(combo)
+    return combinations
+# Example: ['LT', 'DF', 'OffOnly'] → 8 combinations
+```
+
+---
+## CROSS-CLUSTER DEPENDENCIES
+
+Some clusters depend on others (e.g., LevelControl depends on OnOff):
+```tamarin
+rule Cmd_MoveToLevel_RequiresOnOff:
+  [ !Config_LevelControl(~tid, ...),
+    St_LevelControl(~tid, level, ...),
+    St_OnOff(~tid, b_true, ...) ]  // OnOff must be ON
+--[ Command(~tid, 'MoveToLevel') ]->
+  [ St_LevelControl(~tid, newLevel, ...),
+    St_OnOff(~tid, b_true, ...) ]  // Preserve OnOff
+```
+Options: Full modeling | Interface abstraction | Assume independence
+
+---
+## COMMAND PARAMETERS
+
+For commands with parameters (e.g., `MoveToLevel(level, time)`):
+```tamarin
+functions: param_low/0, param_mid/0, param_high/0, param_max/0
+
+rule Cmd_MoveToLevel_Low:
+  [ St(~tid, state, level, ...), In(<param_low, time>) ]
+--[ Command(~tid, 'MoveToLevel'), ParamUsed(~tid, param_low) ]->
+  [ St(~tid, state, param_low, ...) ]
+```
+
+---
+## TIMER STATE INVARIANT
+
+```tamarin
+restriction timer_state_invariant:
+  "All tid state a1 a2 timerAttr delayAttr timerState #i.
+     St(tid, state, a1, a2, timerAttr, delayAttr, timerState)@i ==>
+       ((timerState = ts_idle) |
+        (timerState = ts_timed & timerAttr = tv_pos) |
+        (timerState = ts_delayed & delayAttr = tv_pos))"
+```
+
+---
+## CLUSTER-SPECIFIC EXAMPLES
+
+**OnOff (0x0006)**: Features: LT, DF, OffOnly | States: OffIdle, OnIdle, TimedOn, DelayedOff | Attrs: OnOff, OnTime, OffWaitTime, GlobalSceneControl | Commands: Off, On, Toggle, OffWithEffect, OnWithRecallGlobalScene, OnWithTimedOff
+
+**LevelControl (0x0008)**: Features: OO, LT, FQ | States: Idle, Moving, Transitioning | Attrs: CurrentLevel, OnLevel, RemainingTime | Commands: MoveToLevel, Move, Step, Stop
+
+**DoorLock (0x0101)**: Features: PIN, RID, FGP, LOG, USR | States: Locked, Unlocked, PartiallyLocked | Attrs: LockState, LockType, ActuatorEnabled | Commands: LockDoor, UnlockDoor, UnlockWithTimeout, SetCredential
+
+---
+## EXAMPLE CONVERSION
+
+**FSM Input (SimpleSwitch)**:
+```json
+{{
+  "cluster_name": "SimpleSwitch",
+  "states": [
+    {{ "name": "Off", "attributes": {{ "power": {{ "value": false }} }} }},
+    {{ "name": "On", "attributes": {{ "power": {{ "value": true }} }} }}
+  ],
+  "transitions": [
+    {{ "source": "Off", "target": "On", "trigger": {{ "type": "command", "name": "TurnOn" }} }},
+    {{ "source": "On", "target": "Off", "trigger": {{ "type": "command", "name": "TurnOff" }} }}
+  ]
+}}
+```
+
+**Tamarin Output**:
+```tamarin
+theory SimpleSwitch_Matter
+begin
+
+functions: b_true/0, b_false/0, st_Off/0, st_On/0
+
+rule Init:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_Off) ]
+
+rule Cmd_TurnOn:
+  [ St(~tid, st_Off) ]
+--[ Command(~tid, 'TurnOn'), StateTransition(~tid, st_Off, st_On) ]->
+  [ St(~tid, st_On) ]
+
+rule Cmd_TurnOff:
+  [ St(~tid, st_On) ]
+--[ Command(~tid, 'TurnOff'), StateTransition(~tid, st_On, st_Off) ]->
+  [ St(~tid, st_Off) ]
+
+restriction unique_init:
+  "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
+
+lemma sources [sources]:
+  "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i ==>
+     Ex #j. ClusterInit(tid)@j & #j < #i"
+
+lemma exec_turnon: exists-trace "Ex tid #i. Command(tid, 'TurnOn')@i"
+lemma exec_turnoff: exists-trace "Ex tid #i. Command(tid, 'TurnOff')@i"
+
+end
+```
+
+---
+## OUTPUT REQUIREMENTS
+
+Return ONLY valid Tamarin theory code:
+- No markdown code blocks
+- No explanatory text
+- Directly parseable by: `tamarin-prover --parse-only <file>.spthy`
 """

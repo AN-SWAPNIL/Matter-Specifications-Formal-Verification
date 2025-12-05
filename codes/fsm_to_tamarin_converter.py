@@ -23,6 +23,8 @@ from config import (
     FSM_TO_TAMARIN_PROMPT_TEMPLATE
 )
 
+MAX_TRIES = 5
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -93,25 +95,48 @@ class FSMToTamarinConverter:
     def judge_tamarin(self, tamarin_model: str, fsm_json: str) -> str:
         """Evaluate the correctness of a Tamarin conversion using the judge model."""
         prompt = f"""
-You are a judge that evaluates the correctness of a Tamarin prover model conversion from an FSM JSON.
+You are an expert Tamarin prover judge evaluating FSM-to-Tamarin conversions for Matter protocol clusters.
 
-Your task is to determine if the Tamarin model correctly translates the FSM structure and semantics.
+Your task: Determine if the Tamarin model correctly and completely translates the FSM structure and semantics.
 
-Evaluation criteria:
-1. **Syntax correctness**: Valid Tamarin syntax (theory, builtins, functions, rules, lemmas)
-2. **State preservation**: All FSM states mapped to Tamarin facts
-3. **Transition fidelity**: All FSM transitions converted to Tamarin rules with correct guards
-4. **Action facts**: State changes and events captured as action facts
-5. **Lemmas**: Safety/liveness properties derived from FSM invariants
-6. **Completeness**: All FSM elements (states, transitions, commands, events) covered
+## CRITICAL SYNTAX CHECKS (MUST ALL PASS)
+1. **Single functions block**: Only ONE `functions:` declaration (multiple blocks = FAIL)
+2. **No underscore wildcards**: No `_` in rule premises (use named variables)
+3. **No disjunctions in premises**: No `|` in premise facts (split into separate rules)
+4. **No negation in premises**: NEVER use `not()` or `not (x = y)` in rule PREMISES - only valid in formulas!
+5. **Consistent fact arity**: All `St(...)` facts must have SAME number of arguments in ALL rules
+6. **Correct inequality in FORMULAS only**: `not (x = y)` is ONLY valid in lemmas/restrictions, NOT in premises
+7. **Fresh/public prefixes**: Fresh vars use `~`, public use `$`
+8. **Lemma attributes**: Use `[sources]` NOT deprecated `[typing]`
 
-Your output format should be json parsable and strictly follow this format:
+## SEMANTIC CHECKS
+9. **State mapping**: Every FSM state → `st_StateName/0` function constant
+10. **Transition rules**: Every FSM transition → Tamarin rule(s) with correct guards
+11. **Guard encoding**: Guards encoded via pattern matching (NO negation in premises!)
+12. **Inequality guards**: `X != value` guards MUST be split into separate rules per allowed value
+13. **Action facts**: Commands emit `Command(tid, 'CmdName')` and `StateTransition(tid, s1, s2)`
+14. **Timer abstraction**: Timers use `tv_zero/0`, `tv_pos/0`, `tv_ffff/0` (NO arithmetic)
+15. **Config vs State**: Immutable features in persistent `!Config(...)`, mutable in linear `St(...)`
+
+## STRUCTURAL CHECKS
+16. **Sources lemma present**: Must have `lemma sources [sources]: ...` for termination
+17. **Unique init restriction**: Must have `restriction unique_init: ...`
+18. **Executability lemmas**: At least one `exists-trace` lemma
+19. **Theory structure**: Proper `theory Name begin ... end` wrapper
+
+## VERDICT
+- If ANY critical syntax check fails (especially check #4 - no negation in premises!) → "correct": false
+- If >2 semantic checks fail → "correct": false  
+- If all critical + most semantic checks pass → "correct": true
+
+Your output format MUST be valid JSON:
 {{
     "correct": true/false,
-    "explanation": "Your explanation or reasoning here"
+    "explanation": "Detailed explanation of issues found or confirmation of correctness",
+    "issues": ["list of specific issues if any"]
 }}
 
-Now evaluate the following conversion:
+Now evaluate:
 
 TAMARIN MODEL:
 {tamarin_model}
@@ -127,7 +152,7 @@ SOURCE FSM JSON:
             logger.error(f"Error during judge evaluation: {e}")
             return json.dumps({"correct": False, "explanation": f"Judge error: {str(e)}"})
 
-    def convert_fsm_to_tamarin(self, fsm_data: Dict[str, Any], max_retries: int = 10) -> Optional[Dict[str, Any]]:
+    def convert_fsm_to_tamarin(self, fsm_data: Dict[str, Any], max_retries: int = MAX_TRIES) -> Optional[Dict[str, Any]]:
         """Convert FSM JSON to Tamarin model with iterative refinement based on judge feedback."""
         cluster_name = "Unknown"
         if isinstance(fsm_data, dict) and 'fsm_model' in fsm_data:
@@ -354,7 +379,7 @@ Please correct the Tamarin model based on this feedback and generate an improved
 
 
 def main():
-    input_file = "fsm_models_g2.5f/1.5_OnOff_Cluster_fsm.json"
+    input_file = "fsm_models/1.6_Level_Control_fsm.json"
     output_dir = "tamarin_models_from_fsm"
     if len(sys.argv) > 1:
         input_file = sys.argv[1]

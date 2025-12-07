@@ -1,0 +1,491 @@
+[
+  {
+    "protocol": "Tuya-Matter-Fabric-Bug",
+    "cve": "CVE-2025-56557",
+    "clarification": "Multiple related APIs and Matter behaviors allowing a guest to obtain fabric credentials, enumerate node IDs, add malicious node IDs, and escalate to fabric admin via issued certificates.",
+    "entries": [
+      {
+        "Command": "thing.m.matter.icac.issue",
+        "Argument Info": "Request body containing { \"gid\": <group-id>, \"pubkey\": <ECC public key> }",
+        "Expected Behavior": "Only fabric administrators (or other authorized roles) may call this API. The API should validate caller permissions and only return RCAC/ICAC certificates, fabric ID, and node ID when the caller is authorized for that fabric.",
+        "Buggy Behavior": "A normal/guest-level user can call the API and receive valid RCAC/ICAC certificates, the fabric ID, and an attacker-assigned node ID, enabling the attacker to obtain fabric credentials and act as a controller/admin for that fabric.",
+        "CVE": "CVE-2025-56557",
+        "clarification": "Attacker can obtain fabric certificates tied to the home's fabric, enabling use of CHIP Tool as a controller."
+      },
+      {
+        "Command": "thing.m.matter.device.node.batch.get",
+        "Argument Info": "Request with { \"gid\": <group-id>, ... } or other identifiers to enumerate node IDs in a fabric",
+        "Expected Behavior": "Only authorized fabric controllers or users with appropriate view permissions may enumerate device node IDs; the API should restrict or obfuscate node identifiers to prevent enumeration by low-privilege users.",
+        "Buggy Behavior": "A guest/low-privilege user can call the API and obtain the list of node IDs for devices in the fabric, allowing enumeration and mapping of owner/device node IDs.",
+        "CVE": "CVE-2025-56557",
+        "clarification": "Allows mapping of node IDs which attackers can use to hijack or impersonate devices."
+      },
+      {
+        "Command": "Matter AccessControl Write (cluster AccessControl)",
+        "Argument Info": "ACL write payload (List or Map) e.g. [{ \"fabricindex\": <int>, \"privilege\": <int>, \"authMode\": <int>, \"subjects\": [<ids>], \"targets\": <null|list> }]",
+        "Expected Behavior": "Only the fabric administrator (or properly authorized subjects) may write or modify a device's ACL. ACL entries must be validated and limited to prevent granting admin-level privileges to unauthorized subjects.",
+        "Buggy Behavior": "An attacker with temporary/guest access can write a new ACL that grants high privilege (e.g., privilege 5) to attacker-controlled subjects (including malicious node IDs), allowing remote control and privilege escalation; the owner may be demoted or lose control.",
+        "CVE": "CVE-2025-56557",
+        "clarification": "ACL writing abused to escalate privileges and persist control."
+      },
+      {
+        "Command": "Create/Add Matter device to fabric with Node ID (commissioning)",
+        "Argument Info": "Commissioning request parameters (fabric ID, Node ID, commissioning payload); Node ID supplied/controlled by controller during commissioning",
+        "Expected Behavior": "The fabric controller or provisioning flow should prevent a non-admin from adding devices with arbitrary Node IDs that collide with existing or predicted Node IDs; Node ID assignment should be controlled and checked server- and device-side to prevent collisions and spoofing.",
+        "Buggy Behavior": "An attacker can add a malicious device specifying an arbitrary (or predicted) Node ID X into the fabric; this can cause command routing conflicts and allow the attacker to intercept or hijack control of benign devices that later receive the same Node ID.",
+        "CVE": "CVE-2025-56557",
+        "clarification": "Node ID collisions allow hijacking of control when owner later gets same Node ID."
+      },
+      {
+        "Command": "Node ID enumeration / prediction",
+        "Argument Info": "Behavioral property: node IDs assigned to users/devices are incremental (predictable) within a home/fabric",
+        "Expected Behavior": "Node IDs for users and devices should not be trivially enumerable or predictably incremental; APIs and assignments must avoid leaking a simple sequence that allows brute-force prediction.",
+        "Buggy Behavior": "Node IDs are assigned incrementally and/or disclosed by APIs. A temporary guest can enumerate or predict the owner/device Node ID by brute forcing the predictable sequence and then impersonate them or pre-claim the next device Node ID.",
+        "CVE": "CVE-2025-56557",
+        "clarification": "Incremental node IDs leak strong predictive information."
+      },
+      {
+        "Command": "Use CHIP Tool with stolen fabric credentials",
+        "Argument Info": "Attacker uses obtained fabric certificates, fabric ID and node IDs (from thing.m.matter.icac.issue and device.node.batch.get) with CHIP Tool commands to act as a controller",
+        "Expected Behavior": "Obtaining certificates/credentials should be restricted so that only authorized administrators keep controller privileges. Possession of issued certificates by a low-privilege actor should not permit unilateral takeover of a fabric.",
+        "Buggy Behavior": "An attacker uses certificates and node IDs obtained as a guest to operate CHIP Tool and assume fabric admin/controller roles, enabling persistent control of devices (even after their app-level access is revoked).",
+        "CVE": "CVE-2025-56557",
+        "clarification": "Fabric credentials enable continued control even after user revocation."
+      },
+      {
+        "Command": "ACL modification resulting in DoS (combined attack)",
+        "Argument Info": "Sequence: (1) issue certificates (thing.m.matter.icac.issue), (2) add malicious device or change ACL via Matter AccessControl cluster write",
+        "Expected Behavior": "ACL modification flows must be restricted to authorized admins; owner ACL entries cannot be silently downgraded by a low-privileged actor. The system must log and notify owners when privileged ACL changes occur.",
+        "Buggy Behavior": "An attacker escalates privileges or modifies ACL such that the legitimate owner is demoted or removed; owner can no longer control or commission the device and receives no explanatory UI feedback (resulting in effective DoS).",
+        "CVE": "CVE-2025-56557",
+        "clarification": "Combined sequence yields persistent DoS / admin-takeover."
+      }
+    ]
+  },
+  {
+    "protocol": "Matter-UserLabel-Unlimited-Append",
+    "cve": "CVE-2024-56319",
+    "title": "Unlimited AppendItem in User Label Cluster causing DoS",
+    "reproduction_steps": [
+      "Run chip-tool and chip-all-clusters-app separately:",
+      "./chip-tool interactive start",
+      "./chip-all-clusters-app",
+      "Write a user label list with a large number of entries using chip-tool:",
+      "userlabel write label-list '[{\"label\":\"roomName\", \"value\":\"master bedroom 1\"}, {\"label\":\"orientation\", \"value\":\"east\"}, {\"label\":\"floor\", \"value\":\"2\"}, {\"label\":\"roomType\", \"value\":\"bedroom\"}, ... , {\"label\":\"roomType\", \"value\":\"bedroom\"}]' 1 0",
+      "Observe CPU usage and responsiveness: CPU reaches 100%, processing times increase exponentially, resulting in timeouts. Reading back the list also times out."
+    ],
+    "summary": "The WriteLabelList implementation allows unlimited AppendItem operations bypassing kMaxUserLabelListLength (10), causing resource exhaustion (CPU, memory, storage), timeouts, and system-wide slowdown / DoS.",
+    "root_cause_analysis": "AppendItem path validates individual entry but does not enforce total list length. AppendUserLabel increments and stores entries without checking max length.",
+    "proposed_code_fix_snippet": "Add check in AppendUserLabel to return CHIP_ERROR_NO_MEMORY if length >= kMaxUserLabelListLength before appending.",
+    "roles": [
+      {
+        "name": "Attacker",
+        "steps": [
+          {
+            "send": "Repeatedly send AppendItem entries via WriteLabelList with many items",
+            "clarification": "Flood the device with AppendItem requests to grow stored labels beyond intended limits."
+          }
+        ]
+      },
+      {
+        "name": "Device",
+        "steps": [
+          {
+            "recv": "AcceptAppendItem(Device, Entry)",
+            "state_updates": ["AppendEntry(Device, Entry)"],
+            "clarification": "Device appends entries without enforcing total maximum length."
+          }
+        ]
+      }
+    ],
+    "facts": [
+      {
+        "name": "UnlimitedLabelAppend",
+        "arity": 1,
+        "clarification": "Labels appended past the expected maximum list size."
+      },
+      {
+        "name": "ResourceExhausted",
+        "arity": 1,
+        "clarification": "Device CPU/memory/disk exhausted leading to timeouts and DoS."
+      }
+    ],
+    "rules": [
+      {
+        "name": "AppendWithoutLimit",
+        "premises": ["In(Entry)"],
+        "actions": ["AppendEntry(Device, Entry)"],
+        "conclusions": ["UnlimitedLabelAppend(Device)"],
+        "clarification": "AppendItem path appends without checking global limit."
+      },
+      {
+        "name": "ResourceExhaustion",
+        "premises": ["UnlimitedLabelAppend(Device)"],
+        "conclusions": ["ResourceExhausted(Device)"],
+        "clarification": "Unbounded growth leads to CPU/memory/disk exhaustion and timeouts."
+      }
+    ],
+    "lemmas": [
+      {
+        "name": "AppendCanCauseDoS",
+        "type": "safety",
+        "query": "exists Device. ResourceExhausted(Device)",
+        "clarification": "Shows that an attacker can produce resource exhaustion via AppendItem operations."
+      }
+    ],
+    "initial_facts": [
+      {
+        "fact": "Device(Device)",
+        "clarification": "Device starts with normal limited user label list (kMaxUserLabelListLength = 10)."
+      }
+    ]
+  },
+  {
+    "protocol": "Matter-TCP-Malformed-Length",
+    "cve": "CVE-2024-56318",
+    "title": "Null pointer deref via malformed TCP Matter packet length (DoS)",
+    "reproduction_steps": [
+      "Run chip-tool and chip-all-clusters-app separately:",
+      "./chip-tool interactive start",
+      "./chip-all-clusters-app",
+      "Send a crafted TCP packet where the 4-byte length field is present but leads Consume() to free the only buffer (e.g., length exactly equals current buffer length and chain not present).",
+      "Observe crash logs showing timeout and null pointer dereference in ProcessSingleMessage."
+    ],
+    "summary": "TCP-based Matter packet parsing reads a 4-byte length, consumes those bytes, and then calls ProcessSingleMessage without verifying that the receive buffer pointer is non-null; in some cases Consume frees the only buffer and returns nullptr, causing a null pointer deref and crash.",
+    "root_cause_analysis": "After Read() returns the length and Consume(kPacketSizeBytes) is called, PacketBuffer::FreeHead can return nullptr, which is assigned to state->mReceived.mBuffer. ProcessSingleMessage dereferences state->mReceived without IsNull check.",
+    "proposed_mitigation_snippet": "After Consume(kPacketSizeBytes); call VerifyOrReturnError(!state->mReceived.IsNull(), CHIP_ERROR_MESSAGE_INCOMPLETE); before calling ProcessSingleMessage.",
+    "roles": [
+      {
+        "name": "Attacker",
+        "steps": [
+          {
+            "send": "SendMalformedTCPPacket(Device, MalformedLengthField)",
+            "clarification": "Attacker sends a single unauthenticated TCP Matter packet crafted so that Consume() frees the only buffer — causing state->mReceived to become null."
+          }
+        ]
+      },
+      {
+        "name": "Device",
+        "steps": [
+          {
+            "recv": "RecvMalformedTCPPacket(Device, MalformedLengthField)",
+            "state_updates": ["ConsumeLength(Device)", "CallProcessSingleMessage(Device)"],
+            "clarification": "Device consumes packet length and then calls ProcessSingleMessage without checking state->mReceived for null, leading to crash."
+          }
+        ]
+      }
+    ],
+    "facts": [
+      {
+        "name": "BufferFreed",
+        "arity": 1,
+        "clarification": "Internal TCP buffer chain freed resulting in null mBuffer pointer."
+      },
+      {
+        "name": "NullDerefCrash",
+        "arity": 1,
+        "clarification": "Null pointer dereference in ProcessSingleMessage causing application crash and DoS."
+      }
+    ],
+    "rules": [
+      {
+        "name": "MalformedTCPPacketAccepted",
+        "premises": ["In(MalformedLengthField)"],
+        "actions": ["Consume(Device)"],
+        "conclusions": ["BufferFreed(Device)"],
+        "clarification": "Malformed TCP packet length leads Consume() to free buffer chain and return nullptr."
+      },
+      {
+        "name": "ProcessSingleMessageNullCrash",
+        "premises": ["BufferFreed(Device)"],
+        "conclusions": ["NullDerefCrash(Device)"],
+        "clarification": "ProcessSingleMessage dereferences state->mReceived without null check, causing crash."
+      }
+    ],
+    "lemmas": [
+      {
+        "name": "NullPointerCrashReachable",
+        "type": "security",
+        "query": "exists Device. NullDerefCrash(Device)",
+        "clarification": "Demonstrates that a crash (DoS) is reachable via a single unauthenticated malformed TCP packet."
+      }
+    ],
+    "initial_facts": [
+      {
+        "fact": "Device(Device)",
+        "clarification": "Device with a TCP listener exists initially."
+      }
+    ]
+  },
+  {
+    "protocol": "Matter-ACL-Write-ReplaceAll",
+    "cve": "CVE-2024-ACL-ReplaceAll",
+    "title": "WriteAcl ReplaceAll then decode failure leaves ACL empty (DoS)",
+    "reproduction_steps": [
+      "After pairing, read ACL to confirm existing entries:",
+      "./chip-tool accesscontrol read acl 1 0",
+      "Send a write request that includes invalid entry (e.g., privilege 99):",
+      "./chip-tool accesscontrol write acl '[{\"privilege\":99,\"authMode\":2,\"subjects\":[112233],\"fabricIndex\":1}]' 1 0",
+      "Observe response failure (CONSTRAINT_ERROR) but ACL entries deleted and left empty."
+    ],
+    "summary": "WriteAcl implementation deletes all existing ACL entries (ReplaceAll) and then decodes & recreates entries. If TLV decoding fails mid-way, the function aborts and leaves the ACL empty, causing denial of access including administrator.",
+    "root_cause_analysis": "TLV decoded sequentially. ReplaceAll semantics delete first; invalid entries cause decoding to fail after deletion; no rollback or staging is used.",
+    "roles": [
+      {
+        "name": "Attacker",
+        "steps": [
+          {
+            "send": "SendInvalidAclWrite(Device, InvalidAclPayload)",
+            "clarification": "Attacker or mis-sent write that contains invalid field causing constraint error during decoding."
+          }
+        ]
+      },
+      {
+        "name": "Device",
+        "steps": [
+          {
+            "recv": "RecvInvalidAclWrite(Device, InvalidAclPayload)",
+            "state_updates": ["ReplaceAll(Device)", "BeginDecode(Device)", "DecodeFailure(Device)"],
+            "clarification": "Device deletes existing ACLs then fails to decode new ACL entries, leaving the ACL empty."
+          }
+        ]
+      }
+    ],
+    "facts": [
+      {
+        "name": "ACLDeleted",
+        "arity": 1,
+        "clarification": "Represents the state after ReplaceAll where all ACL entries are removed."
+      },
+      {
+        "name": "DecodeFailed",
+        "arity": 1,
+        "clarification": "TLV decoding failed due to invalid input; no new ACL entries were added."
+      },
+      {
+        "name": "ACLDoS",
+        "arity": 1,
+        "clarification": "Device is left with no ACL entries, causing complete access denial for all users including administrators."
+      }
+    ],
+    "rules": [
+      {
+        "name": "ProcessReplaceAll",
+        "premises": ["In(InvalidAclPayload)"],
+        "actions": ["ReplaceAll(Device)"],
+        "conclusions": ["ACLDeleted(Device)"],
+        "clarification": "WriteAcl deletes all existing ACL entries before validating incoming data."
+      },
+      {
+        "name": "DecodeFailureAfterReplace",
+        "premises": ["ACLDeleted(Device)"],
+        "conclusions": ["DecodeFailed(Device)"],
+        "clarification": "TLV decoding of the new entries fails because the payload contains invalid values (e.g., privilege=99)."
+      },
+      {
+        "name": "FinalACLDoS",
+        "premises": ["ACLDeleted(Device)", "DecodeFailed(Device)"],
+        "conclusions": ["ACLDoS(Device)"],
+        "clarification": "The decode failure aborts recreation, leaving the ACL list empty and the device inaccessible."
+      }
+    ],
+    "lemmas": [
+      {
+        "name": "ACLDoSIsReachable",
+        "type": "security",
+        "query": "exists Device. ACLDoS(Device)",
+        "clarification": "Shows that a user-provided invalid WriteAcl request triggers full ACL deletion and results in permanent denial of access."
+      }
+    ],
+    "initial_facts": [
+      {
+        "fact": "Device(Device)",
+        "clarification": "Device begins in a normal state with valid ACL entries."
+      }
+    ]
+  },
+  {
+    "protocol": "Matter-InFabric-Attribute-Disclosure",
+    "cve": "CVE-2024-3454",
+    "cvss": "3.5 (AV:A/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N)",
+    "title": "In-Fabric Attribute Disclosure (Footprinting)",
+    "summary": "Implementation issue in connectedhomeip SDK (Matter 1.2) allows a low-privileged in-fabric actor to disclose attributes of other devices (footprinting) that should be restricted.",
+    "credit": "Bela Genge, Bitdefender",
+    "roles": [
+      {
+        "name": "Attacker",
+        "steps": [
+          {
+            "send": "SendInFabricQuery(Attacker, TargetDevice, AttributeRequest)",
+            "clarification": "Attacker part of same fabric sends attribute read or crafted queries to infer metadata."
+          }
+        ]
+      },
+      {
+        "name": "TargetDevice",
+        "steps": [
+          {
+            "recv": "RecvInFabricQuery(TargetDevice, AttributeRequest)",
+            "state_updates": ["ProcessRequest(TargetDevice)", "LeakAttribute(TargetDevice)"],
+            "clarification": "Due to insufficient isolation, device processes and leaks attribute metadata to attacker."
+          }
+        ]
+      }
+    ],
+    "facts": [
+      {
+        "name": "InFabric",
+        "arity": 2,
+        "clarification": "Indicates that Attacker and TargetDevice are part of the same Matter fabric."
+      },
+      {
+        "name": "UnauthorizedAttribute",
+        "arity": 1,
+        "clarification": "Attribute or metadata that the attacker should not be able to read."
+      },
+      {
+        "name": "LeakOccurred",
+        "arity": 2,
+        "clarification": "Represents that unauthorized attribute information was disclosed to the attacker."
+      }
+    ],
+    "rules": [
+      {
+        "name": "ProcessUnauthorizedDisclosure",
+        "premises": ["InFabric(Attacker, TargetDevice)", "UnauthorizedAttribute(TargetDevice)"],
+        "actions": ["LeakAttribute(TargetDevice)"],
+        "conclusions": ["LeakOccurred(Attacker, TargetDevice)"],
+        "clarification": "Because of improper in-fabric attribute isolation, the device leaks attribute information even though the attacker lacks proper privilege."
+      }
+    ],
+    "lemmas": [
+      {
+        "name": "UnauthorizedDisclosurePossible",
+        "type": "security",
+        "query": "exists Attacker, TargetDevice. LeakOccurred(Attacker, TargetDevice)",
+        "clarification": "An in-fabric low-privileged node can obtain unauthorized device attribute information (footprinting)."
+      }
+    ],
+    "initial_facts": [
+      {
+        "fact": "InFabric(Attacker, TargetDevice)",
+        "clarification": "Both attacker and target belong to the same Matter fabric; attacker is legitimate but low-privileged."
+      },
+      {
+        "fact": "UnauthorizedAttribute(TargetDevice)",
+        "clarification": "Target device has attributes requiring higher privilege and should not be disclosed."
+      }
+    ]
+  },
+  {
+    "cve_id": "CVE-2024-3297",
+    "protocol": "Matter-CASE-Sigma1-Replay-Lockup",
+    "title": "Session establishment lock-up during replay of CASE Sigma1 messages",
+    "publication_date": "2024-07-24",
+    "cvss_score": "6.5",
+    "cvss_vector": "CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+    "affected_vendors": [
+      "Connectivity Standards Alliance"
+    ],
+    "affected_products": [
+      "Matter"
+    ],
+    "vulnerability_details": "An issue in the CASE protocol implementation before Matter 1.1 allows an attacker to replay manipulated CASE Sigma1 messages to make the device unresponsive until power-cycled.",
+    "credit": "Bela Genge, Bitdefender",
+    "clarification": {
+      "what_this_json_is_used_for": "Map protocol steps to Tamarin model for replay detection and DoS liveness property violations."
+    }
+  },
+  {
+    "protocol": "Matter-KeySetRemove",
+    "cve": "CVE-2023-42189",
+    "title": "KeySetRemove invalid parameter accepted causing DoS",
+    "cvss_score": "Denial of Service (no CVSS vector published)",
+    "affected_products": [
+      "Nanoleaf Light Strip (v3.5.10)",
+      "Govee LED Strip (v3.00.42)",
+      "SwitchBot Hub2 (v1.0-0.8)",
+      "Philips Hue Hub (v1.59.1959097030)",
+      "Yeelight Smart Lamp (v1.12.69)"
+    ],
+    "reproduction_notes": "Devices accept KeySetRemove(0) or missing argument {} which should be invalid. Once malformed command executed, subsequent commands may error with 'Invalid CASE parameter' or 'No shared trusted root'.",
+    "roles": [
+      {
+        "name": "Attacker",
+        "steps": [
+          {
+            "send": "SendKeySetRemove(Device, InvalidGroupKeySetID)",
+            "clarification": "Attacker sends KeySetRemove with GroupKeySetID = 0 or empty parameter ({}). Valid range is [1..65534]."
+          }
+        ]
+      },
+      {
+        "name": "Device",
+        "steps": [
+          {
+            "recv": "RecvKeySetRemove(Device, InvalidGroupKeySetID)",
+            "state_updates": ["ProcessInvalidRemoval(Device)"],
+            "clarification": "Device accepts invalid removal, corrupts group key state or removes key material in unexpected way."
+          },
+          {
+            "recv": "SubsequentCommands(Device)",
+            "state_updates": ["FailureState(Device)"],
+            "clarification": "Device begins returning session/CASE errors for future commands."
+          }
+        ]
+      }
+    ],
+    "facts": [
+      {
+        "name": "InvalidRemoveAccepted",
+        "arity": 1,
+        "clarification": "Device accepted KeySetRemove with invalid GroupKeySetID (0 or {})."
+      },
+      {
+        "name": "FailureState",
+        "arity": 1,
+        "clarification": "Device enters inconsistent cryptographic/session state."
+      },
+      {
+        "name": "DoSState",
+        "arity": 1,
+        "clarification": "Final DoS state where device cannot process normal Matter commands."
+      }
+    ],
+    "rules": [
+      {
+        "name": "AcceptInvalidKeySetRemove",
+        "premises": ["In(InvalidGroupKeySetID)"],
+        "actions": ["ProcessInvalidRemoval(Device)"],
+        "conclusions": ["InvalidRemoveAccepted(Device)"],
+        "clarification": "KeySetRemove should validate GroupKeySetID ∈ [1..65534], but devices accept 0 or missing argument."
+      },
+      {
+        "name": "TransitionToFailureState",
+        "premises": ["InvalidRemoveAccepted(Device)"],
+        "conclusions": ["FailureState(Device)"],
+        "clarification": "Invalid removal causes cryptographic/session state corruption leading to failure."
+      },
+      {
+        "name": "TriggerDoS",
+        "premises": ["FailureState(Device)"],
+        "conclusions": ["DoSState(Device)"],
+        "clarification": "Further operations fail causing DoS."
+      }
+    ],
+    "lemmas": [
+      {
+        "name": "InvalidKeySetRemoveCausesDoS",
+        "type": "security",
+        "query": "exists Device. DoSState(Device)",
+        "clarification": "Invalid KeySetRemove commands allow unauthenticated DoS on Matter devices."
+      }
+    ],
+    "initial_facts": [
+      {
+        "fact": "Device(Device)",
+        "clarification": "A Matter device supporting GroupKeyManagement cluster exists initially."
+      }
+    ]
+  }
+]

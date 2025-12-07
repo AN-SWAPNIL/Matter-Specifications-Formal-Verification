@@ -1,0 +1,677 @@
+theory LevelControlCluster_Matter_FSM
+begin
+
+/* 
+ * Level Control Cluster (0x0008)
+ * Auto-generated from FSM
+ */
+
+//========================================
+// SECTION 1: Function Declarations (SINGLE BLOCK)
+//========================================
+functions:
+  // Booleans
+  b_true/0, b_false/0,
+
+  // State enumerations
+  st_IdleOffLevelUndefined/0,
+  st_IdleOffLevelDefined/0,
+  st_IdleOn/0,
+  st_MovingToLevel/0,
+  st_MovingContinuouslyUp/0,
+  st_MovingContinuouslyDown/0,
+  st_FrequencyControlIdle/0,
+
+  // Abstract level-value kinds
+  lv_undef/0,    // CurrentLevel undefined or outside [Min,Max]
+  lv_def/0,      // CurrentLevel defined in [Min,Max]
+
+  // Abstract timer values
+  tv_zero/0,     // RemainingTime == 0
+  tv_pos/0,      // RemainingTime > 0 (finite)
+  tv_indet/0,    // RemainingTime == IndeterminateContinuous
+
+  // Move directions
+  dir_up/0,
+  dir_down/0,
+
+  // Feature flags
+  f_LT/0,    // Lighting feature
+  f_noLT/0,
+  f_FQ/0,
+  f_noFQ/0,
+
+  // ExecuteIfOff effective flag
+  ex_off0/0,   // EffectiveExecuteIfOff == 0
+  ex_off1/0,   // EffectiveExecuteIfOff == 1
+
+  // Rate kinds for Move / MoveWithOnOff
+  rt_zero/0,   // Rate == 0
+  rt_pos/0,    // Rate != 0
+
+  // StepSize kinds for Step / StepWithOnOff
+  ss_zero/0,   // StepSize == 0
+  ss_pos/0,    // StepSize != 0
+
+  // Rate-limited transition time specified or not
+  rl_spec/0,    // RateLimitedTransitionTimeSpecified == true
+  rl_nospec/0,  // RateLimitedTransitionTimeSpecified == false
+
+  // Result level classification relative to MinLevel
+  res_at_min/0,    // resulting/final level == DeviceMinLevel
+  res_above_min/0, // resulting/final level > DeviceMinLevel
+
+  // Frequency support classification for requested frequency
+  fq_supported/0,
+  fq_notsupported/0,
+
+  // LastCommandHadOnOffLinkage flag
+  lc_link/0,
+  lc_nolink/0,
+
+  // Command tags
+  c_PowerUp/0,
+  c_MoveToLevel/0,
+  c_MoveToLevelWithOnOff/0,
+  c_Move/0,
+  c_Step/0,
+  c_StepWithOnOff/0,
+  c_Stop/0,
+  c_StopWithOnOff/0,
+  c_TimerTick/0,
+  c_TimerExpiry/0,
+  c_ReachedMaxLevel/0,
+  c_ReachedMinLevel/0,
+  c_MoveToClosestFrequency/0
+
+//========================================
+// SECTION 2: Global Facts
+//========================================
+
+// Unified cluster state:
+// St(tid, State, OnOff, LevelKind, RemainingTimeKind, MoveDirOrFreqFlag)
+//
+// - State            : st_*
+// - OnOff            : b_true / b_false
+// - LevelKind        : lv_undef / lv_def
+// - RemainingTimeKind: tv_zero / tv_pos / tv_indet
+// - MoveDirOrFreqFlag:
+//      dir_up / dir_down for movement-related states,
+//      f_FQ / f_noFQ or similar abstract placeholders where needed
+//
+// We abstract many concrete attributes into these kinds.
+
+// Persistent configuration facts:
+//
+// !Config(tid, LTFlag, FQFlag)
+//   LTFlag : f_LT or f_noLT
+//   FQFlag : f_FQ or f_noFQ
+//
+// !CmdOptions(tid, ExOffFlag)
+//   ExOffFlag : ex_off0 or ex_off1
+//
+// !RateKind(tid, RateFlag)
+//   RateFlag : rt_zero or rt_pos
+//
+// !StepSizeKind(tid, StepFlag)
+//   StepFlag : ss_zero or ss_pos
+//
+// !RateLimitedKind(tid, RLFlag)
+//   RLFlag : rl_spec or rl_nospec
+//
+// !ResultLevelKind(tid, ResFlag)
+//   ResFlag : res_at_min or res_above_min
+//
+// !FreqSupport(tid, FreqFlag)
+//   FreqFlag : fq_supported or fq_notsupported
+//
+// !LastCmdLink(tid, LcFlag)
+//   LcFlag : lc_link or lc_nolink
+
+//========================================
+// SECTION 3: Initialization Rules
+//========================================
+
+rule Init_LT_FQ_Enabled:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, f_noFQ),
+    !Config(~tid, f_LT, f_FQ),
+    !CmdOptions(~tid, ex_off0),
+    !RateKind(~tid, rt_pos),
+    !StepSizeKind(~tid, ss_pos),
+    !RateLimitedKind(~tid, rl_spec),
+    !ResultLevelKind(~tid, res_above_min),
+    !FreqSupport(~tid, fq_supported),
+    !LastCmdLink(~tid, lc_nolink) ]
+
+rule Init_LT_Only:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, f_noFQ),
+    !Config(~tid, f_LT, f_noFQ),
+    !CmdOptions(~tid, ex_off0),
+    !RateKind(~tid, rt_pos),
+    !StepSizeKind(~tid, ss_pos),
+    !RateLimitedKind(~tid, rl_spec),
+    !ResultLevelKind(~tid, res_above_min),
+    !FreqSupport(~tid, fq_notsupported),
+    !LastCmdLink(~tid, lc_nolink) ]
+
+rule Init_NoLT_FQ_Enabled:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, f_noFQ),
+    !Config(~tid, f_noLT, f_FQ),
+    !CmdOptions(~tid, ex_off0),
+    !RateKind(~tid, rt_pos),
+    !StepSizeKind(~tid, ss_pos),
+    !RateLimitedKind(~tid, rl_spec),
+    !ResultLevelKind(~tid, res_above_min),
+    !FreqSupport(~tid, fq_supported),
+    !LastCmdLink(~tid, lc_nolink) ]
+
+rule Init_NoLT_NoFQ:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, f_noFQ),
+    !Config(~tid, f_noLT, f_noFQ),
+    !CmdOptions(~tid, ex_off0),
+    !RateKind(~tid, rt_pos),
+    !StepSizeKind(~tid, ss_pos),
+    !RateLimitedKind(~tid, rl_spec),
+    !ResultLevelKind(~tid, res_above_min),
+    !FreqSupport(~tid, fq_notsupported),
+    !LastCmdLink(~tid, lc_nolink) ]
+
+//========================================
+// SECTION 4: PowerUp Transitions
+//========================================
+
+// From IdleOffLevelUndefined, Feature LT enabled, StartUpCurrentLevel == 0
+rule Ev_PowerUp_IdleOffUndef_LT_SULevelZero:
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, D),
+    !Config(~tid, f_LT, FQ) ]
+--[ Command(~tid, c_PowerUp), StateTransition(~tid, st_IdleOffLevelUndefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// From IdleOffLevelUndefined, Feature LT enabled, StartUpCurrentLevel == null
+rule Ev_PowerUp_IdleOffUndef_LT_SULevelNull:
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, D),
+    !Config(~tid, f_LT, FQ) ]
+--[ Command(~tid, c_PowerUp), StateTransition(~tid, st_IdleOffLevelUndefined, st_IdleOffLevelUndefined) ]->
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, D) ]
+
+// From IdleOffLevelUndefined, Feature LT enabled, StartUpCurrentLevel != 0 && != null
+rule Ev_PowerUp_IdleOffUndef_LT_SULevelDefined:
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, D),
+    !Config(~tid, f_LT, FQ) ]
+--[ Command(~tid, c_PowerUp), StateTransition(~tid, st_IdleOffLevelUndefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// From IdleOffLevelUndefined, Feature LT disabled
+rule Ev_PowerUp_IdleOffUndef_NoLT:
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, D),
+    !Config(~tid, f_noLT, FQ) ]
+--[ Command(~tid, c_PowerUp), StateTransition(~tid, st_IdleOffLevelUndefined, st_IdleOffLevelUndefined) ]->
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, D) ]
+
+//========================================
+// SECTION 5: MoveToLevel Transitions
+//========================================
+
+// IdleOffLevelDefined, RL specified, ExecuteIfOff == 0, Off -> no effect
+rule Cmd_MoveToLevel_IdleOffDef_RL_EIO0_Off:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !RateLimitedKind(~tid, rl_spec),
+    !CmdOptions(~tid, ex_off0) ]
+--[ Command(~tid, c_MoveToLevel), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// IdleOffLevelDefined, RL specified, ExecuteIfOff == 1, Off -> start finite move
+rule Cmd_MoveToLevel_IdleOffDef_RL_EIO1_Off:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !RateLimitedKind(~tid, rl_spec),
+    !CmdOptions(~tid, ex_off1) ]
+--[ Command(~tid, c_MoveToLevel), StateTransition(~tid, st_IdleOffLevelDefined, st_MovingToLevel) ]->
+  [ St(~tid, st_MovingToLevel, b_false, lv_def, tv_pos, dir_up) ]
+
+// IdleOffLevelDefined, RL not specified, Off -> start finite move
+rule Cmd_MoveToLevel_IdleOffDef_NoRL_Off:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !RateLimitedKind(~tid, rl_nospec) ]
+--[ Command(~tid, c_MoveToLevel), StateTransition(~tid, st_IdleOffLevelDefined, st_MovingToLevel) ]->
+  [ St(~tid, st_MovingToLevel, b_false, lv_def, tv_pos, dir_up) ]
+
+// IdleOn, MoveToLevel, On -> start finite move
+rule Cmd_MoveToLevel_IdleOn_On:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D) ]
+--[ Command(~tid, c_MoveToLevel), StateTransition(~tid, st_IdleOn, st_MovingToLevel) ]->
+  [ St(~tid, st_MovingToLevel, b_true, lv_def, tv_pos, dir_up) ]
+
+// IdleOffLevelUndefined, MoveToLevel, Off -> no effect
+rule Cmd_MoveToLevel_IdleOffUndef_Off:
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, D) ]
+--[ Command(~tid, c_MoveToLevel), StateTransition(~tid, st_IdleOffLevelUndefined, st_IdleOffLevelUndefined) ]->
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, D) ]
+
+//========================================
+// SECTION 6: MoveToLevelWithOnOff Transitions
+//========================================
+
+// IdleOffLevelDefined, Off -> IdleOn, set level, RemainingTime finite
+rule Cmd_MoveToLevelWithOnOff_IdleOffDef_Off:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+--[ Command(~tid, c_MoveToLevelWithOnOff), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_pos, D) ]
+
+// IdleOffLevelUndefined, Off -> IdleOn, define level
+rule Cmd_MoveToLevelWithOnOff_IdleOffUndef_Off:
+  [ St(~tid, st_IdleOffLevelUndefined, b_false, lv_undef, tv_zero, D) ]
+--[ Command(~tid, c_MoveToLevelWithOnOff), StateTransition(~tid, st_IdleOffLevelUndefined, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_pos, D) ]
+
+// IdleOn, resulting level above min -> stay IdleOn
+rule Cmd_MoveToLevelWithOnOff_IdleOn_On_ResultAboveMin:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D),
+    !ResultLevelKind(~tid, res_above_min) ]
+--[ Command(~tid, c_MoveToLevelWithOnOff), StateTransition(~tid, st_IdleOn, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_pos, D) ]
+
+// IdleOn, resulting level at min -> IdleOffLevelDefined
+rule Cmd_MoveToLevelWithOnOff_IdleOn_On_ResultAtMin:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D),
+    !ResultLevelKind(~tid, res_at_min) ]
+--[ Command(~tid, c_MoveToLevelWithOnOff), StateTransition(~tid, st_IdleOn, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_pos, D) ]
+
+//========================================
+// SECTION 7: Move Transitions
+//========================================
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 0 -> no effect
+rule Cmd_Move_IdleOffDef_EIO0_Off:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !CmdOptions(~tid, ex_off0) ]
+--[ Command(~tid, c_Move), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 1, Up, Rate != 0 -> MovingContinuouslyUp
+rule Cmd_Move_IdleOffDef_EIO1_Up_RatePos:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, L1),
+    !CmdOptions(~tid, ex_off1),
+    !RateKind(~tid, rt_pos) ]
+--[ Command(~tid, c_Move), StateTransition(~tid, st_IdleOffLevelDefined, st_MovingContinuouslyUp) ]->
+  [ St(~tid, st_MovingContinuouslyUp, b_false, lv_def, tv_indet, dir_up) ]
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 1, Down, Rate != 0 -> MovingContinuouslyDown
+rule Cmd_Move_IdleOffDef_EIO1_Down_RatePos:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, L2),
+    !CmdOptions(~tid, ex_off1),
+    !RateKind(~tid, rt_pos) ]
+--[ Command(~tid, c_Move), StateTransition(~tid, st_IdleOffLevelDefined, st_MovingContinuouslyDown) ]->
+  [ St(~tid, st_MovingContinuouslyDown, b_false, lv_def, tv_indet, dir_down) ]
+
+// IdleOn, Up, Rate != 0 -> MovingContinuouslyUp
+rule Cmd_Move_IdleOn_Up_RatePos:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, L3),
+    !RateKind(~tid, rt_pos) ]
+--[ Command(~tid, c_Move), StateTransition(~tid, st_IdleOn, st_MovingContinuouslyUp) ]->
+  [ St(~tid, st_MovingContinuouslyUp, b_true, lv_def, tv_indet, dir_up) ]
+
+// IdleOn, Down, Rate != 0 -> MovingContinuouslyDown
+rule Cmd_Move_IdleOn_Down_RatePos:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, L4),
+    !RateKind(~tid, rt_pos) ]
+--[ Command(~tid, c_Move), StateTransition(~tid, st_IdleOn, st_MovingContinuouslyDown) ]->
+  [ St(~tid, st_MovingContinuouslyDown, b_true, lv_def, tv_indet, dir_down) ]
+
+// IdleOffLevelDefined, Rate == 0 -> INVALID_COMMAND (abstracted as no state change)
+rule Cmd_Move_IdleOffDef_RateZero:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !RateKind(~tid, rt_zero) ]
+--[ Command(~tid, c_Move), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// IdleOn, Rate == 0 -> INVALID_COMMAND
+rule Cmd_Move_IdleOn_RateZero:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D),
+    !RateKind(~tid, rt_zero) ]
+--[ Command(~tid, c_Move), StateTransition(~tid, st_IdleOn, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D) ]
+
+//========================================
+// SECTION 8: Step Transitions
+//========================================
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 0 -> no effect
+rule Cmd_Step_IdleOffDef_EIO0_Off:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !CmdOptions(~tid, ex_off0) ]
+--[ Command(~tid, c_Step), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 1, StepSize != 0 -> MovingToLevel
+rule Cmd_Step_IdleOffDef_EIO1_Off_StepPos:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !CmdOptions(~tid, ex_off1),
+    !StepSizeKind(~tid, ss_pos) ]
+--[ Command(~tid, c_Step), StateTransition(~tid, st_IdleOffLevelDefined, st_MovingToLevel) ]->
+  [ St(~tid, st_MovingToLevel, b_false, lv_def, tv_pos, dir_up) ]
+
+// IdleOn, StepSize != 0 -> MovingToLevel
+rule Cmd_Step_IdleOn_StepPos:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D),
+    !StepSizeKind(~tid, ss_pos) ]
+--[ Command(~tid, c_Step), StateTransition(~tid, st_IdleOn, st_MovingToLevel) ]->
+  [ St(~tid, st_MovingToLevel, b_true, lv_def, tv_pos, dir_up) ]
+
+// IdleOffLevelDefined, StepSize == 0 -> INVALID_COMMAND
+rule Cmd_Step_IdleOffDef_StepZero:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !StepSizeKind(~tid, ss_zero) ]
+--[ Command(~tid, c_Step), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// IdleOn, StepSize == 0 -> INVALID_COMMAND
+rule Cmd_Step_IdleOn_StepZero:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D),
+    !StepSizeKind(~tid, ss_zero) ]
+--[ Command(~tid, c_Step), StateTransition(~tid, st_IdleOn, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D) ]
+
+//========================================
+// SECTION 9: StepWithOnOff Transitions
+//========================================
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 0 -> no effect
+rule Cmd_StepWithOnOff_IdleOffDef_EIO0_Off:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !CmdOptions(~tid, ex_off0) ]
+--[ Command(~tid, c_StepWithOnOff), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 1, StepSize != 0, resulting level at min -> remain off
+rule Cmd_StepWithOnOff_IdleOffDef_EIO1_Off_StepPos_ResAtMin:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !CmdOptions(~tid, ex_off1),
+    !StepSizeKind(~tid, ss_pos),
+    !ResultLevelKind(~tid, res_at_min) ]
+--[ Command(~tid, c_StepWithOnOff), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_pos, D) ]
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 1, StepSize != 0, resulting level above min -> IdleOn
+rule Cmd_StepWithOnOff_IdleOffDef_EIO1_Off_StepPos_ResAboveMin:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !CmdOptions(~tid, ex_off1),
+    !StepSizeKind(~tid, ss_pos),
+    !ResultLevelKind(~tid, res_above_min) ]
+--[ Command(~tid, c_StepWithOnOff), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_pos, D) ]
+
+// IdleOn, StepSize != 0, resulting level above min -> stay IdleOn
+rule Cmd_StepWithOnOff_IdleOn_StepPos_ResAboveMin:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D),
+    !StepSizeKind(~tid, ss_pos),
+    !ResultLevelKind(~tid, res_above_min) ]
+--[ Command(~tid, c_StepWithOnOff), StateTransition(~tid, st_IdleOn, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_pos, D) ]
+
+// IdleOn, StepSize != 0, resulting level at min -> IdleOffLevelDefined
+rule Cmd_StepWithOnOff_IdleOn_StepPos_ResAtMin:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D),
+    !StepSizeKind(~tid, ss_pos),
+    !ResultLevelKind(~tid, res_at_min) ]
+--[ Command(~tid, c_StepWithOnOff), StateTransition(~tid, st_IdleOn, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_pos, D) ]
+
+// IdleOffLevelDefined, StepSize == 0 -> INVALID_COMMAND
+rule Cmd_StepWithOnOff_IdleOffDef_StepZero:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !StepSizeKind(~tid, ss_zero) ]
+--[ Command(~tid, c_StepWithOnOff), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// IdleOn, StepSize == 0 -> INVALID_COMMAND
+rule Cmd_StepWithOnOff_IdleOn_StepZero:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D),
+    !StepSizeKind(~tid, ss_zero) ]
+--[ Command(~tid, c_StepWithOnOff), StateTransition(~tid, st_IdleOn, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D) ]
+
+//========================================
+// SECTION 10: MoveWithOnOff Transitions
+//========================================
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 0 -> no effect
+rule Cmd_MoveWithOnOff_IdleOffDef_EIO0_Off:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !CmdOptions(~tid, ex_off0) ]
+--[ Command(~tid, c_MoveWithOnOff), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 1, Up, Rate != 0 -> IdleOn, continuous up, linkage
+rule Cmd_MoveWithOnOff_IdleOffDef_EIO1_Up_RatePos:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, L5),
+    !CmdOptions(~tid, ex_off1),
+    !RateKind(~tid, rt_pos) ]
+--[ Command(~tid, c_MoveWithOnOff), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_indet, dir_up),
+    !LastCmdLink(~tid, lc_link) ]
+
+// IdleOffLevelDefined, Off, ExecuteIfOff == 1, Down, Rate != 0 -> stay off, continuous down, linkage
+rule Cmd_MoveWithOnOff_IdleOffDef_EIO1_Down_RatePos:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, L6),
+    !CmdOptions(~tid, ex_off1),
+    !RateKind(~tid, rt_pos) ]
+--[ Command(~tid, c_MoveWithOnOff), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_indet, dir_down),
+    !LastCmdLink(~tid, lc_link) ]
+
+// IdleOn, Up, Rate != 0 -> MovingContinuouslyUp, linkage
+rule Cmd_MoveWithOnOff_IdleOn_Up_RatePos:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, L7),
+    !RateKind(~tid, rt_pos) ]
+--[ Command(~tid, c_MoveWithOnOff), StateTransition(~tid, st_IdleOn, st_MovingContinuouslyUp) ]->
+  [ St(~tid, st_MovingContinuouslyUp, b_true, lv_def, tv_indet, dir_up),
+    !LastCmdLink(~tid, lc_link) ]
+
+// IdleOn, Down, Rate != 0 -> MovingContinuouslyDown, linkage
+rule Cmd_MoveWithOnOff_IdleOn_Down_RatePos:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, L8),
+    !RateKind(~tid, rt_pos) ]
+--[ Command(~tid, c_MoveWithOnOff), StateTransition(~tid, st_IdleOn, st_MovingContinuouslyDown) ]->
+  [ St(~tid, st_MovingContinuouslyDown, b_true, lv_def, tv_indet, dir_down),
+    !LastCmdLink(~tid, lc_link) ]
+
+// IdleOffLevelDefined, Rate == 0 -> INVALID_COMMAND
+rule Cmd_MoveWithOnOff_IdleOffDef_RateZero:
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D),
+    !RateKind(~tid, rt_zero) ]
+--[ Command(~tid, c_MoveWithOnOff), StateTransition(~tid, st_IdleOffLevelDefined, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// IdleOn, Rate == 0 -> INVALID_COMMAND
+rule Cmd_MoveWithOnOff_IdleOn_RateZero:
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D),
+    !RateKind(~tid, rt_zero) ]
+--[ Command(~tid, c_MoveWithOnOff), StateTransition(~tid, st_IdleOn, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D) ]
+
+//========================================
+// SECTION 11: Stop / StopWithOnOff Transitions
+//========================================
+
+// From MovingToLevel, Stop, On -> IdleOn
+rule Cmd_Stop_MovingToLevel_On:
+  [ St(~tid, st_MovingToLevel, b_true, lv_def, tv_pos, D) ]
+--[ Command(~tid, c_Stop), StateTransition(~tid, st_MovingToLevel, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D) ]
+
+// From MovingToLevel, Stop, Off -> IdleOffLevelDefined
+rule Cmd_Stop_MovingToLevel_Off:
+  [ St(~tid, st_MovingToLevel, b_false, lv_def, tv_pos, D) ]
+--[ Command(~tid, c_Stop), StateTransition(~tid, st_MovingToLevel, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+// MovingContinuouslyUp, Stop, On -> IdleOn
+rule Cmd_Stop_MovingContUp_On:
+  [ St(~tid, st_MovingContinuouslyUp, b_true, lv_def, tv_indet, dir_up) ]
+--[ Command(~tid, c_Stop), StateTransition(~tid, st_MovingContinuouslyUp, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, dir_up) ]
+
+// MovingContinuouslyUp, Stop, Off -> IdleOffLevelDefined
+rule Cmd_Stop_MovingContUp_Off:
+  [ St(~tid, st_MovingContinuouslyUp, b_false, lv_def, tv_indet, dir_up) ]
+--[ Command(~tid, c_Stop), StateTransition(~tid, st_MovingContinuouslyUp, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, dir_up) ]
+
+// MovingContinuouslyDown, Stop, On -> IdleOn
+rule Cmd_Stop_MovingContDown_On:
+  [ St(~tid, st_MovingContinuouslyDown, b_true, lv_def, tv_indet, dir_down) ]
+--[ Command(~tid, c_Stop), StateTransition(~tid, st_MovingContinuouslyDown, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, dir_down) ]
+
+// MovingContinuouslyDown, Stop, Off -> IdleOffLevelDefined
+rule Cmd_Stop_MovingContDown_Off:
+  [ St(~tid, st_MovingContinuouslyDown, b_false, lv_def, tv_indet, dir_down) ]
+--[ Command(~tid, c_Stop), StateTransition(~tid, st_MovingContinuouslyDown, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, dir_down) ]
+
+// StopWithOnOff variants: identical state effects to Stop
+
+rule Cmd_StopWithOnOff_MovingToLevel_On:
+  [ St(~tid, st_MovingToLevel, b_true, lv_def, tv_pos, D) ]
+--[ Command(~tid, c_StopWithOnOff), StateTransition(~tid, st_MovingToLevel, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, D) ]
+
+rule Cmd_StopWithOnOff_MovingToLevel_Off:
+  [ St(~tid, st_MovingToLevel, b_false, lv_def, tv_pos, D) ]
+--[ Command(~tid, c_StopWithOnOff), StateTransition(~tid, st_MovingToLevel, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, D) ]
+
+rule Cmd_StopWithOnOff_MovingContUp_On:
+  [ St(~tid, st_MovingContinuouslyUp, b_true, lv_def, tv_indet, dir_up) ]
+--[ Command(~tid, c_StopWithOnOff), StateTransition(~tid, st_MovingContinuouslyUp, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, dir_up) ]
+
+rule Cmd_StopWithOnOff_MovingContUp_Off:
+  [ St(~tid, st_MovingContinuouslyUp, b_false, lv_def, tv_indet, dir_up) ]
+--[ Command(~tid, c_StopWithOnOff), StateTransition(~tid, st_MovingContinuouslyUp, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, dir_up) ]
+
+rule Cmd_StopWithOnOff_MovingContDown_On:
+  [ St(~tid, st_MovingContinuouslyDown, b_true, lv_def, tv_indet, dir_down) ]
+--[ Command(~tid, c_StopWithOnOff), StateTransition(~tid, st_MovingContinuouslyDown, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, dir_down) ]
+
+rule Cmd_StopWithOnOff_MovingContDown_Off:
+  [ St(~tid, st_MovingContinuouslyDown, b_false, lv_def, tv_indet, dir_down) ]
+--[ Command(~tid, c_StopWithOnOff), StateTransition(~tid, st_MovingContinuouslyDown, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, dir_down) ]
+
+//========================================
+// SECTION 12: Timer Transitions
+//========================================
+
+// MovingToLevel, RemainingTime > 1 -> Timer Tick 0.1s: stay MovingToLevel, tv_pos
+rule Ev_TimerTick_MovingToLevel:
+  [ St(~tid, st_MovingToLevel, B, lv_def, tv_pos, Dir) ]
+--[ Command(~tid, c_TimerTick), StateTransition(~tid, st_MovingToLevel, st_MovingToLevel) ]->
+  [ St(~tid, st_MovingToLevel, B, lv_def, tv_pos, Dir) ]
+
+// MovingToLevel, RemainingTime == 1, final level above min -> IdleOn
+rule Ev_TimerExpiry_MovingToLevel_FinalAboveMin:
+  [ St(~tid, st_MovingToLevel, B, lv_def, tv_pos, Dir),
+    !ResultLevelKind(~tid, res_above_min) ]
+--[ Command(~tid, c_TimerExpiry), StateTransition(~tid, st_MovingToLevel, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, Dir) ]
+
+// MovingToLevel, RemainingTime == 1, final level at min -> IdleOffLevelDefined
+rule Ev_TimerExpiry_MovingToLevel_FinalAtMin:
+  [ St(~tid, st_MovingToLevel, B, lv_def, tv_pos, Dir),
+    !ResultLevelKind(~tid, res_at_min) ]
+--[ Command(~tid, c_TimerExpiry), StateTransition(~tid, st_MovingToLevel, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, Dir) ]
+
+//========================================
+// SECTION 13: ReachedMaxLevel / ReachedMinLevel
+//========================================
+
+// MovingContinuouslyUp, ReachedMaxLevel, On -> IdleOn at MaxLevel
+rule Ev_ReachedMaxLevel_MovingContUp_On:
+  [ St(~tid, st_MovingContinuouslyUp, b_true, lv_def, tv_indet, dir_up) ]
+--[ Command(~tid, c_ReachedMaxLevel), StateTransition(~tid, st_MovingContinuouslyUp, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, dir_up) ]
+
+// MovingContinuouslyUp, ReachedMaxLevel, Off -> IdleOffLevelDefined
+rule Ev_ReachedMaxLevel_MovingContUp_Off:
+  [ St(~tid, st_MovingContinuouslyUp, b_false, lv_def, tv_indet, dir_up) ]
+--[ Command(~tid, c_ReachedMaxLevel), StateTransition(~tid, st_MovingContinuouslyUp, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, dir_up) ]
+
+// MovingContinuouslyDown, ReachedMinLevel, last command without OnOff linkage -> IdleOn
+rule Ev_ReachedMinLevel_MovingContDown_NoLink:
+  [ St(~tid, st_MovingContinuouslyDown, b_true, lv_def, tv_indet, dir_down),
+    !LastCmdLink(~tid, lc_nolink) ]
+--[ Command(~tid, c_ReachedMinLevel), StateTransition(~tid, st_MovingContinuouslyDown, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, lv_def, tv_zero, dir_down) ]
+
+// MovingContinuouslyDown, ReachedMinLevel, last command with OnOff linkage -> IdleOffLevelDefined, Off
+rule Ev_ReachedMinLevel_MovingContDown_Link:
+  [ St(~tid, st_MovingContinuouslyDown, B, lv_def, tv_indet, dir_down),
+    !LastCmdLink(~tid, lc_link) ]
+--[ Command(~tid, c_ReachedMinLevel), StateTransition(~tid, st_MovingContinuouslyDown, st_IdleOffLevelDefined) ]->
+  [ St(~tid, st_IdleOffLevelDefined, b_false, lv_def, tv_zero, dir_down) ]
+
+//========================================
+// SECTION 14: Frequency Control Transitions
+//========================================
+
+// FrequencyControlIdle, FQ feature, supported frequency -> success
+rule Cmd_MoveToClosestFrequency_Supported:
+  [ St(~tid, st_FrequencyControlIdle, B, L, tv_zero, f_FQ),
+    !FreqSupport(~tid, fq_supported) ]
+--[ Command(~tid, c_MoveToClosestFrequency), StateTransition(~tid, st_FrequencyControlIdle, st_FrequencyControlIdle) ]->
+  [ St(~tid, st_FrequencyControlIdle, B, L, tv_zero, f_FQ) ]
+
+// FrequencyControlIdle, FQ feature, unsupported frequency -> CONSTRAINT_ERROR
+rule Cmd_MoveToClosestFrequency_NotSupported:
+  [ St(~tid, st_FrequencyControlIdle, B, L, tv_zero, f_FQ),
+    !FreqSupport(~tid, fq_notsupported) ]
+--[ Command(~tid, c_MoveToClosestFrequency), StateTransition(~tid, st_FrequencyControlIdle, st_FrequencyControlIdle) ]->
+  [ St(~tid, st_FrequencyControlIdle, B, L, tv_zero, f_FQ) ]
+
+//========================================
+// SECTION 15: Restrictions
+//========================================
+
+restriction unique_init:
+  "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
+
+//========================================
+// SECTION 16: Source Lemmas (REQUIRED)
+//========================================
+
+lemma sources [sources]:
+  "All tid s1 s2 #i.
+     StateTransition(tid, s1, s2)@i ==>
+       Ex #j. ClusterInit(tid)@j & #j < #i"
+
+//========================================
+// SECTION 17: Simple Reachability Lemmas
+//========================================
+
+lemma exec_MoveToLevel:
+  exists-trace
+  "Ex tid #i. Command(tid, c_MoveToLevel)@i"
+
+lemma exec_Move:
+  exists-trace
+  "Ex tid #i. Command(tid, c_Move)@i"
+
+lemma exec_StepWithOnOff:
+  exists-trace
+  "Ex tid #i. Command(tid, c_StepWithOnOff)@i"
+
+end

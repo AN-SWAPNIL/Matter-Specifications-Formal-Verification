@@ -155,275 +155,309 @@ MANUAL_CLUSTER_DATA = [
 # Manual extraction configuration - no AI prompts needed
 
 # FSM Generation Configuration
-FSM_GENERATION_PROMPT_TEMPLATE = """
-You are a Matter IoT protocol expert who generates precise Finite State Machine models from Matter Application Cluster specifications.
+# FSM_GENERATION_PROMPT_TEMPLATE = """
+# You are a Matter IoT protocol expert who generates precise Finite State Machine models from Matter Application Cluster specifications.
 
-CLUSTER SPECIFICATION TO ANALYZE:
+# CLUSTER SPECIFICATION TO ANALYZE:
+# {cluster_info}
+
+# **UNIVERSAL FSM GENERATION APPROACH:**
+
+# **STEP 1: CLUSTER BEHAVIORAL ANALYSIS**
+# Analyze the cluster specification to determine behavioral patterns:
+# - **Attribute-driven states**: States correspond to meaningful attribute value combinations
+# - **Command semantics**: Extract behavioral logic from "effect_on_receipt" descriptions  
+# - **Timer-based transitions**: Identify countdown timers and automatic state changes
+# - **Conditional logic**: Commands with if/then/else branches require multiple transitions
+# - **Feature constraints**: Only use features defined in the specification
+
+# **STEP 2: STATE IDENTIFICATION**
+# Define states based on cluster attributes and operational conditions:
+# - States represent actual device behavior, not internal processing
+# - Use attribute values to determine state invariants
+# - Include timer states if countdown attributes exist
+# - Model fault/error states if specified in cluster
+# - Ensure states reflect physical/logical device condition
+
+# **STEP 3: TRANSITION MODELING**
+# Create transitions from command specifications:
+# - Parse "effect_on_receipt" for exact behavioral steps
+# - Split conditional commands into multiple guarded transitions
+# - Model timer expiry as automatic transitions
+# - Include proper guard conditions for all branching logic
+# - Set response_command to null (Application Cluster specification)
+# - **Model event generation**: Include events in transition actions when specified
+# - **Use data type constraints**: Apply enum values and bitmap constraints in guards
+# - **Handle scene behaviors**: Model scene store/recall for scene-capable attributes
+# - **Include stay transitions**: Model state continuation for commands that extend/reset timers
+# - **Enforce feature constraints**: Block commands when features prohibit execution
+
+# **CRITICAL ACTION REQUIREMENTS:**
+# - **Actions MUST be atomic operations**: Each action is a single, unconditional statement
+# - **NO conditionals in actions**: if/then/else logic belongs in guard conditions, creating separate transitions
+# - **NO loops in actions**: for/while loops must be split into separate transitions or modeled as definitions
+# - **Actions define what happens**: Simple attribute assignments, event generation, or function calls
+# - **Use definitions for complex logic**: Define helper functions/procedures in the definitions section
+# - **Example valid actions**: "CurrentLevel := targetLevel", "generate_event(LevelChanged)", "start_timer(TransitionTime)"
+# - **Example invalid actions**: "if x then y", "for each item", "while condition do action"
+
+# **STEP 4: ADVANCED BEHAVIORAL MODELING**
+# Enhance FSM with detailed cluster information:
+# - **Data Type Integration**: Use extracted enums for state values, bitmaps for feature validation
+# - **Quality Flag Handling**: Model read-only vs read-write attribute behaviors
+# - **Constraint Validation**: Apply attribute constraints as state invariants
+# - **Feature Enforcement**: Add guard conditions that respect feature flags and limitations
+# - **Timer Decrement Logic**: Model internal timer decrements with appropriate resolution
+# - **Event-Driven Transitions**: Model transitions triggered by cluster events
+# - **Scene Capability**: Include scene store/recall behaviors for scene-capable attributes
+# - **Fabric Sensitivity**: Model fabric-scoped attribute access patterns
+
+# **STEP 5: TIMER SEMANTICS**
+# For clusters with timer attributes:
+# - Model timer countdown behavior with correct resolution
+# - Create timer expiry transitions when timer reaches zero
+# - Include internal timer decrement transitions (stay transitions)
+# - Distinguish between different timer types and their resolutions
+# - Include timer start/stop logic in command actions
+# - Model timer reset behaviors for command extensions
+
+# **STEP 6: FEATURE VALIDATION**
+# Apply feature constraints correctly:
+# - Only use features explicitly defined in cluster specification
+# - Model feature-dependent command availability with guard conditions
+# - Include feature validation that blocks prohibited commands
+# - Avoid inventing non-existent features
+# - Enforce feature limitations in transition guards
+
+# **REQUIRED FSM STRUCTURE:**
+# {{
+#   "fsm_model": {{
+#     "cluster_name": "[extracted from specification]",
+#     "cluster_id": "[hex ID from specification]", 
+#     "category": "[cluster category]",
+#     "states": [
+#       {{
+#         "name": "[state name]",
+#         "description": "[clear behavioral description]",
+#         "is_initial": true/false,
+#         "invariants": ["[attribute constraints in this state]"],
+#         "attributes_monitored": ["[relevant cluster attributes]"]
+#       }}
+#     ],
+#     "transitions": [
+#       {{
+#         "from_state": "[source state]",
+#         "to_state": "[target state]",
+#         "trigger": "[command name or timer/event trigger]",
+#         "guard_condition": "[boolean condition with data type constraints]",
+#         "actions": ["[atomic attribute updates]", "[event generation]", "[function calls from definitions]"],
+#         "response_command": null,
+#         "timing_requirements": "[timing constraints if applicable or null]"
+#       }}
+#     ],
+#     "initial_state": "[appropriate default state]",
+#     "attributes_used": ["[all referenced attributes with quality flags]"],
+#     "commands_handled": ["[all cluster commands]"],
+#     "events_generated": ["[cluster events from specification]"],
+#     "data_types_used": ["[enums, bitmaps, structures referenced]"],
+#     "scene_behaviors": ["[scene store/recall actions if applicable]"],
+#     "definitions": [
+#       {{
+#         "term": "[technical term, function, or concept]",
+#         "definition": "[clear explanation of meaning and purpose in pseudo code]",
+#         "usage_context": "[where/how it appears in FSM - states/transitions/actions]"
+#       }}
+#     ],
+#     "references": [
+#       {{
+#         "id": "[cluster/attr ID or null if external spec]",
+#         "name": "[referenced cluster/attribute/specification]",
+#         "description": "[why referenced - dependency/interaction/constraint]"
+#       }}
+#     ],
+#     "metadata": {{
+#       "generation_timestamp": "[ISO 8601 timestamp]",
+#       "generation_attempts": "[number of iterations]",
+#       "judge_approved": true/false,
+#       "source_pages": "[from cluster_info]",
+#       "section_number": "[from cluster_info]"
+#     }}
+#   }}
+# }}
+
+# **ANALYSIS METHODOLOGY:**
+# 1. Identify cluster type: state-based, timer-driven, mode-based, measurement, etc.
+# 2. Extract key attributes that define operational states (consider quality flags)
+# 3. Analyze command effects for precise behavioral logic including conditional branches
+# 4. **Integrate data types**: Use enums for state values, bitmaps for feature checks, structures for complex data
+# 5. Map states to meaningful attribute combinations with proper constraints
+# 6. Model conditional command branches as separate transitions with data type validation
+# 7. **Split complex actions**: Break down if/else and loops into multiple transitions with guards
+#    - Example: "if MoveWithOnOff.Rate == 0 then exit" becomes a separate transition with guard "MoveWithOnOff.Rate == 0" to Idle state
+#    - Example: "for each bit in OptionsBitmap" becomes multiple transitions or a defined function "apply_options()" in definitions
+# 8. Add timer-based automatic transitions with correct resolution and decrement logic
+# 9. **Include event modeling**: Add event generation and event-driven transitions
+# 10. **Model scene behaviors**: Include scene store/recall for scene-capable attributes
+# 11. **Add stay transitions**: Include state continuation for timer extensions and command repetitions
+# 12. **Enforce feature constraints**: Add guard conditions that block prohibited commands
+# 13. **Create definitions**: Document all technical terms, functions, and domain-specific concepts
+# 14. Validate against specification features and constraints
+# 15. Ensure complete coverage of commands, events, and data type interactions
+
+# **TRANSITION DECOMPOSITION EXAMPLE:**
+# Instead of one transition with complex actions containing if/for:
+# ```
+# Transition with actions: ["if x then y", "for each i do z"]  // WRONG
+# ```
+# Create multiple transitions:
+# ```
+# Transition 1: guard "x == true", actions: ["y"]              // CORRECT
+# Transition 2: guard "x == false", actions: ["skip"]          // CORRECT  
+# Transition 3: actions: ["apply_function()"]                  // CORRECT (function defined in definitions)
+# ```
+
+# **DEFINITIONS REQUIREMENTS:**
+# Define cluster-specific terms, functions used in actions, feature flags, data type enums, attribute behaviors, and guard condition terms to reduce verbosity and improve clarity.
+# - **Cluster-specific terms**: Domain concepts
+# - **Functions/procedures**: Complex operations referenced in actions (pseudocode without if/else/for)
+# - **Feature flags**: Feature abbreviations and their meanings
+# - **Data type enums**: Enum values and their behavioral implications
+# - **Attribute concepts**: Complex attribute behaviors
+# - **Guard condition terms**: Special conditions used in transitions
+
+# **REFERENCES REQUIREMENTS:**
+# Document external dependencies and interactions:
+# - **Other clusters**: Clusters referenced but not defined
+# - **Core specifications**: Matter Core Spec concepts
+# - **Shared attributes**: Global attributes
+# Use hex IDs when known, null for external specifications.
+
+# **CRITICAL ACCURACY REQUIREMENTS:**
+# - States reflect actual device behavior from specification
+# - Transitions implement exact command semantics with complete guard conditions
+# - Guard conditions capture all conditional logic including feature enforcement
+# - Actions are atomic and unconditional: No if/then/else, no for/while loops in actions
+# - Complex logic goes in guard conditions: Conditionals determine which transition fires
+# - Loops become multiple transitions or definitions: Iterative logic is abstracted
+# - Timer behaviors model correct countdown, expiry, and internal decrement
+# - Features constrain commands as specified with proper blocking
+# - All attribute interactions are accurate and complete
+# - Include both state-changing and stay transitions where appropriate
+# - Model timer reset and extension behaviors correctly
+# - Use null for response_command in Application Clusters
+# - **Definitions are clear and helpful**: Each definition explains what the term means in the FSM context
+# - **Metadata is properly nested**: All generation metadata goes under "metadata" object
+
+# Focus on Matter specification accuracy over generic patterns. Generate FSM by analyzing the provided cluster specification systematically.
+
+# Return ONLY the JSON structure. No explanations, no markdown blocks, no additional text."""
+
+FSM_GENERATION_PROMPT_TEMPLATE = """
+You are a Matter IoT protocol expert. Your task is to generate a precise Finite State Machine (FSM) model in JSON format based on the provided Matter Application Cluster specification.
+
+
+CLUSTER SPECIFICATION:
 {cluster_info}
 
-**UNIVERSAL FSM GENERATION APPROACH:**
 
-**STEP 1: CLUSTER BEHAVIORAL ANALYSIS**
-Analyze the cluster specification to determine behavioral patterns:
-- **Attribute-driven states**: States correspond to meaningful attribute value combinations
-- **Command semantics**: Extract behavioral logic from "effect_on_receipt" descriptions  
-- **Timer-based transitions**: Identify countdown timers and automatic state changes
-- **Conditional logic**: Commands with if/then/else branches require multiple transitions
-- **Feature constraints**: Only use features defined in the specification
+### MODELING GUIDELINES
 
-**STEP 2: STATE IDENTIFICATION**
-Define states based on cluster attributes and operational conditions:
-- States represent actual device behavior, not internal processing
-- Use attribute values to determine state invariants
-- Include timer states if countdown attributes exist
-- Model fault/error states if specified in cluster
-- Ensure states reflect physical/logical device condition
 
-**STEP 3: TRANSITION MODELING**
-Create transitions from command specifications:
-- Parse "effect_on_receipt" for exact behavioral steps
-- Split conditional commands into multiple guarded transitions
-- Model timer expiry as automatic transitions
-- Include proper guard conditions for all branching logic
-- Set response_command to null (Application Cluster specification)
-- **Model event generation**: Include events in transition actions when specified
-- **Use data type constraints**: Apply enum values and bitmap constraints in guards
-- **Handle scene behaviors**: Model scene store/recall for scene-capable attributes
-- **Include stay transitions**: Model state continuation for commands that extend/reset timers
-- **Enforce feature constraints**: Block commands when features prohibit execution
+**1. State Definition (Behavioral)**
+* Derive states from **cluster attributes** and operational conditions (e.g., specific enum values, boolean flags).
+* Include **timer states** if the cluster involves countdowns or time-limited operations.
+* Ensure states reflect the physical or logical condition of the device.
 
-**STEP 4: ADVANCED BEHAVIORAL MODELING**
-Enhance FSM with detailed cluster information:
-- **Data Type Integration**: Use extracted enums for state values, bitmaps for feature validation
-- **Quality Flag Handling**: Model read-only vs read-write attribute behaviors
-- **Constraint Validation**: Apply attribute constraints as state invariants
-- **Feature Enforcement**: Add guard conditions that respect feature flags and limitations
-- **Timer Decrement Logic**: Model internal timer decrements with appropriate resolution
-- **Event-Driven Transitions**: Model transitions triggered by cluster events
-- **Scene Capability**: Include scene store/recall behaviors for scene-capable attributes
-- **Fabric Sensitivity**: Model fabric-scoped attribute access patterns
 
-**STEP 5: TIMER SEMANTICS**
-For clusters with timer attributes:
-- Model timer countdown behavior with correct resolution
-- Create timer expiry transitions when timer reaches zero
-- Include internal timer decrement transitions (stay transitions)
-- Distinguish between different timer types and their resolutions
-- Include timer start/stop logic in command actions
-- Model timer reset behaviors for command extensions
+**2. Transition Logic (Semantics)**
+* Parse "effect_on_receipt" of commands to determine transitions.
+* **Conditional Logic:** Convert `if/then/else` logic from the spec into **separate transitions** with mutually exclusive `guard_conditions`.
+* **Feature Constraints:** Use guard conditions to block commands if specific Feature Map bits are not set.
+* **Timers:** Model timer expiration as automatic transitions; model timer extensions as "stay" transitions.
 
-**STEP 6: FEATURE VALIDATION**
-Apply feature constraints correctly:
-- Only use features explicitly defined in cluster specification
-- Model feature-dependent command availability with guard conditions
-- Include feature validation that blocks prohibited commands
-- Avoid inventing non-existent features
-- Enforce feature limitations in transition guards
 
-**REQUIRED FSM STRUCTURE:**
+**3. Action & Definition Constraints (Tamarin-Compatible)**
+* **Atomic Actions Only:** Actions are simple assignments (`attribute := value`) or external calls (`send_response(Status)`).
+* **NO Control Flow in Actions:** Never use `if`, `else`, `for`, `while`, `:=`, or complex logic inside action strings.
+* **NO Control Flow in Definitions:** Definitions must NOT contain pseudocode, if/else, loops, or assignments.
+* **All Conditional Logic Goes to Guard Conditions:** Every `if/else` branch from the spec becomes a separate transition with unique, mutually exclusive guards.
+* **Definitions are Term/Concept Explanations Only:** Explain domain terms and constants, not algorithms.
+
+
+### OUTPUT JSON STRUCTURE
+
+
+Return **ONLY** the raw JSON object matching this schema:
+
+
 {{
   "fsm_model": {{
-    "cluster_name": "[extracted from specification]",
-    "cluster_id": "[hex ID from specification]", 
-    "category": "[cluster category]",
+    "cluster_name": "String",
+    "cluster_id": "Hex String",
+    "category": "String",
     "states": [
       {{
-        "name": "[state name]",
-        "description": "[clear behavioral description]",
-        "is_initial": true/false,
-        "invariants": ["[attribute constraints in this state]"],
-        "attributes_monitored": ["[relevant cluster attributes]"]
+        "name": "State Name",
+        "description": "Behavioral summary",
+        "is_initial": Boolean,
+        "invariants": ["Attribute constraints active in this state"],
+        "attributes_monitored": ["Attributes defining this state"]
       }}
     ],
     "transitions": [
       {{
-        "from_state": "[source state]",
-        "to_state": "[target state]",
-        "trigger": "[command name or timer/event trigger]",
-        "guard_condition": "[boolean condition with data type constraints]",
-        "actions": ["[attribute updates]", "[event generation if applicable]"],
+        "from_state": "Source State",
+        "to_state": "Target State",
+        "trigger": "Command Name | Timer Expiry | Event",
+        "guard_condition": "Boolean condition (e.g., 'Level > 0 && FeatureMap.Has(ABC)')",
+        "actions": ["attribute := value", "generate_event(Name)"],
         "response_command": null,
-        "timing_requirements": "[timing constraints if applicable or null]"
+        "timing_requirements": "String or null"
       }}
     ],
-    "initial_state": "[appropriate default state]",
-    "attributes_used": ["[all referenced attributes with quality flags]"],
-    "commands_handled": ["[all cluster commands]"],
-    "events_generated": ["[cluster events from specification]"],
-    "data_types_used": ["[enums, bitmaps, structures referenced]"],
-    "scene_behaviors": ["[scene store/recall actions if applicable]"],
+    "initial_state": "String",
+    "attributes_used": ["List of all referenced attributes"],
+    "commands_handled": ["List of all handled commands"],
+    "events_generated": ["List of generated events"],
+    "data_types_used": ["Enums, Bitmaps, Structs used"],
+    "scene_behaviors": ["Scene store/recall details if applicable"],
     "definitions": [
       {{
-        "term": "[technical term, function, or concept]",
-        "definition": "[clear explanation of meaning and purpose]",
-        "usage_context": "[where/how it appears in FSM - states/transitions/actions]"
+        "term": "Concept or Constant Name",
+        "definition": "Plain English explanation (NO pseudocode, NO if/else, NO loops)",
+        "usage_context": "Where this term is used in the FSM"
       }}
     ],
     "references": [
       {{
-        "id": "[cluster/attr ID or null if external spec]",
-        "name": "[referenced cluster/attribute/specification]",
-        "description": "[why referenced - dependency/interaction/constraint]"
+        "id": "ID or Null",
+        "name": "External Standard/Cluster",
+        "description": "Reason for dependency"
       }}
     ],
     "metadata": {{
-      "generation_timestamp": "[ISO 8601 timestamp]",
-      "generation_attempts": "[number of iterations]",
-      "judge_approved": true/false,
-      "source_pages": "[from cluster_info]",
-      "section_number": "[from cluster_info]"
+      "generation_timestamp": "ISO 8601",
+      "generation_attempts": Integer,
+      "judge_approved": Boolean,
+      "source_pages": "String",
+      "section_number": "String"
     }}
   }}
 }}
 
-**ANALYSIS METHODOLOGY:**
-1. Identify cluster type: state-based, timer-driven, mode-based, measurement, etc.
-2. Extract key attributes that define operational states (consider quality flags)
-3. Analyze command effects for precise behavioral logic including conditional branches
-4. **Integrate data types**: Use enums for state values, bitmaps for feature checks, structures for complex data
-5. Map states to meaningful attribute combinations with proper constraints
-6. Model conditional command branches as separate transitions with data type validation
-7. Add timer-based automatic transitions with correct resolution and decrement logic
-8. **Include event modeling**: Add event generation and event-driven transitions
-9. **Model scene behaviors**: Include scene store/recall for scene-capable attributes
-10. **Add stay transitions**: Include state continuation for timer extensions and command repetitions
-11. **Enforce feature constraints**: Add guard conditions that block prohibited commands
-12. **Create definitions**: Document all technical terms, functions, and domain-specific concepts
-13. Validate against specification features and constraints
-14. Ensure complete coverage of commands, events, and data type interactions
 
-**DEFINITIONS REQUIREMENTS:**
-Define cluster-specific terms, functions used in actions, feature flags, data type enums, attribute behaviors, and guard condition terms to reduce verbosity and improve clarity.
-- **Cluster-specific terms**: Domain concepts
-- **Functions/procedures**: Operations used in actions
-- **Feature flags**: Feature abbreviations and their meanings
-- **Data type enums**: Enum values and their behavioral implications
-- **Attribute concepts**: Complex attribute behaviors
-- **Guard condition terms**: Special conditions used in transitions
-Definitions are optional but encouraged for clarity and to simplify actions/guards by referencing defined terms.
-
-**REFERENCES REQUIREMENTS:**
-Document external dependencies and interactions:
-- **Other clusters**: Clusters referenced but not defined
-- **Core specifications**: Matter Core Spec concepts
-- **Shared attributes**: Global attributes
-Use hex IDs when known, null for external specifications.
-
-**CRITICAL ACCURACY REQUIREMENTS:**
-- States reflect actual device behavior from specification
-- Transitions implement exact command semantics with complete guard conditions
-- Guard conditions capture all conditional logic including feature enforcement
-- Timer behaviors model correct countdown, expiry, and internal decrement
-- Features constrain commands as specified with proper blocking
-- All attribute interactions are accurate and complete
-- Include both state-changing and stay transitions where appropriate
-- Model timer reset and extension behaviors correctly
-- Use null for response_command in Application Clusters
-- **Definitions are clear and helpful**: Each definition explains what the term means in the FSM context
-- **Metadata is properly nested**: All generation metadata goes under "metadata" object
-
-Focus on Matter specification accuracy over generic patterns. Generate FSM by analyzing the provided cluster specification systematically.
-
-Return ONLY the JSON structure. No explanations, no markdown blocks, no additional text."""
-
-# Promela Generation Configuration
-PROMELA_GENERATION_PROMPT_TEMPLATE = """
-You are a formal verification expert who generates Promela models for SPIN model checker from FSM specifications.
-
-GENERATE a Promela model for this FSM that captures its behavioral semantics for formal verification:
-
-FSM MODEL:
-{fsm_model}
-
-CLUSTER NAME: {cluster_name}
-
-**PROMELA GENERATION STRUCTURE:**
-
-1. **EXTRACT STATES**: Convert FSM states to mtype enumeration
-2. **MODEL COMMANDS**: Create mtype for commands from FSM's commands_handled  
-3. **IMPLEMENT TRANSITIONS**: Use if/fi blocks to model FSM transitions with guards
-4. **ADD ATTRIBUTES**: Model key attributes as global variables
-5. **CREATE PROCESSES**: Main cluster process + user simulation
-6. **INCLUDE PROPERTIES**: Add LTL properties for safety/liveness verification
-
-**REQUIRED PROMELA STRUCTURE:**
-
-```promela
-/*
- * Promela Model for Matter [CLUSTER_NAME] Cluster  
- * Cluster ID: [CLUSTER_ID]
- * For verification with SPIN model checker
- */
-
-#define MAX_USERS 3
-#define MAX_COMMANDS 5
-
-/* State enumeration from FSM states */
-mtype = {{ [state1], [state2], [state3] }};
-
-/* Command types from FSM commands_handled */
-mtype = {{ [cmd1], [cmd2], [cmd3], nop }};
-
-/* Global cluster state and attributes */
-mtype cluster_state = [initial_state];
-[attribute_declarations];
-chan user_commands = [MAX_COMMANDS] of {{ mtype, byte, byte }};
-
-/* Command processing functions */
-[inline_command_functions];
-
-/* Main cluster state machine process */
-active proctype ClusterStateMachine() {{
-    mtype cmd;
-    byte param1, param2;
-    
-    do
-    :: user_commands?cmd, param1, param2 ->
-        [command_processing_logic];
-    :: [timer_logic_if_applicable];
-    od
-}}
-
-/* User process for command simulation */
-proctype User(byte uid) {{
-    do
-    :: [command_generation_logic];
-    od
-}}
-
-/* LTL properties from FSM specification */
-[ltl_properties];
-
-init {{
-    atomic {{
-        run ClusterStateMachine();
-        run User(0);
-    }}
-}}
-```
-
-**GENERATION INSTRUCTIONS:**
-- Extract exact state names from FSM states array
-- Use exact command names from FSM commands_handled array
-- Model attribute constraints from FSM invariants and data types
-- Include timer logic with proper decrement and expiry handling if timer attributes exist in FSM
-- Create guard conditions from FSM transition guard_condition fields (including data type constraints)
-- Model actions from FSM transition actions arrays (including event generation)
-- **Model data types**: Include enum values and bitmap validations in logic
-- **Handle events**: Model event generation and event-driven transitions
-- **Include scene behaviors**: Model scene store/recall if present in FSM
-- **Model feature constraints**: Include feature flag enforcement in guard conditions
-- Generate LTL properties based on FSM safety/liveness properties and data constraints
-
-**FOCUS REQUIREMENTS:**
-- Model the SPECIFIC cluster behavior from the provided FSM
-- Use exact state and command names from FSM specification
-- Include all important state transitions and guards
-- Model timer behaviors if present in FSM
-- Generate meaningful LTL properties for verification
-- Ensure syntactically correct Promela code
-
-Return ONLY the Promela code with proper syntax. No explanations, no markdown blocks, just the .pml model."""
+### CRITICAL RULES REMINDER
+1.  **Split Conditionals (Mandatory for Tamarin):**
+    * *Bad:* Action ["if x > 5 then y = 1"]
+    * *Good:* Transition 1 (Guard: "x > 5", Action: ["y := 1"]), Transition 2 (Guard: "x <= 5", Action: ["y := 0"])
+2.  **Split Loops:**
+    * *Bad:* Action ["for each item in list, set value"]
+    * *Good:* Create separate transitions for each bit/item, or use guard conditions to handle all cases.
+3.  **Definitions are NOT Algorithms:**
+    * *Bad:* "if Rate != null then effectiveRate := Rate else effectiveRate := DefaultRate"
+    * *Good:* "effectiveRate: The rate value used for continuous movement, determined by Rate parameter, DefaultMoveRate attribute, or MAX_PRACTICAL_RATE constant."
+4.  **Accuracy:** Adhere strictly to the provided text. Do not hallucinate features not present in `{cluster_info}`.
+"""
 
 # Cluster Categories for Classification
 CLUSTER_CATEGORIES = [
@@ -438,212 +472,6 @@ CLUSTER_CATEGORIES = [
     "Energy Management",
     "Network Infrastructure"
 ]
-
-# Detailed Cluster Information Extraction Configuration
-CLUSTER_DETAIL_EXTRACTION_PROMPT = """
-You are extracting comprehensive technical information from a Matter protocol cluster specification for formal verification and fuzzing.
-
-**TASK**: Extract all available information from the cluster specification and return valid JSON only.
-
-**EXTRACTION REQUIREMENTS**:
-
-1. **Attributes** (Section X.Y.6):
-   - Extract each attribute with columns: ID, Name, Type, Constraint, Quality, Default, Access, Conformance
-   - Look for tables with headers like "ID | Name | Type | Constraint | Quality | Default | Access | Conformance"
-   - Include attribute descriptions from surrounding text
-
-2. **Commands** (Section X.Y.7):
-   - Extract each command with columns: ID, Name, Direction, Response, Access, Conformance
-   - For each command, extract field definitions from command payload tables
-   - Look for command field tables with headers like "ID | Name | Type | Constraint | Default | Conformance"
-   - Extract "Effect on Receipt" behavioral semantics for every command
-   - Look for normative text starting with "On receipt of [CommandName]:" or "Effect on Receipt:"
-   - Extract conditional logic (if/then/else), attribute assignments, state changes, timer operations
-   - Include behavioral requirements and their conditions
-
-3. **Behavioral State Transitions**:
-   - Extract timer-based state changes and countdown behaviors
-   - Extract attribute-driven state logic (when attributes change, what happens)
-   - Look for state diagrams or state descriptions in the specification
-   - Capture timing requirements and resolution specifications
-   - Extract conditional behavior based on feature flags and capabilities
-
-4. **Data Types** (Sections X.Y.4-5):
-   - **Enumerations**: Extract enum values with hex codes (0x00, 0x01, etc.) and names
-   - **Bitmaps**: Extract bit definitions with bit positions and names  
-   - **Structures**: Extract field definitions with IDs, names, types, conformance
-   - Look for definition tables and include nested structure definitions
-
-5. **Features** (Section X.Y.3):
-   - Extract features with bit positions, codes, names, descriptions
-   - Include feature dependencies and conformance requirements
-
-6. **Events** (if present):
-   - Extract events with IDs, names, priorities, access, conformance
-   - Extract event field definitions for each event
-
-**EXTRACTION STRATEGY**:
-   - Search the entire cluster text for information, not just the beginning
-   - Tables often span multiple pages - capture all rows
-   - Look for continuation markers like "Table X.Y continued"  
-   - Check for embedded definitions within attribute/command descriptions
-   - Extract hex values exactly as shown (0x0000, 0x01, etc.)
-   - Preserve technical abbreviations and codes exactly
-   - If information exists in the specification, extract it - do not leave arrays empty
-   - Extract ALL features with bit positions, codes, names, descriptions
-   - Include feature dependencies and conformance requirements
-
-6. EVENTS (if present):
-   - Extract ALL events with IDs, names, priorities, access, conformance
-   - Extract ALL event field definitions for each event
-**BEHAVIORAL EXTRACTION PATTERNS**:
-
-Extract command behavioral semantics including:
-- **Command conditionals**: "On receipt: if [condition]==TRUE, [action1] → set [attribute]:=FALSE"
-- **Multi-branch logic**: "If [condition1] → [action1]; Else if [condition2] → [action2]; Else → [action3]"
-- **Timer behaviors**: "When [timer]→0, server SHALL set [attribute]:=0"
-- **State transitions**: "Being [state] while [timer]>0 counts down"
-- **Resolution specs**: "Updates happen in [time] steps ([unit] units)"
-- **Attribute lifecycle**: "SHALL be set to [value] after any command causing [condition]"
-
-**JSON OUTPUT FORMAT**:
-{{
-  "cluster_info": {{
-    "cluster_name": "exact cluster name",
-    "cluster_id": "hex ID with 0x prefix",
-    "classification": {{
-      "hierarchy": "hierarchy type (Base/Utility/Application)",
-      "role": "role type (Client/Server/Both)", 
-      "scope": "scope type (Node/Endpoint)",
-      "pics_code": "PICS code for testing"
-    }},
-    "revision_history": [
-      {{
-        "revision": "revision number",
-        "description": "detailed change summary with pseudocode if applicable (max 200 chars)",
-        "date": "revision date if available"
-      }}
-    ],
-    "features": [
-      {{
-        "bit": "bit number (0-31)",
-        "code": "feature code (2-4 chars)",
-        "name": "full feature name",
-        "summary": "detailed feature description with pseudocode if applicable (max 200 chars)",
-        "conformance": "M/O/F/C conformance",
-        "dependencies": "feature dependencies if any"
-      }}
-    ],
-    "data_types": [
-      {{
-        "name": "data type name",
-        "base_type": "base type (enum8/enum16/map8/map16/struct/etc.)",
-        "constraint": "constraints if any",
-        "values": [
-          {{
-            "value": "For ENUMS: hex code (0x00), For BITMAPS: bit number (0-7), For STRUCTS: field order (0,1,2...)",
-            "name": "For ENUMS: enum name, For BITMAPS: bit name, For STRUCTS: field name", 
-            "summary": "description of enum value/bit/field",
-            "conformance": "M/O/F conformance requirement"
-          }}
-        ]
-      }}
-    ],
-    "attributes": [
-      {{
-        "id": "hex attribute ID (0x0000)",
-        "name": "full attribute name",
-        "type": "data type (including custom types)",
-        "constraint": "value constraints, ranges, or 'desc'",
-        "quality": "quality flags (N/S/P/F/X/C)",
-        "default": "default value or 'desc' if varies",
-        "access": "access permissions (R/W/RW, may include F for fabric)",
-        "conformance": "M/O/F conformance requirement",
-        "summary": "detailed attribute purpose with pseudocode notation if applicable (max 200 chars)",
-        "fabric_sensitive": "true/false if fabric-scoped",
-        "scene_capable": "true/false if supports scenes"
-      }}
-    ],
-    "commands": [
-      {{
-        "id": "hex command ID (0x00)",
-        "name": "full command name",
-        "direction": "client→server or server→client",
-        "response": "response command name or 'DefaultResponse'",
-        "access": "access level (A/V/M/etc.) and fabric requirements",
-        "conformance": "M/O/F conformance requirement",
-        "summary": "detailed command purpose with pseudocode notation (max 200 chars)",
-        "timing": "timing requirements if specified",
-        "fields": [
-          {{
-            "id": "field ID or order",
-            "name": "field name",
-            "type": "data type",
-            "constraint": "constraints or ranges",
-            "quality": "quality flags if any",
-            "default": "default value if any",
-            "conformance": "M/O/F for this field",
-            "summary": "detailed field description with pseudocode if applicable (max 200 chars)"
-          }}
-        ],
-        "effect_on_receipt": "Detailed algorithmic steps with pseudocode if applicable (max 400 chars): state changes, attribute updates, conditions, loops. Example: 'if [condition]==TRUE: [action1], set [attribute]:=FALSE; for each [item]: update [field]; else [action2]'"
-      }}
-    ],
-    "events": [
-      {{
-        "id": "hex event ID (0x00)",
-        "name": "full event name", 
-        "priority": "event priority (Info/Critical/Debug)",
-        "access": "access requirements",
-        "conformance": "M/O/F conformance",
-        "summary": "event description",
-        "fields": [
-          {{
-            "id": "field ID",
-            "name": "field name",
-            "type": "data type",
-            "conformance": "field conformance"
-          }}
-        ]
-      }}
-    ],
-    "global_attributes": [
-      {{
-        "id": "global attribute ID",
-        "name": "global attribute name",
-        "conformance": "conformance for this cluster"
-      }}
-    ]
-  }}
-}}
-
-EXTRACTION STRATEGY:
-1. **Section Scanning**: Look for numbered subsections (X.Y.3 Features, X.Y.4 Data Types, X.Y.5 Enums, X.Y.6 Attributes, X.Y.7 Commands)
-2. **Deep Subsection Analysis**: Scan X.Y.Z.1, X.Y.Z.2 subsections for detailed definitions (like "1.10.5.1 ModeTagStruct Type")
-3. **Table Extraction**: Find tables with column headers and extract ALL rows completely
-4. **Structure Field Tables**: Look for field definition tables within structure type subsections
-5. **Enum Value Lists**: Extract complete enum value tables with hex codes and names
-6. **Command Field Definitions**: Find command payload field tables within command subsections
-7. **Status Code Tables**: Extract status code definitions and ranges
-8. **Mode/Tag Namespaces**: Look for value namespace tables with semantic meanings
-9. **Multi-page Continuations**: Handle tables that span multiple pages or sections
-10. **Constraint Details**: Capture detailed constraint specifications (max values, ranges, dependencies)
-
-CRITICAL INSTRUCTIONS:
-1. **NEVER RETURN EMPTY ARRAYS IF DATA EXISTS**: Every enum, bitmap, struct, and command with defined values/fields MUST have populated arrays
-**VALIDATION REQUIREMENTS**:
-- Extract all rows from tables in the specification
-- Extract all enum values with hex codes, names, and descriptions
-- Extract all structure field definitions with IDs, names, types, conformance
-- Extract all command field definitions from command payload tables
-- Extract complete "effect_on_receipt" behavioral text for commands
-- Return valid JSON only - no markdown blocks, no explanations
-- Ensure all JSON strings are properly escaped
-- Use character limits: summaries max 200 chars, descriptions max 200 chars, effect_on_receipt max 400 chars
-- Close all braces properly - never truncate JSON structure
-
-Extract from the provided cluster specification text and return complete valid JSON only.
-"""
 
 # Section-Based Extraction Prompts
 # Following the same unbiased structure as CLUSTER_DETAIL_EXTRACTION_PROMPT
@@ -2032,502 +1860,6 @@ section_prompt_dict = {
 # TAMARIN PROVER MODEL GENERATION CONFIGURATION
 # ==============================================================================
 
-# # Tamarin Generation Prompt Template (Direct from Cluster Details)
-# TAMARIN_GENERATION_PROMPT_TEMPLATE = """
-# # MATTER CLUSTER TO TAMARIN CONVERSION
-
-# You are a formal verification expert converting Matter protocol cluster specifications to Tamarin prover theories. Focus on **termination, efficiency, and correctness**.
-
-# CLUSTER SPECIFICATION:
-# {cluster_info}
-
-# ---
-# ## CORE PRINCIPLES
-
-# 1. **Termination First**: Tamarin uses backwards search. Avoid looping rules, unbounded state explosion, missing sources lemmas.
-# 2. **Efficiency**: Minimize rules via pattern matching, use persistent facts (`!Fact`) for config, abstract numeric values.
-# 3. **Correctness**: Every FSM transition needs a rule, guards faithfully encoded, state invariants preserved.
-
-# ---
-# ## TAMARIN SYNTAX RULES (CRITICAL - MEMORIZE THESE)
-
-# ### Rule Premises Can ONLY Contain:
-# 1. **Linear facts**: `St(~tid, state, attr1, attr2, ...)`
-# 2. **Persistent facts**: `!Config(~tid, f1, f2, ...)`
-# 3. **Fresh facts**: `Fr(~tid)`
-# 4. **Input facts**: `In(x)`
-# 5. **Let bindings**: `let x = term in`
-
-# ### Rule Premises CANNOT Contain (PARSING ERRORS):
-# - ❌ `not (x = y)` - NO negation
-# - ❌ `x = y` - NO equality tests  
-# - ❌ `Fact1 | Fact2` - NO disjunctions
-# - ❌ `_` - NO underscore wildcards
-# - ❌ Any logical operators or conditions
-
-# ### Where Logical Operators ARE Allowed:
-# - ✅ **Restrictions**: `restriction name: "All x #i. ... ==> not (x = y)"`
-# - ✅ **Lemmas**: `lemma name: "All x #i. ... ==> ..."`
-
-# ---
-# ## ✅ VALID Tamarin Syntax
-
-# ```tamarin
-# // Single functions block (MUST be exactly ONE block)
-# functions: b_true/0, b_false/0, st_Off/0, st_On/0, tv_zero/0, tv_pos/0, tv_ffff/0
-
-# // Rule with only facts in premises (CORRECT)
-# rule ValidRule:
-#   let var1 = term1 in
-#   [ Fr(~tid), !Config(~tid, f1, f2), St(~tid, state, attr1, attr2) ]
-# --[ Action(~tid) ]->
-#   [ St(~tid, new_state, new_attr1, new_attr2) ]
-
-# // Variable prefixes
-# [ Fr(~tid) ]  // ~ = fresh (for new values)
-# [ In($A) ]    // $ = public (for attacker-known values)
-
-# // Negation ONLY in restrictions/lemmas
-# restriction no_double_init:
-#   "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
-
-# restriction inequality_example:
-#   "All x y #i. SomeFact(x, y)@i ==> not (x = y)"
-# ```
-
-# ---
-# ## ❌ INVALID Patterns (WILL CAUSE PARSING ERRORS)
-
-# ```tamarin
-# // WRONG: Multiple function blocks
-# functions: b_true/0
-# functions: b_false/0  // ERROR! Combine into single block
-
-# // WRONG: Negation in premises
-# rule Bad1: [ St(~tid, s, x), not (x = tv_ffff) ] --> ...  // PARSE ERROR!
-
-# // WRONG: Equality test in premises  
-# rule Bad2: [ St(~tid, s, x), x = tv_zero ] --> ...  // PARSE ERROR!
-
-# // WRONG: Disjunction in premises
-# rule Bad3: [ St(~tid, s1, x) | St(~tid, s2, x) ] --> ...  // PARSE ERROR!
-
-# // WRONG: Underscore wildcard
-# rule Bad4: [ St(~tid, _, attr) ] --> ...  // PARSE ERROR!
-
-# // WRONG: Inconsistent fact arity
-# rule Bad5: [ St(~tid, s, a1, a2, a3) ] --> [ St(~tid, s, a1, a2) ]  // 5 vs 4 = ERROR!
-# ```
-
-# ---
-# ## HOW TO HANDLE GUARDS WITHOUT NEGATION
-
-# Since you CANNOT use `not`, `=`, or conditions in premises, use these patterns:
-
-# ### Pattern 1: Equality Guard → Direct Pattern Matching
-# FSM: `guard: OnOff == TRUE`
-# ```tamarin
-# // Match the specific value directly
-# rule Cmd_When_OnOff_True:
-#   [ St(~tid, state, b_true, other_attrs...) ]  // b_true matched directly
-# --[ Command(~tid, 'Cmd') ]->
-#   [ St(~tid, new_state, b_true, other_attrs...) ]
-# ```
-
-# ### Pattern 2: Inequality Guard → Enumerate Allowed Values
-# FSM: `guard: OnTime != 0xFFFF`
-# ```tamarin
-# // Create separate rules for each ALLOWED value, omit the excluded value
-# rule Cmd_When_OnTime_Zero:
-#   [ St(~tid, state, tv_zero, ow) ]  // OnTime = 0 (allowed)
-# --[ Command(~tid, 'Cmd') ]->
-#   [ St(~tid, new_state, tv_zero, ow) ]
-
-# rule Cmd_When_OnTime_Pos:
-#   [ St(~tid, state, tv_pos, ow) ]   // OnTime > 0 and < 0xFFFF (allowed)
-# --[ Command(~tid, 'Cmd') ]->
-#   [ St(~tid, new_state, tv_pos, ow) ]
-
-# // NO rule for tv_ffff - this excludes OnTime == 0xFFFF
-# ```
-
-# ### Pattern 3: OR Guard → Separate Rules
-# FSM: `guard: state == OffIdle OR state == OnIdle`
-# ```tamarin
-# rule Cmd_From_OffIdle:
-#   [ St(~tid, st_OffIdle, attrs...) ]
-# --[ Command(~tid, 'Cmd') ]->
-#   [ St(~tid, target, attrs...) ]
-
-# rule Cmd_From_OnIdle:
-#   [ St(~tid, st_OnIdle, attrs...) ]
-# --[ Command(~tid, 'Cmd') ]->
-#   [ St(~tid, target, attrs...) ]
-# ```
-
-# ### Pattern 4: AND Guard → Same Rule with Multiple Patterns
-# FSM: `guard: OnOff == TRUE AND OnTime > 0`
-# ```tamarin
-# rule Cmd_When_On_And_TimerActive:
-#   [ St(~tid, state, b_true, tv_pos, ow) ]  // Both conditions in pattern
-# --[ Command(~tid, 'Cmd') ]->
-#   [ St(~tid, new_state, b_true, tv_pos, ow) ]
-# ```
-
-# ### Pattern 5: Complex Inequality → Full Enumeration
-# FSM: `guard: TimerState != ts_idle AND OnTime != tv_ffff`
-# ```tamarin
-# // Enumerate all valid combinations
-# rule Case_Timed_OT_Zero:
-#   [ St(~tid, state, tv_zero, ow, ts_timed) ]
-# --[ ... ]->
-#   [ ... ]
-
-# rule Case_Timed_OT_Pos:
-#   [ St(~tid, state, tv_pos, ow, ts_timed) ]
-# --[ ... ]->
-#   [ ... ]
-
-# rule Case_Delayed_OT_Zero:
-#   [ St(~tid, state, tv_zero, ow, ts_delayed) ]
-# --[ ... ]->
-#   [ ... ]
-
-# rule Case_Delayed_OT_Pos:
-#   [ St(~tid, state, tv_pos, ow, ts_delayed) ]
-# --[ ... ]->
-#   [ ... ]
-
-# // ts_idle excluded, tv_ffff excluded by not having rules for them
-# ```
-
-# ---
-# ## OPTIMIZATION STRATEGIES
-
-# ### 1. Separate Config from State
-# ```tamarin
-# !Config(tid, SupportsLT, SupportsDF, OffOnly)  // Persistent - set once
-# St(tid, FSMState, OnOff, GSC, OnTime, OffWaitTime)  // Linear - changes
-# ```
-# Reduces O(states × features × commands) → O(states × commands) rules.
-
-# ### 2. Abstract Numeric Domains
-# ```tamarin
-# functions: tv_zero/0, tv_pos/0, tv_ffff/0  // 0, 1..0xFFFE, 0xFFFF
-# // Timer: tv_pos → tv_zero (expiry), tv_ffff stays (disabled)
-# ```
-
-# ### 3. Explicit State Constants
-# ```tamarin
-# functions: st_OffIdle/0, st_OnIdle/0, st_TimedOn/0, st_DelayedOff/0
-# St(tid, FSMState, ...)  // FSMState = st_* constant
-# ```
-
-# ### 4. Sources Lemma (CRITICAL for termination)
-# ```tamarin
-# lemma sources [sources]:
-#   "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i ==>
-#      (Ex #j. ClusterInit(tid)@j & #j < #i)"
-# ```
-
-# ### 5. Restrictions (for constraints that span rules)
-# ```tamarin
-# restriction unique_init:
-#   "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
-
-# restriction single_timer_lifecycle:
-#   "All tid kind #i #j. TimerStarted(tid, kind)@i & TimerStarted(tid, kind)@j ==> #i = #j"
-
-# restriction timer_causality:
-#   "All tid kind #j. TimerExpired(tid, kind)@j ==>
-#      Ex #i. TimerStarted(tid, kind)@i & #i < #j"
-# ```
-
-# ---
-# ## CONVERSION WORKFLOW
-
-# ### Step 1: Extract from FSM
-# - **States** → `st_StateName/0` constants
-# - **Transitions** → Rules (split by guards)
-# - **Guards** → Pattern matching (enumerate allowed values)
-# - **Actions** → State changes + action facts
-# - **Attributes** → Config (immutable) vs State (mutable)
-
-# ### Step 2: State Representation
-# ```
-# St(tid, FSMState, Attr1, Attr2, ..., TimerState)  // Arity = 2 + |MutableAttrs| + TimerState
-# !Config(tid, Feature1, Feature2, ..., StartupConfig)  // Persistent
-# ```
-
-# ### Step 3: Init Rules (one per feature combo)
-# ```tamarin
-# rule Init_Base:
-#   [ Fr(~tid) ]
-# --[ ClusterInit(~tid) ]->
-#   [ !Config(~tid, b_false, b_false, startup_previous),
-#     St(~tid, st_Initial, b_false, tv_zero, tv_zero, ts_idle) ]
-# ```
-
-# ### Step 4: Transition Rules (enumerate guard combinations)
-# ```tamarin
-# // For guard "OnTime != tv_ffff", create rules for tv_zero and tv_pos only
-# rule Cmd_Name_OT_Zero:
-#   [ !Config(~tid, F1, F2, SUO), St(~tid, st_From, tv_zero, OW, TS) ]
-# --[ Command(~tid, 'CmdName'), StateTransition(~tid, st_From, st_To) ]->
-#   [ St(~tid, st_To, tv_zero, OW, NewTS) ]
-
-# rule Cmd_Name_OT_Pos:
-#   [ !Config(~tid, F1, F2, SUO), St(~tid, st_From, tv_pos, OW, TS) ]
-# --[ Command(~tid, 'CmdName'), StateTransition(~tid, st_From, st_To) ]->
-#   [ St(~tid, st_To, tv_pos, OW, NewTS) ]
-# ```
-
-# ### Step 5: Timer Rules
-# ```tamarin
-# rule Timer_Expire_Kind:
-#   [ !Config(~tid, b_true, F2, SUO), St(~tid, st_Timed, A1, tv_pos, ts_timed) ]
-# --[ TimerExpired(~tid, 'Kind'), StateTransition(~tid, st_Timed, st_Final) ]->
-#   [ St(~tid, st_Final, A1, tv_zero, ts_idle) ]
-# ```
-
-# ---
-# ## GUARD → PATTERN MAPPING
-
-# | FSM Guard | Tamarin Pattern |
-# |-----------|-----------------|
-# | `Attr == TRUE` | `b_true` in position |
-# | `Attr == FALSE` | `b_false` in position |
-# | `Attr == 0` | `tv_zero` in position |
-# | `Attr > 0 AND != 0xFFFF` | `tv_pos` in position |
-# | `Attr == 0xFFFF` | `tv_ffff` in position |
-# | `Attr != value` | **Split into rules for each ALLOWED value (omit excluded)** |
-# | `feature(X) == TRUE` | `b_true` in !Config position |
-# | `feature(X) == FALSE` | `b_false` in !Config position |
-# | `timer_active` | `ts_timed` or `ts_delayed` |
-# | `!timer_active` | `ts_idle` |
-# | `EnumAttr == VAL` | `enum_val/0` constant |
-# | `G1 AND G2` | Both patterns in same rule |
-# | `G1 OR G2` | **Split into separate rules** |
-
-# **⚠️ NEVER use `not()` in premises - split into separate rules instead!**
-
-# ## ACTION → EFFECT MAPPING
-
-# | FSM Action | Tamarin Effect |
-# |------------|----------------|
-# | `Attr := TRUE` | `b_true` in conclusion |
-# | `Attr := FALSE` | `b_false` in conclusion |
-# | `Attr := 0` | `tv_zero` in conclusion |
-# | `Attr := val (>0)` | `tv_pos` in conclusion |
-# | `Attr := 0xFFFF` | `tv_ffff` in conclusion |
-# | `timer_start(kind)` | `TimerStarted(tid, 'kind')` action fact |
-# | `timer_stop()` | `ts_idle` in conclusion |
-# | `send_status(OK)` | `CmdSucceeded(tid, 'Cmd')` action |
-# | `send_status(UNSUP)` | `CmdRejected(tid, 'Cmd', 'UNSUPPORTED')` |
-# | `if X then A else B` | **Split into separate rules** |
-
-# ---
-# ## COMPLETE TEMPLATE
-
-# ```tamarin
-# theory {{ClusterName}}_Matter
-# begin
-
-# builtins: hashing
-
-# functions:
-#   b_true/0, b_false/0,
-#   st_State1/0, st_State2/0, st_State3/0,
-#   tv_zero/0, tv_pos/0, tv_ffff/0,
-#   ts_idle/0, ts_timed/0, ts_delayed/0,
-#   startup_off/0, startup_on/0, startup_previous/0
-
-# /* !Config(tid, Feature1, Feature2, StartupOnOff) - PERSISTENT */
-# /* St(tid, FSMState, Attr1, Attr2, TimerAttr, TimerState) - LINEAR */
-# /* CRITICAL: All St facts MUST have same arity in ALL rules! */
-
-# rule Init_Base:
-#   [ Fr(~tid) ]
-# --[ ClusterInit(~tid) ]->
-#   [ !Config(~tid, b_false, b_false, startup_previous),
-#     St(~tid, st_State1, b_false, tv_zero, tv_zero, ts_idle) ]
-
-# rule Cmd_Name_FromState:
-#   [ !Config(~tid, F1, F2, SUO), St(~tid, st_From, A1, A2, A3, TS) ]
-# --[ Command(~tid, 'CmdName'), CmdName(~tid), StateTransition(~tid, st_From, st_To) ]->
-#   [ St(~tid, st_To, NewA1, NewA2, NewA3, NewTS) ]
-
-# rule Timer_Expire:
-#   [ !Config(~tid, b_true, F2, SUO), St(~tid, st_Timed, A1, tv_pos, A3, ts_timed) ]
-# --[ TimerExpired(~tid, 'Kind'), StateTransition(~tid, st_Timed, st_Final) ]->
-#   [ St(~tid, st_Final, A1, tv_zero, A3, ts_idle) ]
-
-# restriction unique_init:
-#   "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
-
-# restriction single_timer:
-#   "All tid k #i #j. TimerStarted(tid, k)@i & TimerStarted(tid, k)@j ==> #i = #j"
-
-# restriction timer_causality:
-#   "All tid k #j. TimerExpired(tid, k)@j ==> Ex #i. TimerStarted(tid, k)@i & #i < #j"
-
-# lemma sources [sources]:
-#   "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i ==>
-#      Ex #j. ClusterInit(tid)@j & #j < #i"
-
-# lemma exec_init: exists-trace "Ex tid #i. ClusterInit(tid)@i"
-# lemma exec_cmd: exists-trace "Ex tid #i. CmdName(tid)@i"
-
-# end
-# ```
-
-# ---
-# ## VALIDATION CHECKLIST
-
-# Before output, verify:
-# - [ ] Single `functions:` block
-# - [ ] No `_` wildcards in premises
-# - [ ] No `|` disjunctions in premises
-# - [ ] **No `not()` or negation in premises** (split into separate rules!)
-# - [ ] All rules: same St fact arity
-# - [ ] Fresh vars use `~`, public use `$`
-# - [ ] `not (x = y)` ONLY in formulas (lemmas/restrictions), NEVER in rule premises
-# - [ ] Lemmas use `[sources]` not `[typing]`
-# - [ ] Every FSM state → `st_*/0` constant
-# - [ ] Every transition → rule(s)
-# - [ ] Config facts: `!` persistent
-# - [ ] Sources lemma present
-
-# ---
-# ## TROUBLESHOOTING
-
-# - **Parse error "unexpected ("**: You used `not()` in premises - split into separate rules instead!
-# - **Non-termination**: Add sources lemma, check for cycles, use `--precompute-only`
-# - **Partial deconstructions**: Add sources lemma, try `--auto-sources`
-# - **Rule not firing**: Check pattern matching, verify init creates needed facts
-# - **Memory issues**: Reduce feature combos, use `--heuristic=s`
-
-# ---
-# ## TYPE MAPPINGS
-
-# | FSM Type | Tamarin Constants |
-# |----------|-------------------|
-# | `bool` | `b_true/0`, `b_false/0` |
-# | `uint8/16/32` | `tv_zero/0`, `tv_pos/0`, `tv_max/0` |
-# | `enum` | `{{attr}}_{{value}}/0` per value |
-# | `string/list/struct` | Abstract or ignore |
-
-# ---
-# ## FEATURE COMBINATION GENERATION
-
-# For N boolean features, generate 2^N init rules:
-# ```python
-# def generate_feature_combinations(features: list[str]) -> list[dict]:
-#     combinations = []
-#     for i in range(2 ** len(features)):
-#         combo = {{}}
-#         for j, feature in enumerate(features):
-#             combo[feature] = bool((i >> j) & 1)
-#         combinations.append(combo)
-#     return combinations
-# # Example: ['LT', 'DF', 'OffOnly'] → 8 combinations
-# ```
-
-# ---
-# ## CROSS-CLUSTER DEPENDENCIES
-
-# Some clusters depend on others (e.g., LevelControl depends on OnOff):
-# ```tamarin
-# rule Cmd_MoveToLevel_RequiresOnOff:
-#   [ !Config_LevelControl(~tid, ...),
-#     St_LevelControl(~tid, level, ...),
-#     St_OnOff(~tid, b_true, ...) ]  // OnOff must be ON
-# --[ Command(~tid, 'MoveToLevel') ]->
-#   [ St_LevelControl(~tid, newLevel, ...),
-#     St_OnOff(~tid, b_true, ...) ]  // Preserve OnOff
-# ```
-# Options: Full modeling | Interface abstraction | Assume independence
-
-# ---
-# ## COMMAND PARAMETERS
-
-# For commands with parameters (e.g., `MoveToLevel(level, time)`):
-# ```tamarin
-# functions: param_low/0, param_mid/0, param_high/0, param_max/0
-
-# rule Cmd_MoveToLevel_Low:
-#   [ St(~tid, state, level, ...), In(<param_low, time>) ]
-# --[ Command(~tid, 'MoveToLevel'), ParamUsed(~tid, param_low) ]->
-#   [ St(~tid, state, param_low, ...) ]
-# ```
-
-# ---
-# ## TIMER STATE INVARIANT
-
-# ```tamarin
-# restriction timer_state_invariant:
-#   "All tid state a1 a2 timerAttr delayAttr timerState #i.
-#      St(tid, state, a1, a2, timerAttr, delayAttr, timerState)@i ==>
-#        ((timerState = ts_idle) |
-#         (timerState = ts_timed & timerAttr = tv_pos) |
-#         (timerState = ts_delayed & delayAttr = tv_pos))"
-# ```
-
-# ---
-# ## FSM INPUT FORMAT (JSON Schema)
-
-# ```json
-# {{
-#   "fsm_model": {{
-#     "cluster_name": "string",
-#     "cluster_id": "hex_string",
-#     "spec_version": "string",
-#     "features": [
-#       {{ "name": "string", "code": "string", "affects_attributes": [], "affects_commands": [] }}
-#     ],
-#     "states": [
-#       {{ "name": "string", "is_initial": bool, "invariants": [], "attributes_monitored": [] }}
-#     ],
-#     "transitions": [
-#       {{ "from_state": "string", "to_state": "string", "trigger": "string",
-#          "guard_condition": "string", "actions": [], "feature_required": "string" }}
-#     ],
-#     "attributes": [
-#       {{ "name": "string", "type": "string", "default": "value", "mutable": bool,
-#          "feature_required": "string", "enum_values": [] }}
-#     ],
-#     "commands": [
-#       {{ "name": "string", "code": "hex", "feature_required": "string", "parameters": [] }}
-#     ],
-#     "timers": [
-#       {{ "name": "string", "trigger_attribute": "string",
-#          "expiry_transition": {{ "from_state": "string", "to_state": "string" }} }}
-#     ],
-#     "cross_cluster_dependencies": [
-#       {{ "cluster": "string", "dependency_type": "requires|modifies|observes" }}
-#     ]
-#   }}
-# }}
-# ```
-
-# ---
-# ## CLUSTER-SPECIFIC EXAMPLES
-
-# **OnOff (0x0006)**: Features: LT, DF, OffOnly | States: OffIdle, OnIdle, TimedOn, DelayedOff | Attrs: OnOff, OnTime, OffWaitTime, GlobalSceneControl | Commands: Off, On, Toggle, OffWithEffect, OnWithRecallGlobalScene, OnWithTimedOff
-
-# **LevelControl (0x0008)**: Features: OO, LT, FQ | States: Idle, Moving, Transitioning | Attrs: CurrentLevel, OnLevel, RemainingTime | Commands: MoveToLevel, Move, Step, Stop
-
-# **DoorLock (0x0101)**: Features: PIN, RID, FGP, LOG, USR | States: Locked, Unlocked, PartiallyLocked | Attrs: LockState, LockType, ActuatorEnabled | Commands: LockDoor, UnlockDoor, UnlockWithTimeout, SetCredential
-
-# ---
-# ## OUTPUT REQUIREMENTS
-
-# Return ONLY valid Tamarin theory code:
-# - No markdown code blocks
-# - No explanatory text
-# - Directly parseable by: `tamarin-prover --parse-only <file>.spthy`
-# """
-
 # FSM to Tamarin Conversion Prompt Template
 FSM_TO_TAMARIN_PROMPT_TEMPLATE = """
 # MATTER FSM TO TAMARIN - COMPACT REFERENCE
@@ -2943,3 +2275,124 @@ Return ONLY valid Tamarin theory code:
 - No explanatory text
 - Directly parseable by: `tamarin-prover --parse-only <file>.spthy`
 """
+
+# FSM_TO_TAMARIN_PROMPT_TEMPLATE = """
+# # MATTER FSM → TAMARIN CONVERTER (COMPACT)
+
+# Expert converter. Focus: **termination, correctness, parsing validity**.
+
+# **FSM INPUT**: {fsm_json}
+
+# ---
+# ## CORE PRINCIPLES & SYNTAX RULES
+
+# 1. **Termination**: No loops without progress. Use `[sources]` lemmas.
+# 2. **Correctness**: 1 Transition = 1 Rule. Guards must be exact.
+# 3. **Efficiency**: Use persistent facts (`!Config`).
+
+# ### ✅ CRITICAL SYNTAX (STRICT)
+# - **Functions**: SINGLE block `functions: name/arity, ...`
+# - **Rules**: Facts ONLY in premises. `[ St(...) ] --[ Action ]-> [ St(...) ]`
+# - **Config**: `!Config(tid, features...)` is persistent.
+# - **Fresh**: `Fr(~tid)` | **Public**: `In($x)`
+# - **Inequality**: ONLY in restrictions `not(x=y)`. **NEVER in premises.**
+
+# ### ❌ PARSING ERRORS (AVOID)
+# - **NO `not()` in premises**: `[ St(..), not(X=val) ]` → WILL NOT PARSE.
+# - **NO Disjunction**: `[ A | B ]` → Invalid.
+# - **NO Underscores**: `St(_, x)` → Invalid. Use variables.
+# - **Arity Mismatch**: All `St(...)` facts MUST have EQUAL arguments. Pad with `null`.
+
+# ---
+# ## MODELING STRATEGIES
+
+# ### 1. Handling `!=` Guards (MANDATORY)
+# Tamarin premises cannot handle negation. Split into rules for **allowed** values.
+# *Bad*: `guard: X != 0xFFFF` → `rule [St(X), not(X=tv_ffff)]` (ERROR)
+# *Good*:
+#   - Rule 1: `[St(tv_zero)]`
+#   - Rule 2: `[St(tv_pos)]`
+#   (tv_ffff is implicitly excluded by omission)
+
+# ### 2. Abstracting Attributes (No Arithmetic)
+# Discretize large ranges into symbolic constants:
+# - **Timers**: `tv_zero` (0), `tv_pos` (>0), `tv_ffff` (max)
+# - **Levels**: `lv_min`, `lv_mid`, `lv_max`
+# - **Bools**: `b_true`, `b_false`
+
+# ### 3. State Fact Arity Consistency
+# Calculate MAX attributes across all states. **Pad shorter states with `null`**.
+# - State A (2 attrs): `St(~tid, st_A, a1, a2, null)`
+# - State B (3 attrs): `St(~tid, st_B, b1, b2, b3)`
+
+# ### 4. Feature Combinations
+# Generate `2^N` init rules for feature sets (LT, OO, etc.).
+# `rule Init_LT: [Fr(~tid)] --[Init]-> [St(...), !Config(~tid, f_LT)]`
+
+# ---
+# ## MAPPINGS
+
+# | FSM Element | Tamarin Equivalent | Notes |
+# |-------------|-------------------|-------|
+# | `OnOff := true` | `St(..., b_true)` | Use constant |
+# | `Timer := 100` | `St(..., tv_pos)` | Abstract value |
+# | `Timer := 0` | `St(..., tv_zero)` | |
+# | `Guard: X == Y` | Pattern match in premises | Same variable name |
+# | `Guard: X != Y` | Split into rules for allowed values | |
+# | `Action: generate(E)` | `--[ Event(tid, E) ]->` | Traceable action |
+
+# ---
+# ## TAMARIN TEMPLATE (Output ONLY this)
+
+# ```tamarin
+# theory {{ClusterName}}_FSM
+# begin
+
+# /* {{CLUSTER_NAME}} FSM Model */
+
+# // 1. FUNCTIONS (Single Block)
+# functions:
+#   b_true/0, b_false/0, null/0,
+#   st_Idle/0, st_Moving/0, ...,          // States
+#   tv_zero/0, tv_pos/0, tv_ffff/0,       // Timers
+#   lv_min/0, lv_mid/0, lv_max/0,         // Levels
+#   f_LT/0, f_OO/0                        // Features
+
+# // 2. INITIALIZATION
+# rule Init_Features:
+#   [ Fr(~tid) ]
+# --[ ClusterInit(~tid) ]->
+#   [ St(~tid, st_Initial, init_vals..., null...), !Config(~tid, f_LT...) ]
+
+# // 3. TRANSITIONS
+# rule Trans_Name:
+#   [ St(~tid, st_Src, val_match...), !Config(~tid, f_LT...) ]
+# --[ Command(~tid, 'Cmd'), Transition(st_Src, st_Dst) ]->
+#   [ St(~tid, st_Dst, new_vals...) ]
+
+# // 4. RESTRICTIONS
+# restriction UniqueInit:
+#   "All t #i #j. ClusterInit(t)@i & ClusterInit(t)@j ==> #i=#j"
+
+# restriction SameArity:
+#   "All t s a1 a2 a3 a4 #i. St(t,s,a1,a2,a3,a4)@i ==> T" // Adjust count
+
+# // 5. LEMMAS
+# lemma sources [sources]:
+#   "All t s1 s2 #i. Transition(s1,s2)@i ==> Ex #j. ClusterInit(t)@j & j<i"
+
+# lemma executable: exists-trace "Ex t #i. Command(t, 'Cmd')@i"
+
+# end
+# ```
+
+# ---
+# ## CHECKLIST (Pre-Generation)
+# 1. Single `functions:` block?
+# 2. No `not()` in rule premises?
+# 3. All `St()` facts have SAME arity (padded with `null`)?
+# 4. `!=` guards split into multiple rules?
+# 5. `[sources]` lemma included?
+
+# RETURN ONLY VALID TAMARIN CODE.
+# """

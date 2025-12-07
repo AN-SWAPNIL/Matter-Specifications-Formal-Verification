@@ -379,7 +379,7 @@ Please correct the Tamarin model based on this feedback and generate an improved
 
 
 def main():
-    input_file = "fsm_models/1.6_Level_Control_fsm.json"
+    input_file = "fsm_models/1.6_Level_Control_Cluster_fsm.json"
     output_dir = "tamarin_models_from_fsm"
     if len(sys.argv) > 1:
         input_file = sys.argv[1]

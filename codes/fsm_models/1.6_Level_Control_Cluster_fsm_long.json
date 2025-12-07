@@ -1,0 +1,999 @@
+{
+  "fsm_model": {
+    "cluster_name": "Level Control",
+    "cluster_id": "0x0008",
+    "category": "Application / Base",
+    "states": [
+      {
+        "name": "Idle",
+        "description": "No level or frequency transition in progress; CurrentLevel and CurrentFrequency are stable.",
+        "is_initial": true,
+        "invariants": [
+          "RemainingTime == 0",
+          "CurrentLevel == null or (CurrentLevel >= MinLevel and (MaxLevel == null or CurrentLevel <= MaxLevel))",
+          "implemented(FQ) == false or CurrentFrequency == 0 or (CurrentFrequency >= MinFrequency and (MaxFrequency == 0 or CurrentFrequency <= MaxFrequency))"
+        ],
+        "attributes_monitored": [
+          "CurrentLevel",
+          "RemainingTime",
+          "CurrentFrequency",
+          "MinLevel",
+          "MaxLevel",
+          "MinFrequency",
+          "MaxFrequency",
+          "Options",
+          "FeatureMap",
+          "OnOffCluster.OnOff"
+        ]
+      },
+      {
+        "name": "LevelTransitionActive",
+        "description": "A time-bounded level transition is in progress (MoveToLevel, Step, MoveToLevelWithOnOff, StepWithOnOff).",
+        "is_initial": false,
+        "invariants": [
+          "RemainingTime > 0",
+          "transition_type in {MoveToLevel, Step, MoveToLevelWithOnOff, StepWithOnOff}",
+          "CurrentLevel != null",
+          "CurrentLevel >= MinLevel",
+          "MaxLevel == null or CurrentLevel <= MaxLevel"
+        ],
+        "attributes_monitored": [
+          "CurrentLevel",
+          "RemainingTime",
+          "Options",
+          "FeatureMap",
+          "OnOffCluster.OnOff"
+        ]
+      },
+      {
+        "name": "ContinuousMoveActive",
+        "description": "A continuous level movement is in progress (Move, MoveWithOnOff), nominally with no predefined end time.",
+        "is_initial": false,
+        "invariants": [
+          "continuous_move_active == true",
+          "move_mode in {MoveModeEnum.Up, MoveModeEnum.Down}",
+          "CurrentLevel != null",
+          "CurrentLevel >= MinLevel",
+          "MaxLevel == null or CurrentLevel <= MaxLevel",
+          "RemainingTime == 0"
+        ],
+        "attributes_monitored": [
+          "CurrentLevel",
+          "Options",
+          "FeatureMap",
+          "OnOffCluster.OnOff"
+        ]
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevel",
+        "guard_condition": "TransitionTime == null and Level == null",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevel",
+        "guard_condition": "TransitionTime == null and Level != null and Level > 254",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevel",
+        "guard_condition": "TransitionTime != null and Level != null and Level <= 254 and (FeatureMap & OO) == 0 and (FeatureMap & LT) == 0",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)"
+        ],
+        "response_command": null,
+        "timing_requirements": "TransitionTime in 0.1s units; implementation MAY ignore duration if constant rate only"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevel",
+        "guard_condition": "TransitionTime != null and Level != null and Level <= 254 and (FeatureMap & OO) != 0 and is_lighting_application == true and get_temp_execute_if_off(Options, OptionsMask, OptionsOverride) == 0 and OnOffCluster.OnOff == false",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Command has no effect on level or on/off when ExecuteIfOff == 0 and device is off"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "MoveToLevel",
+        "guard_condition": "TransitionTime != null and Level != null and Level <= 254 and ((FeatureMap & OO) == 0 or is_lighting_application == false or get_temp_execute_if_off(Options, OptionsMask, OptionsOverride) == 1 or OnOffCluster.OnOff == true)",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := clamp_level(Level)",
+          "transition_type := MoveToLevel",
+          "RemainingTime := compute_move_to_level_time(TransitionTime, target_level, CurrentLevel)",
+          "level_transition_with_onoff := false",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "RemainingTime in 0.1s units; MAY be rounded; device MAY ignore precise duration if it does not support variable rate"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "MoveToLevel",
+        "guard_condition": "TransitionTime == null and Level != null and Level <= 254 and ((FeatureMap & OO) == 0 or is_lighting_application == false or get_temp_execute_if_off(Options, OptionsMask, OptionsOverride) == 1 or OnOffCluster.OnOff == true)",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := clamp_level(Level)",
+          "RemainingTime := compute_immediate_transition_time(target_level, CurrentLevel)",
+          "transition_type := MoveToLevel",
+          "level_transition_with_onoff := false",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "If TransitionTime is null, implementation uses OnOffTransitionTime if present, otherwise minimum practical time"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Move",
+        "guard_condition": "Rate == 0",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 and MoveMode not_in {MoveModeEnum.Up, MoveModeEnum.Down}",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 and MoveMode in {MoveModeEnum.Up, MoveModeEnum.Down} and (FeatureMap & OO) != 0 and is_lighting_application == true and get_temp_execute_if_off(Options, OptionsMask, OptionsOverride) == 0 and OnOffCluster.OnOff == false",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "When ExecuteIfOff == 0 and device is off, Move has no effect"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "ContinuousMoveActive",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 and MoveMode in {MoveModeEnum.Up, MoveModeEnum.Down} and ((FeatureMap & OO) == 0 or is_lighting_application == false or get_temp_execute_if_off(Options, OptionsMask, OptionsOverride) == 1 or OnOffCluster.OnOff == true)",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "effRate := compute_effective_move_rate(Rate, DefaultMoveRate, device_supports_variable_rate)",
+          "continuous_move_active := true",
+          "move_mode := MoveMode",
+          "continuous_move_with_onoff := false",
+          "start_continuous_move(effRate)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Movement continues until limit or Stop; RemainingTime stays 0"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize == 0",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize != 0 and StepMode not_in {StepModeEnum.Up, StepModeEnum.Down}",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize != 0 and StepMode in {StepModeEnum.Up, StepModeEnum.Down} and (FeatureMap & OO) != 0 and is_lighting_application == true and get_temp_execute_if_off(Options, OptionsMask, OptionsOverride) == 0 and OnOffCluster.OnOff == false",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "When ExecuteIfOff == 0 and device is off, Step has no effect"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize != 0 and StepMode in {StepModeEnum.Up, StepModeEnum.Down} and TransitionTime != null and ((FeatureMap & OO) == 0 or is_lighting_application == false or get_temp_execute_if_off(Options, OptionsMask, OptionsOverride) == 1 or OnOffCluster.OnOff == true)",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := compute_step_target_level(StepMode, StepSize, CurrentLevel)",
+          "effective_duration := compute_step_duration(TransitionTime, StepSize, CurrentLevel, target_level, device_supports_variable_rate)",
+          "RemainingTime := effective_duration",
+          "transition_type := Step",
+          "level_transition_with_onoff := false",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "TransitionTime in 0.1s units; reduced proportionally if clamped before full step"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize != 0 and StepMode in {StepModeEnum.Up, StepModeEnum.Down} and TransitionTime == null and ((FeatureMap & OO) == 0 or is_lighting_application == false or get_temp_execute_if_off(Options, OptionsMask, OptionsOverride) == 1 or OnOffCluster.OnOff == true)",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := compute_step_target_level(StepMode, StepSize, CurrentLevel)",
+          "RemainingTime := compute_immediate_transition_time(target_level, CurrentLevel)",
+          "transition_type := Step",
+          "level_transition_with_onoff := false",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "If TransitionTime is null, movement is as fast as able"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Stop",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Stops any in-progress move/step/MoveToLevel initiated earlier; effect actualized on other states"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "TransitionTime == null and Level == null",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "TransitionTime == null and Level != null and Level > 254",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "TransitionTime != null and Level != null and Level <= 254 and implemented(OnOffCluster) == true and OnOffCluster.OnOff == false",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := clamp_level(Level)",
+          "OnOffCluster.OnOff := true",
+          "update_global_scene_control_on_onoff_change()",
+          "transition_type := MoveToLevelWithOnOff",
+          "level_transition_with_onoff := true",
+          "RemainingTime := compute_move_to_level_time(TransitionTime, target_level, CurrentLevel)",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Per state table, device turns on when command is received while off regardless of ExecuteIfOff"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "TransitionTime != null and Level != null and Level <= 254 and implemented(OnOffCluster) == true and OnOffCluster.OnOff == true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := clamp_level(Level)",
+          "transition_type := MoveToLevelWithOnOff",
+          "level_transition_with_onoff := true",
+          "RemainingTime := compute_move_to_level_time(TransitionTime, target_level, CurrentLevel)",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "When already on, device stays on; final on/off will be adjusted at end if needed"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "TransitionTime == null and Level != null and Level <= 254 and implemented(OnOffCluster) == true and OnOffCluster.OnOff == false",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := clamp_level(Level)",
+          "OnOffCluster.OnOff := true",
+          "update_global_scene_control_on_onoff_change()",
+          "transition_type := MoveToLevelWithOnOff",
+          "level_transition_with_onoff := true",
+          "RemainingTime := compute_immediate_transition_time(target_level, CurrentLevel)",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "OnOff set to ON when command received while off"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "TransitionTime == null and Level != null and Level <= 254 and implemented(OnOffCluster) == true and OnOffCluster.OnOff == true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := clamp_level(Level)",
+          "transition_type := MoveToLevelWithOnOff",
+          "level_transition_with_onoff := true",
+          "RemainingTime := compute_immediate_transition_time(target_level, CurrentLevel)",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate transition behavior as fast as able when TransitionTime is null"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "ContinuousMoveActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Rate != 0 and MoveMode in {MoveModeEnum.Up, MoveModeEnum.Down} and implemented(OnOffCluster) == true and OnOffCluster.OnOff == false and MoveMode == MoveModeEnum.Up",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "effRate := compute_effective_move_rate(Rate, DefaultMoveRate, device_supports_variable_rate)",
+          "continuous_move_active := true",
+          "move_mode := MoveModeEnum.Up",
+          "continuous_move_with_onoff := true",
+          "OnOffCluster.OnOff := true",
+          "update_global_scene_control_on_onoff_change()",
+          "start_continuous_move(effRate)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Per state table, off + up causes device to turn on and move toward max"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "ContinuousMoveActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Rate != 0 and MoveMode in {MoveModeEnum.Up, MoveModeEnum.Down} and implemented(OnOffCluster) == true and OnOffCluster.OnOff == false and MoveMode == MoveModeEnum.Down",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "effRate := compute_effective_move_rate(Rate, DefaultMoveRate, device_supports_variable_rate)",
+          "continuous_move_active := true",
+          "move_mode := MoveModeEnum.Down",
+          "continuous_move_with_onoff := true",
+          "start_continuous_move(effRate)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Per state table, MoveWithOnOff(down) from off moves CurrentLevel to min but does not turn device on"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "ContinuousMoveActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Rate != 0 and MoveMode in {MoveModeEnum.Up, MoveModeEnum.Down} and implemented(OnOffCluster) == true and OnOffCluster.OnOff == true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "effRate := compute_effective_move_rate(Rate, DefaultMoveRate, device_supports_variable_rate)",
+          "continuous_move_active := true",
+          "move_mode := MoveMode",
+          "continuous_move_with_onoff := true",
+          "start_continuous_move(effRate)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "When already on, OnOff remains true until level reaches DeviceMinLevel on down direction"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Rate == 0",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Rate != 0 and MoveMode not_in {MoveModeEnum.Up, MoveModeEnum.Down}",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "StepSize != 0 and StepMode in {StepModeEnum.Up, StepModeEnum.Down} and TransitionTime != null and implemented(OnOffCluster) == true and OnOffCluster.OnOff == false and StepMode == StepModeEnum.Up",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "OnOffCluster.OnOff := true",
+          "update_global_scene_control_on_onoff_change()",
+          "target_level := compute_step_target_level(StepMode, StepSize, CurrentLevel)",
+          "effective_duration := compute_step_duration(TransitionTime, StepSize, CurrentLevel, target_level, device_supports_variable_rate)",
+          "RemainingTime := effective_duration",
+          "transition_type := StepWithOnOff",
+          "level_transition_with_onoff := true",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Off + StepWithOnOff(up) turns device on and steps up to target level"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "StepSize != 0 and StepMode in {StepModeEnum.Up, StepModeEnum.Down} and TransitionTime != null and implemented(OnOffCluster) == true and OnOffCluster.OnOff == false and StepMode == StepModeEnum.Down",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := compute_step_target_level(StepMode, StepSize, CurrentLevel)",
+          "effective_duration := compute_step_duration(TransitionTime, StepSize, CurrentLevel, target_level, device_supports_variable_rate)",
+          "RemainingTime := effective_duration",
+          "transition_type := StepWithOnOff",
+          "level_transition_with_onoff := true",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Off + StepWithOnOff(down) sets CurrentLevel toward min but device may remain off depending on final level vs min"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "StepSize != 0 and StepMode in {StepModeEnum.Up, StepModeEnum.Down} and TransitionTime != null and implemented(OnOffCluster) == true and OnOffCluster.OnOff == true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := compute_step_target_level(StepMode, StepSize, CurrentLevel)",
+          "effective_duration := compute_step_duration(TransitionTime, StepSize, CurrentLevel, target_level, device_supports_variable_rate)",
+          "RemainingTime := effective_duration",
+          "transition_type := StepWithOnOff",
+          "level_transition_with_onoff := true",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "When already on, OnOff final value is tied to resulting level vs DeviceMinLevel"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "LevelTransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "StepSize != 0 and StepMode in {StepModeEnum.Up, StepModeEnum.Down} and TransitionTime == null and implemented(OnOffCluster) == true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "target_level := compute_step_target_level(StepMode, StepSize, CurrentLevel)",
+          "RemainingTime := compute_immediate_transition_time(target_level, CurrentLevel)",
+          "transition_type := StepWithOnOff",
+          "level_transition_with_onoff := true",
+          "start_level_transition_timer()",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate step when TransitionTime is null"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "StepSize == 0",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "StepSize != 0 and StepMode not_in {StepModeEnum.Up, StepModeEnum.Down}",
+        "actions": [
+          "send_default_response(INVALID_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StopWithOnOff",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Same behavior as Stop; effect on transitions modeled in other states"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToClosestFrequency",
+        "guard_condition": "implemented(FQ) == false",
+        "actions": [
+          "send_default_response(UNSUPPORTED_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToClosestFrequency",
+        "guard_condition": "implemented(FQ) == true and select_closest_supported_frequency(Frequency) == null",
+        "actions": [
+          "send_default_response(CONSTRAINT_ERROR)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Device cannot approximate requested frequency"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToClosestFrequency",
+        "guard_condition": "implemented(FQ) == true and select_closest_supported_frequency(Frequency) != null",
+        "actions": [
+          "CurrentFrequency := select_closest_supported_frequency(Frequency)",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Update is immediate; no RemainingTime semantics defined"
+      },
+      {
+        "from_state": "LevelTransitionActive",
+        "to_state": "LevelTransitionActive",
+        "trigger": "level_transition_timer_tick",
+        "guard_condition": "RemainingTime > timer_tick and device_supports_continuous_reporting == true",
+        "actions": [
+          "CurrentLevel := interpolate_level(CurrentLevel, target_level, RemainingTime)",
+          "RemainingTime := RemainingTime - timer_tick"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timer tick resolution implementation-specific; RemainingTime in 0.1s units logically"
+      },
+      {
+        "from_state": "LevelTransitionActive",
+        "to_state": "Idle",
+        "trigger": "level_transition_timer_tick",
+        "guard_condition": "RemainingTime <= timer_tick",
+        "actions": [
+          "CurrentLevel := target_level",
+          "RemainingTime := 0",
+          "apply_with_onoff_end_behavior(level_transition_with_onoff, CurrentLevel)",
+          "transition_type := None"
+        ],
+        "response_command": null,
+        "timing_requirements": "Transition completes when RemainingTime reaches 0"
+      },
+      {
+        "from_state": "LevelTransitionActive",
+        "to_state": "Idle",
+        "trigger": "Stop",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "terminate_level_transition()",
+          "RemainingTime := 0",
+          "transition_type := None",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Stop freezes CurrentLevel at its value at receipt time and clears RemainingTime"
+      },
+      {
+        "from_state": "LevelTransitionActive",
+        "to_state": "Idle",
+        "trigger": "StopWithOnOff",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "terminate_level_transition()",
+          "RemainingTime := 0",
+          "transition_type := None",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Same as Stop; On/Off linkage determined by originally started command"
+      },
+      {
+        "from_state": "ContinuousMoveActive",
+        "to_state": "ContinuousMoveActive",
+        "trigger": "continuous_move_tick",
+        "guard_condition": "continuous_move_active == true and move_mode == MoveModeEnum.Up and CurrentLevel < DeviceMaxLevel",
+        "actions": [
+          "CurrentLevel := increment_level(CurrentLevel, continuous_move_step_up())"
+        ],
+        "response_command": null,
+        "timing_requirements": "Tick resolution and step size depend on effRate and device capabilities"
+      },
+      {
+        "from_state": "ContinuousMoveActive",
+        "to_state": "ContinuousMoveActive",
+        "trigger": "continuous_move_tick",
+        "guard_condition": "continuous_move_active == true and move_mode == MoveModeEnum.Down and CurrentLevel > DeviceMinLevel",
+        "actions": [
+          "CurrentLevel := decrement_level(CurrentLevel, continuous_move_step_down())"
+        ],
+        "response_command": null,
+        "timing_requirements": "Tick resolution and step size depend on effRate and device capabilities"
+      },
+      {
+        "from_state": "ContinuousMoveActive",
+        "to_state": "Idle",
+        "trigger": "continuous_move_tick",
+        "guard_condition": "continuous_move_active == true and ((move_mode == MoveModeEnum.Up and CurrentLevel >= DeviceMaxLevel) or (move_mode == MoveModeEnum.Down and CurrentLevel <= DeviceMinLevel))",
+        "actions": [
+          "CurrentLevel := clamp_level(CurrentLevel)",
+          "continuous_move_active := false",
+          "apply_continuous_with_onoff_limit_behavior(continuous_move_with_onoff, move_mode, CurrentLevel)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Movement stops automatically when min or max limit reached"
+      },
+      {
+        "from_state": "ContinuousMoveActive",
+        "to_state": "Idle",
+        "trigger": "Stop",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "terminate_continuous_move()",
+          "continuous_move_active := false",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Stop freezes CurrentLevel and ends continuous move"
+      },
+      {
+        "from_state": "ContinuousMoveActive",
+        "to_state": "Idle",
+        "trigger": "StopWithOnOff",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := build_temp_options(Options, OptionsMask, OptionsOverride)",
+          "process_options(tempOptions)",
+          "terminate_continuous_move()",
+          "continuous_move_active := false",
+          "send_default_response(SUCCESS)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Same as Stop; On/Off effect is determined by what the command being stopped would do"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "SceneRecall",
+        "guard_condition": "scene_contains_level_control_extension == true",
+        "actions": [
+          "CurrentLevel := scene_restore_current_level()",
+          "CurrentFrequency := scene_restore_current_frequency()",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Scene recall updates scene-capable attributes immediately"
+      },
+      {
+        "from_state": "LevelTransitionActive",
+        "to_state": "Idle",
+        "trigger": "SceneRecall",
+        "guard_condition": "scene_contains_level_control_extension == true",
+        "actions": [
+          "terminate_level_transition()",
+          "CurrentLevel := scene_restore_current_level()",
+          "CurrentFrequency := scene_restore_current_frequency()",
+          "RemainingTime := 0",
+          "transition_type := None"
+        ],
+        "response_command": null,
+        "timing_requirements": "Scene recall cancels ongoing transition and applies stored values"
+      },
+      {
+        "from_state": "ContinuousMoveActive",
+        "to_state": "Idle",
+        "trigger": "SceneRecall",
+        "guard_condition": "scene_contains_level_control_extension == true",
+        "actions": [
+          "terminate_continuous_move()",
+          "continuous_move_active := false",
+          "CurrentLevel := scene_restore_current_level()",
+          "CurrentFrequency := scene_restore_current_frequency()",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Scene recall cancels move and applies stored values"
+      }
+    ],
+    "initial_state": "Idle",
+    "attributes_used": [
+      "CurrentLevel (S N X Q, RV)",
+      "RemainingTime (Q, RV)",
+      "MinLevel (RV)",
+      "MaxLevel (RV)",
+      "CurrentFrequency (P S Q, RV, FQ)",
+      "MinFrequency (RV, FQ)",
+      "MaxFrequency (RV, FQ)",
+      "OnOffTransitionTime (RW VO)",
+      "OnLevel (RW VO X)",
+      "OnTransitionTime (RW VO X)",
+      "OffTransitionTime (RW VO X)",
+      "DefaultMoveRate (RW VO X)",
+      "Options (RW VO)",
+      "StartUpCurrentLevel (RW VM XN)",
+      "FeatureMap (global, RV)",
+      "ClusterRevision (global, RV)",
+      "OnOffCluster.OnOff (external, RW)",
+      "OnOffCluster.GlobalSceneControl (external, RW)"
+    ],
+    "commands_handled": [
+      "MoveToLevel",
+      "Move",
+      "Step",
+      "Stop",
+      "MoveToLevelWithOnOff",
+      "MoveWithOnOff",
+      "StepWithOnOff",
+      "StopWithOnOff",
+      "MoveToClosestFrequency",
+      "SceneRecall"
+    ],
+    "events_generated": [],
+    "data_types_used": [
+      "OptionsBitmap (map8)",
+      "MoveModeEnum (enum8: Up=0x00, Down=0x01)",
+      "StepModeEnum (enum8: Up=0x00, Down=0x01)",
+      "uint8",
+      "uint16"
+    ],
+    "scene_behaviors": [
+      "If Scenes Management server cluster is present, CurrentLevel and CurrentFrequency are stored in the Scene Table ExtensionFieldSetStruct for this endpoint.",
+      "On scene recall, scene_restore_current_level() and scene_restore_current_frequency() assign stored values to CurrentLevel and CurrentFrequency.",
+      "Attributes not supported by the FeatureMap must still have storage locations in scene tables but are ignored on recall.",
+      "Scene recall cancels any ongoing level transition or continuous move and resets RemainingTime to 0."
+    ],
+    "definitions": [
+      {
+        "term": "build_temp_options",
+        "definition": "Function that computes a temporary Options bitmap from the persistent Options attribute and a command's OptionsMask and OptionsOverride fields by replacing each bit i where OptionsMask[i] == 1 with OptionsOverride[i], and leaving bits unchanged where OptionsMask[i] == 0.",
+        "usage_context": "Used in actions for all commands that carry OptionsMask/OptionsOverride to construct tempOptions before calling process_options."
+      },
+      {
+        "term": "process_options",
+        "definition": "Function that applies the semantics of the temporary Options bitmap to internal command processing, including ExecuteIfOff and CoupleColorTempToLevel behavior. It interprets bits such as ExecuteIfOff according to the OptionsBitmap definition.",
+        "usage_context": "Invoked as an action in most command-processing transitions immediately after building tempOptions."
+      },
+      {
+        "term": "get_temp_execute_if_off",
+        "definition": "Guard helper that returns the logical value (0 or 1) of the ExecuteIfOff bit as it appears in the tempOptions bitmap that would be produced by build_temp_options(Options, OptionsMask, OptionsOverride).",
+        "usage_context": "Used in guard conditions to decide if a command is allowed to act when the device is off and OnOff feature is present."
+      },
+      {
+        "term": "DeviceMinLevel",
+        "definition": "Internal derived constant representing the minimum effective level the device can take, typically MinLevel for LT feature or another manufacturer-defined minimum. Used to clamp CurrentLevel and interpret On/Off linkage.",
+        "usage_context": "Used in clamp_level, compute_step_target_level and with On/Off behavior definitions."
+      },
+      {
+        "term": "DeviceMaxLevel",
+        "definition": "Internal derived constant representing the maximum effective level the device can take, typically MaxLevel when implemented or 254 otherwise.",
+        "usage_context": "Used to clamp target levels in Move, MoveToLevel, Step, and continuous move limit checks."
+      },
+      {
+        "term": "clamp_level",
+        "definition": "Function that returns a level constrained between DeviceMinLevel and DeviceMaxLevel for non-null inputs while respecting CurrentLevel and attribute constraints.",
+        "usage_context": "Used in transitions when computing target_level from command Level fields or when enforcing limits on CurrentLevel."
+      },
+      {
+        "term": "compute_move_to_level_time",
+        "definition": "Function that maps a TransitionTime field (0.1s units) and the delta between CurrentLevel and target_level into a RemainingTime value, taking into account whether the device supports variable rates. It may cap or round times according to implementation limits.",
+        "usage_context": "Used in MoveToLevel and MoveToLevelWithOnOff transitions when TransitionTime is not null."
+      },
+      {
+        "term": "compute_immediate_transition_time",
+        "definition": "Function that returns a minimal but nonzero RemainingTime (or 0) suitable for representing an effectively immediate transition when no explicit TransitionTime is provided.",
+        "usage_context": "Used when TransitionTime is null for Step and MoveToLevel-like transitions."
+      },
+      {
+        "term": "compute_effective_move_rate",
+        "definition": "Function that returns the effective move rate in units per second based on the Rate field, DefaultMoveRate attribute when Rate is null, and whether the device supports variable rate. If variable rate is not supported, it returns a MAX_PRACTICAL_RATE constant.",
+        "usage_context": "Used in Move and MoveWithOnOff commands to determine effRate passed to start_continuous_move."
+      },
+      {
+        "term": "compute_step_target_level",
+        "definition": "Function that computes target_level = min(CurrentLevel + StepSize, DeviceMaxLevel) when StepMode is Up and target_level = max(CurrentLevel - StepSize, DeviceMinLevel) when StepMode is Down.",
+        "usage_context": "Used for Step and StepWithOnOff commands when deriving target levels from StepSize and StepMode."
+      },
+      {
+        "term": "compute_step_duration",
+        "definition": "Function that converts TransitionTime and step size into an effective RemainingTime in 0.1s units, scaling proportionally if the actual delta between CurrentLevel and target_level is smaller than StepSize due to clamping.",
+        "usage_context": "Used for Step and StepWithOnOff transitions when TransitionTime is provided and the step is clamped at device limits."
+      },
+      {
+        "term": "interpolate_level",
+        "definition": "Function that returns the next CurrentLevel value between the previous level and target_level based on RemainingTime and elapsed time per tick, ensuring monotonic movement and compliance with MinLevel/MaxLevel.",
+        "usage_context": "Used during LevelTransitionActive timer ticks to update CurrentLevel progressively."
+      },
+      {
+        "term": "increment_level",
+        "definition": "Function that increases CurrentLevel by a small step correlated with effRate and timer tick, without exceeding DeviceMaxLevel.",
+        "usage_context": "Used in ContinuousMoveActive state ticks when move_mode is Up."
+      },
+      {
+        "term": "decrement_level",
+        "definition": "Function that decreases CurrentLevel by a small step correlated with effRate and timer tick, without going below DeviceMinLevel.",
+        "usage_context": "Used in ContinuousMoveActive state ticks when move_mode is Down."
+      },
+      {
+        "term": "continuous_move_step_up",
+        "definition": "Function that returns a device-specific incremental step size for each continuous_move_tick when moving up, derived from effRate.",
+        "usage_context": "Used in increment_level during ContinuousMoveActive."
+      },
+      {
+        "term": "continuous_move_step_down",
+        "definition": "Function that returns a device-specific incremental step size for each continuous_move_tick when moving down, derived from effRate.",
+        "usage_context": "Used in decrement_level during ContinuousMoveActive."
+      },
+      {
+        "term": "start_level_transition_timer",
+        "definition": "Procedure that activates a logical timer producing level_transition_timer_tick events until RemainingTime reaches 0.",
+        "usage_context": "Called when entering LevelTransitionActive as part of MoveToLevel, Step, MoveToLevelWithOnOff, or StepWithOnOff."
+      },
+      {
+        "term": "start_continuous_move",
+        "definition": "Procedure that starts the continuous move mechanism using effRate, generating continuous_move_tick events until explicitly stopped or a limit is reached.",
+        "usage_context": "Called in Move and MoveWithOnOff transitions that enter ContinuousMoveActive."
+      },
+      {
+        "term": "terminate_level_transition",
+        "definition": "Procedure that halts the ongoing level transition without changing CurrentLevel, used by Stop and StopWithOnOff.",
+        "usage_context": "Used when Stop or StopWithOnOff is received in LevelTransitionActive state."
+      },
+      {
+        "term": "terminate_continuous_move",
+        "definition": "Procedure that halts the ongoing continuous move without changing CurrentLevel.",
+        "usage_context": "Used when Stop or StopWithOnOff is received in ContinuousMoveActive state."
+      },
+      {
+        "term": "apply_with_onoff_end_behavior",
+        "definition": "Procedure that, after a WithOnOff-style time-bounded transition completes, updates OnOffCluster.OnOff based on resulting CurrentLevel vs DeviceMinLevel, and updates GlobalSceneControl accordingly.",
+        "usage_context": "Called when LevelTransitionActive completes if level_transition_with_onoff is true."
+      },
+      {
+        "term": "apply_continuous_with_onoff_limit_behavior",
+        "definition": "Procedure that, after a WithOnOff-style continuous move reaches DeviceMinLevel or DeviceMaxLevel, updates OnOffCluster.OnOff per spec: if CurrentLevel > DeviceMinLevel, OnOff is set to TRUE; if equals DeviceMinLevel and move_mode is Down, OnOff is set to FALSE.",
+        "usage_context": "Called when ContinuousMoveActive ends and continuous_move_with_onoff is true."
+      },
+      {
+        "term": "select_closest_supported_frequency",
+        "definition": "Function that returns a supported frequency closest to the requested Frequency, or null if the device cannot approximate it according to manufacturer policy.",
+        "usage_context": "Used in MoveToClosestFrequency guard and actions to determine CONSTRAINT_ERROR vs SUCCESS."
+      },
+      {
+        "term": "update_global_scene_control_on_onoff_change",
+        "definition": "Procedure that updates the GlobalSceneControl attribute in the On/Off cluster whenever OnOffCluster.OnOff changes as a result of Level Control commands.",
+        "usage_context": "Called after setting OnOffCluster.OnOff in WithOnOff transitions, according to On/Off cluster semantics."
+      },
+      {
+        "term": "scene_restore_current_level",
+        "definition": "Function that returns the stored CurrentLevel value from a previously saved scene extension fieldset.",
+        "usage_context": "Used in SceneRecall-triggered transitions to restore level on scene recall."
+      },
+      {
+        "term": "scene_restore_current_frequency",
+        "definition": "Function that returns the stored CurrentFrequency value from a previously saved scene extension fieldset, or 0 if not stored.",
+        "usage_context": "Used in SceneRecall-triggered transitions when the FQ feature is supported."
+      },
+      {
+        "term": "is_lighting_application",
+        "definition": "Boolean that reflects whether the device is considered a lighting application, typically implied by LT feature and relevant product context.",
+        "usage_context": "Used in ExecuteIfOff guards for Move and Step to apply lighting-specific behavior."
+      }
+    ],
+    "references": [
+      {
+        "id": "0x0008",
+        "name": "Level Control cluster",
+        "description": "Primary cluster providing generic level control behavior."
+      },
+      {
+        "id": "0x0006",
+        "name": "On/Off cluster",
+        "description": "Provides OnOff and GlobalSceneControl attributes; tightly coupled via the OnOff feature and WithOnOff commands."
+      },
+      {
+        "id": "0x0300",
+        "name": "Color Control cluster",
+        "description": "Referenced via Options.CoupleColorTempToLevel for lighting applications."
+      },
+      {
+        "id": null,
+        "name": "Scenes Management server cluster",
+        "description": "Stores and recalls scene data including Level Control attributes when present on the same endpoint."
+      },
+      {
+        "id": "0xFFFD",
+        "name": "FeatureMap",
+        "description": "Global attribute that indicates supported Level Control features (OO, LT, FQ)."
+      },
+      {
+        "id": "0xFFFC",
+        "name": "ClusterRevision",
+        "description": "Global attribute indicating the revision of the Level Control cluster supported by the implementation."
+      }
+    ],
+    "metadata": {
+      "generation_timestamp": "2025-12-08T01:24:51.071171",
+      "generation_attempts": 4,
+      "judge_approved": true,
+      "source_pages": "74-89",
+      "section_number": "1.6"
+    }
+  }
+}

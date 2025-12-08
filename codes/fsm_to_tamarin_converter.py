@@ -166,15 +166,21 @@ SOURCE FSM JSON:
         feedback = None
         last_valid_response = None  # Track last valid Tamarin model
         best_attempt = 0
+        previous_tamarin_str = None
+        last_judge_feedback = None
         
         for attempt in range(max_retries):
-            if feedback:
+            if feedback and previous_tamarin_str:
                 feedback_section = f"""
 
 The previously converted Tamarin model was judged incorrect. Here is the feedback from the judge:
 {feedback}
 
+PREVIOUSLY GENERATED TAMARIN MODEL:
+{previous_tamarin_str}
+
 Please correct the Tamarin model based on this feedback and generate an improved version.
+Address the specific issues mentioned in the feedback while maintaining correct Tamarin syntax.
 """
                 prompt = base_prompt + feedback_section
             else:
@@ -193,10 +199,12 @@ Please correct the Tamarin model based on this feedback and generate an improved
 
                 # Save this as a valid attempt
                 last_valid_response = clean_response
+                previous_tamarin_str = clean_response  # Store for next iteration
                 best_attempt = attempt + 1
 
                 # Judge the Tamarin conversion
                 judge_response = self.judge_tamarin(clean_response, fsm_json_str)
+                last_judge_feedback = judge_response  # Store last feedback
 
                 if '"correct": true' in judge_response.lower():
                     logger.info(f"✓ Tamarin conversion approved (attempt {attempt + 1})")
@@ -243,6 +251,7 @@ Please correct the Tamarin model based on this feedback and generate an improved
                         "generation_attempts": best_attempt,
                         "judge_approved": False,
                         "conversion_source": "fsm_json",
+                        "last_judge_feedback": last_judge_feedback,
                         "note": "Best attempt saved - judge approval not obtained"
                     }
                 }
@@ -321,17 +330,22 @@ Please correct the Tamarin model based on this feedback and generate an improved
                 print("\n" + "="*80)
                 print("FSM TO TAMARIN CONVERSION FAILED")
                 print("="*80)
-                print("The Tamarin model could not be approved by the judge after maximum retries.")
-                print("No valid Tamarin theory was generated.")
+                print("No valid Tamarin theory could be generated.")
                 print("Please check the logs for details.")
                 print("="*80 + "\n")
                 return 1
 
             spthy_output = self.save_tamarin_file(tamarin_data, fsm_data, output_dir)
+            
+            # Check if approved
+            is_approved = tamarin_data.get('tamarin_model', {}).get('metadata', {}).get('judge_approved', False)
 
             # Print summary
             print("\n" + "="*80)
-            print("FSM TO TAMARIN CONVERSION SUCCESSFUL")
+            if is_approved:
+                print("FSM TO TAMARIN CONVERSION SUCCESSFUL (APPROVED)")
+            else:
+                print("FSM TO TAMARIN CONVERSION COMPLETED (NOT APPROVED - NEEDS REVIEW)")
             print("="*80)
             cluster_name = tamarin_data.get('tamarin_model', {}).get('cluster_name', 'unknown')
             print(f"Cluster: {cluster_name}")

@@ -117,14 +117,22 @@ User Input: {user_input}
         base_prompt = self.prompt_template.format(cluster_info=cluster_info_str)
 
         feedback = None
+        last_fsm_data = None
+        last_judge_feedback = None
+        previous_fsm_str = None
+        
         for attempt in range(max_retries):
-            if feedback:
+            if feedback and previous_fsm_str:
                 feedback_section = f"""
 
 The previously generated FSM was judged incorrect. Here is the feedback from the judge:
 {feedback}
 
+PREVIOUSLY GENERATED FSM:
+{previous_fsm_str}
+
 Please correct the FSM based on this feedback and generate an improved version.
+Address the specific issues mentioned in the feedback while maintaining correct FSM structure.
 """
                 prompt = base_prompt + feedback_section
             else:
@@ -143,11 +151,15 @@ Please correct the FSM based on this feedback and generate an improved version.
 
                 try:
                     fsm_data = json.loads(clean_response)
+                    last_fsm_data = fsm_data  # Store last valid FSM
+                    previous_fsm_str = json.dumps(fsm_data, indent=2, ensure_ascii=False)  # Store for next iteration
                 except json.JSONDecodeError as json_error:
                     logger.warning(f"JSON parse error: {json_error}, retrying...")
                     continue
 
                 judge_response = self.judge_fsm(clean_response, cluster_info_str)
+                # print("Judge Response:", judge_response)
+                last_judge_feedback = judge_response  # Store last feedback
 
                 if '"correct": true' in judge_response.lower():
                     logger.info(f"✓ FSM approved (attempt {attempt + 1})")
@@ -166,6 +178,19 @@ Please correct the FSM based on this feedback and generate an improved version.
                 logger.error(f"Error during generation attempt: {e}")
 
         logger.error(f"Failed to generate approved FSM for {cluster_name} after {max_retries} attempts")
+        
+        # Save the last generated FSM even if not approved
+        if last_fsm_data:
+            logger.warning(f"Saving last generated FSM (unapproved) for {cluster_name}")
+            if 'metadata' not in last_fsm_data.get('fsm_model', {}):
+                last_fsm_data.setdefault('fsm_model', {})['metadata'] = {}
+            
+            last_fsm_data['fsm_model']['metadata']['generation_timestamp'] = datetime.now().isoformat()
+            last_fsm_data['fsm_model']['metadata']['generation_attempts'] = max_retries
+            last_fsm_data['fsm_model']['metadata']['judge_approved'] = False
+            last_fsm_data['fsm_model']['metadata']['last_judge_feedback'] = last_judge_feedback
+            return last_fsm_data
+        
         return None
 
     def save_fsm_file(self, fsm_data: Dict[str, Any], cluster_info: Dict[str, Any], output_dir: str) -> Optional[str]:
@@ -216,20 +241,26 @@ Please correct the FSM based on this feedback and generate an improved version.
             fsm_data = self.generate_fsm(cluster_info)
 
             if not fsm_data:
-                logger.error("Failed to generate a correct FSM after multiple attempts")
+                logger.error("Failed to generate any valid FSM after multiple attempts")
                 print("\n" + "="*80)
                 print("FSM GENERATION FAILED")
                 print("="*80)
-                print("The FSM could not be approved by the judge after maximum retries.")
+                print("No valid FSM could be generated after maximum retries.")
                 print("Please check the logs for details.")
                 print("="*80 + "\n")
                 return 1
 
             json_output = self.save_fsm_file(fsm_data, cluster_info, output_dir)
+            
+            # Check if FSM was approved
+            is_approved = fsm_data.get('fsm_model', {}).get('metadata', {}).get('judge_approved', False)
 
             # Print summary
             print("\n" + "="*80)
-            print("FSM GENERATION SUCCESSFUL")
+            if is_approved:
+                print("FSM GENERATION SUCCESSFUL (APPROVED)")
+            else:
+                print("FSM GENERATION COMPLETED (NOT APPROVED - NEEDS REVIEW)")
             print("="*80)
             cluster_name = fsm_data.get('fsm_model', {}).get('cluster_name', 'unknown')
             print(f"Cluster: {cluster_name}")

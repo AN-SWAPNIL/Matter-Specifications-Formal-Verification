@@ -1,610 +1,522 @@
-theory OnOffCluster_Matter_FSM
+theory OnOff_Cluster_0x0006_Matter_FSM
 begin
 
 /* 
  * On/Off Cluster (0x0006)
- * States: OffIdle, OnIdle, TimedOn, DelayedOff
- * Attributes tracked:
- *   - OnOff        : b_true / b_false
- *   - GlobalSceneControl : b_true / b_false
- *   - OnTime       : tv_zero / tv_pos / tv_ffff
- *   - OffWaitTime  : tv_zero / tv_pos / tv_ffff
- *   - timing_timer_active : tt_true / tt_false
- * Features (immutable per tid):
- *   - LT       : fv_true / fv_false
- *   - DF       : fv_true / fv_false
- *   - OFFONLY  : fv_true / fv_false
- *   - AcceptOnlyWhenOn (OnOffControl bit) : fv_true / fv_false
+ * States: Off_Idle, On_Idle, Timed_On, Delayed_Off
+ * Features (abstracted as free constants): LT, DF, OFFONLY
+ * Timers abstracted: tv_zero (0), tv_pos (>0), tv_ffff (sentinel)
  */
 
 //========================================
-// SECTION 1: Function Declarations (SINGLE BLOCK)
+// SECTION 1: Function Declarations
 //========================================
 functions:
-  // Boolean-like values
+  // Boolean values
   b_true/0, b_false/0,
-
-  // Feature boolean values
-  fv_true/0, fv_false/0,
 
   // State enumerations
   st_OffIdle/0, st_OnIdle/0, st_TimedOn/0, st_DelayedOff/0,
 
-  // Abstract timer values (for OnTime, OffWaitTime)
-  // tv_zero: value 0
-  // tv_pos : finite positive value (>0 and != 0xFFFF)
-  // tv_ffff: sentinel 0xFFFF
+  // Abstract timer values
   tv_zero/0, tv_pos/0, tv_ffff/0,
 
-  // Timing timer active flag
-  tt_true/0, tt_false/0
+  // Feature flags (values used inside !Config)
+  f_LT_true/0, f_LT_false/0,
+  f_DF_true/0, f_DF_false/0,
+  f_OFFONLY_true/0, f_OFFONLY_false/0,
+
+  // Startup enum values
+  su_null/0,
+  su_off/0, su_on/0, su_toggle/0,
+
+  // PreviousOnOff abstract values
+  prev_on/0, prev_off/0
 
 //========================================
-// SECTION 2: Immutable Configuration
+// SECTION 2: Facts
 //========================================
-// !Config(tid, LT, DF, OFFONLY, AcceptOnlyWhenOn)
- // LT, DF, OFFONLY, AcceptOnlyWhenOn ∈ {fv_true, fv_false}
-
-// Generate all 2^4 combinations (LT, DF, OFFONLY, AcceptOnlyWhenOn).
-
-rule Init_Features_LT0_DF0_OFF0_ACC0:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_false, fv_false, fv_false, fv_false) ]
-
-rule Init_Features_LT0_DF0_OFF0_ACC1:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_false, fv_false, fv_false, fv_true) ]
-
-rule Init_Features_LT0_DF0_OFF1_ACC0:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_false, fv_false, fv_true, fv_false) ]
-
-rule Init_Features_LT0_DF0_OFF1_ACC1:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_false, fv_false, fv_true, fv_true) ]
-
-rule Init_Features_LT0_DF1_OFF0_ACC0:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_false, fv_true, fv_false, fv_false) ]
-
-rule Init_Features_LT0_DF1_OFF0_ACC1:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_false, fv_true, fv_false, fv_true) ]
-
-rule Init_Features_LT0_DF1_OFF1_ACC0:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_false, fv_true, fv_true, fv_false) ]
-
-rule Init_Features_LT0_DF1_OFF1_ACC1:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_false, fv_true, fv_true, fv_true) ]
-
-rule Init_Features_LT1_DF0_OFF0_ACC0:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_true, fv_false, fv_false, fv_false) ]
-
-rule Init_Features_LT1_DF0_OFF0_ACC1:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_true, fv_false, fv_false, fv_true) ]
-
-rule Init_Features_LT1_DF0_OFF1_ACC0:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_true, fv_false, fv_true, fv_false) ]
-
-rule Init_Features_LT1_DF0_OFF1_ACC1:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_true, fv_false, fv_true, fv_true) ]
-
-rule Init_Features_LT1_DF1_OFF0_ACC0:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_true, fv_true, fv_false, fv_false) ]
-
-rule Init_Features_LT1_DF1_OFF0_ACC1:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_true, fv_true, fv_false, fv_true) ]
-
-rule Init_Features_LT1_DF1_OFF1_ACC0:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_true, fv_true, fv_true, fv_false) ]
-
-rule Init_Features_LT1_DF1_OFF1_ACC1:
-  [ Fr(~tid) ]
---[ ClusterInit(~tid) ]->
-  [ St(~tid, st_OffIdle, b_false, b_true, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_true, fv_true, fv_true, fv_true) ]
-
-
+//
+// Unified state fact:
+//   St(tid, State, OnOff, OnTime, OffWaitTime, GlobalSceneControl, StartUpOnOff, PreviousOnOff)
+//
+// OnOff: b_true / b_false
+// OnTime, OffWaitTime: tv_zero / tv_pos / tv_ffff
+// GlobalSceneControl: b_true / b_false
+// StartUpOnOff: su_null / su_off / su_on / su_toggle
+// PreviousOnOff: prev_on / prev_off
+//
+// Feature configuration:
+//   !Config(tid, LTFlag, DFFlag, OFFONLYFlag)
+// where each flag is one of f_*_true / f_*_false
+//
 //========================================
-// SECTION 3: Off command (all features)
+// SECTION 3: Initialization Rules
 //========================================
 
-// Off from OffIdle: no timer, OnOff already FALSE
-rule Cmd_Off_From_OffIdle:
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, OW, tt_false),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'Off'), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, tv_zero, OW, tt_false) ]
+rule Init_OffIdle_GenericConfig:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, b_true, su_null, prev_off),
+    !Config(~tid, f_LT_true, f_DF_false, f_OFFONLY_false) ]
 
-// Off from OnIdle: turn off, clear OnTime, timer inactive
-rule Cmd_Off_From_OnIdle:
-  [ St(~tid, st_OnIdle, b_true, GSC, OT, OW, tt_false),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
+//========================================
+// SECTION 4: Command and Timer Rules
+//========================================
+
+//-----------------------------
+// Off command
+//-----------------------------
+
+rule Cmd_Off_From_OnIdle_noLT:
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, SU, P),
+    !Config(~tid, f_LT_false, DF, OFFONLY) ]
 --[ Command(~tid, 'Off'), StateTransition(~tid, st_OnIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, tv_zero, OW, tt_false) ]
+  [ St(~tid, st_OffIdle, b_false, tv_zero, OW, GSC, SU, P) ]
 
-// Off from TimedOn: stop timer, clear OnTime, go OffIdle
+rule Cmd_Off_From_OnIdle_LT:
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'Off'), StateTransition(~tid, st_OnIdle, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, tv_zero, OW, GSC, SU, P) ]
+
 rule Cmd_Off_From_TimedOn:
-  [ St(~tid, st_TimedOn, b_true, GSC, OT, OW, tt_true),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
+  [ St(~tid, st_TimedOn, b_true, OT, OW, GSC, SU, P),
+    !Config(~tid, LTFlag, DF, OFFONLY) ]
 --[ Command(~tid, 'Off'), StateTransition(~tid, st_TimedOn, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, tv_zero, OW, tt_false) ]
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, GSC, SU, P) ]
 
-// Off from DelayedOff: stop timer, clear OffWaitTime, stay OffIdle
 rule Cmd_Off_From_DelayedOff:
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, OW, tt_true),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
+  [ St(~tid, st_DelayedOff, b_false, OT, OW, GSC, SU, P),
+    !Config(~tid, LTFlag, DF, OFFONLY) ]
 --[ Command(~tid, 'Off'), StateTransition(~tid, st_DelayedOff, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, tv_zero, tt_false) ]
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, GSC, SU, P) ]
 
+rule Cmd_Off_From_OffIdle:
+  [ St(~tid, st_OffIdle, b_false, OT, OW, GSC, SU, P),
+    !Config(~tid, LTFlag, DF, OFFONLY) ]
+--[ Command(~tid, 'Off'), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, tv_zero, OW, GSC, SU, P) ]
 
-//========================================
-// SECTION 4: On command, OFFONLY == FALSE (allowed)
-//========================================
+//-----------------------------
+// On command
+//-----------------------------
 
-// OffIdle -> OnIdle (OFFONLY == FALSE)
-rule Cmd_On_From_OffIdle_OffOnlyFalse:
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, OW, tt_false),
-    !Config(~tid, LT, DF, fv_false, ACC) ]
+// OffIdle, OffOnly == TRUE: command rejected (no state change)
+rule Cmd_On_From_OffIdle_OffOnly:
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, SU, P),
+    !Config(~tid, LT, DF, f_OFFONLY_true) ]
+--[ Command(~tid, 'On') ]->
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, SU, P) ]
+
+// OffIdle, no LT, OffOnly == FALSE
+rule Cmd_On_From_OffIdle_NoLT:
+  [ St(~tid, st_OffIdle, b_false, OT, OW, GSC, SU, P),
+    !Config(~tid, f_LT_false, DF, f_OFFONLY_false) ]
 --[ Command(~tid, 'On'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
-  // if LT and both timers supported and OnTime == 0 then OffWaitTime := 0
-  [ St(~tid, st_OnIdle, b_true, GSC, tv_zero, tv_zero, tt_false) ]
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, SU, P) ]
 
-// OnIdle -> OnIdle (OFFONLY == FALSE)
-rule Cmd_On_From_OnIdle_OffOnlyFalse:
-  [ St(~tid, st_OnIdle, b_true, GSC, OT, OW, tt_false),
-    !Config(~tid, LT, DF, fv_false, ACC) ]
+// OffIdle, LT, OffOnly == FALSE, OnTime = 0, OffWaitTime = 0
+rule Cmd_On_From_OffIdle_LT_OnTimeZero_OffWaitZero:
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
+--[ Command(~tid, 'On'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, GSC, SU, P) ]
+
+// OffIdle, LT, OffOnly == FALSE, OnTime = 0, OffWaitTime > 0
+rule Cmd_On_From_OffIdle_LT_OnTimeZero_OffWaitPos:
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_pos, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
+--[ Command(~tid, 'On'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, GSC, SU, P) ]
+
+// OffIdle, LT, OffOnly == FALSE, OnTime > 0 (tv_pos), OffWaitTime any finite
+rule Cmd_On_From_OffIdle_LT_OnTimePos_OffWaitZero:
+  [ St(~tid, st_OffIdle, b_false, tv_pos, tv_zero, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
+--[ Command(~tid, 'On'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_pos, tv_zero, GSC, SU, P) ]
+
+rule Cmd_On_From_OffIdle_LT_OnTimePos_OffWaitPos:
+  [ St(~tid, st_OffIdle, b_false, tv_pos, tv_pos, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
+--[ Command(~tid, 'On'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_pos, tv_pos, GSC, SU, P) ]
+
+// OnIdle, OffOnly == FALSE: stays On_Idle
+rule Cmd_On_From_OnIdle:
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, SU, P),
+    !Config(~tid, LT, DF, f_OFFONLY_false) ]
 --[ Command(~tid, 'On'), StateTransition(~tid, st_OnIdle, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, GSC, tv_zero, tv_zero, tt_false) ]
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, SU, P) ]
 
-// TimedOn -> OnIdle (OFFONLY == FALSE): cancel timing, clear timers
-rule Cmd_On_From_TimedOn_OffOnlyFalse:
-  [ St(~tid, st_TimedOn, b_true, GSC, OT, OW, tt_true),
-    !Config(~tid, LT, DF, fv_false, ACC) ]
---[ Command(~tid, 'On'), StateTransition(~tid, st_TimedOn, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, GSC, tv_zero, tv_zero, tt_false) ]
+// Timed_On, OffOnly == FALSE: timers unchanged
+rule Cmd_On_From_TimedOn:
+  [ St(~tid, st_TimedOn, b_true, OT, OW, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
+--[ Command(~tid, 'On'), StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
+  [ St(~tid, st_TimedOn, b_true, OT, OW, GSC, SU, P) ]
 
-// DelayedOff -> OnIdle (OFFONLY == FALSE): cancel timing, clear timers
-rule Cmd_On_From_DelayedOff_OffOnlyFalse:
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, OW, tt_true),
-    !Config(~tid, LT, DF, fv_false, ACC) ]
+// Delayed_Off, LT, OffOnly == FALSE, OnTime = 0
+rule Cmd_On_From_DelayedOff_OnTimeZero:
+  [ St(~tid, st_DelayedOff, b_false, tv_zero, OW, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
 --[ Command(~tid, 'On'), StateTransition(~tid, st_DelayedOff, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, GSC, tv_zero, tv_zero, tt_false) ]
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, GSC, SU, P) ]
 
+//-----------------------------
+// Toggle command
+//-----------------------------
 
-//========================================
-// SECTION 5: On command, OFFONLY == TRUE (unsupported)
-//========================================
+// OffIdle, OffOnly == TRUE: rejected
+rule Cmd_Toggle_From_OffIdle_OffOnly:
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, SU, P),
+    !Config(~tid, LT, DF, f_OFFONLY_true) ]
+--[ Command(~tid, 'Toggle') ]->
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, SU, P) ]
 
-// OFFONLY == TRUE: Off and OnIdle: command rejected, state unchanged
-rule Cmd_On_OffOnlyTrue_From_OffIdle:
-  [ St(~tid, st_OffIdle, ON, GSC, OT, OW, TT),
-    !Config(~tid, LT, DF, fv_true, ACC) ]
---[ CommandRejected(~tid, 'On'), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, ON, GSC, OT, OW, TT) ]
-
-rule Cmd_On_OffOnlyTrue_From_OnIdle:
-  [ St(~tid, st_OnIdle, ON, GSC, OT, OW, TT),
-    !Config(~tid, LT, DF, fv_true, ACC) ]
---[ CommandRejected(~tid, 'On'), StateTransition(~tid, st_OnIdle, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, ON, GSC, OT, OW, TT) ]
-
-rule Cmd_On_OffOnlyTrue_From_TimedOn:
-  [ St(~tid, st_TimedOn, ON, GSC, OT, OW, TT),
-    !Config(~tid, LT, DF, fv_true, ACC) ]
---[ CommandRejected(~tid, 'On'), StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
-  [ St(~tid, st_TimedOn, ON, GSC, OT, OW, TT) ]
-
-rule Cmd_On_OffOnlyTrue_From_DelayedOff:
-  [ St(~tid, st_DelayedOff, ON, GSC, OT, OW, TT),
-    !Config(~tid, LT, DF, fv_true, ACC) ]
---[ CommandRejected(~tid, 'On'), StateTransition(~tid, st_DelayedOff, st_DelayedOff) ]->
-  [ St(~tid, st_DelayedOff, ON, GSC, OT, OW, TT) ]
-
-
-//========================================
-// SECTION 6: Toggle command, OFFONLY == FALSE
-//========================================
-
-// OffIdle -> OnIdle
-rule Cmd_Toggle_From_OffIdle_OffOnlyFalse:
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, OW, tt_false),
-    !Config(~tid, LT, DF, fv_false, ACC) ]
+// OffIdle, no LT, OffOnly == FALSE: turns on
+rule Cmd_Toggle_From_OffIdle_NoLT:
+  [ St(~tid, st_OffIdle, b_false, OT, OW, GSC, SU, P),
+    !Config(~tid, f_LT_false, DF, f_OFFONLY_false) ]
 --[ Command(~tid, 'Toggle'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, GSC, tv_zero, OW, tt_false) ]
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, SU, P) ]
 
-// OnIdle -> OffIdle
-rule Cmd_Toggle_From_OnIdle_OffOnlyFalse:
-  [ St(~tid, st_OnIdle, b_true, GSC, OT, OW, tt_false),
-    !Config(~tid, LT, DF, fv_false, ACC) ]
+// OffIdle, LT, OffOnly == FALSE, OnTime = 0, OffWaitTime = 0
+rule Cmd_Toggle_From_OffIdle_LT_OnTimeZero_OffWaitZero:
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
+--[ Command(~tid, 'Toggle'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, GSC, SU, P) ]
+
+// OffIdle, LT, OffOnly == FALSE, OnTime = 0, OffWaitTime > 0
+rule Cmd_Toggle_From_OffIdle_LT_OnTimeZero_OffWaitPos:
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_pos, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
+--[ Command(~tid, 'Toggle'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, GSC, SU, P) ]
+
+// OffIdle, LT, OffOnly == FALSE, OnTime > 0 (tv_pos), OffWaitTime = 0
+rule Cmd_Toggle_From_OffIdle_LT_OnTimePos_OffWaitZero:
+  [ St(~tid, st_OffIdle, b_false, tv_pos, tv_zero, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
+--[ Command(~tid, 'Toggle'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, GSC, SU, P) ]
+
+// OffIdle, LT, OffOnly == FALSE, OnTime > 0 (tv_pos), OffWaitTime > 0
+rule Cmd_Toggle_From_OffIdle_LT_OnTimePos_OffWaitPos:
+  [ St(~tid, st_OffIdle, b_false, tv_pos, tv_pos, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, f_OFFONLY_false) ]
+--[ Command(~tid, 'Toggle'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, GSC, SU, P) ]
+
+// OnIdle, OffOnly == FALSE: toggle off
+rule Cmd_Toggle_From_OnIdle:
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, SU, P),
+    !Config(~tid, LT, DF, f_OFFONLY_false) ]
 --[ Command(~tid, 'Toggle'), StateTransition(~tid, st_OnIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, tv_zero, tt_false) ]
+  [ St(~tid, st_OffIdle, b_false, OT, OW, GSC, SU, P) ]
 
-// TimedOn -> OffIdle (cancel timing)
-rule Cmd_Toggle_From_TimedOn_OffOnlyFalse:
-  [ St(~tid, st_TimedOn, b_true, GSC, OT, OW, tt_true),
-    !Config(~tid, LT, DF, fv_false, ACC) ]
+// Timed_On, OffOnly == FALSE: abort timers, turn off
+rule Cmd_Toggle_From_TimedOn:
+  [ St(~tid, st_TimedOn, b_true, OT, OW, GSC, SU, P),
+    !Config(~tid, LT, DF, f_OFFONLY_false) ]
 --[ Command(~tid, 'Toggle'), StateTransition(~tid, st_TimedOn, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, tv_zero, tt_false) ]
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, GSC, SU, P) ]
 
-// DelayedOff -> OnIdle (cancel timing)
-rule Cmd_Toggle_From_DelayedOff_OffOnlyFalse:
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, OW, tt_true),
-    !Config(~tid, LT, DF, fv_false, ACC) ]
+// Delayed_Off, OffOnly == FALSE: cancel delay, turn on
+rule Cmd_Toggle_From_DelayedOff:
+  [ St(~tid, st_DelayedOff, b_false, OT, OW, GSC, SU, P),
+    !Config(~tid, LT, DF, f_OFFONLY_false) ]
 --[ Command(~tid, 'Toggle'), StateTransition(~tid, st_DelayedOff, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, GSC, tv_zero, OW, tt_false) ]
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, GSC, SU, P) ]
 
+//-----------------------------
+// OffWithEffect (LT == TRUE)
+//-----------------------------
 
-//========================================
-// SECTION 7: Toggle command, OFFONLY == TRUE (unsupported)
-//========================================
-
-rule Cmd_Toggle_OffOnlyTrue_From_OffIdle:
-  [ St(~tid, st_OffIdle, ON, GSC, OT, OW, TT),
-    !Config(~tid, LT, DF, fv_true, ACC) ]
---[ CommandRejected(~tid, 'Toggle'), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, ON, GSC, OT, OW, TT) ]
-
-rule Cmd_Toggle_OffOnlyTrue_From_OnIdle:
-  [ St(~tid, st_OnIdle, ON, GSC, OT, OW, TT),
-    !Config(~tid, LT, DF, fv_true, ACC) ]
---[ CommandRejected(~tid, 'Toggle'), StateTransition(~tid, st_OnIdle, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, ON, GSC, OT, OW, TT) ]
-
-rule Cmd_Toggle_OffOnlyTrue_From_TimedOn:
-  [ St(~tid, st_TimedOn, ON, GSC, OT, OW, TT),
-    !Config(~tid, LT, DF, fv_true, ACC) ]
---[ CommandRejected(~tid, 'Toggle'), StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
-  [ St(~tid, st_TimedOn, ON, GSC, OT, OW, TT) ]
-
-rule Cmd_Toggle_OffOnlyTrue_From_DelayedOff:
-  [ St(~tid, st_DelayedOff, ON, GSC, OT, OW, TT),
-    !Config(~tid, LT, DF, fv_true, ACC) ]
---[ CommandRejected(~tid, 'Toggle'), StateTransition(~tid, st_DelayedOff, st_DelayedOff) ]->
-  [ St(~tid, st_DelayedOff, ON, GSC, OT, OW, TT) ]
-
-
-//========================================
-// SECTION 8: OffWithEffect (LT == TRUE only)
-//========================================
-
-// OnIdle -> OffIdle
-rule Cmd_OffWithEffect_From_OnIdle_LTTrue:
-  [ St(~tid, st_OnIdle, b_true, GSC, OT, OW, tt_false),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
+// On_Idle, LT, GSC == FALSE
+rule Cmd_OffWithEffect_From_OnIdle_LT_GSCFalse:
+  [ St(~tid, st_OnIdle, b_true, OT, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
 --[ Command(~tid, 'OffWithEffect'), StateTransition(~tid, st_OnIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, b_false, tv_zero, OW, tt_false) ]
+  [ St(~tid, st_OffIdle, b_false, tv_zero, OW, b_false, SU, P) ]
 
-// TimedOn -> OffIdle (stop timing)
-rule Cmd_OffWithEffect_From_TimedOn_LTTrue:
-  [ St(~tid, st_TimedOn, b_true, GSC, OT, OW, tt_true),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
+// On_Idle, LT, GSC == TRUE
+rule Cmd_OffWithEffect_From_OnIdle_LT_GSCTrue:
+  [ St(~tid, st_OnIdle, b_true, OT, OW, b_true, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OffWithEffect'), StateTransition(~tid, st_OnIdle, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, tv_zero, OW, b_false, SU, P) ]
+
+// Timed_On, LT, GSC == TRUE
+rule Cmd_OffWithEffect_From_TimedOn_LT_GSCTrue:
+  [ St(~tid, st_TimedOn, b_true, OT, OW, b_true, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
 --[ Command(~tid, 'OffWithEffect'), StateTransition(~tid, st_TimedOn, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, b_false, tv_zero, OW, tt_false) ]
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, b_false, SU, P) ]
 
-// DelayedOff -> OffIdle (stop timing, clear OffWaitTime)
-rule Cmd_OffWithEffect_From_DelayedOff_LTTrue:
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, OW, tt_true),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
+// Timed_On, LT, GSC == FALSE
+rule Cmd_OffWithEffect_From_TimedOn_LT_GSCFalse:
+  [ St(~tid, st_TimedOn, b_true, OT, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OffWithEffect'), StateTransition(~tid, st_TimedOn, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, b_false, SU, P) ]
+
+// Delayed_Off, LT, GSC == TRUE
+rule Cmd_OffWithEffect_From_DelayedOff_LT_GSCTrue:
+  [ St(~tid, st_DelayedOff, b_false, OT, OW, b_true, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
 --[ Command(~tid, 'OffWithEffect'), StateTransition(~tid, st_DelayedOff, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, b_false, tv_zero, tv_zero, tt_false) ]
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, b_false, SU, P) ]
 
+// Delayed_Off, LT, GSC == FALSE
+rule Cmd_OffWithEffect_From_DelayedOff_LT_GSCFalse:
+  [ St(~tid, st_DelayedOff, b_false, OT, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OffWithEffect'), StateTransition(~tid, st_DelayedOff, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, b_false, SU, P) ]
 
-// LT == FALSE: OffWithEffect unsupported (all states)
-rule Cmd_OffWithEffect_LTFalse:
-  [ St(~tid, S, ON, GSC, OT, OW, TT),
-    !Config(~tid, fv_false, DF, OFFONLY, ACC) ]
---[ CommandRejected(~tid, 'OffWithEffect'), StateTransition(~tid, S, S) ]->
-  [ St(~tid, S, ON, GSC, OT, OW, TT) ]
+// Off_Idle, LT, GSC == TRUE
+rule Cmd_OffWithEffect_From_OffIdle_LT_GSCTrue:
+  [ St(~tid, st_OffIdle, b_false, OT, OW, b_true, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OffWithEffect'), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, tv_zero, OW, b_false, SU, P) ]
 
+// Off_Idle, LT, GSC == FALSE
+rule Cmd_OffWithEffect_From_OffIdle_LT_GSCFalse:
+  [ St(~tid, st_OffIdle, b_false, OT, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OffWithEffect'), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, tv_zero, OW, b_false, SU, P) ]
 
-//========================================
-// SECTION 9: OnWithRecallGlobalScene (LT == TRUE only)
-//========================================
+//-----------------------------
+// OnWithRecallGlobalScene (LT == TRUE)
+//-----------------------------
 
-// OffIdle, GSC == FALSE -> OnIdle
-rule Cmd_OnWithRecall_From_OffIdle_GSCFalse_LTTrue:
-  [ St(~tid, st_OffIdle, b_false, b_false, OT, OW, tt_false),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'OnWithRecallGlobalScene'),
-    StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, b_true, tv_zero, tv_zero, tt_false) ]
+// Off_Idle, LT, GSC == FALSE, OnTime == 0
+rule Cmd_OnWithRecall_From_OffIdle_LT_GSCFalse_OnTimeZero:
+  [ St(~tid, st_OffIdle, b_false, tv_zero, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, b_true, SU, P) ]
 
-// OffIdle, GSC == TRUE -> OffIdle (discard)
-rule Cmd_OnWithRecall_From_OffIdle_GSCTrue_LTTrue:
-  [ St(~tid, st_OffIdle, ON, b_true, OT, OW, TT),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ CommandDiscarded(~tid, 'OnWithRecallGlobalScene'),
-    StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, ON, b_true, OT, OW, TT) ]
+// Off_Idle, LT, GSC == FALSE, OnTime > 0
+rule Cmd_OnWithRecall_From_OffIdle_LT_GSCFalse_OnTimePos:
+  [ St(~tid, st_OffIdle, b_false, tv_pos, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_pos, OW, b_true, SU, P) ]
 
-// OnIdle, GSC == FALSE -> OnIdle
-rule Cmd_OnWithRecall_From_OnIdle_GSCFalse_LTTrue:
-  [ St(~tid, st_OnIdle, ON, b_false, OT, OW, tt_false),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'OnWithRecallGlobalScene'),
-    StateTransition(~tid, st_OnIdle, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, b_true, tv_zero, tv_zero, tt_false) ]
+// Off_Idle, LT, GSC == TRUE: discarded
+rule Cmd_OnWithRecall_From_OffIdle_LT_GSCTrue:
+  [ St(~tid, st_OffIdle, On, OT, OW, b_true, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene') ]->
+  [ St(~tid, st_OffIdle, On, OT, OW, b_true, SU, P) ]
 
-// OnIdle, GSC == TRUE -> OnIdle (discard)
-rule Cmd_OnWithRecall_From_OnIdle_GSCTrue_LTTrue:
-  [ St(~tid, st_OnIdle, ON, b_true, OT, OW, TT),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ CommandDiscarded(~tid, 'OnWithRecallGlobalScene'),
-    StateTransition(~tid, st_OnIdle, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, ON, b_true, OT, OW, TT) ]
+// On_Idle, LT, GSC == FALSE, OnTime == 0
+rule Cmd_OnWithRecall_From_OnIdle_LT_GSCFalse_OnTimeZero:
+  [ St(~tid, st_OnIdle, b_true, tv_zero, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene'), StateTransition(~tid, st_OnIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_zero, tv_zero, b_true, SU, P) ]
 
-// TimedOn, GSC == FALSE -> OnIdle, stop timing, clear timers
-rule Cmd_OnWithRecall_From_TimedOn_GSCFalse_LTTrue:
-  [ St(~tid, st_TimedOn, b_true, b_false, OT, OW, tt_true),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'OnWithRecallGlobalScene'),
-    StateTransition(~tid, st_TimedOn, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, b_true, tv_zero, tv_zero, tt_false) ]
+// On_Idle, LT, GSC == FALSE, OnTime > 0
+rule Cmd_OnWithRecall_From_OnIdle_LT_GSCFalse_OnTimePos:
+  [ St(~tid, st_OnIdle, b_true, tv_pos, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene'), StateTransition(~tid, st_OnIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, tv_pos, OW, b_true, SU, P) ]
 
-// TimedOn, GSC == TRUE -> TimedOn (discard)
-rule Cmd_OnWithRecall_From_TimedOn_GSCTrue_LTTrue:
-  [ St(~tid, st_TimedOn, ON, b_true, OT, OW, TT),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ CommandDiscarded(~tid, 'OnWithRecallGlobalScene'),
-    StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
-  [ St(~tid, st_TimedOn, ON, b_true, OT, OW, TT) ]
+// On_Idle, LT, GSC == TRUE: discarded
+rule Cmd_OnWithRecall_From_OnIdle_LT_GSCTrue:
+  [ St(~tid, st_OnIdle, On, OT, OW, b_true, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene') ]->
+  [ St(~tid, st_OnIdle, On, OT, OW, b_true, SU, P) ]
 
-// DelayedOff, GSC == FALSE -> OnIdle, stop timing, clear timers
-rule Cmd_OnWithRecall_From_DelayedOff_GSCFalse_LTTrue:
-  [ St(~tid, st_DelayedOff, b_false, b_false, OT, OW, tt_true),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'OnWithRecallGlobalScene'),
-    StateTransition(~tid, st_DelayedOff, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, b_true, tv_zero, tv_zero, tt_false) ]
+// Timed_On, LT, GSC == FALSE, OnTime == 0 (abstract with tv_zero)
+rule Cmd_OnWithRecall_From_TimedOn_LT_GSCFalse_OnTimeZero:
+  [ St(~tid, st_TimedOn, b_true, tv_zero, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene'), StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
+  [ St(~tid, st_TimedOn, b_true, tv_zero, tv_zero, b_true, SU, P) ]
 
-// DelayedOff, GSC == TRUE -> DelayedOff (discard)
-rule Cmd_OnWithRecall_From_DelayedOff_GSCTrue_LTTrue:
-  [ St(~tid, st_DelayedOff, ON, b_true, OT, OW, TT),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ CommandDiscarded(~tid, 'OnWithRecallGlobalScene'),
-    StateTransition(~tid, st_DelayedOff, st_DelayedOff) ]->
-  [ St(~tid, st_DelayedOff, ON, b_true, OT, OW, TT) ]
+// Timed_On, LT, GSC == FALSE, OnTime > 0
+rule Cmd_OnWithRecall_From_TimedOn_LT_GSCFalse_OnTimePos:
+  [ St(~tid, st_TimedOn, b_true, tv_pos, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene'), StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
+  [ St(~tid, st_TimedOn, b_true, tv_pos, OW, b_true, SU, P) ]
 
+// Timed_On, LT, GSC == TRUE: discarded
+rule Cmd_OnWithRecall_From_TimedOn_LT_GSCTrue:
+  [ St(~tid, st_TimedOn, On, OT, OW, b_true, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene') ]->
+  [ St(~tid, st_TimedOn, On, OT, OW, b_true, SU, P) ]
 
-// LT == FALSE: OnWithRecallGlobalScene unsupported
-rule Cmd_OnWithRecall_LTFalse:
-  [ St(~tid, S, ON, GSC, OT, OW, TT),
-    !Config(~tid, fv_false, DF, OFFONLY, ACC) ]
---[ CommandRejected(~tid, 'OnWithRecallGlobalScene'),
-    StateTransition(~tid, S, S) ]->
-  [ St(~tid, S, ON, GSC, OT, OW, TT) ]
+// Delayed_Off, LT, GSC == FALSE, OnTime == 0
+rule Cmd_OnWithRecall_From_DelayedOff_LT_GSCFalse_OnTimeZero:
+  [ St(~tid, st_DelayedOff, b_false, tv_zero, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene'), StateTransition(~tid, st_DelayedOff, st_DelayedOff) ]->
+  [ St(~tid, st_DelayedOff, b_false, tv_zero, tv_zero, b_true, SU, P) ]
 
+// Delayed_Off, LT, GSC == FALSE, OnTime > 0
+rule Cmd_OnWithRecall_From_DelayedOff_LT_GSCFalse_OnTimePos:
+  [ St(~tid, st_DelayedOff, b_false, tv_pos, OW, b_false, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene'), StateTransition(~tid, st_DelayedOff, st_DelayedOff) ]->
+  [ St(~tid, st_DelayedOff, b_false, tv_pos, OW, b_true, SU, P) ]
 
-//========================================
-// SECTION 10: OnWithTimedOff (LT == TRUE only)
-// OnTime and OffWaitTime fields are abstracted into tv_zero / tv_pos / tv_ffff
-// AcceptOnlyWhenOn is the 4th config parameter.
+// Delayed_Off, LT, GSC == TRUE: discarded
+rule Cmd_OnWithRecall_From_DelayedOff_LT_GSCTrue:
+  [ St(~tid, st_DelayedOff, On, OT, OW, b_true, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithRecallGlobalScene') ]->
+  [ St(~tid, st_DelayedOff, On, OT, OW, b_true, SU, P) ]
 
-//---- From OffIdle ----
+//-----------------------------
+// OnWithTimedOff (parameters abstracted)
+//-----------------------------
 
-// Case: AcceptOnlyWhenOn == 0, OffWaitTime <= 0 OR OffWaitTimeField == 0
-// Abstract: current OW = tv_zero, field OWF = tv_zero -> TimedOn with OT >0
-rule Cmd_OnWithTimedOff_From_OffIdle_To_TimedOn_Accept0_OWZero:
-  [ St(~tid, st_OffIdle, b_false, GSC, tv_zero, tv_zero, tt_false),
-    !Config(~tid, fv_true, DF, OFFONLY, fv_false) ]
---[ Command(~tid, 'OnWithTimedOff'), StateTransition(~tid, st_OffIdle, st_TimedOn) ]->
-  [ St(~tid, st_TimedOn, b_true, GSC, tv_pos, tv_zero, tt_true) ]
+// Off_Idle, LT, AcceptOnlyWhenOn == 1, OnOff == FALSE: discarded
+rule Cmd_OnWithTimedOff_From_OffIdle_AcceptOnlyWhenOn_OnOffFalse:
+  [ St(~tid, st_OffIdle, b_false, OT, OW, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithTimedOff_AcceptOnlyWhenOn') ]->
+  [ St(~tid, st_OffIdle, b_false, OT, OW, GSC, SU, P) ]
 
-// Case: AcceptOnlyWhenOn == 0, OffWaitTimeField > 0, OffWaitTime > 0 -> DelayedOff
-rule Cmd_OnWithTimedOff_From_OffIdle_To_DelayedOff_Accept0_OWPos:
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, tv_pos, tt_false),
-    !Config(~tid, fv_true, DF, OFFONLY, fv_false) ]
---[ Command(~tid, 'OnWithTimedOff'), StateTransition(~tid, st_OffIdle, st_DelayedOff) ]->
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, tv_pos, tt_true) ]
+// Off_Idle, LT, AcceptOnlyWhenOn == 0, no positive OffWaitTime: enter Timed_On
+rule Cmd_OnWithTimedOff_From_OffIdle_StartTimedOn_NoDelay:
+  [ St(~tid, st_OffIdle, b_false, OT, tv_zero, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithTimedOff_StartTimedOn'), StateTransition(~tid, st_OffIdle, st_TimedOn) ]->
+  [ St(~tid, st_TimedOn, b_true, tv_pos, tv_pos, GSC, SU, P) ]
 
-// Case: AcceptOnlyWhenOn == 1 and OnOff == FALSE -> discard
-rule Cmd_OnWithTimedOff_From_OffIdle_Discard_Accept1:
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, OW, TT),
-    !Config(~tid, fv_true, DF, OFFONLY, fv_true) ]
---[ CommandDiscarded(~tid, 'OnWithTimedOff'),
-    StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, OW, TT) ]
+// Off_Idle, LT, AcceptOnlyWhenOn == 0, OffWaitTime > 0, OnOff == FALSE: Delayed_Off
+rule Cmd_OnWithTimedOff_From_OffIdle_EnterDelayedOff:
+  [ St(~tid, st_OffIdle, b_false, OT, tv_pos, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithTimedOff_EnterDelayedOff'), StateTransition(~tid, st_OffIdle, st_DelayedOff) ]->
+  [ St(~tid, st_DelayedOff, b_false, tv_zero, tv_pos, GSC, SU, P) ]
 
+// On_Idle, LT, OnOff == TRUE: enter/continue Timed_On, extend or set timers (abstract)
+rule Cmd_OnWithTimedOff_From_OnIdle_ToTimedOn:
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithTimedOff_FromOnIdle'), StateTransition(~tid, st_OnIdle, st_TimedOn) ]->
+  [ St(~tid, st_TimedOn, b_true, tv_pos, tv_pos, GSC, SU, P) ]
 
-//---- From OnIdle ----
+// Timed_On, LT, OnOff == TRUE: update timers (abstract)
+rule Cmd_OnWithTimedOff_From_TimedOn_Update:
+  [ St(~tid, st_TimedOn, b_true, OT, OW, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithTimedOff_FromTimedOn'), StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
+  [ St(~tid, st_TimedOn, b_true, tv_pos, tv_pos, GSC, SU, P) ]
 
-// OnIdle, AcceptOnlyWhenOn == 0 or 1 with OnOff == TRUE, OnTimeField > current
-// Abstract: result TimedOn with OT = tv_pos, OW set and timer active when OT>0
-rule Cmd_OnWithTimedOff_From_OnIdle_To_TimedOn:
-  [ St(~tid, st_OnIdle, b_true, GSC, OT, OW, tt_false),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'OnWithTimedOff'), StateTransition(~tid, st_OnIdle, st_TimedOn) ]->
-  [ St(~tid, st_TimedOn, b_true, GSC, tv_pos, tv_pos, tt_true) ]
+// Delayed_Off, LT, OnOff == FALSE: adjust OffWaitTime (abstract)
+rule Cmd_OnWithTimedOff_From_DelayedOff_Update:
+  [ St(~tid, st_DelayedOff, b_false, OT, OW, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'OnWithTimedOff_FromDelayedOff'), StateTransition(~tid, st_DelayedOff, st_DelayedOff) ]->
+  [ St(~tid, st_DelayedOff, b_false, tv_zero, tv_pos, GSC, SU, P) ]
 
+//-----------------------------
+// OnWithTimedOff_timer_tick
+//-----------------------------
 
-//---- From TimedOn ----
+// Timed_On, OnTime > 1 (tv_pos), stay Timed_On (abstractly keep tv_pos)
+rule TimerTick_From_TimedOn_OnTimePos:
+  [ St(~tid, st_TimedOn, b_true, tv_pos, OW, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ OnWithTimedOffTimerTick(~tid), StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
+  [ St(~tid, st_TimedOn, b_true, tv_pos, OW, GSC, SU, P) ]
 
-// TimedOn, OnOff == TRUE, update OT ≥ existing, OW from field
-rule Cmd_OnWithTimedOff_From_TimedOn_Stay_TimedOn:
-  [ St(~tid, st_TimedOn, b_true, GSC, OT, OW, tt_true),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'OnWithTimedOff'),
-    StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
-  [ St(~tid, st_TimedOn, b_true, GSC, tv_pos, tv_pos, tt_true) ]
+// Timed_On, OnTime == 1 (we abstract with tv_zero to represent reaching 0), turn off
+rule TimerTick_From_TimedOn_OnTimeLast:
+  [ St(~tid, st_TimedOn, b_true, tv_zero, OW, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ OnWithTimedOffTimerTick(~tid), StateTransition(~tid, st_TimedOn, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, tv_zero, tv_zero, GSC, SU, P) ]
 
+// Delayed_Off, OffWaitTime > 1 (tv_pos), stay Delayed_Off
+rule TimerTick_From_DelayedOff_OffWaitPos:
+  [ St(~tid, st_DelayedOff, b_false, OT, tv_pos, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ OnWithTimedOffTimerTick(~tid), StateTransition(~tid, st_DelayedOff, st_DelayedOff) ]->
+  [ St(~tid, st_DelayedOff, b_false, OT, tv_pos, GSC, SU, P) ]
 
-//---- From DelayedOff ----
+// Delayed_Off, OffWaitTime == 1 (abstracted with tv_zero), go to Off_Idle
+rule TimerTick_From_DelayedOff_OffWaitLast:
+  [ St(~tid, st_DelayedOff, b_false, OT, tv_zero, GSC, SU, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ OnWithTimedOffTimerTick(~tid), StateTransition(~tid, st_DelayedOff, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, OT, tv_zero, GSC, SU, P) ]
 
-// DelayedOff, OnOff == FALSE, update OW = min(current, field) > 0
-rule Cmd_OnWithTimedOff_From_DelayedOff_Stay_DelayedOff:
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, tv_pos, tt_true),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'OnWithTimedOff'),
-    StateTransition(~tid, st_DelayedOff, st_DelayedOff) ]->
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, tv_pos, tt_true) ]
+//-----------------------------
+// Startup rules (feature_LT == TRUE)
+//-----------------------------
 
+// StartUpOnOff_is_null == TRUE, PreviousOnOff == TRUE
+rule Startup_From_OffIdle_SU_Null_PrevOn:
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, su_null, prev_on),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'Startup'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, su_null, prev_on) ]
 
-// LT == FALSE: OnWithTimedOff unsupported
-rule Cmd_OnWithTimedOff_LTFalse:
-  [ St(~tid, S, ON, GSC, OT, OW, TT),
-    !Config(~tid, fv_false, DF, OFFONLY, ACC) ]
---[ CommandRejected(~tid, 'OnWithTimedOff'),
-    StateTransition(~tid, S, S) ]->
-  [ St(~tid, S, ON, GSC, OT, OW, TT) ]
+// StartUpOnOff_is_null == TRUE, PreviousOnOff == FALSE
+rule Startup_From_OffIdle_SU_Null_PrevOff:
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, su_null, prev_off),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'Startup'), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, OT, OW, GSC, su_null, prev_off) ]
 
+// StartUpOnOff_value == Off
+rule Startup_From_OffIdle_SU_Off:
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, su_off, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'Startup'), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, OT, OW, GSC, su_off, P) ]
 
-//========================================
-// SECTION 11: TimerTick_100ms
-// We distinguish last vs intermediate tick by tv_pos vs tv_zero only.
-// We do not model exact counters; instead we enforce:
-//  - From TimedOn with tv_pos -> either stay TimedOn(tv_pos) or
-//    non-deterministically go to OffIdle(tv_zero).
-// This over-approximates but preserves progress possibility without
-// illegal states.
+// StartUpOnOff_value == On
+rule Startup_From_OffIdle_SU_On:
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, su_on, P),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'Startup'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, su_on, P) ]
 
-// When timing_timer_active == FALSE: no-op, any state
-rule TimerTick_NoEffect_OffIdle:
-  [ St(~tid, st_OffIdle, ON, GSC, OT, OW, tt_false),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
---[ TimerTick(~tid), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, ON, GSC, OT, OW, tt_false) ]
+// StartUpOnOff_value == Toggle, PreviousOnOff == FALSE
+rule Startup_From_OffIdle_SU_Toggle_PrevOff:
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, su_toggle, prev_off),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'Startup'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
+  [ St(~tid, st_OnIdle, b_true, OT, OW, GSC, su_toggle, prev_off) ]
 
-rule TimerTick_NoEffect_OnIdle:
-  [ St(~tid, st_OnIdle, ON, GSC, OT, OW, tt_false),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
---[ TimerTick(~tid), StateTransition(~tid, st_OnIdle, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, ON, GSC, OT, OW, tt_false) ]
-
-
-// TimedOn, tt_true, OT = tv_pos: intermediate tick, stay TimedOn
-rule TimerTick_From_TimedOn_Intermediate:
-  [ St(~tid, st_TimedOn, b_true, GSC, tv_pos, OW, tt_true),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
---[ TimerTick(~tid), StateTransition(~tid, st_TimedOn, st_TimedOn) ]->
-  [ St(~tid, st_TimedOn, b_true, GSC, tv_pos, OW, tt_true) ]
-
-// TimedOn, tt_true, OT = tv_pos: last tick, go to OffIdle, clear OW, stop timer
-rule TimerTick_From_TimedOn_Last:
-  [ St(~tid, st_TimedOn, b_true, GSC, tv_pos, OW, tt_true),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
---[ TimerTick(~tid), StateTransition(~tid, st_TimedOn, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, tv_zero, tv_zero, tt_false) ]
-
-
-// DelayedOff, tt_true, OW = tv_pos: intermediate tick, stay DelayedOff
-rule TimerTick_From_DelayedOff_Intermediate:
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, tv_pos, tt_true),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
---[ TimerTick(~tid), StateTransition(~tid, st_DelayedOff, st_DelayedOff) ]->
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, tv_pos, tt_true) ]
-
-// DelayedOff, tt_true, OW = tv_pos: last tick, go to OffIdle, OW->0, timer off
-rule TimerTick_From_DelayedOff_Last:
-  [ St(~tid, st_DelayedOff, b_false, GSC, OT, tv_pos, tt_true),
-    !Config(~tid, LT, DF, OFFONLY, ACC) ]
---[ TimerTick(~tid), StateTransition(~tid, st_DelayedOff, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, tv_zero, tt_false) ]
-
-
-//========================================
-// SECTION 12: External LevelControl interactions (LT == TRUE only)
-//========================================
-
-// ExternalLevelControl_On from OffIdle
-rule ExternalLevelControl_On_From_OffIdle_LTTrue:
-  [ St(~tid, st_OffIdle, b_false, GSC, OT, OW, tt_false),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'ExternalLevelControl_On'),
-    StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
-  [ St(~tid, st_OnIdle, b_true, b_true, tv_zero, tv_zero, tt_false) ]
-
-// ExternalLevelControl_Off from OnIdle
-rule ExternalLevelControl_Off_From_OnIdle_LTTrue:
-  [ St(~tid, st_OnIdle, b_true, GSC, OT, OW, tt_false),
-    !Config(~tid, fv_true, DF, OFFONLY, ACC) ]
---[ Command(~tid, 'ExternalLevelControl_Off'),
-    StateTransition(~tid, st_OnIdle, st_OffIdle) ]->
-  [ St(~tid, st_OffIdle, b_false, GSC, tv_zero, OW, tt_false) ]
-
-
-// LT == FALSE: external level commands ignored (no effect)
-rule ExternalLevelControl_On_LTFalse:
-  [ St(~tid, S, ON, GSC, OT, OW, TT),
-    !Config(~tid, fv_false, DF, OFFONLY, ACC) ]
---[ CommandRejected(~tid, 'ExternalLevelControl_On'),
-    StateTransition(~tid, S, S) ]->
-  [ St(~tid, S, ON, GSC, OT, OW, TT) ]
-
-rule ExternalLevelControl_Off_LTFalse:
-  [ St(~tid, S, ON, GSC, OT, OW, TT),
-    !Config(~tid, fv_false, DF, OFFONLY, ACC) ]
---[ CommandRejected(~tid, 'ExternalLevelControl_Off'),
-    StateTransition(~tid, S, S) ]->
-  [ St(~tid, S, ON, GSC, OT, OW, TT) ]
-
+// StartUpOnOff_value == Toggle, PreviousOnOff == TRUE
+rule Startup_From_OffIdle_SU_Toggle_PrevOn:
+  [ St(~tid, st_OffIdle, On, OT, OW, GSC, su_toggle, prev_on),
+    !Config(~tid, f_LT_true, DF, OFFONLY) ]
+--[ Command(~tid, 'Startup'), StateTransition(~tid, st_OffIdle, st_OffIdle) ]->
+  [ St(~tid, st_OffIdle, b_false, OT, OW, GSC, su_toggle, prev_on) ]
 
 //========================================
-// SECTION 13: Restrictions
+// SECTION 5: Restrictions
 //========================================
 
 restriction unique_init:
   "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
 
-
 //========================================
-// SECTION 14: Source Lemma (REQUIRED)
+// SECTION 6: Source Lemma
 //========================================
 
 lemma sources [sources]:
-  "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i
+  "All tid s1 s2 #i.
+     StateTransition(tid,s1,s2)@i
    ==> Ex #j. ClusterInit(tid)@j & #j < #i"
-
-
-//========================================
-// SECTION 15: Simple reachability lemmas
-//========================================
-
-lemma exec_on_exists:
-  exists-trace
-  "Ex tid #i. Command(tid, 'On')@i"
-
-lemma exec_toggle_exists:
-  exists-trace
-  "Ex tid #i. Command(tid, 'Toggle')@i"
 
 end

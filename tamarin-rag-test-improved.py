@@ -9,8 +9,6 @@ EMBED_MODEL = "gemini-embedding-001"
 PERSIST_DIR = "tamarin_vectordb"
 COLLECTION_NAME = "tamarin_manual"
 
-if not os.environ.get("GOOGLE_API_KEY"): 
-    os.environ["GOOGLE_API_KEY"] = "AIzaSyABvDYLDLd880La-U1phLJ20JpyjIuz0vQ"
 
 def load_vector_store() -> Chroma:
     """Load the vector store with embeddings."""

@@ -10,9 +10,6 @@ PERSIST_DIR = "tamarin_vectordb"
 COLLECTION_NAME = "tamarin_manual"
 
 
-if not os.environ.get("GOOGLE_API_KEY"): 
-    os.environ["GOOGLE_API_KEY"] = "AIzaSyB4NYH0ShxD8OwCkRFGP8rIk-abzJ4TgIs"
-
 def load_vector_store() -> Chroma:
     embeddings = GoogleGenerativeAIEmbeddings(model=EMBED_MODEL)
     vectorstore = Chroma(

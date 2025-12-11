@@ -3,8 +3,6 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain.chat_models import init_chat_model 
 import json
 
-if not os.environ.get("GOOGLE_API_KEY"):
-  os.environ["GOOGLE_API_KEY"] = "AIzaSyABvDYLDLd880La-U1phLJ20JpyjIuz0vQ"
 
 MODEL_NAME = "gemini-2.5-flash"
 MODEL_PROVIDER = "google_genai"

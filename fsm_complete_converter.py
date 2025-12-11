@@ -28,8 +28,6 @@ MAX_ROUNDS = 3      # generator → judge → generator → ...
 TEMPERATURE = 0.0
 INCLUDE_THOUGHTS = False
 
-if not os.environ.get("GOOGLE_API_KEY"):
-    os.environ["GOOGLE_API_KEY"] = "AIzaSyABvDYLDLd880La-U1phLJ20JpyjIuz0vQ"
 
 # ===============================
 # System Prompt: Generator

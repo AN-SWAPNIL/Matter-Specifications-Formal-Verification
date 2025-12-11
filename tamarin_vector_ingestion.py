@@ -10,8 +10,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-if not os.environ.get("GOOGLE_API_KEY"): 
-    os.environ["GOOGLE_API_KEY"] = "AIzaSyABvDYLDLd880La-U1phLJ20JpyjIuz0vQ"
+
 
 MODEL_NAME = "gemini-embedding-001"
 PERSIST_DIR = "tamarin_vectordb"

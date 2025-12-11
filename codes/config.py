@@ -11,10 +11,13 @@ load_dotenv()
 
 # API Configuration
 API_KEY = os.getenv('OPENAI_API_KEY')  # Can be any provider's API key
-LLM_MODEL = "gpt-5.1"  # Model name (e.g., "gpt-4", "claude-3-5-sonnet", "gemini-2.5-pro")
-MODEL_PROVIDER = "openai"  # LangChain model provider (e.g., "openai", "anthropic", "google_genai")
+# Model name (e.g., "gpt-4", "claude-3-5-sonnet", "gemini-2.5-pro")
+LLM_MODEL = "gpt-5.1"
+# LangChain model provider (e.g., "openai", "anthropic", "google_genai")
+MODEL_PROVIDER = "openai"
 LLM_TEMPERATURE = 0.0  # More deterministic for detailed extraction
-LLM_MAX_OUTPUT_TOKENS = 16384  # Significantly increased for comprehensive behavioral extraction
+# Significantly increased for comprehensive behavioral extraction
+LLM_MAX_OUTPUT_TOKENS = 16384
 
 # PDF Processin**STEP 4:**STEP 5: FEATURE VALIDATION**EMANTICS**ation
 PDF_FILENAME = "Matter-1.4-Application-Cluster-Specification.pdf"
@@ -47,7 +50,7 @@ SUBSECTION_PAGE_BUFFER = 0  # Buffer for subsection text extraction
 # TOC Pattern Recognition
 TOC_INDICATORS = [
     "table of contents",
-    "contents", 
+    "contents",
     "cluster",
     "section",
     r"\d+\.\d+\..*\.\.\.*\d+",  # Pattern like "6.2. Account Login ... 471"
@@ -57,98 +60,172 @@ TOC_INDICATORS = [
 # This data is used when AI extraction fails
 MANUAL_CLUSTER_DATA = [
     # General Clusters (Section 1)
-    {"name": "Identify Cluster", "section": "1.2", "start": 26, "end": 31, "category": "General"},
-    {"name": "Groups Cluster", "section": "1.3", "start": 31, "end": 39, "category": "General"},
-    {"name": "Scenes Management Cluster", "section": "1.4", "start": 39, "end": 60, "category": "General"},
-    {"name": "On/Off Cluster", "section": "1.5", "start": 60, "end": 70, "category": "General"},
-    {"name": "Level Control Cluster", "section": "1.6", "start": 70, "end": 85, "category": "General"},
-    {"name": "Boolean State Cluster", "section": "1.7", "start": 85, "end": 86, "category": "General"},
-    {"name": "Boolean State Configuration Cluster", "section": "1.8", "start": 86, "end": 92, "category": "General"},
-    {"name": "Mode Select Cluster", "section": "1.9", "start": 92, "end": 97, "category": "General"},
-    {"name": "Mode Base Cluster", "section": "1.10", "start": 97, "end": 106, "category": "General"},
-    {"name": "Low Power Cluster", "section": "1.11", "start": 106, "end": 107, "category": "General"},
-    {"name": "Wake On LAN Cluster", "section": "1.12", "start": 107, "end": 108, "category": "General"},
-    {"name": "Switch Cluster", "section": "1.13", "start": 108, "end": 127, "category": "General"},
-    {"name": "Operational State Cluster", "section": "1.14", "start": 127, "end": 138, "category": "General"},
-    {"name": "Alarm Base Cluster", "section": "1.15", "start": 138, "end": 141, "category": "General"},
-    {"name": "Messages Cluster", "section": "1.16", "start": 141, "end": 151, "category": "General"},
-    {"name": "Service Area Cluster", "section": "1.17", "start": 151, "end": 167, "category": "General"},
-    
+    {"name": "Identify Cluster", "section": "1.2",
+        "start": 26, "end": 31, "category": "General"},
+    {"name": "Groups Cluster", "section": "1.3",
+        "start": 31, "end": 39, "category": "General"},
+    {"name": "Scenes Management Cluster", "section": "1.4",
+        "start": 39, "end": 60, "category": "General"},
+    {"name": "On/Off Cluster", "section": "1.5",
+        "start": 60, "end": 70, "category": "General"},
+    {"name": "Level Control Cluster", "section": "1.6",
+        "start": 70, "end": 85, "category": "General"},
+    {"name": "Boolean State Cluster", "section": "1.7",
+        "start": 85, "end": 86, "category": "General"},
+    {"name": "Boolean State Configuration Cluster", "section": "1.8",
+        "start": 86, "end": 92, "category": "General"},
+    {"name": "Mode Select Cluster", "section": "1.9",
+        "start": 92, "end": 97, "category": "General"},
+    {"name": "Mode Base Cluster", "section": "1.10",
+        "start": 97, "end": 106, "category": "General"},
+    {"name": "Low Power Cluster", "section": "1.11",
+        "start": 106, "end": 107, "category": "General"},
+    {"name": "Wake On LAN Cluster", "section": "1.12",
+        "start": 107, "end": 108, "category": "General"},
+    {"name": "Switch Cluster", "section": "1.13",
+        "start": 108, "end": 127, "category": "General"},
+    {"name": "Operational State Cluster", "section": "1.14",
+        "start": 127, "end": 138, "category": "General"},
+    {"name": "Alarm Base Cluster", "section": "1.15",
+        "start": 138, "end": 141, "category": "General"},
+    {"name": "Messages Cluster", "section": "1.16",
+        "start": 141, "end": 151, "category": "General"},
+    {"name": "Service Area Cluster", "section": "1.17",
+        "start": 151, "end": 167, "category": "General"},
+
     # Measurement and Sensing Clusters (Section 2)
-    {"name": "Illuminance Measurement Cluster", "section": "2.2", "start": 173, "end": 175, "category": "Measurement and Sensing"},
-    {"name": "Temperature Measurement Cluster", "section": "2.3", "start": 175, "end": 176, "category": "Measurement and Sensing"},
-    {"name": "Pressure Measurement Cluster", "section": "2.4", "start": 176, "end": 179, "category": "Measurement and Sensing"},
-    {"name": "Flow Measurement Cluster", "section": "2.5", "start": 179, "end": 181, "category": "Measurement and Sensing"},
-    {"name": "Water Content Measurement Clusters", "section": "2.6", "start": 181, "end": 182, "category": "Measurement and Sensing"},
-    {"name": "Occupancy Sensing Cluster", "section": "2.7", "start": 182, "end": 192, "category": "Measurement and Sensing"},
-    {"name": "Resource Monitoring Clusters", "section": "2.8", "start": 192, "end": 197, "category": "Measurement and Sensing"},
-    {"name": "Air Quality Cluster", "section": "2.9", "start": 197, "end": 198, "category": "Measurement and Sensing"},
-    {"name": "Concentration Measurement Clusters", "section": "2.10", "start": 198, "end": 204, "category": "Measurement and Sensing"},
-    {"name": "Smoke CO Alarm Cluster", "section": "2.11", "start": 204, "end": 214, "category": "Measurement and Sensing"},
-    {"name": "Electrical Energy Measurement Cluster", "section": "2.12", "start": 214, "end": 222, "category": "Measurement and Sensing"},
-    {"name": "Electrical Power Measurement Cluster", "section": "2.13", "start": 222, "end": 235, "category": "Measurement and Sensing"},
-    
+    {"name": "Illuminance Measurement Cluster", "section": "2.2",
+        "start": 173, "end": 175, "category": "Measurement and Sensing"},
+    {"name": "Temperature Measurement Cluster", "section": "2.3",
+        "start": 175, "end": 176, "category": "Measurement and Sensing"},
+    {"name": "Pressure Measurement Cluster", "section": "2.4",
+        "start": 176, "end": 179, "category": "Measurement and Sensing"},
+    {"name": "Flow Measurement Cluster", "section": "2.5", "start": 179,
+        "end": 181, "category": "Measurement and Sensing"},
+    {"name": "Water Content Measurement Clusters", "section": "2.6",
+        "start": 181, "end": 182, "category": "Measurement and Sensing"},
+    {"name": "Occupancy Sensing Cluster", "section": "2.7",
+        "start": 182, "end": 192, "category": "Measurement and Sensing"},
+    {"name": "Resource Monitoring Clusters", "section": "2.8",
+        "start": 192, "end": 197, "category": "Measurement and Sensing"},
+    {"name": "Air Quality Cluster", "section": "2.9", "start": 197,
+        "end": 198, "category": "Measurement and Sensing"},
+    {"name": "Concentration Measurement Clusters", "section": "2.10",
+        "start": 198, "end": 204, "category": "Measurement and Sensing"},
+    {"name": "Smoke CO Alarm Cluster", "section": "2.11", "start": 204,
+        "end": 214, "category": "Measurement and Sensing"},
+    {"name": "Electrical Energy Measurement Cluster", "section": "2.12",
+        "start": 214, "end": 222, "category": "Measurement and Sensing"},
+    {"name": "Electrical Power Measurement Cluster", "section": "2.13",
+        "start": 222, "end": 235, "category": "Measurement and Sensing"},
+
     # Lighting Clusters (Section 3)
-    {"name": "Color Control Cluster", "section": "3.2", "start": 235, "end": 277, "category": "Lighting"},
-    {"name": "Ballast Configuration Cluster", "section": "3.3", "start": 277, "end": 285, "category": "Lighting"},
-    
+    {"name": "Color Control Cluster", "section": "3.2",
+        "start": 235, "end": 277, "category": "Lighting"},
+    {"name": "Ballast Configuration Cluster", "section": "3.3",
+        "start": 277, "end": 285, "category": "Lighting"},
+
     # HVAC Clusters (Section 4)
-    {"name": "Pump Configuration and Control Cluster", "section": "4.2", "start": 285, "end": 299, "category": "HVAC"},
-    {"name": "Thermostat Cluster", "section": "4.3", "start": 299, "end": 348, "category": "HVAC"},
-    {"name": "Fan Control Cluster", "section": "4.4", "start": 348, "end": 357, "category": "HVAC"},
-    {"name": "Thermostat User Interface Configuration Cluster", "section": "4.5", "start": 357, "end": 359, "category": "HVAC"},
-    {"name": "Valve Configuration and Control Cluster", "section": "4.6", "start": 359, "end": 369, "category": "HVAC"},
-    
+    {"name": "Pump Configuration and Control Cluster",
+        "section": "4.2", "start": 285, "end": 299, "category": "HVAC"},
+    {"name": "Thermostat Cluster", "section": "4.3",
+        "start": 299, "end": 348, "category": "HVAC"},
+    {"name": "Fan Control Cluster", "section": "4.4",
+        "start": 348, "end": 357, "category": "HVAC"},
+    {"name": "Thermostat User Interface Configuration Cluster",
+        "section": "4.5", "start": 357, "end": 359, "category": "HVAC"},
+    {"name": "Valve Configuration and Control Cluster",
+        "section": "4.6", "start": 359, "end": 369, "category": "HVAC"},
+
     # Closures Clusters (Section 5)
-    {"name": "Door Lock Cluster", "section": "5.2", "start": 369, "end": 449, "category": "Closures"},
-    {"name": "Window Covering Cluster", "section": "5.3", "start": 449, "end": 469, "category": "Closures"},
-    
+    {"name": "Door Lock Cluster", "section": "5.2",
+        "start": 369, "end": 449, "category": "Closures"},
+    {"name": "Window Covering Cluster", "section": "5.3",
+        "start": 449, "end": 469, "category": "Closures"},
+
     # Media Clusters (Section 6)
-    {"name": "Account Login Cluster", "section": "6.2", "start": 471, "end": 476, "category": "Media"},
-    {"name": "Application Basic Cluster", "section": "6.3", "start": 476, "end": 479, "category": "Media"},
-    {"name": "Application Launcher Cluster", "section": "6.4", "start": 479, "end": 484, "category": "Media"},
-    {"name": "Audio Output Cluster", "section": "6.5", "start": 484, "end": 487, "category": "Media"},
-    {"name": "Channel Cluster", "section": "6.6", "start": 487, "end": 503, "category": "Media"},
-    {"name": "Content Launcher Cluster", "section": "6.7", "start": 503, "end": 517, "category": "Media"},
-    {"name": "Keypad Input Cluster", "section": "6.8", "start": 517, "end": 522, "category": "Media"},
-    {"name": "Media Input Cluster", "section": "6.9", "start": 522, "end": 525, "category": "Media"},
-    {"name": "Media Playback Cluster", "section": "6.10", "start": 525, "end": 542, "category": "Media"},
-    {"name": "Target Navigator Cluster", "section": "6.11", "start": 542, "end": 546, "category": "Media"},
-    {"name": "Content App Observer Cluster", "section": "6.12", "start": 546, "end": 548, "category": "Media"},
-    {"name": "Content Control Cluster", "section": "6.13", "start": 548, "end": 567, "category": "Media"},
-    
+    {"name": "Account Login Cluster", "section": "6.2",
+        "start": 471, "end": 476, "category": "Media"},
+    {"name": "Application Basic Cluster", "section": "6.3",
+        "start": 476, "end": 479, "category": "Media"},
+    {"name": "Application Launcher Cluster", "section": "6.4",
+        "start": 479, "end": 484, "category": "Media"},
+    {"name": "Audio Output Cluster", "section": "6.5",
+        "start": 484, "end": 487, "category": "Media"},
+    {"name": "Channel Cluster", "section": "6.6",
+        "start": 487, "end": 503, "category": "Media"},
+    {"name": "Content Launcher Cluster", "section": "6.7",
+        "start": 503, "end": 517, "category": "Media"},
+    {"name": "Keypad Input Cluster", "section": "6.8",
+        "start": 517, "end": 522, "category": "Media"},
+    {"name": "Media Input Cluster", "section": "6.9",
+        "start": 522, "end": 525, "category": "Media"},
+    {"name": "Media Playback Cluster", "section": "6.10",
+        "start": 525, "end": 542, "category": "Media"},
+    {"name": "Target Navigator Cluster", "section": "6.11",
+        "start": 542, "end": 546, "category": "Media"},
+    {"name": "Content App Observer Cluster", "section": "6.12",
+        "start": 546, "end": 548, "category": "Media"},
+    {"name": "Content Control Cluster", "section": "6.13",
+        "start": 548, "end": 567, "category": "Media"},
+
     # Robot Clusters (Section 7)
-    {"name": "RVC Run Mode Cluster", "section": "7.2", "start": 567, "end": 571, "category": "Robots"},
-    {"name": "RVC Clean Mode Cluster", "section": "7.3", "start": 571, "end": 574, "category": "Robots"},
-    {"name": "RVC Operational State Cluster", "section": "7.4", "start": 574, "end": 579, "category": "Robots"},
-    
+    {"name": "RVC Run Mode Cluster", "section": "7.2",
+        "start": 567, "end": 571, "category": "Robots"},
+    {"name": "RVC Clean Mode Cluster", "section": "7.3",
+        "start": 571, "end": 574, "category": "Robots"},
+    {"name": "RVC Operational State Cluster", "section": "7.4",
+        "start": 574, "end": 579, "category": "Robots"},
+
     # Home Appliance Clusters (Section 8)
-    {"name": "Temperature Control Cluster", "section": "8.2", "start": 580, "end": 584, "category": "Home Appliances"},
-    {"name": "Dishwasher Mode Cluster", "section": "8.3", "start": 584, "end": 586, "category": "Home Appliances"},
-    {"name": "Dishwasher Alarm Cluster", "section": "8.4", "start": 586, "end": 587, "category": "Home Appliances"},
-    {"name": "Laundry Washer Mode Cluster", "section": "8.5", "start": 587, "end": 590, "category": "Home Appliances"},
-    {"name": "Laundry Washer Controls Cluster", "section": "8.6", "start": 590, "end": 593, "category": "Home Appliances"},
-    {"name": "Refrigerator And Temperature Controlled Cabinet Mode Cluster", "section": "8.7", "start": 593, "end": 595, "category": "Home Appliances"},
-    {"name": "Refrigerator Alarm Cluster", "section": "8.8", "start": 595, "end": 597, "category": "Home Appliances"},
-    {"name": "Laundry Dryer Controls Cluster", "section": "8.9", "start": 597, "end": 598, "category": "Home Appliances"},
-    {"name": "Oven Cavity Operational State Cluster", "section": "8.10", "start": 598, "end": 600, "category": "Home Appliances"},
-    {"name": "Oven Mode Cluster", "section": "8.11", "start": 600, "end": 603, "category": "Home Appliances"},
-    {"name": "Microwave Oven Mode Cluster", "section": "8.12", "start": 603, "end": 605, "category": "Home Appliances"},
-    {"name": "Microwave Oven Control Cluster", "section": "8.13", "start": 605, "end": 613, "category": "Home Appliances"},
-    
+    {"name": "Temperature Control Cluster", "section": "8.2",
+        "start": 580, "end": 584, "category": "Home Appliances"},
+    {"name": "Dishwasher Mode Cluster", "section": "8.3",
+        "start": 584, "end": 586, "category": "Home Appliances"},
+    {"name": "Dishwasher Alarm Cluster", "section": "8.4",
+        "start": 586, "end": 587, "category": "Home Appliances"},
+    {"name": "Laundry Washer Mode Cluster", "section": "8.5",
+        "start": 587, "end": 590, "category": "Home Appliances"},
+    {"name": "Laundry Washer Controls Cluster", "section": "8.6",
+        "start": 590, "end": 593, "category": "Home Appliances"},
+    {"name": "Refrigerator And Temperature Controlled Cabinet Mode Cluster",
+        "section": "8.7", "start": 593, "end": 595, "category": "Home Appliances"},
+    {"name": "Refrigerator Alarm Cluster", "section": "8.8",
+        "start": 595, "end": 597, "category": "Home Appliances"},
+    {"name": "Laundry Dryer Controls Cluster", "section": "8.9",
+        "start": 597, "end": 598, "category": "Home Appliances"},
+    {"name": "Oven Cavity Operational State Cluster", "section": "8.10",
+        "start": 598, "end": 600, "category": "Home Appliances"},
+    {"name": "Oven Mode Cluster", "section": "8.11",
+        "start": 600, "end": 603, "category": "Home Appliances"},
+    {"name": "Microwave Oven Mode Cluster", "section": "8.12",
+        "start": 603, "end": 605, "category": "Home Appliances"},
+    {"name": "Microwave Oven Control Cluster", "section": "8.13",
+        "start": 605, "end": 613, "category": "Home Appliances"},
+
     # Energy Management Clusters (Section 9)
-    {"name": "Device Energy Management Cluster", "section": "9.2", "start": 613, "end": 650, "category": "Energy Management"},
-    {"name": "Energy EVSE Cluster", "section": "9.3", "start": 650, "end": 677, "category": "Energy Management"},
-    {"name": "Energy EVSE Mode Cluster", "section": "9.4", "start": 677, "end": 680, "category": "Energy Management"},
-    {"name": "Water Heater Management Cluster", "section": "9.5", "start": 680, "end": 687, "category": "Energy Management"},
-    {"name": "Water Heater Mode Cluster", "section": "9.6", "start": 687, "end": 690, "category": "Energy Management"},
-    {"name": "Energy Preference Cluster", "section": "9.7", "start": 690, "end": 694, "category": "Energy Management"},
-    {"name": "Device Energy Management Mode Cluster", "section": "9.8", "start": 694, "end": 699, "category": "Energy Management"},
-    
+    {"name": "Device Energy Management Cluster", "section": "9.2",
+        "start": 613, "end": 650, "category": "Energy Management"},
+    {"name": "Energy EVSE Cluster", "section": "9.3",
+        "start": 650, "end": 677, "category": "Energy Management"},
+    {"name": "Energy EVSE Mode Cluster", "section": "9.4",
+        "start": 677, "end": 680, "category": "Energy Management"},
+    {"name": "Water Heater Management Cluster", "section": "9.5",
+        "start": 680, "end": 687, "category": "Energy Management"},
+    {"name": "Water Heater Mode Cluster", "section": "9.6",
+        "start": 687, "end": 690, "category": "Energy Management"},
+    {"name": "Energy Preference Cluster", "section": "9.7",
+        "start": 690, "end": 694, "category": "Energy Management"},
+    {"name": "Device Energy Management Mode Cluster", "section": "9.8",
+        "start": 694, "end": 699, "category": "Energy Management"},
+
     # Network Infrastructure Clusters (Section 10)
-    {"name": "Wi-Fi Network Management Cluster", "section": "10.2", "start": 699, "end": 702, "category": "Network Infrastructure"},
-    {"name": "Thread Border Router Management Cluster", "section": "10.3", "start": 702, "end": 707, "category": "Network Infrastructure"},
-    {"name": "Thread Network Directory Cluster", "section": "10.4", "start": 707, "end": 712, "category": "Network Infrastructure"},
+    {"name": "Wi-Fi Network Management Cluster", "section": "10.2",
+        "start": 699, "end": 702, "category": "Network Infrastructure"},
+    {"name": "Thread Border Router Management Cluster", "section": "10.3",
+        "start": 702, "end": 707, "category": "Network Infrastructure"},
+    {"name": "Thread Network Directory Cluster", "section": "10.4",
+        "start": 707, "end": 712, "category": "Network Infrastructure"},
 ]
 
 # AI Extraction Prompt Template
@@ -288,7 +365,14 @@ Split into **TWO transitions:**
 ---
 ## OUTPUT STRUCTURE
 
-Return ONLY raw JSON (no markdown, no explanations):
+**CRITICAL JSON REQUIREMENTS:**
+- Output ONLY valid JSON
+- NO markdown code blocks (```json or ```)
+- NO comments in JSON (no // or #)
+- NO trailing commas
+- Validate JSON structure before outputting
+
+Return raw JSON only:
 
 {{
   "fsm_model": {{
@@ -366,6 +450,9 @@ Return ONLY raw JSON (no markdown, no explanations):
 - [ ] References properly document external dependencies
 - [ ] Metadata complete and accurate
 - [ ] JSON is valid and parseable
+- [ ] NO markdown code blocks in output
+- [ ] NO comments (// or #) in JSON
+- [ ] response_command is null in ALL transitions
 
 ---
 ## CRITICAL REMINDERS
@@ -378,6 +465,476 @@ Return ONLY raw JSON (no markdown, no explanations):
 6. **Quality Flags**: Model read-only, writable, and reportable attribute behaviors.
 7. **Fabric Sensitivity**: Consider fabric-scoped attributes where applicable.
 """
+
+
+# =============================================================================
+# PARSER-OPTIMIZED FSM GENERATION PROMPT (Rule-Based Tamarin Conversion)
+# =============================================================================
+# This prompt enhances the base FSM generation with parser-friendly constraints.
+# Use this when generating FSMs for rule-based Tamarin conversion.
+# Maintains generalization while adding structure for easier parsing.
+
+FSM_GENERATION_PARSER_OPTIMIZED_PROMPT = """
+You are a Matter IoT protocol expert generating Finite State Machine models optimized for RULE-BASED parsing to Tamarin protocol code.
+
+CLUSTER SPECIFICATION TO ANALYZE:
+{cluster_info}
+
+---
+## CORE DESIGN PRINCIPLE
+
+**PREFER EXPLICITNESS OVER ABSTRACTION**: When complexity arises, consider adding states rather than complex expressions.
+
+The cluster specification already provides:
+- Attribute types, defaults, and constraints in "Attributes" section
+- Command behavior in "effect_on_receipt" descriptions
+- Data type enumerations in "Data Types" section
+- Feature flags in "Features" section
+
+Your FSM should leverage this information to create parser-friendly structures.
+
+---
+## PARSER-FRIENDLY FSM GUIDELINES
+
+### GUIDELINE 1: LEVERAGE CLUSTER ATTRIBUTE METADATA
+**Extract attribute information from cluster specification's "Attributes" section.**
+
+The cluster spec provides:
+- `type`: bool, uint8, uint16, enum, bitmap, etc.
+- `default`: Initial value
+- `constraint`: Value constraints
+- `conformance`: When attribute is present (M=mandatory, O=optional, feature-dependent)
+
+✅ Use this to understand attribute domains and initial values.
+
+### GUIDELINE 2: EXPLICIT INVARIANTS WITH CLEAR SEMANTICS
+**State invariants should be parseable expressions.**
+
+✅ GOOD (parser can handle):
+```json
+"invariants": [
+  "OnOff == FALSE",
+  "OnTime == 0 || OnTime == 0xFFFF",
+  "feature_LT == TRUE"
+]
+```
+
+⚠️ ACCEPTABLE (may need splitting for complex parsers):
+```json
+"invariants": [
+  "OnOff == TRUE",
+  "OnTime > 0 && OnTime < 0xFFFF"
+]
+```
+
+❌ TOO ABSTRACT (avoid):
+```json
+"invariants": [
+  "device is in intermediate transition state",
+  "waiting for external confirmation"
+]
+```
+
+### GUIDELINE 3: SIMPLE ASSIGNMENT ACTIONS
+**Actions should be atomic assignments. Complex operations can be abstracted.**
+
+✅ GOOD:
+```json
+"actions": [
+  "OnOff := FALSE",
+  "OnTime := 0"
+]
+```
+
+✅ ACCEPTABLE (can be abstracted by parser):
+```json
+"actions": [
+  "OnTime := OnTimeField",
+  "OffWaitTime := OffWaitTimeField"
+]
+```
+
+⚠️ NEEDS CARE (parser may need to abstract):
+```json
+"actions": [
+  "OnTime := max(OnTime, OnTimeField)"
+]
+```
+*For such cases, add clarification in timing_requirements or definitions*
+
+❌ AVOID:
+```json
+"actions": [
+  "if OnTime > 0 then decrement OnTime",
+  "for each bit in bitmap set corresponding flag"
+]
+```
+
+### GUIDELINE 4: GUARD CONDITIONS - BALANCE SIMPLICITY AND COMPLETENESS
+**Guards can use boolean operators, but very complex expressions may warrant state splitting.**
+
+✅ SIMPLE (ideal):
+```json
+"guard_condition": "OnOff == FALSE"
+"guard_condition": "feature_LT == TRUE"
+```
+
+✅ MODERATE (acceptable):
+```json
+"guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE"
+"guard_condition": "OnTime != 0 && OnTime != 0xFFFF"
+```
+
+⚠️ COMPLEX (consider splitting if parser struggles):
+```json
+"guard_condition": "feature_LT == TRUE && !(OnTime == 0 && OffWaitTime > 0)"
+```
+
+**If a guard becomes very complex, consider:**
+- Splitting into multiple transitions from different states
+- Creating intermediate states that capture sub-conditions
+
+### GUIDELINE 5: FEATURE FLAGS AS PART OF STATE SPACE
+**When features significantly change behavior, consider feature-specific states.**
+
+Example: Lighting feature (feature_LT) enables OnTime/OffWaitTime behavior
+
+✅ OPTION 1 - Feature in guards (compact):
+```json
+{{
+  "name": "On_Idle",
+  "invariants": ["OnOff == TRUE"],
+  "transitions": [
+    {{
+      "trigger": "Off",
+      "guard_condition": "feature_LT == TRUE",
+      "actions": ["OnOff := FALSE", "OnTime := 0"]
+    }},
+    {{
+      "trigger": "Off",
+      "guard_condition": "feature_LT == FALSE",
+      "actions": ["OnOff := FALSE"]
+    }}
+  ]
+}}
+```
+
+✅ OPTION 2 - Feature in state space (more explicit):
+```json
+{{
+  "name": "On_Idle_WithLighting",
+  "invariants": ["OnOff == TRUE", "feature_LT == TRUE"]
+}},
+{{
+  "name": "On_Idle_NoLighting",
+  "invariants": ["OnOff == TRUE", "feature_LT == FALSE"]
+}}
+```
+
+Choose based on:
+- Feature impact: High impact → separate states
+- Transition count: Many feature-dependent transitions → separate states
+- Clarity: Which makes behavior clearer?
+
+### GUIDELINE 6: TIMER MODELING FOR PARSING
+**Timers are common in Matter clusters. Model them clearly.**
+
+For timer attributes (e.g., OnTime, OffWaitTime):
+
+✅ DISCRETE TIMER VALUES:
+```json
+{{
+  "name": "Timed_On",
+  "invariants": ["OnOff == TRUE", "OnTime > 0", "OnTime != 0xFFFF"],
+  "description": "Timer actively counting down"
+}},
+{{
+  "name": "On_Idle",
+  "invariants": ["OnOff == TRUE", "OnTime == 0"],
+  "description": "Timer expired or not set"
+}},
+{{
+  "name": "On_TimerDisabled",
+  "invariants": ["OnOff == TRUE", "OnTime == 0xFFFF"],
+  "description": "Timer disabled (sentinel value)"
+}}
+```
+
+✅ TIMER TRANSITIONS:
+```json
+{{
+  "from_state": "Timed_On",
+  "to_state": "Timed_On",
+  "trigger": "OnWithTimedOff_timer_tick",
+  "guard_condition": "OnTime > 1",
+  "actions": [],
+  "timing_requirements": "Timer decrements by 1 each 0.1s; parser models as abstract state transition"
+}},
+{{
+  "from_state": "Timed_On",
+  "to_state": "Off_Idle",
+  "trigger": "OnWithTimedOff_timer_expiry",
+  "guard_condition": "OnTime == 1",
+  "actions": ["OnTime := 0", "OffWaitTime := 0", "OnOff := FALSE"],
+  "timing_requirements": "Timer reaches 0, transition to off"
+}}
+```
+
+**Note**: Parser may abstract timer decrements. Focus on modeling state changes at key timer values (0, >0, 0xFFFF).
+
+### GUIDELINE 7: FUNCTION CALLS AND ABSTRACTIONS
+**Some commands involve external interactions (e.g., scene management).**
+
+✅ MODEL AS STATE EFFECT with explanation:
+```json
+{{
+  "from_state": "On_Idle",
+  "to_state": "Off_SceneStored",
+  "trigger": "OffWithEffect",
+  "guard_condition": "GlobalSceneControl == TRUE",
+  "actions": [
+    "GlobalSceneControl := FALSE",
+    "OnOff := FALSE"
+  ],
+  "timing_requirements": "Global scene stored before turning off"
+}},
+
+// In definitions:
+{{
+  "term": "Off_SceneStored",
+  "definition": "State after OffWithEffect stores global scene. Represents: store_global_scene() was called. Parser abstracts actual scene storage.",
+  "usage_context": "Enables proper scene recall behavior"
+}}
+```
+
+**Principle**: State transitions capture the effect, definitions explain the abstraction.
+
+### GUIDELINE 8: RESPONSE_COMMAND FIELD
+**CRITICAL: Always set response_command to null in all transitions.**
+
+Application Cluster specification does not define response commands in transition modeling.
+
+```json
+"response_command": null  // ALWAYS null - no exceptions
+```
+
+### GUIDELINE 9: ARITHMETIC AND COMPLEX EXPRESSIONS
+**When commands involve arithmetic (max, min, etc.), document clearly.**
+
+❌ NOT PARSEABLE DIRECTLY:
+```json
+"actions": ["OnTime := max(OnTime, OnTimeField)"]
+```
+
+✅ PARSER-FRIENDLY APPROACH:
+```json
+// Split into two transitions
+{{
+  "from_state": "Timed_On",
+  "to_state": "Timed_On_Extended",
+  "trigger": "OnWithTimedOff",
+  "guard_condition": "OnTimeField > OnTime",
+  "actions": ["OnTime := OnTimeField"],
+  "timing_requirements": "Extend timer when new value is greater"
+}},
+{{
+  "from_state": "Timed_On",
+  "to_state": "Timed_On",
+  "trigger": "OnWithTimedOff",
+  "guard_condition": "OnTimeField <= OnTime",
+  "actions": [],
+  "timing_requirements": "Keep current timer when new value is not greater"
+}}
+```
+
+**OR** document as abstract operation:
+```json
+{{
+  "actions": ["OnTime := max(OnTime, OnTimeField)"],
+  "timing_requirements": "Parser models max() as: if OnTimeField > OnTime, use OnTimeField; else keep OnTime"
+}}
+```
+
+---
+## ENHANCED OUTPUT STRUCTURE
+
+**CRITICAL JSON REQUIREMENTS:**
+- Output ONLY valid JSON
+- NO markdown code blocks (```json or ```)
+- NO comments in JSON
+- NO trailing commas
+- Validate JSON structure before outputting
+
+Use the standard FSM structure with these enhancements:
+
+```json
+{{
+  "fsm_model": {{"
+    "cluster_name": "string",
+    "cluster_id": "hex_string",
+    "category": "string",
+    
+    "states": [
+      {{
+        "name": "state_name",
+        "description": "Clear behavioral description",
+        "is_initial": boolean,
+        "invariants": ["parseable_expression"],
+        "attributes_monitored": ["attr1", "attr2"]
+      }}
+    ],
+    
+    "transitions": [
+      {{
+        "from_state": "source",
+        "to_state": "target",
+        "trigger": "command_or_event",
+        "guard_condition": "simple_or_moderate_expression",
+        "actions": ["attr := value"],
+        "response_command": null,
+        "timing_requirements": "string_or_null (explain abstractions here)",
+        "description": "what_this_transition_represents"
+      }}
+    ],
+    
+    "initial_state": "state_name",
+    "attributes_used": ["attr1", "attr2"],
+    "commands_handled": ["cmd1", "cmd2"],
+    "events_generated": ["event1"],
+    "data_types_used": ["enum1", "bitmap1"],
+    "scene_behaviors": ["scene_description"],
+    
+    "definitions": [
+      {{
+        "term": "term_name",
+        "definition": "Clear explanation. For attributes: TYPE: <type>. VALUES: <values>. DEFAULT: <default>. For abstractions: explain what parser should model.",
+        "usage_context": "where_and_how_used"
+      }}
+    ],
+    
+    "references": [
+      {{
+        "id": "id_or_null",
+        "name": "referenced_entity",
+        "description": "why_referenced"
+      }}
+    ],
+    
+    "metadata": {{
+      "generation_timestamp": "ISO_8601",
+      "generation_attempts": 1,
+      "judge_approved": true,
+      "source_pages": "string",
+      "section_number": "string",
+      "parser_optimized": true
+    }}
+  }}
+}}
+```
+
+---
+## GENERATION STRATEGY (ENHANCED)
+
+Follow the original 15-step analysis methodology, with these additions:
+
+**Before Step 1**: Extract attribute metadata from cluster spec
+- Parse "Attributes" section for types, defaults, constraints
+- Parse "Data Types" section for enums and bitmaps
+- Parse "Features" section for feature flags
+
+**During Step 5**: Consider state space size
+- If state space explodes due to many attributes, prioritize key attributes
+- Use feature flags judiciously (separate states vs guards)
+- Balance explicitness with manageability
+
+**During Step 7**: Document complex operations
+- Use timing_requirements to explain abstractions
+- Use definitions to clarify parser expectations
+- Keep actions as simple assignments when possible
+
+**After Step 15**: Add parser guidance to definitions
+- For each key attribute, add TYPE/VALUES/DEFAULT
+- For complex operations, explain abstraction approach
+- For timer behaviors, clarify discrete value modeling
+
+---
+## BALANCE PRINCIPLE
+
+**NOT all complexity needs elimination**. The goal is **PARSEABLE**, not **TRIVIAL**.
+
+✅ Parsers can handle:
+- Boolean operators (&&, ||, !)
+- Comparisons (==, !=, <, >, <=, >=)
+- Moderate expression nesting
+- Range expressions (OnTime > 0 && OnTime < 100)
+
+⚠️ Parsers may struggle with:
+- Deep nesting (3+ levels)
+- Complex arithmetic in guards
+- Conditional logic in actions
+- Unstructured free-form descriptions
+
+**Solution**: When in doubt, add a clarifying comment in `timing_requirements` or `definitions` explaining how the parser should interpret complex expressions.
+
+---
+## VALIDATION CHECKLIST (PARSER-OPTIMIZED)
+
+- [ ] All attributes have type information (from cluster spec or definitions)
+- [ ] State invariants use parseable expressions (not prose)
+- [ ] Actions are atomic assignments (or clearly documented abstractions)
+- [ ] Guards use boolean/comparison operators (complexity is moderate)
+- [ ] Complex operations documented in timing_requirements/definitions
+- [ ] Timer states distinguish between 0, >0, and disabled values
+- [ ] Feature flags handled (via guards or state space)
+- [ ] Function calls explained as state effects in definitions
+- [ ] All attribute defaults extractable from cluster spec
+- [ ] State space is manageable (not exponential explosion)
+- [ ] Transitions cover all command branches from specification
+- [ ] Follows original 15-step analysis methodology
+- [ ] Maintains generalization (works for any cluster type)
+- [ ] Leverages cluster spec structure (Attributes, Commands, Data Types)
+
+---
+## CRITICAL REMINDERS
+
+1. **Build on existing structure**: The cluster spec provides rich metadata - use it!
+2. **Keep generalization**: Must work for any Matter cluster type
+3. **Balance simplicity and completeness**: Don't sacrifice correctness for simplicity
+4. **Document abstractions**: Parser can handle "abstract" operations if documented
+5. **State count is negotiable**: More states if it helps, but not mandatory
+6. **Guard complexity is acceptable**: Moderate complexity is OK, extreme complexity warrants splitting
+7. **Actions stay atomic**: This is non-negotiable for Tamarin compatibility
+8. **Leverage definitions**: Use this section to explain parser expectations
+
+**REMEMBER**: This is an ENHANCEMENT of the base prompt, not a replacement. Generate FSMs that are both ACCURATE to the specification and FRIENDLY to rule-based parsing.
+"""
+
+
+# FSM Judge Prompt Template
+FSM_JUDGE_PROMPT_TEMPLATE = """You are an FSM validator for Matter IoT protocols. Evaluate if the FSM fundamentally models the cluster behavior correctly.
+
+FSM (JSON):
+{fsm}
+
+Cluster Specification:
+{cluster_info}
+
+Validation (approve if CORE behavior is correct):
+1. States represent cluster attribute values/conditions?
+2. Major commands handled?
+3. Guards logically sound?
+4. Actions modify correct attributes?
+5. Initial state appropriate?
+
+**Approve if core FSM structure is sound, even if minor details need refinement.**
+
+Output strict JSON (NO markdown, NO comments):
+{{
+    "correct": true,
+    "explanation": "Brief reason"
+}}
+"""
+
 
 # FSM_GENERATION_PROMPT_TEMPLATE = """
 # You are a Matter IoT protocol expert. Your task is to generate a precise Finite State Machine (FSM) model in JSON format based on the provided Matter Application Cluster specification.
@@ -490,11 +1047,11 @@ Return ONLY raw JSON (no markdown, no explanations):
 CLUSTER_CATEGORIES = [
     "General",
     "Measurement and Sensing",
-    "Lighting", 
+    "Lighting",
     "HVAC",
     "Closures",
     "Media",
-    "Robots", 
+    "Robots",
     "Home Appliances",
     "Energy Management",
     "Network Infrastructure"
@@ -1851,36 +2408,36 @@ Return ONLY the JSON array. No explanations, no markdown, no additional text.
 #     ]
 
 section_prompt_dict = {
-  "Classification" : CLUSTER_OVERVIEW_EXTRACTION_PROMPT,
-  "Revision History" : REVISION_HISTORY_EXTRACTION_PROMPT,
-  "Cluster ID" : CLUSTER_OVERVIEW_EXTRACTION_PROMPT,
-  "Attributes" : ATTRIBUTES_EXTRACTION_PROMPT,
-  "Data Types" : DATA_TYPES_EXTRACTION_PROMPT,
-  "Features" : FEATURES_EXTRACTION_PROMPT,
-  "Commands" : COMMANDS_EXTRACTION_PROMPT,
-  "Events" : EVENTS_EXTRACTION_PROMPT,
-  "Derived Cluster Namespace" : DERIVED_CLUSTER_NAMESPACE_EXTRACTION_PROMPT,
-  "Dependencies" : DEPENDENCIES_EXTRACTION_PROMPT,
-  "Mode Examples" : MODE_EXAMPLES_EXTRACTION_PROMPT,
-  "Status Codes" : STATUS_CODES_EXTRACTION_PROMPT,
-  "Cluster IDs" : CLUSTER_OVERVIEW_EXTRACTION_PROMPT,
-  "Definitions" : DEFINITIONS_EXTRACTION_PROMPT,
-  "Conversion of Temperature Values for Display" : CONVERSIONS_EXTRACTION_PROMPT,
-  "Multi Position Details" : MULTI_POSITION_DETAILS_EXTRACTION_PROMPT,
-  "Sequence of events for MultiPress" : MULTIPRESS_SEQUENCE_EXTRACTION_PROMPT,
-  "Summary of cases for MS feature flag" : MS_FEATURE_FLAG_SUMMARY_EXTRACTION_PROMPT,
-  "PIN/RFID Code Format" : PIN_RFID_CODE_FORMAT_EXTRACTION_PROMPT,
-  "State Change Table for Lighting" : STATE_CHANGE_TABLE_LIGHTING_EXTRACTION_PROMPT,
-  "Sequence of generated events" : SEQUENCE_OF_GENERATED_EVENTS_EXTRACTION_PROMPT,
-  "The Dimming Light Curve" : DIMMING_LIGHT_CURVE_EXTRACTION_PROMPT,
-  "Mode Use" : MODE_USE_EXTRACTION_PROMPT,
-  "Setpoint Limits" : SETPOINT_LIMITS_EXTRACTION_PROMPT,
-  "Recommended steps for creating a new User" : USER_CREATION_STEPS_EXTRACTION_PROMPT,
-  "Handling of fabric-scoping" : FABRIC_SCOPING_EXTRACTION_PROMPT,
-  "State Description" : STATE_DESCRIPTION_EXTRACTION_PROMPT,
-  "Mode Namespace" : MODE_NAMESPACE_EXTRACTION_PROMPT,
-  "Units of Temperature" : UNITS_OF_TEMPERATURE_EXTRACTION_PROMPT,
-  "Guidance for Fabrics / Commissioners" : FABRICS_COMMISSIONERS_GUIDANCE_EXTRACTION_PROMPT
+    "Classification": CLUSTER_OVERVIEW_EXTRACTION_PROMPT,
+    "Revision History": REVISION_HISTORY_EXTRACTION_PROMPT,
+    "Cluster ID": CLUSTER_OVERVIEW_EXTRACTION_PROMPT,
+    "Attributes": ATTRIBUTES_EXTRACTION_PROMPT,
+    "Data Types": DATA_TYPES_EXTRACTION_PROMPT,
+    "Features": FEATURES_EXTRACTION_PROMPT,
+    "Commands": COMMANDS_EXTRACTION_PROMPT,
+    "Events": EVENTS_EXTRACTION_PROMPT,
+    "Derived Cluster Namespace": DERIVED_CLUSTER_NAMESPACE_EXTRACTION_PROMPT,
+    "Dependencies": DEPENDENCIES_EXTRACTION_PROMPT,
+    "Mode Examples": MODE_EXAMPLES_EXTRACTION_PROMPT,
+    "Status Codes": STATUS_CODES_EXTRACTION_PROMPT,
+    "Cluster IDs": CLUSTER_OVERVIEW_EXTRACTION_PROMPT,
+    "Definitions": DEFINITIONS_EXTRACTION_PROMPT,
+    "Conversion of Temperature Values for Display": CONVERSIONS_EXTRACTION_PROMPT,
+    "Multi Position Details": MULTI_POSITION_DETAILS_EXTRACTION_PROMPT,
+    "Sequence of events for MultiPress": MULTIPRESS_SEQUENCE_EXTRACTION_PROMPT,
+    "Summary of cases for MS feature flag": MS_FEATURE_FLAG_SUMMARY_EXTRACTION_PROMPT,
+    "PIN/RFID Code Format": PIN_RFID_CODE_FORMAT_EXTRACTION_PROMPT,
+    "State Change Table for Lighting": STATE_CHANGE_TABLE_LIGHTING_EXTRACTION_PROMPT,
+    "Sequence of generated events": SEQUENCE_OF_GENERATED_EVENTS_EXTRACTION_PROMPT,
+    "The Dimming Light Curve": DIMMING_LIGHT_CURVE_EXTRACTION_PROMPT,
+    "Mode Use": MODE_USE_EXTRACTION_PROMPT,
+    "Setpoint Limits": SETPOINT_LIMITS_EXTRACTION_PROMPT,
+    "Recommended steps for creating a new User": USER_CREATION_STEPS_EXTRACTION_PROMPT,
+    "Handling of fabric-scoping": FABRIC_SCOPING_EXTRACTION_PROMPT,
+    "State Description": STATE_DESCRIPTION_EXTRACTION_PROMPT,
+    "Mode Namespace": MODE_NAMESPACE_EXTRACTION_PROMPT,
+    "Units of Temperature": UNITS_OF_TEMPERATURE_EXTRACTION_PROMPT,
+    "Guidance for Fabrics / Commissioners": FABRICS_COMMISSIONERS_GUIDANCE_EXTRACTION_PROMPT
 }
 
 # ==============================================================================

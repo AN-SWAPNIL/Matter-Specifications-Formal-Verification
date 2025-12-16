@@ -1,0 +1,251 @@
+{
+  "cluster_info": {
+    "cluster_name": "Account Login Cluster",
+    "cluster_ids": [
+      {
+        "id": "0x050E",
+        "name": "Account Login",
+        "summary": "Provides commands (GetSetupPIN, Login, Logout) to manage account-based login and setup PIN for PASE with a Commissionee."
+      }
+    ],
+    "classifications": [
+      {
+        "hierarchy": "Base",
+        "role": "Application",
+        "scope": "Endpoint",
+        "pics_code": "ALOGIN",
+        "summary": "Base application cluster on an endpoint; PICS ALOGIN used to declare support: if PICS(ALOGIN) then implement Account Login behavior."
+      }
+    ],
+    "Revision History": {
+      "revisions": [
+        {
+          "revision": "1",
+          "description": "Initial revision of Account Login cluster specification.",
+          "date": "null"
+        },
+        {
+          "revision": "2",
+          "description": "Add support for 8-character PIN code; add Node to Login/Logout commands; add LoggedOut event.",
+          "date": "null"
+        }
+      ]
+    },
+    "Commands": {
+      "commands": [
+        {
+          "id": "0x00",
+          "name": "GetSetupPIN",
+          "direction": "client ⇒ server",
+          "response": "GetSetupPINResponse",
+          "access": "A F T",
+          "conformance": "M",
+          "summary": "Check if TempAccountIdentifier account matches active account; if match and within rate limits, return Setup PIN for PASE, else return empty/NULL or FAILURE. Enforce max 10 unique req/10min and 10min identifier lifetime.",
+          "timing": "Server: ≤10 unique GetSetupPIN requests per 10 minutes per applicable scope; Temporary Account Identifier valid ≤10 minutes.",
+          "fields": [
+            {
+              "id": "0",
+              "name": "TempAccountIdentifier",
+              "type": "string",
+              "constraint": "length 16 to 100 characters",
+              "quality": null,
+              "default": null,
+              "conformance": "M",
+              "summary": "Specifies client’s Temporary Account Identifier; length ≥16 chars to mitigate guessing. Often derived from Rotating Device Identifier hex string."
+            }
+          ],
+          "effect_on_receipt": "pseudocode:\n1. if rate_limiter.too_many_unique_requests(last_10_min) then\n    send_command_response_status(FAILURE);\n    return;\n2. account_req := lookup_account_by_temp_id(TempAccountIdentifier);\n3. account_active := get_active_account_for_content_app();\n4. if account_req = account_active and temp_id_not_expired(TempAccountIdentifier, 10_min) then\n    setup_pin := get_commissionee_setup_pin(account_req);\n    send_GetSetupPINResponse(SetupPIN := setup_pin);\n   else\n    send_GetSetupPINResponse(SetupPIN := \"\");\n5. ensure_temp_identifier_lifetime(TempAccountIdentifier, max_age := 10_min);"
+        },
+        {
+          "id": "0x01",
+          "name": "GetSetupPINResponse",
+          "direction": "client ⇐ server",
+          "response": "N",
+          "access": "F",
+          "conformance": "M",
+          "summary": "Carries Setup PIN string or empty string if accounts do not match. Client uses presence/non-empty to decide whether PASE can proceed.",
+          "timing": null,
+          "fields": [
+            {
+              "id": "0",
+              "name": "SetupPIN",
+              "type": "string",
+              "constraint": "text string; length ≥8 if non-empty; empty string indicates no match",
+              "quality": null,
+              "default": null,
+              "conformance": "M",
+              "summary": "Contains setup PIN for PASE when accounts match; empty string signals account mismatch. New clients note older rev required min 11 digits."
+            }
+          ],
+          "effect_on_receipt": "pseudocode (client side):\n1. if SetupPIN = \"\" then\n     account_match := false;\n     abort_pase_commissioning();\n   else\n     account_match := true;\n     proceed_with_pase_commissioning(SetupPIN);"
+        },
+        {
+          "id": "0x02",
+          "name": "Login",
+          "direction": "client ⇒ server",
+          "response": "Y",
+          "access": "A F T",
+          "conformance": "M",
+          "summary": "Given TempAccountIdentifier and SetupPIN (and optional Node), server checks if PIN is current/valid for that account; if valid, MAY make that user account active. Enforce rate limits and temp ID lifetime.",
+          "timing": "Server: ≤10 unique Login requests per 10 minutes per applicable scope; Temporary Account Identifier valid ≤10 minutes.",
+          "fields": [
+            {
+              "id": "0",
+              "name": "TempAccountIdentifier",
+              "type": "string",
+              "constraint": "length 16 to 100 characters",
+              "quality": null,
+              "default": null,
+              "conformance": "M",
+              "summary": "Client’s temporary account identifier used to look up user and associated Setup PIN mapping."
+            },
+            {
+              "id": "1",
+              "name": "SetupPIN",
+              "type": "string",
+              "constraint": "min length 8 characters",
+              "quality": null,
+              "default": null,
+              "conformance": "M",
+              "summary": "Setup PIN code as text string (typically 8 or 11 decimal digits) used to validate and map TempAccountIdentifier to an account."
+            },
+            {
+              "id": "2",
+              "name": "Node",
+              "type": "node-id",
+              "constraint": null,
+              "quality": null,
+              "default": null,
+              "conformance": "O",
+              "summary": "Optional client Node ID; Content App MAY use to track which Nodes currently have access."
+            }
+          ],
+          "effect_on_receipt": "pseudocode:\n1. if rate_limiter.too_many_unique_requests(last_10_min) then\n    send_command_response_status(FAILURE);\n    return;\n2. if temp_id_expired(TempAccountIdentifier, 10_min) then\n    send_command_response_status(FAILURE);\n    return;\n3. acct := lookup_account_by_temp_id(TempAccountIdentifier);\n4. if acct = null then\n    send_command_response_status(FAILURE);\n    return;\n5. if not has_current_active_setup_pin(acct, SetupPIN) then\n    send_command_response_status(FAILURE);\n    return;\n6. if policy_allow_auto_login(acct) then\n     set_active_account_for_content_app(acct);\n     if Node is present then\n        grant_content_app_access_to_node(acct, Node);\n7. send_success_response();\n8. mapping_service_enforce_aggressive_timeout(TempAccountIdentifier, SetupPIN);"
+        },
+        {
+          "id": "0x03",
+          "name": "Logout",
+          "direction": "client ⇒ server",
+          "response": "Y",
+          "access": "O F T",
+          "conformance": "M",
+          "summary": "Instructs Content App to clear current user account; optionally scoped to a Node. SHOULD be used to mark end of user session and may trigger LoggedOut event and ACL revocation.",
+          "timing": null,
+          "fields": [
+            {
+              "id": "0",
+              "name": "Node",
+              "type": "node-id",
+              "constraint": null,
+              "quality": null,
+              "default": null,
+              "conformance": "O",
+              "summary": "Optional client Node ID used by the Content App to track and potentially revoke this Node’s access."
+            }
+          ],
+          "effect_on_receipt": "pseudocode:\n1. current_acct := get_active_account_for_content_app();\n2. if current_acct = null then\n     send_success_response();\n     return;\n3. clear_active_account_for_content_app();\n4. if Node is present then\n     record_node_logout(Node);\n     emit_LoggedOut_event(Node := Node);\n   else\n     record_global_logout();\n     emit_LoggedOut_event(Node := null);\n5. send_success_response();"
+        }
+      ]
+    },
+    "Events": {
+      "events": [
+        {
+          "id": "0x00",
+          "name": "LoggedOut",
+          "priority": "CRITICAL",
+          "access": "A S",
+          "conformance": "O",
+          "summary": "Emitted by the Content App when the current user logs out; Fabric Admin SHALL remove access to this Content App for the specified Node, or for all non-Admin Nodes if Node is absent.",
+          "fields": [
+            {
+              "id": "0",
+              "name": "Node",
+              "type": "node-id",
+              "conformance": "O",
+              "summary": "Node ID of the user account that logged out; if available include this field, else omit it. Pseudocode: if (NodeIdAvailable) include Node; else omit."
+            }
+          ]
+        }
+      ]
+    },
+    "references": [
+      {
+        "id": "0xFFFD",
+        "name": "ClusterRevision",
+        "description": "Global attribute storing highest supported revision; used to track cluster version but not defined in this section."
+      },
+      {
+        "id": null,
+        "name": "PASE (password-authenticated session establishment)",
+        "description": "Secure session setup using a PIN: if accountsMatch then use SetupPIN for PASE; cryptographic details in core spec, not here."
+      },
+      {
+        "id": null,
+        "name": "Commissionee",
+        "description": "Node being commissioned; used in GetSetupPIN logic: if activeAccount(ContentApp)==activeAccount(Commissionee) then return Setup PIN."
+      },
+      {
+        "id": null,
+        "name": "Content App Platform",
+        "description": "Platform hosting multiple content app endpoints; mentioned as caller of GetSetupPIN but behavior defined elsewhere."
+      },
+      {
+        "id": null,
+        "name": "Phone App",
+        "description": "Client application used during commissioning; referenced as a use case but not specified here."
+      },
+      {
+        "id": null,
+        "name": "Video Player device",
+        "description": "Device type that may host this cluster server to simplify login; full device behavior specified outside this section."
+      },
+      {
+        "id": null,
+        "name": "Content App endpoint",
+        "description": "Endpoint running a Content App cluster set; used as target for GetSetupPIN, but its clusters/attributes are defined elsewhere."
+      },
+      {
+        "id": null,
+        "name": "MatterCore - Rotating Device Identifier",
+        "description": "Defines Rotating Device Identifier and commissionable node advertisement; used to derive Temporary Account Identifier as uppercase hex octet string."
+      },
+      {
+        "id": null,
+        "name": "MatterCore - Manual Pairing Code",
+        "description": "Defines Manual Pairing Code and Passcode; used as source of Setup PIN for Commissionee, encoded as 8–11 character decimal string."
+      },
+      {
+        "id": null,
+        "name": "Commissioner / Admin Node Behavior",
+        "description": "Commissioner/Admin prompts user for consent before invoking GetSetupPIN and uses returned Setup PIN for PASE commissioning flows."
+      },
+      {
+        "id": null,
+        "name": "Central Account Mapping Service",
+        "description": "External service used by Content App to map Temporary Account Identifier to account and Setup PIN; must enforce aggressive timeouts to avoid delayed or accidental logins."
+      },
+      {
+        "id": null,
+        "name": "Fabric Admin",
+        "description": "On LoggedOut event, Fabric Admin SHALL remove access: if Node present, revoke that Node’s access; else revoke all non-Admin Node access for the Content App."
+      },
+      {
+        "id": null,
+        "name": "Content App",
+        "description": "Application represented by this cluster; emits LoggedOut when the current user logs out to drive access revocation by the Fabric Admin."
+      },
+      {
+        "id": null,
+        "name": "Device Type Library",
+        "description": "External document defining device types and endpoints; referenced for how a Content App is represented as an endpoint."
+      }
+    ]
+  },
+  "metadata": {
+    "source_pages": "475-480",
+    "extraction_method": "enhanced_section_based_dynamic",
+    "section_number": "6.2",
+    "category": "Media",
+    "subsections_processed": 5
+  }
+}

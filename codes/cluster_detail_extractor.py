@@ -733,20 +733,22 @@ class EnhancedClusterExtractor:
         Args:
             cluster_number: Cluster index (1-based)
         """
-        clusters_list = list(self.clusters_data.get('clusters', {}).items())
+        # clusters_list = list(self.clusters_data.get('clusters', {}).items())
         
-        if cluster_number < 1 or cluster_number > len(clusters_list):
-            logger.error(f"Invalid cluster number: {cluster_number}. Valid range: 1-{len(clusters_list)}")
+        if cluster_number < 1 or cluster_number > len(self.clusters_data.get('clusters', {})):
+            logger.error(f"Invalid cluster number: {cluster_number}. Valid range: 1-{len(self.clusters_data.get('clusters', {}))}")
             return
         
-        cluster_key, cluster_data = clusters_list[cluster_number - 1]
-        section_number = cluster_data.get('section_number', cluster_key)
+        # cluster_key, cluster_data = clusters_list[cluster_number - 1]
+        cluster_data = self.clusters_data.get('clusters', {}).get(f"{cluster_number}")
+        section_number = cluster_data.get('section_number', "Unknown")
         cluster_name = cluster_data.get('cluster_name', 'Unknown')
+        logger.info(f"Starting processing for cluster {cluster_number}: {cluster_name} and section {section_number}")
         
         try:
             logger.info(f"{'='*80}")
             logger.info(f"Processing cluster {cluster_number}: {cluster_name}")
-            
+            logger.info(f"Section number: {section_number}")
             cluster_result = self.process_cluster_enhanced(cluster_data)
             
             if cluster_result is None:
@@ -782,7 +784,7 @@ def main():
         extractor = EnhancedClusterExtractor(pdf_path, clusters_json_path, output_dir)
         
         # Process specific cluster by number (1-based index)
-        extractor.process_cluster_by_number(cluster_number=5)
+        extractor.process_cluster_by_number(cluster_number=6.2)
         
     except KeyboardInterrupt:
         logger.warning("Extraction interrupted by user")

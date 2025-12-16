@@ -40,7 +40,7 @@ class FSMGenerator:
                  provider: str = MODEL_PROVIDER,
                  temperature: float = LLM_TEMPERATURE,
                  max_tokens: int = LLM_MAX_OUTPUT_TOKENS,
-                 prompt_template: str = FSM_GENERATION_PARSER_OPTIMIZED_PROMPT,
+                 prompt_template: str = FSM_GENERATION_PROMPT_TEMPLATE,  # Changed to v2.0 prompt
                  judge_prompt_template: str = FSM_JUDGE_PROMPT_TEMPLATE):
         self.api_key = api_key
         self.model = model
@@ -332,8 +332,9 @@ Address the specific issues mentioned in the feedback while maintaining correct 
 
 
 def main():
+    # input_file = "cluster_details/6.2_Account_Login_Cluster_detail.json"
     input_file = "cluster_details/1.5_OnOff_Cluster_detail.json"
-    output_dir = "fsm_models_parsable"
+    output_dir = "fsm_models_v2/"
     if len(sys.argv) > 1:
         input_file = sys.argv[1]
     if len(sys.argv) > 2:

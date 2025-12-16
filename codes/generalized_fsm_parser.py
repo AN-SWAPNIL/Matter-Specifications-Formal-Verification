@@ -74,10 +74,16 @@ class ExpressionParser:
         
         facts = []
         
-        # Handle compound conditions (&&, ||)
-        if '&&' in expression or '||' in expression:
-            # For now, split by && and process each part
-            # TODO: Handle || (disjunction) with separate rules
+        # Check for OR conditions - these require separate transitions in FSM
+        if '||' in expression:
+            print(f"⚠ WARNING: Guard contains OR (||) which requires separate transitions in FSM")
+            print(f"  Guard: {expression}")
+            print(f"  Parser cannot handle OR in guards - FSM should split into separate transitions")
+            # Return empty facts - this will cause validation error
+            return ParsedGuard(facts=[], raw_expression=expression)
+        
+        # Handle compound conditions (&&)
+        if '&&' in expression:
             parts = [p.strip() for p in expression.split('&&')]
             for part in parts:
                 sub_facts = self._parse_simple_condition(part, attributes)
@@ -106,6 +112,29 @@ class ExpressionParser:
     def _create_fact(self, left: str, op: str, right: str, attributes: Dict[str, Attribute]) -> List[str]:
         """Create Tamarin fact from comparison."""
         facts = []
+        
+        # Handle empty string literal
+        if right == '""' or right == "''":
+            if op == '==':
+                facts.append(f"State({left}, 'empty')")
+            elif op == '!=':
+                facts.append(f"State({left}, 'nonempty')")
+            else:
+                # For other operators with empty string, use variable
+                facts.append(f"State({left}, v{left})  /* {op} empty string */")
+            return facts
+        
+        # Handle quoted string literals (non-empty)
+        if (right.startswith('"') and right.endswith('"')) or (right.startswith("'") and right.endswith("'")):
+            # Extract string content
+            string_value = right[1:-1]
+            if op == '==':
+                facts.append(f"State({left}, '{string_value}')")
+            elif op == '!=':
+                facts.append(f"State({left}, v{left})  /* where v{left} != '{string_value}' */")
+            else:
+                facts.append(f"State({left}, v{left})  /* {op} '{string_value}' */")
+            return facts
         
         # Normalize boolean values
         right_normalized = right.upper()
@@ -173,6 +202,11 @@ class ActionParser:
     
     def _create_assignment_fact(self, attr: str, value: str, attributes: Dict[str, Attribute]) -> str:
         """Create Tamarin fact for assignment."""
+        # Handle quoted string literals (strip quotes and use content)
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+            string_value = value[1:-1]  # Extract string content
+            return f"State({attr}, '{string_value}')"
+        
         # Normalize boolean values
         value_upper = value.upper()
         if value_upper in ['TRUE', 'FALSE']:
@@ -395,7 +429,170 @@ begin
   "All s1 s2 #i #j. State(CurrentState, s1) @i & State(CurrentState, s2) @j & #i = #j ==> s1 = s2"
 """)
         
+        # Cluster-specific security properties
+        security_props = self.fsm.get('security_properties', [])
+        if security_props:
+            lemmas.append("\n// Cluster-specific security properties")
+            lemmas.append("// NOTE: These lemmas reference predicates from the security model.")
+            lemmas.append("// They require corresponding action facts to be added to rules for verification.")
+            lemmas.append("// Uncomment and adapt after adding required action facts.\n")
+            for prop in security_props:
+                lemma = self._generate_security_lemma(prop)
+                if lemma:
+                    lemmas.append(lemma)
+        
         return '\n'.join(lemmas)
+    
+    def _convert_to_tamarin_syntax(self, expression: str) -> str:
+        """
+        Convert programming-style expressions to Tamarin-compatible syntax.
+        
+        Examples:
+            "AccountMatch(tempid) == FALSE" -> "not(AccountMatch(tempid))"
+            "IsNonEmpty(setup_pin) == TRUE" -> "IsNonEmpty(setup_pin)"
+            "NodeParamPresent(node) == FALSE" -> "not(NodeParamPresent(node))"
+        """
+        if not expression:
+            return expression
+            
+        expression = expression.strip()
+        
+        # Handle "Func(args) == TRUE" -> "Func(args)"
+        # Handle "Func(args) == FALSE" -> "not(Func(args))"
+        # Pattern: identifier(params) == TRUE/FALSE
+        pattern = r'(\w+\([^)]*\))\s*==\s*(TRUE|FALSE)'
+        
+        def replace_bool_comparison(match):
+            func_call = match.group(1)
+            bool_val = match.group(2).upper()
+            if bool_val == 'TRUE':
+                return func_call
+            else:  # FALSE
+                return f"not({func_call})"
+        
+        result = re.sub(pattern, replace_bool_comparison, expression)
+        
+        # Handle "variable == value" -> "variable = value" for simple equalities
+        # But only for non-function cases (no parentheses on left side)
+        pattern_simple = r'(\b\w+)\s*==\s*(\w+)'
+        
+        def replace_simple_equality(match):
+            left = match.group(1)
+            right = match.group(2)
+            # Don't touch if it's a function call (already handled above)
+            if '(' in left:
+                return match.group(0)
+            return f"{left} = {right}"
+        
+        result = re.sub(pattern_simple, replace_simple_equality, result)
+        
+        return result
+    
+    def _generate_security_lemma(self, prop: Dict[str, Any]) -> str:
+        """Generate Tamarin lemma from structured security property.
+        
+        Complex security properties that use predicates not emitted by rules
+        are generated as comments for manual review.
+        """
+        prop_name = prop.get('property_name', 'unknown')
+        prop_type = prop.get('property_type', 'safety')
+        description = prop.get('description', '')
+        constraint = prop.get('constraint_type', 'universal')
+        event_pattern = prop.get('event_pattern', {})
+        
+        # Skip if event_pattern is empty or missing required fields
+        if not event_pattern or not event_pattern.get('type'):
+            print(f"⚠ WARNING: Skipping security property '{prop_name}' - empty or invalid event_pattern")
+            print(f"  Expected: event_pattern with 'type', 'event', 'params' fields")
+            return ""
+        
+        # Build Tamarin formula from structured pattern
+        formula = self._build_formula_from_pattern(event_pattern, prop_type, constraint)
+        if not formula:
+            print(f"⚠ WARNING: Could not generate formula for property '{prop_name}'")
+            return ""
+        
+        # Determine lemma annotation
+        annotation = "exists-trace" if constraint == "existential" else ""
+        
+        # Build lemma as a COMMENT (since predicates may not be defined)
+        # This allows the Tamarin file to parse successfully while preserving
+        # the security property for manual refinement
+        lemma_parts = [f"/*"]
+        lemma_parts.append(f"lemma {prop_name}:")
+        if annotation:
+            lemma_parts.append(f"  {annotation}")
+        if description:
+            lemma_parts.append(f"  // {description}")
+        lemma_parts.append(f'  "{formula}"')
+        lemma_parts.append("*/")
+        lemma_parts.append("")
+        
+        return '\n'.join(lemma_parts)
+    
+    def _build_formula_from_pattern(self, pattern: Dict[str, Any], prop_type: str, constraint: str) -> str:
+        """Convert structured event pattern to Tamarin formula."""
+        pattern_type = pattern.get('type', '')
+        
+        if pattern_type == 'happens':
+            # Ex #i. Event(params)@i
+            event = pattern.get('event', '')
+            params = ', '.join(pattern.get('params', []))
+            if not event:
+                print(f"⚠ WARNING: 'happens' pattern missing 'event' field")
+                return ""
+            return f"Ex #i. {event}({params})@i"
+        
+        elif pattern_type == 'never':
+            # not(Ex #i. Event(params)@i)
+            event = pattern.get('event', '')
+            params = ', '.join(pattern.get('params', []))
+            if not event:
+                print(f"⚠ WARNING: 'never' pattern missing 'event' field")
+                return ""
+            return f"not(Ex #i. {event}({params})@i)"
+        
+        elif pattern_type == 'requires_previous':
+            # All x #i. Event1(x)@i ==> Ex #j. Event2(x)@j & #j < #i
+            trigger = pattern.get('trigger_event', '')
+            trigger_params = pattern.get('trigger_params', [])
+            required = pattern.get('required_event', '')
+            required_params = pattern.get('required_params', [])
+            
+            if not trigger or not required:
+                print(f"⚠ WARNING: 'requires_previous' pattern missing required fields")
+                print(f"  Expected: trigger_event, trigger_params, required_event, required_params")
+                print(f"  Got: {pattern}")
+                return ""
+            
+            trigger_vars = ' '.join(trigger_params) if trigger_params else 'x'
+            trigger_args = ', '.join(trigger_params) if trigger_params else ''
+            required_args = ', '.join(required_params) if required_params else ''
+            
+            return f"All {trigger_vars} #i. {trigger}({trigger_args})@i ==> Ex #j. {required}({required_args})@j & #j < #i"
+        
+        elif pattern_type == 'conditional':
+            # All x #i. Event1(x)@i & Cond() ==> Event2(x)@i
+            trigger = pattern.get('trigger_event', '')
+            trigger_params = pattern.get('trigger_params', [])
+            condition = pattern.get('condition', '')
+            consequence = pattern.get('consequence', '')
+            
+            if not trigger or not consequence:
+                print(f"⚠ WARNING: 'conditional' pattern missing required fields")
+                print(f"  Expected: trigger_event, trigger_params, condition, consequence")
+                return ""
+            
+            trigger_vars = ' '.join(trigger_params) if trigger_params else 'x'
+            trigger_args = ', '.join(trigger_params) if trigger_params else ''
+            
+            # Convert programming-style conditions to Tamarin syntax
+            tamarin_condition = self._convert_to_tamarin_syntax(condition)
+            tamarin_consequence = self._convert_to_tamarin_syntax(consequence)
+            
+            return f"All {trigger_vars} #i. {trigger}({trigger_args})@i & {tamarin_condition} ==> {tamarin_consequence}"
+        
+        return ""
 
 
 class GeneralizedFSMParser:

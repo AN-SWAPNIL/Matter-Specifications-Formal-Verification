@@ -232,8 +232,637 @@ MANUAL_CLUSTER_DATA = [
 # Manual extraction configuration - no AI prompts needed
 
 
-# FSM Generation Configuration
+# =============================================================================
+# FSM GENERATION FOR TAMARIN SECURITY ANALYSIS
+# =============================================================================
+
 FSM_GENERATION_PROMPT_TEMPLATE = """
+You are a Matter IoT protocol security expert. Generate a Finite State Machine model from a Matter Application Cluster specification that will be converted to Tamarin protocol verification code for SECURITY ANALYSIS.
+
+CLUSTER SPECIFICATION TO ANALYZE:
+{cluster_info}
+
+================================================================================
+## CRITICAL: SECURITY ANALYSIS REQUIREMENTS
+================================================================================
+
+This FSM will be used for FORMAL SECURITY VERIFICATION with Tamarin Prover.
+The generated model MUST support verification of:
+- Authentication properties (who performed an action)
+- Authorization properties (permission checks before actions)
+- Confidentiality properties (secrets not leaked)
+- Rate limiting and temporal properties
+
+================================================================================
+## FSM STRUCTURE FOR TAMARIN CONVERSION
+================================================================================
+
+### CORE PRINCIPLE: EVERY SECURITY-RELEVANT EVENT MUST BE TRACEABLE
+
+For Tamarin verification, we need:
+1. **Action Facts** - Events emitted during transitions (become Tamarin action labels)
+2. **Variables** - Parameters bound from inputs (become Tamarin variables)
+3. **Consistency** - Security properties ONLY reference action facts that transitions emit
+
+--------------------------------------------------------------------------------
+### STRUCTURE 1: PROTOCOL MESSAGES
+--------------------------------------------------------------------------------
+
+Define all command request/response messages with their parameters:
+
+```json
+"protocol_messages": [
+  {{
+    "name": "GetSetupPIN_Request",
+    "direction": "client_to_server",
+    "fields": [
+      {{"name": "temp_account_id", "type": "string", "security_relevant": true}}
+    ]
+  }},
+  {{
+    "name": "GetSetupPIN_Response",
+    "direction": "server_to_client",
+    "fields": [
+      {{"name": "setup_pin", "type": "string", "security_relevant": true}}
+    ]
+  }}
+]
+```
+
+**Rules:**
+- Extract from cluster_info.Commands
+- Mark fields as `security_relevant: true` if they contain credentials, identifiers, or secrets
+- Include both request and response messages
+
+--------------------------------------------------------------------------------
+### STRUCTURE 2: ACTION FACTS (CRITICAL FOR SECURITY)
+--------------------------------------------------------------------------------
+
+Define ALL security-relevant events that can occur. These become Tamarin action labels.
+
+```json
+"action_facts": [
+  {{
+    "name": "GetSetupPINReceived",
+    "params": ["endpoint", "temp_id"],
+    "description": "Server received GetSetupPIN request"
+  }},
+  {{
+    "name": "GetSetupPINAccepted",
+    "params": ["endpoint", "temp_id"],
+    "description": "GetSetupPIN passed rate limit check"
+  }},
+  {{
+    "name": "SetupPINReturned",
+    "params": ["endpoint", "temp_id", "setup_pin"],
+    "description": "Non-empty SetupPIN returned to client"
+  }},
+  {{
+    "name": "EmptyPINReturned",
+    "params": ["endpoint", "temp_id"],
+    "description": "Empty SetupPIN returned (mismatch or expired)"
+  }},
+  {{
+    "name": "RateLimitExceeded",
+    "params": ["endpoint", "scope"],
+    "description": "Request rejected due to rate limiting"
+  }},
+  {{
+    "name": "TempIdValidated",
+    "params": ["temp_id"],
+    "description": "Temporary Account Identifier confirmed not expired"
+  }},
+  {{
+    "name": "TempIdExpired",
+    "params": ["temp_id"],
+    "description": "Temporary Account Identifier has expired"
+  }},
+  {{
+    "name": "AccountLookupSuccess",
+    "params": ["temp_id", "account"],
+    "description": "Account found for given TempAccountIdentifier"
+  }},
+  {{
+    "name": "AccountLookupFailed",
+    "params": ["temp_id"],
+    "description": "No account found for TempAccountIdentifier"
+  }},
+  {{
+    "name": "SetupPINValidated",
+    "params": ["account", "setup_pin"],
+    "description": "SetupPIN confirmed valid for account"
+  }},
+  {{
+    "name": "SetupPINInvalid",
+    "params": ["account", "setup_pin"],
+    "description": "SetupPIN not valid for account"
+  }},
+  {{
+    "name": "LoginSuccess",
+    "params": ["endpoint", "temp_id", "account"],
+    "description": "Login completed successfully, account activated"
+  }},
+  {{
+    "name": "LoginFailed",
+    "params": ["endpoint", "temp_id", "reason"],
+    "description": "Login rejected with reason"
+  }},
+  {{
+    "name": "AccountActivated",
+    "params": ["endpoint", "account"],
+    "description": "Account set as active for Content App"
+  }},
+  {{
+    "name": "NodeAccessGranted",
+    "params": ["endpoint", "account", "node"],
+    "description": "Node granted access to Content App"
+  }},
+  {{
+    "name": "LogoutReceived",
+    "params": ["endpoint", "node_or_null"],
+    "description": "Logout command received"
+  }},
+  {{
+    "name": "AccountDeactivated",
+    "params": ["endpoint", "account"],
+    "description": "Account cleared from Content App"
+  }},
+  {{
+    "name": "NodeAccessRevoked",
+    "params": ["endpoint", "account", "node"],
+    "description": "Node access to Content App revoked"
+  }},
+  {{
+    "name": "LoggedOutEvent",
+    "params": ["endpoint", "node_or_null", "account"],
+    "description": "LoggedOut event emitted"
+  }}
+]
+```
+
+**Rules:**
+- Extract from effect_on_receipt pseudocode - each decision point becomes an action fact
+- Include BOTH success and failure cases
+- Parameters must be lowercase (Tamarin variable convention)
+- Names must be CamelCase (Tamarin action fact convention)
+
+--------------------------------------------------------------------------------
+### STRUCTURE 3: TRANSITIONS WITH ACTION FACTS
+--------------------------------------------------------------------------------
+
+Each transition MUST specify which action facts it emits:
+
+```json
+"transitions": [
+  {{
+    "transition_id": "T1",
+    "from_state": "NoActiveAccount",
+    "to_state": "NoActiveAccount",
+    "trigger": "GetSetupPIN",
+    "guard_condition": "rate_limit_exceeded == FALSE && temp_id_valid == TRUE && account_match == TRUE",
+    "input_message": {{
+      "name": "GetSetupPIN_Request",
+      "bindings": {{"temp_id": "temp_account_id"}}
+    }},
+    "output_message": {{
+      "name": "GetSetupPIN_Response",
+      "values": {{"setup_pin": "valid_setup_pin"}}
+    }},
+    "action_facts_emitted": [
+      {{"name": "GetSetupPINReceived", "args": ["endpoint", "temp_id"]}},
+      {{"name": "GetSetupPINAccepted", "args": ["endpoint", "temp_id"]}},
+      {{"name": "TempIdValidated", "args": ["temp_id"]}},
+      {{"name": "AccountLookupSuccess", "args": ["temp_id", "account"]}},
+      {{"name": "SetupPINReturned", "args": ["endpoint", "temp_id", "setup_pin"]}}
+    ],
+    "state_updates": [
+      {{"attribute": "last_temp_id", "value": "temp_id"}}
+    ],
+    "description": "GetSetupPIN succeeds: rate limit OK, temp_id valid, account matches"
+  }},
+  {{
+    "transition_id": "T2",
+    "from_state": "BaseOff",
+    "to_state": "BaseOff",
+    "trigger": "On",
+    "guard_condition": "feature_OFFONLY == TRUE",
+    "guard_features": [
+      {{"name": "OFFONLY", "value": "TRUE"}}
+    ],
+    "guard_attributes": [],
+    "input_message": {{
+      "name": "On_Request",
+      "bindings": {{}}
+    }},
+    "output_message": {{
+      "name": "On_Response",
+      "values": {{"status": "UNSUPPORTED_COMMAND"}}
+    }},
+    "action_facts_emitted": [
+      {{"name": "OnReceived", "args": ["endpoint"]}},
+      {{"name": "OnNotSupportedOffOnly", "args": ["endpoint"]}}
+    ],
+    "state_updates": [],
+    "description": "On command rejected: OffOnly feature enabled"
+  }}
+]
+```
+
+**CRITICAL RULES:**
+- `guard_condition` is human-readable, `guard_features` + `guard_attributes` are machine-parseable
+- `guard_features`: Extract from conditions like "feature_LT == TRUE" → {{"name": "LT", "value": "TRUE"}}
+- `guard_attributes`: Extract from conditions like "OnTime > 0" → {{"name": "OnTime", "operator": ">", "value": "0"}}
+- If no feature/attribute guards, use empty arrays: `"guard_features": [], "guard_attributes": []`
+- `action_facts_emitted` MUST list all security-relevant events for this transition
+- Arguments in `args` MUST match variable names bound from input or state
+- EVERY branch of conditional logic in effect_on_receipt → separate transition
+- Each transition has a unique `transition_id`
+
+--------------------------------------------------------------------------------
+### STRUCTURE 4: SECURITY PROPERTIES (MUST REFERENCE DEFINED ACTION FACTS)
+--------------------------------------------------------------------------------
+
+**CRITICAL: DO NOT FABRICATE SECURITY PROPERTIES**
+- If the cluster specification does NOT contain explicit security requirements (rate limits, validation checks, SHALL statements), leave `security_properties` as an EMPTY array: `"security_properties": []`
+- Only create security properties when you can directly cite the source from the specification
+- Never invent security requirements that are not in the specification
+- It is BETTER to have an empty security_properties array than to include fabricated properties
+
+Security properties MUST only reference action facts defined in `action_facts`:
+
+```json
+"security_properties": [
+  {{
+    "property_id": "SP1",
+    "property_name": "rate_limit_enforced",
+    "property_type": "safety",
+    "description": "Accepted requests must not exceed rate limit",
+    "formula_type": "requires_previous",
+    "formula": {{
+      "quantifier": "All",
+      "variables": ["endpoint", "temp_id"],
+      "trigger": {{"fact": "GetSetupPINAccepted", "args": ["endpoint", "temp_id"]}},
+      "requirement": {{"fact": "RateLimitWindowActive", "args": ["endpoint"]}},
+      "temporal": "before"
+    }},
+    "referenced_action_facts": ["GetSetupPINAccepted", "RateLimitWindowActive"],
+    "source": "timing: ≤10 unique requests per 10 minutes"
+  }},
+  {{
+    "property_id": "SP2",
+    "property_name": "setup_pin_requires_valid_temp_id",
+    "property_type": "authentication",
+    "description": "Non-empty SetupPIN returned only if temp_id was validated",
+    "formula_type": "requires_simultaneous",
+    "formula": {{
+      "quantifier": "All",
+      "variables": ["endpoint", "temp_id", "setup_pin"],
+      "trigger": {{"fact": "SetupPINReturned", "args": ["endpoint", "temp_id", "setup_pin"]}},
+      "requirement": {{"fact": "TempIdValidated", "args": ["temp_id"]}},
+      "temporal": "same_time"
+    }},
+    "referenced_action_facts": ["SetupPINReturned", "TempIdValidated"],
+    "source": "effect_on_receipt: temp_id_not_expired check"
+  }},
+  {{
+    "property_id": "SP3",
+    "property_name": "login_requires_valid_credentials",
+    "property_type": "authentication",
+    "description": "Login success requires valid temp_id and valid setup_pin",
+    "formula_type": "requires_all",
+    "formula": {{
+      "quantifier": "All",
+      "variables": ["endpoint", "temp_id", "account"],
+      "trigger": {{"fact": "LoginSuccess", "args": ["endpoint", "temp_id", "account"]}},
+      "requirements": [
+        {{"fact": "TempIdValidated", "args": ["temp_id"]}},
+        {{"fact": "AccountLookupSuccess", "args": ["temp_id", "account"]}},
+        {{"fact": "SetupPINValidated", "args": ["account", "setup_pin"]}}
+      ],
+      "temporal": "same_time"
+    }},
+    "referenced_action_facts": ["LoginSuccess", "TempIdValidated", "AccountLookupSuccess", "SetupPINValidated"],
+    "source": "effect_on_receipt: Login validation steps"
+  }},
+  {{
+    "property_id": "SP4",
+    "property_name": "logout_triggers_access_revocation",
+    "property_type": "authorization",
+    "description": "LoggedOut event leads to access revocation",
+    "formula_type": "leads_to",
+    "formula": {{
+      "quantifier": "All",
+      "variables": ["endpoint", "node", "account"],
+      "trigger": {{"fact": "LoggedOutEvent", "args": ["endpoint", "node", "account"]}},
+      "consequence": {{"fact": "NodeAccessRevoked", "args": ["endpoint", "account", "node"]}},
+      "temporal": "eventually_after"
+    }},
+    "referenced_action_facts": ["LoggedOutEvent", "NodeAccessRevoked"],
+    "source": "events: Fabric Admin SHALL remove access"
+  }}
+]
+```
+
+**CRITICAL RULES:**
+- `referenced_action_facts` MUST only contain names from the `action_facts` array
+- Every fact referenced in `formula` MUST exist in `action_facts`
+- Variable names in formulas MUST be lowercase
+- Fact names MUST be CamelCase
+
+--------------------------------------------------------------------------------
+### STRUCTURE 5: VARIABLES AND FRESH VALUES
+--------------------------------------------------------------------------------
+
+Define which values are fresh (newly generated) vs bound from input:
+
+```json
+"variables": {{
+  "fresh_values": [
+    {{"name": "setup_pin", "description": "Generated Setup PIN for PASE"}},
+    {{"name": "session_id", "description": "Session identifier"}}
+  ],
+  "input_bound": [
+    {{"name": "temp_id", "source": "GetSetupPIN_Request.temp_account_id"}},
+    {{"name": "provided_pin", "source": "Login_Request.setup_pin"}},
+    {{"name": "node", "source": "Login_Request.node"}}
+  ],
+  "state_bound": [
+    {{"name": "account", "source": "lookup from temp_id"}},
+    {{"name": "endpoint", "source": "server endpoint identity"}}
+  ]
+}}
+```
+
+================================================================================
+## EXTRACTION METHODOLOGY
+================================================================================
+
+### STEP 1: EXTRACT PROTOCOL MESSAGES
+From `cluster_info.Commands`:
+- Each command with direction "client ⇒ server" → Request message
+- Each command with direction "client ⇐ server" → Response message
+- Extract all fields with types
+
+### STEP 2: IDENTIFY ACTION FACTS
+From `cluster_info.Commands[].effect_on_receipt`:
+- Each conditional check → action fact for pass AND fail
+- Each state modification → action fact
+- Each response sent → action fact
+- Each event generated → action fact
+
+Example from GetSetupPIN effect_on_receipt:
+```
+1. if rate_limiter.too_many_unique_requests(last_10_min) then...
+   → RateLimitExceeded (fail case)
+   → RateLimitOK (implicit pass case for step 2)
+2. account_req := lookup_account_by_temp_id(TempAccountIdentifier);
+   → AccountLookupSuccess / AccountLookupFailed
+3. account_active := get_active_account_for_content_app();
+4. if account_req = account_active and temp_id_not_expired...
+   → TempIdValidated / TempIdExpired
+   → AccountMatch / AccountMismatch
+   → SetupPINReturned / EmptyPINReturned
+```
+
+### STEP 3: BUILD TRANSITIONS
+For each unique execution path through effect_on_receipt:
+- Create one transition
+- List all action facts emitted along that path
+- Specify guard conditions that select this path
+
+### STEP 4: DERIVE SECURITY PROPERTIES
+From `cluster_info.Commands[].timing`:
+- Rate limit requirements → safety properties
+
+From `cluster_info.Commands[].effect_on_receipt`:
+- Validation checks → authentication properties
+
+From `cluster_info.Events[].summary`:
+- SHALL requirements → authorization/safety properties
+
+From `cluster_info.Commands[].access`:
+- Access control levels → authorization properties
+
+### STEP 5: VALIDATE CONSISTENCY
+Before outputting:
+1. Every fact in `security_properties.referenced_action_facts` EXISTS in `action_facts`
+2. Every `action_facts_emitted` item in transitions references a defined action fact
+3. All variable names are lowercase, all fact names are CamelCase
+4. No action fact is defined but never emitted by any transition
+
+================================================================================
+## OUTPUT JSON STRUCTURE
+================================================================================
+
+**CRITICAL JSON REQUIREMENTS:**
+- Output ONLY valid JSON (no markdown, no comments)
+- NO trailing commas
+- Validate before outputting
+
+```json
+{{
+  "fsm_model": {{
+    "cluster_name": "string",
+    "cluster_id": "hex_string",
+    "revision": "number",
+    "category": "string",
+    
+    "features": [
+      {{"name": "FEATURE_NAME", "full_name": "Full Feature Name", "description": "string"}}
+    ],
+    
+    "protocol_messages": [
+      {{
+        "name": "string",
+        "direction": "client_to_server | server_to_client",
+        "command_id": "hex_string",
+        "fields": [
+          {{"name": "string", "type": "string", "security_relevant": boolean}}
+        ]
+      }}
+    ],
+    
+    "action_facts": [
+      {{
+        "name": "CamelCase",
+        "params": ["lowercase_param1", "lowercase_param2"],
+        "description": "string"
+      }}
+    ],
+    
+    "states": [
+      {{
+        "name": "string",
+        "description": "string",
+        "is_initial": boolean,
+        "invariants": ["string"]
+      }}
+    ],
+    
+    "transitions": [
+      {{
+        "transition_id": "T1",
+        "from_state": "string",
+        "to_state": "string",
+        "trigger": "string",
+        "guard_condition": "string",
+        "guard_features": [{{"name": "FEATURE", "value": "TRUE | FALSE"}}],
+        "guard_attributes": [{{"name": "attr", "operator": "== | != | > | <", "value": "val"}}],
+        "input_message": {{
+          "name": "string",
+          "bindings": {{"var_name": "field_name"}}
+        }},
+        "output_message": {{
+          "name": "string",
+          "values": {{"field_name": "value_or_var"}}
+        }},
+        "action_facts_emitted": [
+          {{"name": "CamelCase", "args": ["var1", "var2"]}}
+        ],
+        "state_updates": [
+          {{"attribute": "string", "value": "string"}}
+        ],
+        "description": "string"
+      }}
+    ],
+    
+    "initial_state": "string",
+    
+    "variables": {{
+      "fresh_values": [{{"name": "string", "description": "string"}}],
+      "input_bound": [{{"name": "string", "source": "string"}}],
+      "state_bound": [{{"name": "string", "source": "string"}}]
+    }},
+    
+    "security_properties": [
+      {{
+        "property_id": "SP1",
+        "property_name": "snake_case",
+        "property_type": "safety | authentication | authorization | secrecy",
+        "description": "string",
+        "formula_type": "requires_previous | requires_simultaneous | requires_all | leads_to | never | always",
+        "formula": {{
+          "quantifier": "All | Ex",
+          "variables": ["string"],
+          "trigger": {{"fact": "CamelCase", "args": ["var"]}},
+          "requirement": {{"fact": "CamelCase", "args": ["var"]}},
+          "temporal": "before | same_time | eventually_after"
+        }},
+        "referenced_action_facts": ["CamelCase"],
+        "source": "string"
+      }}
+    ],
+    
+    "commands_handled": ["string"],
+    "events_generated": ["string"],
+    
+    "metadata": {{
+      "fsm_version": "2.0",
+      "tamarin_compatible": true,
+      "section_number": "string"
+    }}
+  }}
+}}
+```
+
+================================================================================
+## VALIDATION CHECKLIST (MUST ALL PASS)
+================================================================================
+
+- [ ] Features section lists all feature flags from specification
+- [ ] Every guard_features entry references a defined feature
+- [ ] Guard conditions with "feature_X" have corresponding guard_features entry
+- [ ] Guard conditions with "attr op value" have corresponding guard_attributes entry
+- [ ] Every action fact in security_properties.referenced_action_facts exists in action_facts
+- [ ] Every action_facts_emitted in transitions references a defined action fact
+- [ ] All variable names are lowercase
+- [ ] All action fact names are CamelCase
+- [ ] Every conditional branch in effect_on_receipt has a corresponding transition
+- [ ] Both success and failure paths have action facts
+- [ ] No action fact defined but never used
+- [ ] JSON is valid with no trailing commas
+- [ ] No markdown code blocks in output
+- [ ] Security properties are ONLY from specification - if no security details exist, security_properties is EMPTY array
+
+================================================================================
+## EXAMPLE: MINIMAL CORRECT OUTPUT
+================================================================================
+
+For a simple cluster with one command:
+
+```json
+{{
+  "fsm_model": {{
+    "cluster_name": "Example",
+    "cluster_id": "0x0001",
+    "revision": 1,
+    "category": "Example",
+    "protocol_messages": [
+      {{"name": "Cmd_Request", "direction": "client_to_server", "command_id": "0x00", "fields": [{{"name": "param", "type": "string", "security_relevant": true}}]}}
+    ],
+    "action_facts": [
+      {{"name": "CmdReceived", "params": ["endpoint", "param"], "description": "Command received"}},
+      {{"name": "CmdSuccess", "params": ["endpoint", "param"], "description": "Command succeeded"}}
+    ],
+    "states": [
+      {{"name": "Idle", "description": "Initial state", "is_initial": true, "invariants": []}}
+    ],
+    "transitions": [
+      {{
+        "transition_id": "T1",
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Cmd",
+        "guard_condition": "TRUE",
+        "input_message": {{"name": "Cmd_Request", "bindings": {{"param": "param"}}}},
+        "output_message": {{"name": "Cmd_Response", "values": {{}}}},
+        "action_facts_emitted": [
+          {{"name": "CmdReceived", "args": ["endpoint", "param"]}},
+          {{"name": "CmdSuccess", "args": ["endpoint", "param"]}}
+        ],
+        "state_updates": [],
+        "description": "Command processed"
+      }}
+    ],
+    "initial_state": "Idle",
+    "variables": {{
+      "fresh_values": [],
+      "input_bound": [{{"name": "param", "source": "Cmd_Request.param"}}],
+      "state_bound": [{{"name": "endpoint", "source": "server identity"}}]
+    }},
+    "security_properties": [
+      {{
+        "property_id": "SP1",
+        "property_name": "cmd_received_before_success",
+        "property_type": "safety",
+        "description": "Success requires receipt",
+        "formula_type": "requires_simultaneous",
+        "formula": {{
+          "quantifier": "All",
+          "variables": ["endpoint", "param"],
+          "trigger": {{"fact": "CmdSuccess", "args": ["endpoint", "param"]}},
+          "requirement": {{"fact": "CmdReceived", "args": ["endpoint", "param"]}},
+          "temporal": "same_time"
+        }},
+        "referenced_action_facts": ["CmdSuccess", "CmdReceived"],
+        "source": "basic protocol flow"
+      }}
+    ],
+    "commands_handled": ["Cmd"],
+    "events_generated": [],
+    "metadata": {{"fsm_version": "2.0", "tamarin_compatible": true, "section_number": "1.1"}}
+  }}
+}}
+```
+
+================================================================================
+
+Now generate the FSM model for the provided cluster specification.
+Output ONLY the JSON, no explanation, no markdown blocks.
+"""
+
+
+FSM_GENERATION_PROMPT_TEMPLATE_PREV = """
 You are a Matter IoT protocol expert generating precise Finite State Machine models from Matter Application Cluster specifications.
 
 CLUSTER SPECIFICATION TO ANALYZE:
@@ -718,7 +1347,112 @@ Application Cluster specification does not define response commands in transitio
 "response_command": null  // ALWAYS null - no exceptions
 ```
 
-### GUIDELINE 9: ARITHMETIC AND COMPLEX EXPRESSIONS
+### GUIDELINE 9: SECURITY PROPERTIES (STRUCTURED FORMAT)
+**Extract security requirements as structured event patterns - NO Tamarin code.**
+
+**Sources:**
+1. **timing**: Rate limits, expiry constraints
+2. **access**: Access control requirements  
+3. **effect_on_receipt**: Authentication/authorization checks
+4. **events**: Mandatory behaviors (SHALL requirements)
+
+**Property Types:**
+- **safety**: Bad thing never happens
+- **liveness**: Good thing eventually happens
+- **secrecy**: Attacker never learns
+- **authentication**: Identity verified before action
+- **authorization**: Permission required for access
+
+**Event Pattern Types (Structured - Parser converts to Tamarin):**
+
+1. **happens**: Something occurs in execution
+   - Fields: `type`, `event`, `params`
+2. **never**: Event must not occur
+   - Fields: `type`, `event`, `params`
+3. **requires_previous**: Event requires prior event
+   - Fields: `type`, `trigger_event`, `trigger_params`, `required_event`, `required_params`
+4. **conditional**: Event under condition implies consequence
+   - Fields: `type`, `trigger_event`, `trigger_params`, `condition`, `consequence`
+
+**Extraction Strategy:**
+- Scan `timing` for rate limits → **safety property** (no more than N requests)
+- Scan `timing` for expiry → **safety property** (credentials expire after T)
+- Scan `access` for privilege levels → **authorization property** (command requires level L)
+- Scan `effect_on_receipt` for validation checks → **authentication/authorization properties**
+- Scan event `summary` for "SHALL" requirements → **safety/authorization properties**
+- Extract from references if security-critical (PASE, ACL, etc.)
+
+**Format Requirements:**
+- `property_id`: Unique identifier (SP1, SP2, ...)
+- `property_name`: Snake_case name for Tamarin lemma
+- `property_type`: One of 5 types above
+- `description`: Clear natural language (max 200 chars)
+- `constraint_type`: "universal" (All) or "existential" (Ex)
+- `event_pattern`: Structured pattern - **MUST match field requirements for pattern type!**
+- `source`: Where in cluster_details this was extracted from
+
+**CRITICAL - Pattern Field Requirements:**
+- `happens`/`never`: Use `event` + `params`
+- `requires_previous`: Use `trigger_event` + `trigger_params` + `required_event` + `required_params`
+- `conditional`: Use `trigger_event` + `trigger_params` + `condition` + `consequence`
+
+**Examples (Structured Event Pattern - Parser Converts):**
+```json
+// Example 1: Something must happen
+{{
+  "property_id": "SP1",
+  "property_name": "credential_validated_on_login",
+  "property_type": "authentication",
+  "description": "Login requires credential validation",
+  "constraint_type": "universal",
+  "event_pattern": {{
+    "type": "requires_previous",
+    "trigger_event": "LoginSuccess",
+    "trigger_params": ["user"],
+    "required_event": "CredentialValidated",
+    "required_params": ["user"]
+  }},
+  "source": "effect_on_receipt: validate credentials before login"
+}}
+
+// Example 2: Something must never happen
+{{
+  "property_id": "SP2",
+  "property_name": "no_empty_pin_returned",
+  "property_type": "secrecy",
+  "description": "Empty PIN never sent if account found",
+  "constraint_type": "universal",
+  "event_pattern": {{
+    "type": "never",
+    "event": "SendEmptyPINWhenAccountExists",
+    "params": ["account"]
+  }},
+  "source": "effect_on_receipt: return empty if no match"
+}}
+
+// Example 3: Temporal constraint
+{{
+  "property_id": "SP3",
+  "property_name": "rate_limit_enforced",
+  "property_type": "safety",
+  "description": "Rate limit enforced before accepting request",
+  "constraint_type": "universal",
+  "event_pattern": {{
+    "type": "requires_previous",
+    "trigger_event": "RequestAccepted",
+    "trigger_params": ["scope"],
+    "required_event": "WindowStarted",
+    "required_params": ["scope"]
+  }},
+  "source": "timing: ≤10 unique requests per window"
+}}
+```
+
+**If No Security Properties:**
+- If cluster has NO security-critical requirements (e.g., simple on/off control), set `"security_properties": []`
+- Do NOT invent security properties that aren't in the specification
+
+### GUIDELINE 10: ARITHMETIC AND COMPLEX EXPRESSIONS
 **When commands involve arithmetic (max, min, etc.), document clearly.**
 
 ❌ NOT PARSEABLE DIRECTLY:
@@ -738,9 +1472,8 @@ Application Cluster specification does not define response commands in transitio
   "timing_requirements": "Extend timer when new value is greater"
 }},
 {{
-  "from_state": "Timed_On",
-  "to_state": "Timed_On",
-  "trigger": "OnWithTimedOff",
+  Simple clusters (OnOff) have `"security_properties": []`**
+**Do NOT invent properties not in specification**
   "guard_condition": "OnTimeField <= OnTime",
   "actions": [],
   "timing_requirements": "Keep current timer when new value is not greater"
@@ -804,6 +1537,40 @@ Use the standard FSM structure with these enhancements:
     "data_types_used": ["enum1", "bitmap1"],
     "scene_behaviors": ["scene_description"],
     
+    "security_properties": [
+      // CRITICAL: Match event_pattern structure to type!
+      // Type 'happens' or 'never':
+      {{
+        "property_id": "SP1",
+        "property_name": "snake_case_name",
+        "property_type": "safety",
+        "description": "Brief description",
+        "constraint_type": "existential",
+        "event_pattern": {{
+          "type": "happens",
+          "event": "EventName",
+          "params": ["param1"]
+        }},
+        "source": "timing"
+      }},
+      // Type 'requires_previous':
+      {{
+        "property_id": "SP2",
+        "property_name": "another_property",
+        "property_type": "authentication",
+        "description": "Requires prior event",
+        "constraint_type": "universal",
+        "event_pattern": {{
+          "type": "requires_previous",
+          "trigger_event": "TriggerEvent",
+          "trigger_params": ["param1"],
+          "required_event": "RequiredEvent",
+          "required_params": ["param1"]
+        }},
+        "source": "effect_on_receipt"
+      }}
+    ],
+    
     "definitions": [
       {{
         "term": "term_name",
@@ -821,10 +1588,7 @@ Use the standard FSM structure with these enhancements:
     ],
     
     "metadata": {{
-      "generation_timestamp": "ISO_8601",
-      "generation_attempts": 1,
-      "judge_approved": true,
-      "source_pages": "string",
+      "generator_version": "2.0",
       "section_number": "string",
       "parser_optimized": true
     }}
@@ -890,6 +1654,15 @@ Follow the original 15-step analysis methodology, with these additions:
 - [ ] All attribute defaults extractable from cluster spec
 - [ ] State space is manageable (not exponential explosion)
 - [ ] Transitions cover all command branches from specification
+- [ ] Security properties extracted from timing/access/effect_on_receipt/events
+- [ ] Security properties follow strict format (property_id, property_name, property_type, etc.)
+- [ ] Tamarin formulas use ONLY allowed syntax:
+  - [ ] Timepoints: #i, #j, #k (# prefix mandatory)
+  - [ ] Facts: CapitalCase(args)@timepoint
+  - [ ] Predicates: NO @timepoint suffix (IsNonEmpty(pin), NOT IsNonEmpty(pin)@i)
+  - [ ] NO arithmetic: count <= 10, #i + 600
+  - [ ] NO string literals: pin != ""
+  - [ ] NO inequality operators: !=, <, >, <=, >=
 - [ ] Follows original 15-step analysis methodology
 - [ ] Maintains generalization (works for any cluster type)
 - [ ] Leverages cluster spec structure (Attributes, Commands, Data Types)
@@ -901,17 +1674,20 @@ Follow the original 15-step analysis methodology, with these additions:
 2. **Keep generalization**: Must work for any Matter cluster type
 3. **Balance simplicity and completeness**: Don't sacrifice correctness for simplicity
 4. **Document abstractions**: Parser can handle "abstract" operations if documented
-5. **State count is negotiable**: More states if it helps, but not mandatory
-6. **Guard complexity is acceptable**: Moderate complexity is OK, extreme complexity warrants splitting
-7. **Actions stay atomic**: This is non-negotiable for Tamarin compatibility
-8. **Leverage definitions**: Use this section to explain parser expectations
+5. **State count is negotiable**: Prefer clarity over minimalism - 10 states is fine!
 
-**REMEMBER**: This is an ENHANCEMENT of the base prompt, not a replacement. Generate FSMs that are both ACCURATE to the specification and FRIENDLY to rule-based parsing.
+---
+## FINAL SECURITY CHECKLIST
+
+- [ ] Security properties use STRUCTURED format (event_pattern with type/event/params)
+- [ ] NO Tamarin code in FSM (parser converts structured format)
+- [ ] property_id, property_name, property_type, constraint_type, event_pattern all present
+- [ ] Event names are CapitalCase, params lowercase
 """
 
-
 # FSM Judge Prompt Template
-FSM_JUDGE_PROMPT_TEMPLATE = """You are an FSM validator for Matter IoT protocols. Evaluate if the FSM fundamentally models the cluster behavior correctly.
+
+FSM_JUDGE_PROMPT_TEMPLATE = """You are an FSM validator for Matter IoT protocols. Validate FSM structure for TAMARIN SECURITY ANALYSIS.
 
 FSM (JSON):
 {fsm}
@@ -919,38 +1695,152 @@ FSM (JSON):
 Cluster Specification:
 {cluster_info}
 
-Validation (approve if CORE behavior is correct):
-1. States represent cluster attribute values/conditions?
-2. Major commands handled?
-3. Guards logically sound?
-4. Actions modify correct attributes?
-5. Initial state appropriate?
+================================================================================
+## CRITICAL VALIDATION FOR TAMARIN COMPATIBILITY (v2.0 FORMAT)
+================================================================================
 
-**Approve if core FSM structure is sound, even if minor details need refinement.**
-
-Output strict JSON (NO markdown, NO comments):
+### REQUIRED TOP-LEVEL STRUCTURE:
 {{
-    "correct": true,
-    "explanation": "Brief reason"
+  "fsm_model": {{
+    "cluster_name": "string",
+    "cluster_id": "hex",
+    "initial_state": "state_name",
+    "features": [...],               // REQUIRED if cluster has feature flags
+    "states": [...],
+    "transitions": [...],
+    "action_facts": [...],           // REQUIRED for Tamarin
+    "security_properties": [...],    // Must reference action_facts
+    "variables": {{...}},            // fresh/input/state-bound vars
+    "metadata": {{"fsm_version": "2.0", "tamarin_compatible": true}}
+  }}
+}}
+
+### VALIDATION CHECKLIST:
+
+**1. FEATURES SECTION (CRITICAL FOR FEATURE-DEPENDENT CLUSTERS):**
+- [ ] IF cluster specification mentions features (LT, DF, OFFONLY, etc.), `features` array MUST exist
+- [ ] Each feature has: name, full_name, description
+- [ ] Feature names match those referenced in guard_features
+- [ ] Example: {{"name": "OFFONLY", "full_name": "OffOnly", "description": "Only Off command supported"}}
+
+**2. ACTION FACTS (CRITICAL):**
+- [ ] `action_facts` array exists and is non-empty
+- [ ] Each action fact has: name (CamelCase), params (lowercase array), description
+- [ ] Every security-relevant event has an action fact (success AND failure cases)
+- [ ] Examples: LoginSuccess, LoginFailed, TempIdValidated, TempIdExpired, RateLimitTriggered
+
+**3. TRANSITIONS WITH STRUCTURED GUARDS (CRITICAL):**
+- [ ] Each transition has `guard_condition` (human-readable string)
+- [ ] Each transition has `guard_features` array (can be empty if no feature guards)
+- [ ] Each transition has `guard_attributes` array (can be empty if no attribute guards)
+- [ ] IF guard_condition contains "feature_X == VALUE", guard_features MUST contain {{"name": "X", "value": "VALUE"}}
+- [ ] IF guard_condition contains "attr op value", guard_attributes MUST contain {{"name": "attr", "operator": "op", "value": "value"}}
+- [ ] Feature values are "TRUE" or "FALSE" (strings, uppercase)
+- [ ] Format: {{"name": "OFFONLY", "value": "TRUE"}} or {{"name": "OnTime", "operator": ">", "value": "0"}}
+
+**4. TRANSITIONS WITH ACTION_FACTS_EMITTED:**
+- [ ] Each transition has `action_facts_emitted` array (can be empty for internal transitions)
+- [ ] Each emitted fact references a defined action fact by name
+- [ ] Args in emitted facts use lowercase variable names
+- [ ] Format: {{"name": "ActionFactName", "args": ["var1", "var2"]}}
+
+**5. SECURITY PROPERTIES CONSISTENCY:**
+- [ ] IF no security requirements in specification, `security_properties` MUST be EMPTY array: []
+- [ ] IF security_properties exist, `security_properties[].referenced_action_facts` ONLY contains names from `action_facts`
+- [ ] Formula `trigger.fact` and `requirement.fact` names exist in `action_facts`
+- [ ] No undefined action facts referenced anywhere
+- [ ] Security properties are ONLY from specification - never fabricated or invented
+
+**6. VARIABLES SECTION:**
+- [ ] `variables.fresh_values` - server-generated values (setup_pin, session_id)
+- [ ] `variables.input_bound` - values from client messages (temp_id, node)
+- [ ] `variables.state_bound` - values from server state (account, endpoint)
+
+**7. BASIC FSM STRUCTURE:**
+- [ ] States represent cluster conditions (not abstract processing states)
+- [ ] Initial state is set and exists in states array
+- [ ] Major commands from specification are handled
+- [ ] Guard conditions use simple expressions (no ||, split into multiple transitions)
+- [ ] Actions in state_updates are simple assignments {{"attribute": "name", "value": "val"}}
+
+**8. FORMULA STRUCTURE (for security_properties):**
+- [ ] formula_type is one of: requires_previous, requires_simultaneous, requires_all, leads_to, never, always
+- [ ] formula.trigger and formula.requirement use a structure like {{"fact": "CamelCase", "args": ["var1", ...]}}
+- [ ] All args are lowercase variable names
+- [ ] All fact names are CamelCase
+
+================================================================================
+## COMMON ERRORS TO CHECK
+================================================================================
+
+**ERROR 1: Missing features section when cluster has features**
+❌ Specification mentions "LT feature" or "OFFONLY feature" but no `features` array
+→ REJECT with message: "Add features array with all feature flags from specification"
+
+**ERROR 2: Missing action_facts**
+❌ No action_facts array → REJECT
+
+**ERROR 3: Undefined action fact in security_properties**
+❌ referenced_action_facts contains "LoginAccepted" but action_facts has no "LoginAccepted"
+→ REJECT with message: "Add LoginAccepted to action_facts or remove from security_properties"
+
+**ERROR 4: Missing guard_features or guard_attributes**
+❌ Transition has guard_condition "feature_OFFONLY == TRUE" but no guard_features array
+→ REJECT with message: "Add guard_features: [{{'name': 'OFFONLY', 'value': 'TRUE'}}]"
+
+**ERROR 5: Missing action_facts_emitted in transitions**
+❌ Transition has no action_facts_emitted array → REJECT
+
+**ERROR 6: Guard inconsistency**
+❌ guard_condition says "feature_LT == TRUE" but guard_features has {{"name": "LT", "value": "FALSE"}}
+→ REJECT: guard_condition and guard_features must match
+
+**ERROR 7: Feature not declared**
+❌ guard_features references "OFFONLY" but features array doesn't include it
+→ REJECT: "Add OFFONLY to top-level features array"
+
+**ERROR 8: Inconsistent parameter naming**
+❌ action_facts has params: ["endpoint", "temp_id"]
+   security_properties uses args: ["server", "tempAccountId"]
+→ REJECT: variable names must match
+
+================================================================================
+## JUDGMENT CRITERIA
+================================================================================
+
+**APPROVE** if:
+1. fsm_model.metadata.fsm_version == "2.0" OR tamarin_compatible == true
+2. IF specification mentions features, `features` array exists with all feature flags
+3. action_facts array exists with proper structure
+4. All transitions have guard_features and guard_attributes arrays (can be empty)
+5. Guard_features entries match guard_condition and reference declared features
+6. All transitions have action_facts_emitted
+7. security_properties is either EMPTY array (if no security requirements in spec) OR all references are defined in action_facts
+8. Variables section properly categorizes fresh/input/state values
+9. Basic FSM structure is sound (states, transitions, initial_state)
+10. Security properties (if any) are derived from specification, not fabricated
+
+**REJECT** if:
+1. Cluster has features but missing features array
+2. Missing action_facts array
+3. Security properties reference undefined action facts
+4. Security properties are fabricated (not from specification)
+5. Missing guard_features or guard_attributes in transitions
+6. guard_features references undeclared feature
+7. guard_condition inconsistent with guard_features/guard_attributes
+8. Missing action_facts_emitted in transitions
+9. Using old event_pattern format instead of formula
+10. Guards contain || operators (must split transitions)
+11. state_updates contain control flow (if/for/while)
+
+================================================================================
+
+Output JSON (NO markdown):
+{{
+    "correct": true/false,
+    "explanation": "Brief reason for approval/rejection with specific issues found"
 }}
 """
-
-
-# FSM_GENERATION_PROMPT_TEMPLATE = """
-# You are a Matter IoT protocol expert. Your task is to generate a precise Finite State Machine (FSM) model in JSON format based on the provided Matter Application Cluster specification.
-
-
-# CLUSTER SPECIFICATION:
-# {cluster_info}
-
-
-# ### MODELING GUIDELINES
-
-
-# **1. State Definition (Behavioral)**
-# * Derive states from **cluster attributes** and operational conditions (e.g., specific enum values, boolean flags).
-# * Include **timer states** if the cluster involves countdowns or time-limited operations.
-# * Ensure states reflect the physical or logical condition of the device.
 
 
 # **2. Transition Logic (Semantics)**

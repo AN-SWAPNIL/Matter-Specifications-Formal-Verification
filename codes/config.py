@@ -630,6 +630,95 @@ For each unique execution path through effect_on_receipt:
 - List all action facts emitted along that path
 - Specify guard conditions that select this path
 
+### STEP 3.5: MODEL STARTUP/POWER-CYCLE BEHAVIOR (CRITICAL)
+**IMPORTANT**: Many Matter clusters have power-cycle/startup behavior defined by StartUp* attributes.
+
+**Check for these patterns in cluster_info:**
+1. **StartUpOnOff attribute** (On/Off Cluster): Controls device state after power cycle
+2. **StartUpCurrentLevel attribute** (Level Control): Controls level after power cycle
+3. **StartUpColorTemperatureMireds** (Color Control): Controls color temp after startup
+4. Any attribute with "StartUp" prefix or descriptions mentioning "power-up", "startup", "reboot"
+
+**For each StartUp attribute found, create Startup transitions:**
+
+Example for StartUpOnOff (On/Off Cluster):
+```json
+// If StartUpOnOff is null → restore previous OnOff value
+{{
+  "transition_id": "T_Startup_RestorePrevOn",
+  "from_state": "BaseOff",
+  "to_state": "BaseOn",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff_is_null == TRUE && PreviousOnOff == TRUE",
+  "guard_features": [],
+  "guard_attributes": [{{"name": "StartUpOnOff", "operator": "==", "value": "null"}}, {{"name": "PreviousOnOff", "operator": "==", "value": "TRUE"}}],
+  "input_message": null,
+  "output_message": null,
+  "action_facts_emitted": [
+    {{"name": "StartupOccurred", "args": ["endpoint"]}},
+    {{"name": "StartupRestorePrevious", "args": ["endpoint", "TRUE"]}}
+  ],
+  "state_updates": [{{"attribute": "OnOff", "value": "TRUE"}}],
+  "description": "Power cycle with StartUpOnOff=null restores previous ON state"
+}},
+// If StartUpOnOff is null → restore previous OnOff value (was OFF)
+{{
+  "transition_id": "T_Startup_RestorePrevOff",
+  "from_state": "BaseOff",
+  "to_state": "BaseOff",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff_is_null == TRUE && PreviousOnOff == FALSE",
+  ...
+}},
+// If StartUpOnOff == Off → force OFF
+{{
+  "transition_id": "T_Startup_ForceOff",
+  "from_state": "BaseOff",
+  "to_state": "BaseOff",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff == StartUpOnOffEnum_Off",
+  ...
+}},
+// If StartUpOnOff == On → force ON
+{{
+  "transition_id": "T_Startup_ForceOn",
+  "from_state": "BaseOff",
+  "to_state": "BaseOn",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff == StartUpOnOffEnum_On",
+  ...
+}},
+// If StartUpOnOff == Toggle → toggle from previous state
+{{
+  "transition_id": "T_Startup_ToggleToOn",
+  "from_state": "BaseOff",
+  "to_state": "BaseOn",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff == StartUpOnOffEnum_Toggle && PreviousOnOff == FALSE",
+  ...
+}},
+{{
+  "transition_id": "T_Startup_ToggleToOff",
+  "from_state": "BaseOff",
+  "to_state": "BaseOff",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff == StartUpOnOffEnum_Toggle && PreviousOnOff == TRUE",
+  ...
+}}
+```
+
+**Action Facts for Startup:**
+- Add `StartupOccurred` action fact: {{"name": "StartupOccurred", "params": ["endpoint"], "description": "Device powered on/rebooted"}}
+- Add specific startup behavior facts (e.g., `StartupRestorePrevious`, `StartupForceOn`, `StartupForceOff`, `StartupToggle`)
+
+**Rules:**
+- Startup transitions have trigger = "Startup" (not a command, an internal event)
+- from_state is typically the initial state (e.g., "BaseOff")
+- to_state depends on StartUp attribute value and previous state
+- input_message and output_message are null (no client command)
+- Create one transition for each possible StartUp enum value or null case
+- Include PreviousOnOff (or equivalent) in guards when behavior depends on prior state
+
 ### STEP 4: DERIVE SECURITY PROPERTIES
 From `cluster_info.Commands[].timing`:
 - Rate limit requirements → safety properties
@@ -1311,6 +1400,93 @@ For timer attributes (e.g., OnTime, OffWaitTime):
 
 **Note**: Parser may abstract timer decrements. Focus on modeling state changes at key timer values (0, >0, 0xFFFF).
 
+### GUIDELINE 6.5: STARTUP/POWER-CYCLE TRANSITIONS (CRITICAL)
+**Many Matter clusters define power-cycle behavior via StartUp* attributes.**
+
+**Detection**: Look for attributes starting with "StartUp" in cluster specification:
+- `StartUpOnOff` (On/Off Cluster) - controls on/off state after power cycle
+- `StartUpCurrentLevel` (Level Control) - controls level after power cycle
+- `StartUpColorTemperatureMireds` (Color Control) - controls color temp after startup
+
+**Modeling Requirements:**
+1. Create transitions with `trigger: "Startup"` (internal event, not a command)
+2. Model ALL possible StartUp enum values (Off, On, Toggle, null/previous)
+3. Use `from_state` as initial state, `to_state` depends on StartUp value
+4. Set `input_message: null` and `output_message: null` (no client interaction)
+
+**Example for OnOff Cluster with StartUpOnOff:**
+```json
+// StartUpOnOff is null - restore previous ON state
+{{
+  "from_state": "BaseOff",
+  "to_state": "BaseOn",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff_is_null == TRUE && PreviousOnOff == TRUE",
+  "guard_features": [],
+  "guard_attributes": [{{"name": "StartUpOnOff", "operator": "==", "value": "null"}}],
+  "input_message": null,
+  "output_message": null,
+  "action_facts_emitted": [
+    {{"name": "StartupOccurred", "args": ["endpoint"]}},
+    {{"name": "StartupRestorePrevious", "args": ["endpoint", "on"]}}
+  ],
+  "state_updates": [{{"attribute": "OnOff", "value": "TRUE"}}],
+  "description": "Power cycle restores previous ON state (StartUpOnOff=null)"
+}},
+// StartUpOnOff is null - restore previous OFF state  
+{{
+  "from_state": "BaseOff",
+  "to_state": "BaseOff",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff_is_null == TRUE && PreviousOnOff == FALSE",
+  ...
+}},
+// StartUpOnOff = Off - force device OFF
+{{
+  "from_state": "BaseOff",
+  "to_state": "BaseOff",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff == Off",
+  ...
+}},
+// StartUpOnOff = On - force device ON
+{{
+  "from_state": "BaseOff",
+  "to_state": "BaseOn",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff == On",
+  ...
+}},
+// StartUpOnOff = Toggle - toggle from previous (was OFF → ON)
+{{
+  "from_state": "BaseOff",
+  "to_state": "BaseOn",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff == Toggle && PreviousOnOff == FALSE",
+  ...
+}},
+// StartUpOnOff = Toggle - toggle from previous (was ON → OFF)
+{{
+  "from_state": "BaseOff",
+  "to_state": "BaseOff",
+  "trigger": "Startup",
+  "guard_condition": "StartUpOnOff == Toggle && PreviousOnOff == TRUE",
+  ...
+}}
+```
+
+**Action Facts for Startup:**
+Add these to `action_facts` when cluster has StartUp behavior:
+```json
+{{"name": "StartupOccurred", "params": ["endpoint"], "description": "Device completed power-on sequence"}},
+{{"name": "StartupRestorePrevious", "params": ["endpoint", "previous_state"], "description": "StartUp restored previous state"}},
+{{"name": "StartupForceOn", "params": ["endpoint"], "description": "StartUp forced device ON"}},
+{{"name": "StartupForceOff", "params": ["endpoint"], "description": "StartUp forced device OFF"}},
+{{"name": "StartupToggle", "params": ["endpoint", "new_state"], "description": "StartUp toggled device state"}}
+```
+
+**If NO StartUp attribute exists**: No Startup transitions needed for that cluster.
+
 ### GUIDELINE 7: FUNCTION CALLS AND ABSTRACTIONS
 **Some commands involve external interactions (e.g., scene management).**
 
@@ -1763,6 +1939,14 @@ Cluster Specification:
 - [ ] Guard conditions use simple expressions (no ||, split into multiple transitions)
 - [ ] Actions in state_updates are simple assignments {{"attribute": "name", "value": "val"}}
 
+**7.5. STARTUP TRANSITIONS (CRITICAL FOR CLUSTERS WITH StartUp* ATTRIBUTES):**
+- [ ] IF cluster has StartUpOnOff, StartUpCurrentLevel, or other StartUp* attributes → Startup transitions MUST exist
+- [ ] Startup transitions have trigger = "Startup" (not a command)
+- [ ] Startup transitions have input_message = null and output_message = null
+- [ ] Create transitions for ALL possible StartUp enum values (Off, On, Toggle, null/previous)
+- [ ] Include guards for PreviousOnOff or equivalent when behavior depends on prior state
+- [ ] Action facts like StartupOccurred, StartupForceOn, etc. should be defined and emitted
+
 **8. FORMULA STRUCTURE (for security_properties):**
 - [ ] formula_type is one of: requires_previous, requires_simultaneous, requires_all, leads_to, never, always
 - [ ] formula.trigger and formula.requirement use a structure like {{"fact": "CamelCase", "args": ["var1", ...]}}
@@ -1804,6 +1988,10 @@ Cluster Specification:
    security_properties uses args: ["server", "tempAccountId"]
 → REJECT: variable names must match
 
+**ERROR 9: Missing Startup transitions when StartUp attributes exist**
+❌ Cluster specification has StartUpOnOff or StartUpCurrentLevel attribute but FSM has no transitions with trigger = "Startup"
+→ REJECT: "Add Startup transitions for all StartUp enum values (Off, On, Toggle, null)"
+
 ================================================================================
 ## JUDGMENT CRITERIA
 ================================================================================
@@ -1819,6 +2007,7 @@ Cluster Specification:
 8. Variables section properly categorizes fresh/input/state values
 9. Basic FSM structure is sound (states, transitions, initial_state)
 10. Security properties (if any) are derived from specification, not fabricated
+11. IF cluster has StartUp* attributes, Startup transitions exist covering all enum values
 
 **REJECT** if:
 1. Cluster has features but missing features array
@@ -1832,6 +2021,7 @@ Cluster Specification:
 9. Using old event_pattern format instead of formula
 10. Guards contain || operators (must split transitions)
 11. state_updates contain control flow (if/for/while)
+12. Cluster has StartUp* attributes but missing Startup transitions
 
 ================================================================================
 

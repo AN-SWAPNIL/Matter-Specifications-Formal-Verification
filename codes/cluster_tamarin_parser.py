@@ -213,6 +213,7 @@ class TamarinGeneratorV2:
             self._generate_functions(),
             self._generate_restrictions(),
             self._generate_init_rule(),
+            self._generate_power_cycle_rule(),  # Add power cycle rule for startup transitions
             self._generate_fresh_value_rules(),
             self._generate_transition_rules(),
             self._generate_lemmas(),
@@ -301,6 +302,12 @@ restriction Once:
         
         state_name = self._sanitize_name(initial_state)
         
+        # Check if there are startup transitions
+        has_startup = any(
+            t.get('trigger', '').lower() == 'startup' 
+            for t in self.fsm.get('transitions', [])
+        )
+        
         # Generate feature config facts if features exist
         config_facts = []
         if self.features:
@@ -316,10 +323,15 @@ restriction Once:
         if self.features:
             feature_comment = "\n// Feature flags (feature_X) are abstract terms that represent true/false configuration"
         
+        # Add startup-related comments
+        startup_comment = ""
+        if has_startup:
+            startup_comment = "\n// This cluster has Startup transitions - PowerCycle fact enables them"
+        
         return f"""// ============================================================================
 // Initialization
 // ============================================================================
-{feature_comment}
+{feature_comment}{startup_comment}
 rule Server_Init:
     [ Fr(~endpoint_id) ]
     --[ ServerInit(~endpoint_id), Once(<'server_init', ~endpoint_id>) ]->
@@ -328,6 +340,70 @@ rule Server_Init:
         ServerState(~endpoint_id, '{state_name}'),
         RateLimitCounter(~endpoint_id, 'zero'),
         Out(~endpoint_id){config_lines}  // Endpoint is public - adversary can address server
+    ]
+"""
+    
+    def _generate_power_cycle_rule(self) -> str:
+        """Generate rule for power cycle events (triggers Startup transitions)."""
+        # Check if there are startup transitions
+        has_startup = any(
+            t.get('trigger', '').lower() == 'startup' 
+            for t in self.fsm.get('transitions', [])
+        )
+        
+        if not has_startup:
+            return ""
+        
+        # Collect startup attributes from transitions (e.g., StartUpOnOff, PreviousOnOff)
+        startup_attrs = set()
+        for trans in self.fsm.get('transitions', []):
+            if trans.get('trigger', '').lower() == 'startup':
+                for guard_attr in trans.get('guard_attributes', []):
+                    attr_name = guard_attr.get('name', '')
+                    if attr_name:
+                        startup_attrs.add(attr_name)
+        
+        attr_facts = ""
+        if startup_attrs:
+            # Generate attribute state facts for startup configuration
+            attr_lines = []
+            for attr in sorted(startup_attrs):
+                attr_lines.append(f"!AttrState(endpoint, '{attr}', attr_{attr.lower()})")
+            attr_facts = ",\n        " + ",\n        ".join(attr_lines)
+        
+        return f"""// ============================================================================
+// Power Cycle Event (Triggers Startup Transitions)
+// ============================================================================
+
+// Power cycle can occur anytime - generates PowerCycle fact that startup rules consume
+rule Power_Cycle:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, current_state)
+    ]
+    --[
+        PowerCycleEvent(endpoint),
+        Once(<'power_cycle', endpoint>)
+    ]->
+    [
+        !Server(endpoint),
+        ServerState(endpoint, current_state),
+        PowerCycle(endpoint){attr_facts}
+    ]
+
+// Alternative: Initial power-on (first boot scenario)
+rule Initial_Power_On:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, state)
+    ]
+    --[
+        InitialPowerOn(endpoint)
+    ]->
+    [
+        !Server(endpoint),
+        ServerState(endpoint, state),
+        PowerCycle(endpoint)
     ]
 """
     
@@ -370,13 +446,161 @@ rule TempId_Expires:
             "// ============================================================================"
         ]
         
+        # Separate startup transitions from regular transitions
+        startup_transitions = []
+        regular_transitions = []
+        
         transitions = self.fsm.get('transitions', [])
         for trans in transitions:
+            trigger = trans.get('trigger', '').lower()
+            if trigger == 'startup':
+                startup_transitions.append(trans)
+            else:
+                regular_transitions.append(trans)
+        
+        # Generate startup rules first (if any)
+        if startup_transitions:
+            rules.append("")
+            rules.append("// ============================================================================")
+            rules.append("// Startup/Power-Cycle Transitions")
+            rules.append("// ============================================================================")
+            for trans in startup_transitions:
+                rule = self._generate_startup_rule(trans)
+                if rule:
+                    rules.append(rule)
+        
+        # Generate regular transition rules
+        for trans in regular_transitions:
             rule = self._generate_single_rule(trans)
             if rule:
                 rules.append(rule)
         
         return '\n\n'.join(rules)
+    
+    def _generate_startup_rule(self, trans: Dict[str, Any]) -> str:
+        """Generate a Tamarin rule for Startup/power-cycle transition.
+        
+        Startup transitions are different from regular transitions:
+        - No client input message (triggered by power-cycle event)
+        - May depend on previous state (PreviousOnOff, etc.)
+        - Consumes a PowerCycle fact to trigger
+        """
+        trans_id = trans.get('transition_id', 'T?')
+        from_state = self._sanitize_name(trans.get('from_state', ''))
+        to_state = self._sanitize_name(trans.get('to_state', ''))
+        description = trans.get('description', '')
+        guard_condition = trans.get('guard_condition', 'TRUE')
+        
+        # Build rule name
+        rule_name = f"Startup_{from_state}_to_{to_state}_{trans_id}"
+        
+        # Parse guard_features and guard_attributes
+        guard_features = trans.get('guard_features', [])
+        guard_attributes = trans.get('guard_attributes', [])
+        
+        # Variables bound in this rule
+        bound_variables = set()
+        bound_variables.add('endpoint')  # From ServerState
+        bound_variables.add('previous_state')  # May be used in guards
+        
+        # Collect variables from action facts
+        all_action_vars = set()
+        for af in trans.get('action_facts_emitted', []):
+            for arg in af.get('args', []):
+                if not arg.startswith("'"):
+                    all_action_vars.add(arg)
+        
+        # Classify variables
+        constant_vars = {v for v in all_action_vars if v.isupper() or v in ['TRUE', 'FALSE', 'on', 'off']}
+        
+        # Build premise (LHS)
+        premise_facts = []
+        
+        # Server must exist
+        premise_facts.append("!Server(endpoint)")
+        
+        # Current server state (before startup)
+        premise_facts.append(f"ServerState(endpoint, '{from_state}')")
+        
+        # PowerCycle event triggers startup (consumed - only one startup per power cycle)
+        premise_facts.append("PowerCycle(endpoint)")
+        
+        # Feature guard facts
+        for guard_feat in guard_features:
+            feat_name = guard_feat.get('name', '')
+            feat_value = guard_feat.get('value', 'TRUE')
+            if feat_name:
+                term_value = feat_value.lower() if feat_value in ['TRUE', 'FALSE'] else feat_value
+                premise_facts.append(f"!FeatureConfig(endpoint, '{feat_name}', '{term_value}')")
+        
+        # Attribute guards (for startup, especially StartUp* and Previous* attributes)
+        attr_guard_comments = []
+        for guard_attr in guard_attributes:
+            attr_name = guard_attr.get('name', '')
+            operator = guard_attr.get('operator', '==')
+            value = guard_attr.get('value', '')
+            if attr_name:
+                attr_guard_comments.append(f"// Guard: {attr_name} {operator} {value}")
+                # Add attribute state fact for key startup attributes
+                if 'StartUp' in attr_name or 'Previous' in attr_name:
+                    safe_value = value.lower() if value in ['TRUE', 'FALSE'] else value
+                    premise_facts.append(f"!AttrState(endpoint, '{attr_name}', '{safe_value}')")
+        
+        # Build action labels
+        action_labels = []
+        action_labels.append("Startup(endpoint)")
+        action_labels.append(f"StateTransition(endpoint, '{from_state}', '{to_state}')")
+        
+        for af in trans.get('action_facts_emitted', []):
+            fact_name = af.get('name', '')
+            args = af.get('args', [])
+            if fact_name:
+                processed_args = []
+                for arg in args:
+                    if arg in constant_vars:
+                        processed_args.append(f"'{arg}'")
+                    else:
+                        processed_args.append(arg)
+                args_str = ', '.join(processed_args) if processed_args else ''
+                action_labels.append(f"{fact_name}({args_str})")
+        
+        # Build conclusion (RHS)
+        conclusion_facts = []
+        conclusion_facts.append(f"ServerState(endpoint, '{to_state}')")
+        conclusion_facts.append("!Server(endpoint)")
+        
+        # Preserve feature configs
+        for guard_feat in guard_features:
+            feat_name = guard_feat.get('name', '')
+            feat_value = guard_feat.get('value', 'TRUE')
+            if feat_name:
+                term_value = feat_value.lower() if feat_value in ['TRUE', 'FALSE'] else feat_value
+                conclusion_facts.append(f"!FeatureConfig(endpoint, '{feat_name}', '{term_value}')")
+        
+        # Format the rule
+        guard_comments = ""
+        if guard_condition and guard_condition != "TRUE":
+            guard_comments = f"// Guard: {guard_condition}\n"
+        if attr_guard_comments:
+            guard_comments += '\n'.join(attr_guard_comments) + "\n"
+        
+        premise_str = ',\n        '.join(premise_facts)
+        action_str = ',\n        '.join(action_labels)
+        conclusion_str = ',\n        '.join(conclusion_facts)
+        
+        rule = f"""// {description}
+{guard_comments}rule {rule_name}:
+    [
+        {premise_str}
+    ]
+    --[
+        {action_str}
+    ]->
+    [
+        {conclusion_str}
+    ]"""
+        
+        return rule
     
     def _generate_single_rule(self, trans: Dict[str, Any]) -> str:
         """Generate a single Tamarin rule from a transition."""
@@ -622,6 +846,20 @@ rule TempId_Expires:
 lemma server_init_reachable:
     exists-trace
     "Ex endpoint #i. ServerInit(endpoint)@i"
+""")
+        
+        # Check if there are startup transitions
+        has_startup = any(
+            t.get('trigger', '').lower() == 'startup' 
+            for t in self.fsm.get('transitions', [])
+        )
+        
+        if has_startup:
+            lemmas.append(f"""
+// Startup reachability - power cycle can trigger startup behavior
+lemma startup_reachable:
+    exists-trace
+    "Ex endpoint #i. Startup(endpoint)@i"
 """)
         
         # State reachability - using StateTransition action fact

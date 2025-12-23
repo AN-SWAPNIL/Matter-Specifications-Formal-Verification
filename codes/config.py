@@ -236,7 +236,7 @@ MANUAL_CLUSTER_DATA = [
 # FSM GENERATION FOR TAMARIN SECURITY ANALYSIS
 # =============================================================================
 
-FSM_GENERATION_PROMPT_TEMPLATE = """
+FSM_GENERATION_PROMPT_TEMPLATE_PARSER = """
 You are a Matter IoT protocol security expert. Generate a Finite State Machine model from a Matter Application Cluster specification that will be converted to Tamarin protocol verification code for SECURITY ANALYSIS.
 
 CLUSTER SPECIFICATION TO ANALYZE:
@@ -862,7 +862,7 @@ Output ONLY the JSON, no explanation, no markdown blocks.
 """
 
 
-FSM_GENERATION_PROMPT_TEMPLATE_PREV = """
+FSM_GENERATION_PROMPT_TEMPLATE_LLM = """
 You are a Matter IoT protocol expert generating precise Finite State Machine models from Matter Application Cluster specifications.
 
 CLUSTER SPECIFICATION TO ANALYZE:

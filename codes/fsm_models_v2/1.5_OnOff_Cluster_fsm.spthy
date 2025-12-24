@@ -4,15 +4,15 @@ begin
 /*
  * Tamarin Protocol Security Model for On/Off Cluster
  * Generated from Enhanced FSM JSON (v2.0)
- * Generated: 2025-12-16T21:17:21.266316
+ * Generated: 2025-12-24T06:17:20.482322
  * 
  * Cluster ID: 0x0006
  * Revision: 6
  * 
  * Model Statistics:
- * - States: 4
- * - Transitions: 29
- * - Action Facts: 23
+ * - States: 5
+ * - Transitions: 39
+ * - Action Facts: 46
  * - Security Properties: 0
  * 
  * This model supports security analysis with:
@@ -41,14 +41,6 @@ functions: SUCCESS/0, FAILURE/0
 // Restrictions
 // ============================================================================
 
-// Equality check
-restriction Equality:
-    "All x y #i. Eq(x, y)@i ==> x = y"
-
-// Inequality check  
-restriction Inequality:
-    "All x y #i. Neq(x, y)@i ==> not(x = y)"
-
 // Once restriction for unique events
 restriction Once:
     "All x #i #j. Once(x)@i & Once(x)@j ==> #i = #j"
@@ -58,18 +50,60 @@ restriction Once:
 // Initialization
 // ============================================================================
 
-// Feature flags (feature_X) are abstract terms that represent true/false configuration
+// Feature flags (~feature_X) are fresh values representing configuration
+// They can be constrained to specific values ('true'/'false') in guards
+// This cluster has Startup transitions - PowerCycle fact enables them
 rule Server_Init:
-    [ Fr(~endpoint_id) ]
+    [ Fr(~endpoint_id), Fr(~feature_df), Fr(~feature_lt), Fr(~feature_offonly) ]
     --[ ServerInit(~endpoint_id), Once(<'server_init', ~endpoint_id>) ]->
     [
         !Server(~endpoint_id),
-        ServerState(~endpoint_id, 'BaseOff'),
+        ServerState(~endpoint_id, 'StartupState'),
         RateLimitCounter(~endpoint_id, 'zero'),
         Out(~endpoint_id),
-        !FeatureConfig(~endpoint_id, 'DF', feature_df),
-        !FeatureConfig(~endpoint_id, 'LT', feature_lt),
-        !FeatureConfig(~endpoint_id, 'OFFONLY', feature_offonly)  // Endpoint is public - adversary can address server
+        !FeatureConfig(~endpoint_id, 'DF', ~feature_df),
+        !FeatureConfig(~endpoint_id, 'LT', ~feature_lt),
+        !FeatureConfig(~endpoint_id, 'OFFONLY', ~feature_offonly)  // Endpoint is public - adversary can address server
+    ]
+
+
+// ============================================================================
+// Power Cycle Event (Triggers Startup Transitions)
+// ============================================================================
+
+// Power cycle can occur anytime - generates PowerCycle fact that startup rules consume
+rule Power_Cycle:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, current_state),
+        Fr(~attr_previousonoff),
+        Fr(~attr_startuponoff)
+    ]
+    --[
+        PowerCycleEvent(endpoint),
+        Once(<'power_cycle', endpoint>)
+    ]->
+    [
+        !Server(endpoint),
+        ServerState(endpoint, current_state),
+        PowerCycle(endpoint),
+        !AttrState(endpoint, 'PreviousOnOff', ~attr_previousonoff),
+        !AttrState(endpoint, 'StartUpOnOff', ~attr_startuponoff)
+    ]
+
+// Alternative: Initial power-on (first boot scenario)
+rule Initial_Power_On:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, state)
+    ]
+    --[
+        InitialPowerOn(endpoint)
+    ]->
+    [
+        !Server(endpoint),
+        ServerState(endpoint, state),
+        PowerCycle(endpoint)
     ]
 
 
@@ -102,8 +136,150 @@ rule TempId_Expires:
 
 // ============================================================================
 
-// Off command turns device off and clears OnTime if supported
-rule Off_BaseOn_to_BaseOff_T1:
+
+
+// ============================================================================
+
+// Startup/Power-Cycle Transitions
+
+// ============================================================================
+
+// Power cycle with StartUpOnOff=null restores previous OFF state
+// Guard: StartUpOnOff == null && PreviousOnOff == FALSE
+// Guard: StartUpOnOff == null
+// Guard: PreviousOnOff == FALSE
+rule Startup_StartupState_to_BaseOff_T_Startup_RestorePrevOff:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, 'StartupState'),
+        PowerCycle(endpoint),
+        !AttrState(endpoint, 'StartUpOnOff', 'null'),
+        !AttrState(endpoint, 'PreviousOnOff', 'false')
+    ]
+    --[
+        Startup(endpoint),
+        StateTransition(endpoint, 'StartupState', 'BaseOff'),
+        StartupOccurred(endpoint),
+        StartupRestorePrevious(endpoint, 'false')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOff'),
+        !Server(endpoint)
+    ]
+
+// Power cycle with StartUpOnOff=null restores previous ON state
+// Guard: StartUpOnOff == null && PreviousOnOff == TRUE
+// Guard: StartUpOnOff == null
+// Guard: PreviousOnOff == TRUE
+rule Startup_StartupState_to_BaseOn_T_Startup_RestorePrevOn:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, 'StartupState'),
+        PowerCycle(endpoint),
+        !AttrState(endpoint, 'StartUpOnOff', 'null'),
+        !AttrState(endpoint, 'PreviousOnOff', 'true')
+    ]
+    --[
+        Startup(endpoint),
+        StateTransition(endpoint, 'StartupState', 'BaseOn'),
+        StartupOccurred(endpoint),
+        StartupRestorePrevious(endpoint, 'true')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOn'),
+        !Server(endpoint)
+    ]
+
+// Power cycle forces OFF on startup
+// Guard: StartUpOnOff == Off
+// Guard: StartUpOnOff == Off
+rule Startup_StartupState_to_BaseOff_T_Startup_ForceOff:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, 'StartupState'),
+        PowerCycle(endpoint),
+        !AttrState(endpoint, 'StartUpOnOff', 'Off')
+    ]
+    --[
+        Startup(endpoint),
+        StateTransition(endpoint, 'StartupState', 'BaseOff'),
+        StartupOccurred(endpoint),
+        StartupForceOff(endpoint)
+    ]->
+    [
+        ServerState(endpoint, 'BaseOff'),
+        !Server(endpoint)
+    ]
+
+// Power cycle forces ON on startup
+// Guard: StartUpOnOff == On
+// Guard: StartUpOnOff == On
+rule Startup_StartupState_to_BaseOn_T_Startup_ForceOn:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, 'StartupState'),
+        PowerCycle(endpoint),
+        !AttrState(endpoint, 'StartUpOnOff', 'On')
+    ]
+    --[
+        Startup(endpoint),
+        StateTransition(endpoint, 'StartupState', 'BaseOn'),
+        StartupOccurred(endpoint),
+        StartupForceOn(endpoint)
+    ]->
+    [
+        ServerState(endpoint, 'BaseOn'),
+        !Server(endpoint)
+    ]
+
+// Power cycle toggles from OFF to ON on startup
+// Guard: StartUpOnOff == Toggle && PreviousOnOff == FALSE
+// Guard: StartUpOnOff == Toggle
+// Guard: PreviousOnOff == FALSE
+rule Startup_StartupState_to_BaseOn_T_Startup_ToggleToOn:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, 'StartupState'),
+        PowerCycle(endpoint),
+        !AttrState(endpoint, 'StartUpOnOff', 'Toggle'),
+        !AttrState(endpoint, 'PreviousOnOff', 'false')
+    ]
+    --[
+        Startup(endpoint),
+        StateTransition(endpoint, 'StartupState', 'BaseOn'),
+        StartupOccurred(endpoint),
+        StartupToggleToOn(endpoint)
+    ]->
+    [
+        ServerState(endpoint, 'BaseOn'),
+        !Server(endpoint)
+    ]
+
+// Power cycle toggles from ON to OFF on startup
+// Guard: StartUpOnOff == Toggle && PreviousOnOff == TRUE
+// Guard: StartUpOnOff == Toggle
+// Guard: PreviousOnOff == TRUE
+rule Startup_StartupState_to_BaseOff_T_Startup_ToggleToOff:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, 'StartupState'),
+        PowerCycle(endpoint),
+        !AttrState(endpoint, 'StartUpOnOff', 'Toggle'),
+        !AttrState(endpoint, 'PreviousOnOff', 'true')
+    ]
+    --[
+        Startup(endpoint),
+        StateTransition(endpoint, 'StartupState', 'BaseOff'),
+        StartupOccurred(endpoint),
+        StartupToggleToOff(endpoint)
+    ]->
+    [
+        ServerState(endpoint, 'BaseOff'),
+        !Server(endpoint)
+    ]
+
+// Off command from ON: turns device OFF and clears OnTime
+rule Off_BaseOn_to_BaseOff_T_Off_FromOn:
     [
         ServerState(endpoint, 'BaseOn'),
         In(<'Off_Request', endpoint>),
@@ -113,7 +289,9 @@ rule Off_BaseOn_to_BaseOff_T1:
         Off(endpoint),
         StateTransition(endpoint, 'BaseOn', 'BaseOff'),
         OffReceived(endpoint),
-        OffAccepted(endpoint)
+        OffApplied(endpoint),
+        OnTimeClearedByOff(endpoint),
+        OffResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
@@ -121,8 +299,8 @@ rule Off_BaseOn_to_BaseOff_T1:
         !Server(endpoint)
     ]
 
-// Off command while TimedOn forces off and clears timers
-rule Off_TimedOn_to_BaseOff_T2:
+// Off command during TimedOn: cancels timer and turns device OFF
+rule Off_TimedOn_to_BaseOff_T_Off_FromTimedOn:
     [
         ServerState(endpoint, 'TimedOn'),
         In(<'Off_Request', endpoint>),
@@ -132,7 +310,52 @@ rule Off_TimedOn_to_BaseOff_T2:
         Off(endpoint),
         StateTransition(endpoint, 'TimedOn', 'BaseOff'),
         OffReceived(endpoint),
-        OffAccepted(endpoint)
+        OffApplied(endpoint),
+        OnTimeClearedByOff(endpoint),
+        OnWithTimedOffTimerStopped(endpoint),
+        OffResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOff'),
+        Out(<'Off_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Off command during DelayedOff: cancels timer and leaves device OFF
+rule Off_DelayedOff_to_BaseOff_T_Off_FromDelayedOff:
+    [
+        ServerState(endpoint, 'DelayedOff'),
+        In(<'Off_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        Off(endpoint),
+        StateTransition(endpoint, 'DelayedOff', 'BaseOff'),
+        OffReceived(endpoint),
+        OffApplied(endpoint),
+        OnTimeClearedByOff(endpoint),
+        OnWithTimedOffTimerStopped(endpoint),
+        OffResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOff'),
+        Out(<'Off_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Off command when already OFF: idempotent
+rule Off_BaseOff_to_BaseOff_T_Off_FromOff:
+    [
+        ServerState(endpoint, 'BaseOff'),
+        In(<'Off_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        Off(endpoint),
+        StateTransition(endpoint, 'BaseOff', 'BaseOff'),
+        OffReceived(endpoint),
+        OffApplied(endpoint),
+        OffResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
@@ -141,8 +364,8 @@ rule Off_TimedOn_to_BaseOff_T2:
     ]
 
 // On command rejected because OffOnly feature is enabled
-// Guard: feature_OFFONLY == TRUE
-rule On_BaseOff_to_BaseOff_T3:
+// Guard: OFFONLY == TRUE
+rule On_BaseOff_to_BaseOff_T_On_OffOnly:
     [
         ServerState(endpoint, 'BaseOff'),
         !FeatureConfig(endpoint, 'OFFONLY', 'true'),
@@ -153,7 +376,8 @@ rule On_BaseOff_to_BaseOff_T3:
         On(endpoint),
         StateTransition(endpoint, 'BaseOff', 'BaseOff'),
         OnReceived(endpoint),
-        OnNotSupportedOffOnly(endpoint)
+        OnNotSupportedOffOnly(endpoint),
+        OnResponseSent(endpoint, 'UNSUPPORTED_COMMAND')
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
@@ -162,9 +386,10 @@ rule On_BaseOff_to_BaseOff_T3:
         !Server(endpoint)
     ]
 
-// On command turns device on from BaseOff, clears OffWaitTime if OnTime == 0 (simplified as clear)
-// Guard: feature_OFFONLY == FALSE
-rule On_BaseOff_to_BaseOn_T4:
+// On command turns device ON when OnTime not supported
+// Guard: OFFONLY == FALSE && supports_OnTime == FALSE
+// Guard: supports_OnTime == FALSE
+rule On_BaseOff_to_BaseOn_T_On_FromOff_Simple_NoOnTime:
     [
         ServerState(endpoint, 'BaseOff'),
         !FeatureConfig(endpoint, 'OFFONLY', 'false'),
@@ -175,7 +400,8 @@ rule On_BaseOff_to_BaseOn_T4:
         On(endpoint),
         StateTransition(endpoint, 'BaseOff', 'BaseOn'),
         OnReceived(endpoint),
-        OnAccepted(endpoint)
+        OnApplied(endpoint),
+        OnResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOn'),
@@ -184,20 +410,23 @@ rule On_BaseOff_to_BaseOn_T4:
         !Server(endpoint)
     ]
 
-// On command from DelayedOff turns device on and clears OffWaitTime if OnTime == 0 (simplified as clear)
-// Guard: feature_OFFONLY == FALSE
-rule On_DelayedOff_to_BaseOn_T5:
+// On command turns device ON when OffWaitTime not supported
+// Guard: OFFONLY == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == FALSE
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == FALSE
+rule On_BaseOff_to_BaseOn_T_On_FromOff_Simple_NoOffWaitTime:
     [
-        ServerState(endpoint, 'DelayedOff'),
+        ServerState(endpoint, 'BaseOff'),
         !FeatureConfig(endpoint, 'OFFONLY', 'false'),
         In(<'On_Request', endpoint>),
         !Server(endpoint)
     ]
     --[
         On(endpoint),
-        StateTransition(endpoint, 'DelayedOff', 'BaseOn'),
+        StateTransition(endpoint, 'BaseOff', 'BaseOn'),
         OnReceived(endpoint),
-        OnAccepted(endpoint)
+        OnApplied(endpoint),
+        OnResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOn'),
@@ -206,9 +435,62 @@ rule On_DelayedOff_to_BaseOn_T5:
         !Server(endpoint)
     ]
 
-// Idempotent On command while already on
-// Guard: feature_OFFONLY == FALSE
-rule On_BaseOn_to_BaseOn_T6:
+// On command turns device ON and clears OffWaitTime when OnTime is 0
+// Guard: OFFONLY == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == TRUE && OnTime == 0
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == TRUE
+// Guard: OnTime == 0
+rule On_BaseOff_to_BaseOn_T_On_FromOff_WithTimers_ClearOffWait:
+    [
+        ServerState(endpoint, 'BaseOff'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        In(<'On_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        On(endpoint),
+        StateTransition(endpoint, 'BaseOff', 'BaseOn'),
+        OnReceived(endpoint),
+        OnApplied(endpoint),
+        OffWaitTimeClearedByOn(endpoint),
+        OnResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOn'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        Out(<'On_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// On command turns device ON and keeps OffWaitTime when OnTime is non-zero
+// Guard: OFFONLY == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == TRUE && OnTime != 0
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == TRUE
+// Guard: OnTime != 0
+rule On_BaseOff_to_BaseOn_T_On_FromOff_WithTimers_KeepOffWait:
+    [
+        ServerState(endpoint, 'BaseOff'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        In(<'On_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        On(endpoint),
+        StateTransition(endpoint, 'BaseOff', 'BaseOn'),
+        OnReceived(endpoint),
+        OnApplied(endpoint),
+        OnResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOn'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        Out(<'On_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// On command when already ON: idempotent
+// Guard: OFFONLY == FALSE
+rule On_BaseOn_to_BaseOn_T_On_FromOn:
     [
         ServerState(endpoint, 'BaseOn'),
         !FeatureConfig(endpoint, 'OFFONLY', 'false'),
@@ -219,7 +501,8 @@ rule On_BaseOn_to_BaseOn_T6:
         On(endpoint),
         StateTransition(endpoint, 'BaseOn', 'BaseOn'),
         OnReceived(endpoint),
-        OnAccepted(endpoint)
+        OnApplied(endpoint),
+        OnResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOn'),
@@ -228,31 +511,9 @@ rule On_BaseOn_to_BaseOn_T6:
         !Server(endpoint)
     ]
 
-// On command during TimedOn keeps device on (timers unchanged)
-// Guard: feature_OFFONLY == FALSE
-rule On_TimedOn_to_TimedOn_T7:
-    [
-        ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
-        In(<'On_Request', endpoint>),
-        !Server(endpoint)
-    ]
-    --[
-        On(endpoint),
-        StateTransition(endpoint, 'TimedOn', 'TimedOn'),
-        OnReceived(endpoint),
-        OnAccepted(endpoint)
-    ]->
-    [
-        ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
-        Out(<'On_Response', SUCCESS>),
-        !Server(endpoint)
-    ]
-
 // Toggle command rejected because OffOnly feature is enabled
-// Guard: feature_OFFONLY == TRUE
-rule Toggle_BaseOff_to_BaseOff_T8:
+// Guard: OFFONLY == TRUE
+rule Toggle_BaseOff_to_BaseOff_T_Toggle_OffOnly:
     [
         ServerState(endpoint, 'BaseOff'),
         !FeatureConfig(endpoint, 'OFFONLY', 'true'),
@@ -263,7 +524,8 @@ rule Toggle_BaseOff_to_BaseOff_T8:
         Toggle(endpoint),
         StateTransition(endpoint, 'BaseOff', 'BaseOff'),
         ToggleReceived(endpoint),
-        ToggleNotSupportedOffOnly(endpoint)
+        ToggleNotSupportedOffOnly(endpoint),
+        ToggleResponseSent(endpoint, 'UNSUPPORTED_COMMAND')
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
@@ -272,31 +534,10 @@ rule Toggle_BaseOff_to_BaseOff_T8:
         !Server(endpoint)
     ]
 
-// Toggle command from on to off; clears OnTime if supported
-// Guard: feature_OFFONLY == FALSE
-rule Toggle_BaseOn_to_BaseOff_T9:
-    [
-        ServerState(endpoint, 'BaseOn'),
-        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
-        In(<'Toggle_Request', endpoint>),
-        !Server(endpoint)
-    ]
-    --[
-        Toggle(endpoint),
-        StateTransition(endpoint, 'BaseOn', 'BaseOff'),
-        ToggleReceived(endpoint),
-        ToggleAccepted(endpoint, 'FALSE')
-    ]->
-    [
-        ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
-        Out(<'Toggle_Response', SUCCESS>),
-        !Server(endpoint)
-    ]
-
-// Toggle command from off to on; clears OffWaitTime if OnTime == 0 (simplified as clear)
-// Guard: feature_OFFONLY == FALSE
-rule Toggle_BaseOff_to_BaseOn_T10:
+// Toggle from OFF to ON when OnTime not supported
+// Guard: OFFONLY == FALSE && supports_OnTime == FALSE
+// Guard: supports_OnTime == FALSE
+rule Toggle_BaseOff_to_BaseOn_T_Toggle_OffToOn_NoOnTime:
     [
         ServerState(endpoint, 'BaseOff'),
         !FeatureConfig(endpoint, 'OFFONLY', 'false'),
@@ -307,7 +548,8 @@ rule Toggle_BaseOff_to_BaseOn_T10:
         Toggle(endpoint),
         StateTransition(endpoint, 'BaseOff', 'BaseOn'),
         ToggleReceived(endpoint),
-        ToggleAccepted(endpoint, 'TRUE')
+        ToggleAppliedToOn(endpoint),
+        ToggleResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOn'),
@@ -316,42 +558,49 @@ rule Toggle_BaseOff_to_BaseOn_T10:
         !Server(endpoint)
     ]
 
-// Toggle during TimedOn turns device off and clears OnTime; OffWaitTime behavior follows timer logic
-// Guard: feature_OFFONLY == FALSE
-rule Toggle_TimedOn_to_DelayedOff_T11:
+// Toggle from OFF to ON when OffWaitTime not supported
+// Guard: OFFONLY == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == FALSE
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == FALSE
+rule Toggle_BaseOff_to_BaseOn_T_Toggle_OffToOn_NoOffWaitTime:
     [
-        ServerState(endpoint, 'TimedOn'),
+        ServerState(endpoint, 'BaseOff'),
         !FeatureConfig(endpoint, 'OFFONLY', 'false'),
         In(<'Toggle_Request', endpoint>),
         !Server(endpoint)
     ]
     --[
         Toggle(endpoint),
-        StateTransition(endpoint, 'TimedOn', 'DelayedOff'),
+        StateTransition(endpoint, 'BaseOff', 'BaseOn'),
         ToggleReceived(endpoint),
-        ToggleAccepted(endpoint, 'FALSE')
+        ToggleAppliedToOn(endpoint),
+        ToggleResponseSent(endpoint, 'SUCCESS')
     ]->
     [
-        ServerState(endpoint, 'DelayedOff'),
+        ServerState(endpoint, 'BaseOn'),
         !FeatureConfig(endpoint, 'OFFONLY', 'false'),
         Out(<'Toggle_Response', SUCCESS>),
         !Server(endpoint)
     ]
 
-// Toggle from DelayedOff turns device on and clears OffWaitTime if OnTime == 0 (simplified as clear)
-// Guard: feature_OFFONLY == FALSE
-rule Toggle_DelayedOff_to_BaseOn_T12:
+// Toggle from OFF to ON; clears OnTime when turning ON
+// Guard: OFFONLY == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == TRUE
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == TRUE
+rule Toggle_BaseOff_to_BaseOn_T_Toggle_OffToOn_WithTimers:
     [
-        ServerState(endpoint, 'DelayedOff'),
+        ServerState(endpoint, 'BaseOff'),
         !FeatureConfig(endpoint, 'OFFONLY', 'false'),
         In(<'Toggle_Request', endpoint>),
         !Server(endpoint)
     ]
     --[
         Toggle(endpoint),
-        StateTransition(endpoint, 'DelayedOff', 'BaseOn'),
+        StateTransition(endpoint, 'BaseOff', 'BaseOn'),
         ToggleReceived(endpoint),
-        ToggleAccepted(endpoint, 'TRUE')
+        ToggleAppliedToOn(endpoint),
+        OnTimeClearedByToggleToOn(endpoint),
+        ToggleResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOn'),
@@ -360,13 +609,114 @@ rule Toggle_DelayedOff_to_BaseOn_T12:
         !Server(endpoint)
     ]
 
-// OffWithEffect stores global scene then turns device off and clears OnTime
-// Guard: GlobalSceneControl == TRUE
-// Guard: GlobalSceneControl == TRUE
-rule OffWithEffect_BaseOn_to_BaseOff_T13:
+// Toggle from ON to OFF when OnTime not supported
+// Guard: OFFONLY == FALSE && supports_OnTime == FALSE
+// Guard: supports_OnTime == FALSE
+rule Toggle_BaseOn_to_BaseOff_T_Toggle_OnToOff_NoOnTime:
     [
         ServerState(endpoint, 'BaseOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        In(<'Toggle_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        Toggle(endpoint),
+        StateTransition(endpoint, 'BaseOn', 'BaseOff'),
+        ToggleReceived(endpoint),
+        ToggleAppliedToOff(endpoint),
+        ToggleResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOff'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        Out(<'Toggle_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Toggle from ON to OFF when OffWaitTime not supported
+// Guard: OFFONLY == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == FALSE
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == FALSE
+rule Toggle_BaseOn_to_BaseOff_T_Toggle_OnToOff_NoOffWaitTime:
+    [
+        ServerState(endpoint, 'BaseOn'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        In(<'Toggle_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        Toggle(endpoint),
+        StateTransition(endpoint, 'BaseOn', 'BaseOff'),
+        ToggleReceived(endpoint),
+        ToggleAppliedToOff(endpoint),
+        ToggleResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOff'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        Out(<'Toggle_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Toggle from ON to OFF; clears OffWaitTime when OnTime is 0
+// Guard: OFFONLY == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == TRUE && OnTime == 0
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == TRUE
+// Guard: OnTime == 0
+rule Toggle_BaseOn_to_BaseOff_T_Toggle_OnToOff_WithTimers_ClearOffWait:
+    [
+        ServerState(endpoint, 'BaseOn'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        In(<'Toggle_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        Toggle(endpoint),
+        StateTransition(endpoint, 'BaseOn', 'BaseOff'),
+        ToggleReceived(endpoint),
+        ToggleAppliedToOff(endpoint),
+        OffWaitTimeClearedByToggleToOff(endpoint),
+        ToggleResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOff'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        Out(<'Toggle_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Toggle from ON to OFF; OffWaitTime kept because OnTime is non-zero
+// Guard: OFFONLY == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == TRUE && OnTime != 0
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == TRUE
+// Guard: OnTime != 0
+rule Toggle_BaseOn_to_BaseOff_T_Toggle_OnToOff_WithTimers_KeepOffWait:
+    [
+        ServerState(endpoint, 'BaseOn'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        In(<'Toggle_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        Toggle(endpoint),
+        StateTransition(endpoint, 'BaseOn', 'BaseOff'),
+        ToggleReceived(endpoint),
+        ToggleAppliedToOff(endpoint),
+        ToggleResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOff'),
+        !FeatureConfig(endpoint, 'OFFONLY', 'false'),
+        Out(<'Toggle_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// OffWithEffect with GlobalSceneControl TRUE: store scene, clear flag, turn OFF
+// Guard: GlobalSceneControl == TRUE
+// Guard: GlobalSceneControl == TRUE
+rule OffWithEffect_BaseOn_to_BaseOff_T_OffWithEffect_GlobalSceneTrue_FromOn:
+    [
+        ServerState(endpoint, 'BaseOn'),
         In(<'OffWithEffect_Request', endpoint, effect_identifier, effect_variant>),
         !Server(endpoint)
     ]
@@ -374,22 +724,24 @@ rule OffWithEffect_BaseOn_to_BaseOff_T13:
         OffWithEffect(endpoint),
         StateTransition(endpoint, 'BaseOn', 'BaseOff'),
         OffWithEffectReceived(endpoint, effect_identifier, effect_variant),
-        OffWithEffectAcceptedStoreScene(endpoint, effect_identifier, effect_variant)
+        GlobalSceneStored(endpoint),
+        GlobalSceneControlCleared(endpoint),
+        OffAppliedByEffect(endpoint),
+        OnTimeClearedByOffWithEffect(endpoint),
+        OffWithEffectResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         Out(<'OffWithEffect_Response', SUCCESS>),
         !Server(endpoint)
     ]
 
-// OffWithEffect when GlobalSceneControl FALSE just turns off and clears OnTime
+// OffWithEffect with GlobalSceneControl FALSE: turn OFF without storing scene
 // Guard: GlobalSceneControl == FALSE
 // Guard: GlobalSceneControl == FALSE
-rule OffWithEffect_BaseOn_to_BaseOff_T14:
+rule OffWithEffect_BaseOn_to_BaseOff_T_OffWithEffect_GlobalSceneFalse_FromOn:
     [
         ServerState(endpoint, 'BaseOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         In(<'OffWithEffect_Request', endpoint, effect_identifier, effect_variant>),
         !Server(endpoint)
     ]
@@ -397,89 +749,21 @@ rule OffWithEffect_BaseOn_to_BaseOff_T14:
         OffWithEffect(endpoint),
         StateTransition(endpoint, 'BaseOn', 'BaseOff'),
         OffWithEffectReceived(endpoint, effect_identifier, effect_variant),
-        OffWithEffectAcceptedNoStoreScene(endpoint, effect_identifier, effect_variant)
+        OffAppliedByEffect(endpoint),
+        OffWithEffectResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         Out(<'OffWithEffect_Response', SUCCESS>),
         !Server(endpoint)
     ]
 
-// OffWithEffect from TimedOn stores scene, turns off, and clears timers
+// OnWithRecallGlobalScene discarded when GlobalSceneControl already TRUE
 // Guard: GlobalSceneControl == TRUE
 // Guard: GlobalSceneControl == TRUE
-rule OffWithEffect_TimedOn_to_BaseOff_T15:
-    [
-        ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        In(<'OffWithEffect_Request', endpoint, effect_identifier, effect_variant>),
-        !Server(endpoint)
-    ]
-    --[
-        OffWithEffect(endpoint),
-        StateTransition(endpoint, 'TimedOn', 'BaseOff'),
-        OffWithEffectReceived(endpoint, effect_identifier, effect_variant),
-        OffWithEffectAcceptedStoreScene(endpoint, effect_identifier, effect_variant)
-    ]->
+rule OnWithRecallGlobalScene_BaseOff_to_BaseOff_T_OnWithRecallGlobalScene_Discard:
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        Out(<'OffWithEffect_Response', SUCCESS>),
-        !Server(endpoint)
-    ]
-
-// OffWithEffect from TimedOn without storing scene turns off and clears timers
-// Guard: GlobalSceneControl == FALSE
-// Guard: GlobalSceneControl == FALSE
-rule OffWithEffect_TimedOn_to_BaseOff_T16:
-    [
-        ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        In(<'OffWithEffect_Request', endpoint, effect_identifier, effect_variant>),
-        !Server(endpoint)
-    ]
-    --[
-        OffWithEffect(endpoint),
-        StateTransition(endpoint, 'TimedOn', 'BaseOff'),
-        OffWithEffectReceived(endpoint, effect_identifier, effect_variant),
-        OffWithEffectAcceptedNoStoreScene(endpoint, effect_identifier, effect_variant)
-    ]->
-    [
-        ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        Out(<'OffWithEffect_Response', SUCCESS>),
-        !Server(endpoint)
-    ]
-
-// OffWithEffect while already off performs effect but leaves OnOff FALSE
-rule OffWithEffect_BaseOff_to_BaseOff_T17:
-    [
-        ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        In(<'OffWithEffect_Request', endpoint, effect_identifier, effect_variant>),
-        !Server(endpoint)
-    ]
-    --[
-        OffWithEffect(endpoint),
-        StateTransition(endpoint, 'BaseOff', 'BaseOff'),
-        OffWithEffectReceived(endpoint, effect_identifier, effect_variant),
-        OffWithEffectAcceptedNoStoreScene(endpoint, effect_identifier, effect_variant)
-    ]->
-    [
-        ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        Out(<'OffWithEffect_Response', SUCCESS>),
-        !Server(endpoint)
-    ]
-
-// OnWithRecallGlobalScene discarded when GlobalSceneControl is TRUE
-// Guard: GlobalSceneControl == TRUE
-// Guard: GlobalSceneControl == TRUE
-rule OnWithRecallGlobalScene_BaseOff_to_BaseOff_T18:
-    [
-        ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         In(<'OnWithRecallGlobalScene_Request', endpoint>),
         !Server(endpoint)
     ]
@@ -487,22 +771,24 @@ rule OnWithRecallGlobalScene_BaseOff_to_BaseOff_T18:
         OnWithRecallGlobalScene(endpoint),
         StateTransition(endpoint, 'BaseOff', 'BaseOff'),
         OnWithRecallGlobalSceneReceived(endpoint),
-        OnWithRecallGlobalSceneDiscardedGlobalSceneControlTrue(endpoint)
+        OnWithRecallGlobalSceneDiscarded(endpoint),
+        OnWithRecallGlobalSceneResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         Out(<'OnWithRecallGlobalScene_Response', SUCCESS>),
         !Server(endpoint)
     ]
 
-// OnWithRecallGlobalScene recalls global scene (sets OnOff) and sets GlobalSceneControl TRUE
+// OnWithRecallGlobalScene recalls global scene, sets flag, turns ON, and clears OffWaitTime when OnTime is 0
+// Guard: GlobalSceneControl == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == TRUE && OnTime == 0
 // Guard: GlobalSceneControl == FALSE
-// Guard: GlobalSceneControl == FALSE
-rule OnWithRecallGlobalScene_BaseOff_to_BaseOn_T19:
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == TRUE
+// Guard: OnTime == 0
+rule OnWithRecallGlobalScene_BaseOff_to_BaseOn_T_OnWithRecallGlobalScene_Recall_ClearOffWait:
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         In(<'OnWithRecallGlobalScene_Request', endpoint>),
         !Server(endpoint)
     ]
@@ -510,45 +796,98 @@ rule OnWithRecallGlobalScene_BaseOff_to_BaseOn_T19:
         OnWithRecallGlobalScene(endpoint),
         StateTransition(endpoint, 'BaseOff', 'BaseOn'),
         OnWithRecallGlobalSceneReceived(endpoint),
-        OnWithRecallGlobalSceneAccepted(endpoint)
+        GlobalSceneRecalled(endpoint),
+        GlobalSceneControlSet(endpoint),
+        OffWaitTimeClearedByOnWithRecallGlobalScene(endpoint),
+        OnWithRecallGlobalSceneResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         Out(<'OnWithRecallGlobalScene_Response', SUCCESS>),
         !Server(endpoint)
     ]
 
-// OnWithRecallGlobalScene when already on recalls scene and sets GlobalSceneControl TRUE
+// OnWithRecallGlobalScene recalls global scene and sets flag; OnTime not supported
+// Guard: GlobalSceneControl == FALSE && supports_OnTime == FALSE
 // Guard: GlobalSceneControl == FALSE
-// Guard: GlobalSceneControl == FALSE
-rule OnWithRecallGlobalScene_BaseOn_to_BaseOn_T20:
+// Guard: supports_OnTime == FALSE
+rule OnWithRecallGlobalScene_BaseOff_to_BaseOn_T_OnWithRecallGlobalScene_Recall_NoTimerUpdate_NoOnTime:
     [
-        ServerState(endpoint, 'BaseOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
+        ServerState(endpoint, 'BaseOff'),
         In(<'OnWithRecallGlobalScene_Request', endpoint>),
         !Server(endpoint)
     ]
     --[
         OnWithRecallGlobalScene(endpoint),
-        StateTransition(endpoint, 'BaseOn', 'BaseOn'),
+        StateTransition(endpoint, 'BaseOff', 'BaseOn'),
         OnWithRecallGlobalSceneReceived(endpoint),
-        OnWithRecallGlobalSceneAccepted(endpoint)
+        GlobalSceneRecalled(endpoint),
+        GlobalSceneControlSet(endpoint),
+        OnWithRecallGlobalSceneResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         Out(<'OnWithRecallGlobalScene_Response', SUCCESS>),
         !Server(endpoint)
     ]
 
-// OnWithTimedOff discarded because AcceptOnlyWhenOn bit set and device is off
-// Guard: onoff_control.AcceptOnlyWhenOn == 1 and OnOff == FALSE
-// Guard: OnOff == FALSE
-rule OnWithTimedOff_BaseOff_to_BaseOff_T21:
+// OnWithRecallGlobalScene recalls global scene and sets flag; OffWaitTime not supported
+// Guard: GlobalSceneControl == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == FALSE
+// Guard: GlobalSceneControl == FALSE
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == FALSE
+rule OnWithRecallGlobalScene_BaseOff_to_BaseOn_T_OnWithRecallGlobalScene_Recall_NoTimerUpdate_NoOffWaitTime:
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
+        In(<'OnWithRecallGlobalScene_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        OnWithRecallGlobalScene(endpoint),
+        StateTransition(endpoint, 'BaseOff', 'BaseOn'),
+        OnWithRecallGlobalSceneReceived(endpoint),
+        GlobalSceneRecalled(endpoint),
+        GlobalSceneControlSet(endpoint),
+        OnWithRecallGlobalSceneResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOn'),
+        Out(<'OnWithRecallGlobalScene_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// OnWithRecallGlobalScene recalls global scene and sets flag; timers not cleared when OnTime is non-zero
+// Guard: GlobalSceneControl == FALSE && supports_OnTime == TRUE && supports_OffWaitTime == TRUE && OnTime != 0
+// Guard: GlobalSceneControl == FALSE
+// Guard: supports_OnTime == TRUE
+// Guard: supports_OffWaitTime == TRUE
+// Guard: OnTime != 0
+rule OnWithRecallGlobalScene_BaseOff_to_BaseOn_T_OnWithRecallGlobalScene_Recall_NoTimerUpdate_OnTimeNonZero:
+    [
+        ServerState(endpoint, 'BaseOff'),
+        In(<'OnWithRecallGlobalScene_Request', endpoint>),
+        !Server(endpoint)
+    ]
+    --[
+        OnWithRecallGlobalScene(endpoint),
+        StateTransition(endpoint, 'BaseOff', 'BaseOn'),
+        OnWithRecallGlobalSceneReceived(endpoint),
+        GlobalSceneRecalled(endpoint),
+        GlobalSceneControlSet(endpoint),
+        OnWithRecallGlobalSceneResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'BaseOn'),
+        Out(<'OnWithRecallGlobalScene_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// OnWithTimedOff discarded because AcceptOnlyWhenOn is set and device is OFF
+// Guard: onoff_control_accept_only_when_on == 1 && OnOff == FALSE
+// Guard: OnOff == FALSE
+rule OnWithTimedOff_BaseOff_to_BaseOff_T_OnWithTimedOff_Discard_AcceptOnlyWhenOn:
+    [
+        ServerState(endpoint, 'BaseOff'),
         In(<'OnWithTimedOff_Request', endpoint, onoff_control, on_time_field, off_wait_time_field>),
         !Server(endpoint)
     ]
@@ -556,208 +895,174 @@ rule OnWithTimedOff_BaseOff_to_BaseOff_T21:
         OnWithTimedOff(endpoint),
         StateTransition(endpoint, 'BaseOff', 'BaseOff'),
         OnWithTimedOffReceived(endpoint, onoff_control, on_time_field, off_wait_time_field),
-        OnWithTimedOffDiscardedAcceptOnlyWhenOn(endpoint)
+        OnWithTimedOffDiscardedAcceptOnlyWhenOn(endpoint),
+        OnWithTimedOffResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         Out(<'OnWithTimedOff_Response', SUCCESS>),
         !Server(endpoint)
     ]
 
-// OnWithTimedOff while OnOff TRUE enters or updates TimedOn with new OnTime and OffWaitTime
-// Guard: not (onoff_control.AcceptOnlyWhenOn == 1 and OnOff == FALSE)
-// Guard: OnOff == TRUE
-rule OnWithTimedOff_BaseOn_to_TimedOn_T22:
-    [
-        ServerState(endpoint, 'BaseOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        In(<'OnWithTimedOff_Request', endpoint, onoff_control, on_time_field, off_wait_time_field>),
-        In(off_wait_time),
-        In(on_time),
-        !Server(endpoint)
-    ]
-    --[
-        OnWithTimedOff(endpoint),
-        StateTransition(endpoint, 'BaseOn', 'TimedOn'),
-        OnWithTimedOffReceived(endpoint, onoff_control, on_time_field, off_wait_time_field),
-        OnWithTimedOffAcceptedTimedOn(endpoint, on_time, off_wait_time)
-    ]->
-    [
-        ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        Out(<'OnWithTimedOff_Response', SUCCESS>),
-        !Server(endpoint)
-    ]
-
-// OnWithTimedOff while already in TimedOn updates timers
-// Guard: not (onoff_control.AcceptOnlyWhenOn == 1 and OnOff == FALSE)
-// Guard: OnOff == TRUE
-rule OnWithTimedOff_TimedOn_to_TimedOn_T23:
-    [
-        ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        In(<'OnWithTimedOff_Request', endpoint, onoff_control, on_time_field, off_wait_time_field>),
-        In(off_wait_time),
-        In(on_time),
-        !Server(endpoint)
-    ]
-    --[
-        OnWithTimedOff(endpoint),
-        StateTransition(endpoint, 'TimedOn', 'TimedOn'),
-        OnWithTimedOffReceived(endpoint, onoff_control, on_time_field, off_wait_time_field),
-        OnWithTimedOffAcceptedTimedOn(endpoint, on_time, off_wait_time)
-    ]->
-    [
-        ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        Out(<'OnWithTimedOff_Response', SUCCESS>),
-        !Server(endpoint)
-    ]
-
-// OnWithTimedOff while Off and not guarded enters or updates DelayedOff with new OffWaitTime
-// Guard: not (onoff_control.AcceptOnlyWhenOn == 1 and OnOff == FALSE)
+// OnWithTimedOff in DelayedOff branch: update OffWaitTime and keep OFF
+// Guard: onoff_control_accept_only_when_on != 1 && OnOff == FALSE && OffWaitTime > 0
 // Guard: OnOff == FALSE
-rule OnWithTimedOff_BaseOff_to_DelayedOff_T24:
+// Guard: OffWaitTime > 0
+rule OnWithTimedOff_BaseOff_to_DelayedOff_T_OnWithTimedOff_DelayedOffUpdate:
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         In(<'OnWithTimedOff_Request', endpoint, onoff_control, on_time_field, off_wait_time_field>),
-        In(off_wait_time),
         !Server(endpoint)
     ]
     --[
         OnWithTimedOff(endpoint),
         StateTransition(endpoint, 'BaseOff', 'DelayedOff'),
         OnWithTimedOffReceived(endpoint, onoff_control, on_time_field, off_wait_time_field),
-        OnWithTimedOffAcceptedDelayedOff(endpoint, off_wait_time)
+        OnWithTimedOffUpdateDelayedOff(endpoint),
+        OnWithTimedOffTimerStarted(endpoint),
+        OnWithTimedOffResponseSent(endpoint, 'SUCCESS')
     ]->
     [
         ServerState(endpoint, 'DelayedOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
         Out(<'OnWithTimedOff_Response', SUCCESS>),
         !Server(endpoint)
     ]
 
-// OnWithTimedOff while already in DelayedOff updates OffWaitTime
-// Guard: not (onoff_control.AcceptOnlyWhenOn == 1 and OnOff == FALSE)
+// OnWithTimedOff accepted from OFF when OffWaitTime is 0: enter TimedOn with updated timers
+// Guard: onoff_control_accept_only_when_on != 1 && OnOff == FALSE && OffWaitTime == 0
 // Guard: OnOff == FALSE
-rule OnWithTimedOff_DelayedOff_to_DelayedOff_T25:
+// Guard: OffWaitTime == 0
+rule OnWithTimedOff_BaseOff_to_TimedOn_T_OnWithTimedOff_TimedOnUpdate_FromOff_OffWaitZero:
     [
-        ServerState(endpoint, 'DelayedOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
+        ServerState(endpoint, 'BaseOff'),
         In(<'OnWithTimedOff_Request', endpoint, onoff_control, on_time_field, off_wait_time_field>),
-        In(off_wait_time),
         !Server(endpoint)
     ]
     --[
         OnWithTimedOff(endpoint),
-        StateTransition(endpoint, 'DelayedOff', 'DelayedOff'),
+        StateTransition(endpoint, 'BaseOff', 'TimedOn'),
         OnWithTimedOffReceived(endpoint, onoff_control, on_time_field, off_wait_time_field),
-        OnWithTimedOffAcceptedDelayedOff(endpoint, off_wait_time)
+        OnWithTimedOffUpdateTimedOn(endpoint),
+        OnWithTimedOffTimerStarted(endpoint),
+        OnWithTimedOffResponseSent(endpoint, 'SUCCESS')
     ]->
     [
-        ServerState(endpoint, 'DelayedOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
+        ServerState(endpoint, 'TimedOn'),
         Out(<'OnWithTimedOff_Response', SUCCESS>),
         !Server(endpoint)
     ]
 
-// Periodic timer during TimedOn decrements OnTime while still positive
-// Guard: OnOff == TRUE and OnTime > 0 and OnTime != 0xFFFF and OffWaitTime != 0xFFFF
+// OnWithTimedOff from BaseOn: sets timers and enters TimedOn
+// Guard: onoff_control_accept_only_when_on != 1 && OnOff == TRUE
 // Guard: OnOff == TRUE
-// Guard: OnTime > 0
-rule Timer_TimedOn_to_TimedOn_T26:
+rule OnWithTimedOff_BaseOn_to_TimedOn_T_OnWithTimedOff_TimedOnUpdate_FromOn:
     [
-        ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        In(<'TimerTick_Internal', endpoint>),
-        In(on_time_after),
+        ServerState(endpoint, 'BaseOn'),
+        In(<'OnWithTimedOff_Request', endpoint, onoff_control, on_time_field, off_wait_time_field>),
         !Server(endpoint)
     ]
     --[
-        Timer(endpoint),
+        OnWithTimedOff(endpoint),
+        StateTransition(endpoint, 'BaseOn', 'TimedOn'),
+        OnWithTimedOffReceived(endpoint, onoff_control, on_time_field, off_wait_time_field),
+        OnWithTimedOffUpdateTimedOn(endpoint),
+        OnWithTimedOffTimerStarted(endpoint),
+        OnWithTimedOffResponseSent(endpoint, 'SUCCESS')
+    ]->
+    [
+        ServerState(endpoint, 'TimedOn'),
+        Out(<'OnWithTimedOff_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Timer tick in TimedOn: decrement OnTime when > 1 and timers not disabled
+// Guard: OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == TRUE && OnTime > 1
+// Guard: OnTime > 1
+// Guard: OnOff == TRUE
+// Guard: OnTime != 0xFFFF
+// Guard: OffWaitTime != 0xFFFF
+rule TimerTick_TimedOn_to_TimedOn_T_OnWithTimedOff_Tick_TimedOn_Decrement:
+    [
+        ServerState(endpoint, 'TimedOn'),
+        !Server(endpoint)
+    ]
+    --[
+        TimerTick(endpoint),
         StateTransition(endpoint, 'TimedOn', 'TimedOn'),
-        TimerTick(endpoint),
-        TimerTickTimedOnDecrement(endpoint, on_time_after)
+        OnWithTimedOffTickTimedOn(endpoint),
+        OnTimeDecremented(endpoint)
     ]->
     [
         ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        Out(<'TimerTick_Internal', SUCCESS>),
         !Server(endpoint)
     ]
 
-// When OnTime reaches 0, device turns off and OffWaitTime set to 0
-// Guard: OnOff == TRUE and OnTime == 1 and OnTime != 0xFFFF and OffWaitTime != 0xFFFF
-// Guard: OnOff == TRUE
+// Timer tick causes OnTime to reach 0 and transitions device to OFF; OffWaitTime set to 0 and timer stopped
+// Guard: OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == TRUE && OnTime == 1
 // Guard: OnTime == 1
-rule Timer_TimedOn_to_BaseOff_T27:
+// Guard: OnOff == TRUE
+// Guard: OnTime != 0xFFFF
+// Guard: OffWaitTime != 0xFFFF
+rule TimerTick_TimedOn_to_BaseOff_T_OnWithTimedOff_Tick_TimedOn_ExpireToOff:
     [
         ServerState(endpoint, 'TimedOn'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        In(<'TimerTick_Internal', endpoint>),
         !Server(endpoint)
     ]
     --[
-        Timer(endpoint),
+        TimerTick(endpoint),
         StateTransition(endpoint, 'TimedOn', 'BaseOff'),
-        TimerTick(endpoint),
-        TimerTickTimedOnExpired(endpoint)
+        OnWithTimedOffTickTimedOn(endpoint),
+        OnTimeDecremented(endpoint),
+        OnWithTimedOffTransitionToOff(endpoint),
+        OnWithTimedOffTimerStopped(endpoint)
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        Out(<'TimerTick_Internal', SUCCESS>),
         !Server(endpoint)
     ]
 
-// Periodic timer during DelayedOff decrements OffWaitTime while still positive
-// Guard: OnOff == FALSE and OffWaitTime > 0 and OffWaitTime != 0xFFFF and OnTime != 0xFFFF
+// Timer tick in DelayedOff: decrement OffWaitTime when > 1 and timers not disabled
+// Guard: OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == FALSE && OffWaitTime > 1
+// Guard: OffWaitTime > 1
 // Guard: OnOff == FALSE
-// Guard: OffWaitTime > 0
-rule Timer_DelayedOff_to_DelayedOff_T28:
+// Guard: OnTime != 0xFFFF
+// Guard: OffWaitTime != 0xFFFF
+rule TimerTick_DelayedOff_to_DelayedOff_T_OnWithTimedOff_Tick_DelayedOff_Decrement:
     [
         ServerState(endpoint, 'DelayedOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        In(<'TimerTick_Internal', endpoint>),
-        In(off_wait_time_after),
         !Server(endpoint)
     ]
     --[
-        Timer(endpoint),
+        TimerTick(endpoint),
         StateTransition(endpoint, 'DelayedOff', 'DelayedOff'),
-        TimerTick(endpoint),
-        TimerTickDelayedOffDecrement(endpoint, off_wait_time_after)
+        OnWithTimedOffTickDelayedOff(endpoint),
+        OffWaitTimeDecremented(endpoint)
     ]->
     [
         ServerState(endpoint, 'DelayedOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        Out(<'TimerTick_Internal', SUCCESS>),
         !Server(endpoint)
     ]
 
-// When OffWaitTime reaches 0, delayed-off behavior terminates
-// Guard: OnOff == FALSE and OffWaitTime == 1 and OffWaitTime != 0xFFFF and OnTime != 0xFFFF
-// Guard: OnOff == FALSE
+// Timer tick in DelayedOff decrements OffWaitTime to 0 and stops timer
+// Guard: OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == FALSE && OffWaitTime == 1
 // Guard: OffWaitTime == 1
-rule Timer_DelayedOff_to_BaseOff_T29:
+// Guard: OnOff == FALSE
+// Guard: OnTime != 0xFFFF
+// Guard: OffWaitTime != 0xFFFF
+rule TimerTick_DelayedOff_to_BaseOff_T_OnWithTimedOff_Tick_DelayedOff_Stop:
     [
         ServerState(endpoint, 'DelayedOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        In(<'TimerTick_Internal', endpoint>),
         !Server(endpoint)
     ]
     --[
-        Timer(endpoint),
-        StateTransition(endpoint, 'DelayedOff', 'BaseOff'),
         TimerTick(endpoint),
-        TimerTickDelayedOffExpired(endpoint)
+        StateTransition(endpoint, 'DelayedOff', 'BaseOff'),
+        OnWithTimedOffTickDelayedOff(endpoint),
+        OffWaitTimeDecremented(endpoint),
+        OnWithTimedOffTimerStopped(endpoint)
     ]->
     [
         ServerState(endpoint, 'BaseOff'),
-        !FeatureConfig(endpoint, 'LT', 'true'),
-        Out(<'TimerTick_Internal', SUCCESS>),
         !Server(endpoint)
     ]
 
@@ -771,25 +1076,37 @@ lemma server_init_reachable:
     "Ex endpoint #i. ServerInit(endpoint)@i"
 
 
-// Reachability: Base state with OnOff == FALSE and no active timed-on or delayed-off behavior
+// Startup reachability - power cycle can trigger startup behavior
+lemma startup_reachable:
+    exists-trace
+    "Ex endpoint #i. Startup(endpoint)@i"
+
+
+// Reachability: Neutral startup state before OnOff is set; used only for startup transitions (initial state)
+lemma state_StartupState_reachable:
+    exists-trace
+    "Ex endpoint #i. ServerInit(endpoint)@i"
+
+
+// Reachability: OnOff is FALSE; may be in dead-front if DF feature set
 lemma state_BaseOff_reachable:
     exists-trace
     "Ex endpoint from_state #i. StateTransition(endpoint, from_state, 'BaseOff')@i"
 
 
-// Reachability: Base state with OnOff == TRUE and no active timed-on or delayed-off behavior
+// Reachability: OnOff is TRUE
 lemma state_BaseOn_reachable:
     exists-trace
     "Ex endpoint from_state #i. StateTransition(endpoint, from_state, 'BaseOn')@i"
 
 
-// Reachability: State where OnOff == TRUE and OnTime is being decremented periodically
+// Reachability: OnOff TRUE with active OnWithTimedOff timer; OnTime > 0 or == 0xFFFF
 lemma state_TimedOn_reachable:
     exists-trace
     "Ex endpoint from_state #i. StateTransition(endpoint, from_state, 'TimedOn')@i"
 
 
-// Reachability: State where OnOff == FALSE and OffWaitTime is being decremented periodically
+// Reachability: OnOff FALSE with active OffWaitTime from OnWithTimedOff; OffWaitTime > 0 or == 0xFFFF
 lemma state_DelayedOff_reachable:
     exists-trace
     "Ex endpoint from_state #i. StateTransition(endpoint, from_state, 'DelayedOff')@i"

@@ -281,14 +281,6 @@ begin
 // Restrictions
 // ============================================================================
 
-// Equality check
-restriction Equality:
-    "All x y #i. Eq(x, y)@i ==> x = y"
-
-// Inequality check  
-restriction Inequality:
-    "All x y #i. Neq(x, y)@i ==> not(x = y)"
-
 // Once restriction for unique events
 restriction Once:
     "All x #i #j. Once(x)@i & Once(x)@j ==> #i = #j"
@@ -310,10 +302,19 @@ restriction Once:
         
         # Generate feature config facts if features exist
         config_facts = []
+        fresh_feature_vars = []
         if self.features:
             for feat in sorted(self.features):
-                # Use abstract variable that can be instantiated as 'true' or 'false'
-                config_facts.append(f"!FeatureConfig(~endpoint_id, '{feat}', feature_{feat.lower()})")
+                # Use fresh variable (with ~) to ensure Tamarin variable binding is satisfied
+                # Fresh variables MUST be introduced in premise with Fr() facts
+                fresh_feature_vars.append(f"Fr(~feature_{feat.lower()})")
+                config_facts.append(f"!FeatureConfig(~endpoint_id, '{feat}', ~feature_{feat.lower()})")
+        
+        # Build premise with all fresh variables
+        premise_facts = ["Fr(~endpoint_id)"]
+        if fresh_feature_vars:
+            premise_facts.extend(fresh_feature_vars)
+        premise_line = ", ".join(premise_facts)
         
         config_lines = ""
         if config_facts:
@@ -321,7 +322,7 @@ restriction Once:
         
         feature_comment = ""
         if self.features:
-            feature_comment = "\n// Feature flags (feature_X) are abstract terms that represent true/false configuration"
+            feature_comment = "\n// Feature flags (~feature_X) are fresh values representing configuration\n// They can be constrained to specific values ('true'/'false') in guards"
         
         # Add startup-related comments
         startup_comment = ""
@@ -333,7 +334,7 @@ restriction Once:
 // ============================================================================
 {feature_comment}{startup_comment}
 rule Server_Init:
-    [ Fr(~endpoint_id) ]
+    [ {premise_line} ]
     --[ ServerInit(~endpoint_id), Once(<'server_init', ~endpoint_id>) ]->
     [
         !Server(~endpoint_id),
@@ -363,13 +364,27 @@ rule Server_Init:
                     if attr_name:
                         startup_attrs.add(attr_name)
         
-        attr_facts = ""
+        # Generate Fr() facts for premise and !AttrState facts for conclusion
+        fresh_attr_vars = []
+        attr_facts_conclusion = []
         if startup_attrs:
-            # Generate attribute state facts for startup configuration
-            attr_lines = []
             for attr in sorted(startup_attrs):
-                attr_lines.append(f"!AttrState(endpoint, '{attr}', attr_{attr.lower()})")
-            attr_facts = ",\n        " + ",\n        ".join(attr_lines)
+                safe_attr = attr.lower()
+                # Fresh variables MUST be introduced in premise with Fr()
+                fresh_attr_vars.append(f"Fr(~attr_{safe_attr})")
+                # Use fresh variables (with ~) in conclusion
+                attr_facts_conclusion.append(f"!AttrState(endpoint, '{attr}', ~attr_{safe_attr})")
+        
+        # Build premise with fresh variables
+        premise_facts = ["!Server(endpoint)", "ServerState(endpoint, current_state)"]
+        if fresh_attr_vars:
+            premise_facts.extend(fresh_attr_vars)
+        premise_str = ",\n        ".join(premise_facts)
+        
+        # Build conclusion attribute facts
+        attr_facts = ""
+        if attr_facts_conclusion:
+            attr_facts = ",\n        " + ",\n        ".join(attr_facts_conclusion)
         
         return f"""// ============================================================================
 // Power Cycle Event (Triggers Startup Transitions)
@@ -378,8 +393,7 @@ rule Server_Init:
 // Power cycle can occur anytime - generates PowerCycle fact that startup rules consume
 rule Power_Cycle:
     [
-        !Server(endpoint),
-        ServerState(endpoint, current_state)
+        {premise_str}
     ]
     --[
         PowerCycleEvent(endpoint),
@@ -558,7 +572,9 @@ rule TempId_Expires:
                 processed_args = []
                 for arg in args:
                     if arg in constant_vars:
-                        processed_args.append(f"'{arg}'")
+                        # Convert TRUE/FALSE to lowercase to match Tamarin convention
+                        safe_arg = arg.lower() if arg in ['TRUE', 'FALSE'] else arg
+                        processed_args.append(f"'{safe_arg}'")
                     else:
                         processed_args.append(arg)
                 args_str = ', '.join(processed_args) if processed_args else ''
@@ -733,8 +749,9 @@ rule TempId_Expires:
                 processed_args = []
                 for arg in args:
                     if arg in constant_vars:
-                        # Convert to string constant
-                        processed_args.append(f"'{arg}'")
+                        # Convert TRUE/FALSE to lowercase to match Tamarin convention
+                        safe_arg = arg.lower() if arg in ['TRUE', 'FALSE'] else arg
+                        processed_args.append(f"'{safe_arg}'")
                     else:
                         processed_args.append(arg)
                 args_str = ', '.join(processed_args) if processed_args else ''
@@ -1180,7 +1197,7 @@ def main():
     #     sys.exit(1)
     print(os.listdir())
     print(os.getcwd())
-    input_file = Path("D:\\Academics\\LLM Guided Matter\\FSM_Generator\\codes\\fsm_models_v2\\1.5_OnOff_Cluster_fsm.json")
+    input_file = Path("fsm_models_v2/1.5_OnOff_Cluster_fsm.json")
     # input_file = Path("D:\\Academics\\LLM Guided Matter\\FSM_Generator\\codes\\fsm_models_v2\\6.2_Account_Login_Cluster_fsm.json")
     # if not input_file.exists():
     #     print(f"Error: Input file not found: {input_file}")

@@ -11,6 +11,7 @@ import time
 import sys
 from typing import Dict, Any, Optional
 from datetime import datetime
+import re
 from langchain.chat_models import init_chat_model
 
 # Configuration imports
@@ -76,6 +77,7 @@ class FSMGenerator:
     def clean_json_response(self, response: str, cluster_name: str = "Unknown") -> str:
         """Clean JSON response by removing markdown code blocks and extra whitespace."""
         clean_response = response.strip()
+        original_length = len(response)
 
         # Remove markdown code blocks
         if clean_response.startswith('```json'):
@@ -106,6 +108,14 @@ class FSMGenerator:
             logger.warning(
                 f"Invalid FSM response format for cluster {cluster_name}")
             return ""
+        
+        # Check if JSON appears truncated (doesn't end with })
+        if not clean_response.rstrip().endswith('}'):
+            logger.warning(
+                f"JSON appears truncated for {cluster_name} - doesn't end with '}}' "
+                f"(original length: {original_length} chars, cleaned: {len(clean_response)} chars)")
+            logger.warning(f"Last 200 chars: ...{clean_response[-200:]}")
+        
         return clean_response
 
     def judge_fsm(self, fsm: str, user_input: str) -> str:
@@ -176,9 +186,94 @@ Address the specific issues mentioned in the feedback while maintaining correct 
                     previous_fsm_str = json.dumps(
                         fsm_data, indent=2, ensure_ascii=False)  # Store for next iteration
                 except json.JSONDecodeError as json_error:
-                    logger.warning(
-                        f"JSON parse error: {json_error}, retrying...")
-                    continue
+                    logger.error(
+                        f"JSON parse error at line {json_error.lineno}, column {json_error.colno}: {json_error.msg}")
+                    logger.error(f"Error position: character {json_error.pos}")
+                    logger.error(f"Total response length: {len(clean_response)} characters")
+                    
+                    # Save problematic JSON for debugging
+                    debug_file = f"debug_invalid_json_{cluster_name}_{attempt}.json"
+                    try:
+                        with open(debug_file, 'w', encoding='utf-8') as df:
+                            df.write(clean_response)
+                        logger.error(f"Saved invalid JSON to {debug_file} for debugging")
+                    except Exception as e:
+                        logger.error(f"Failed to save invalid JSON for debugging: {e}")
+                    
+                    # Show context around the error
+                    if json_error.pos and json_error.pos < len(clean_response):
+                        start = max(0, json_error.pos - 100)
+                        end = min(len(clean_response), json_error.pos + 100)
+                        context = clean_response[start:end]
+                        logger.error(f"Context around error: ...{context}...")
+
+                    # Attempt automated repairs
+                    try:
+                        repaired_any = False
+
+                        # Strategy 1: Remove trailing commas before closing brackets/braces
+                        try:
+                            repaired = re.sub(r',\s*([\]}])', r'\1', clean_response)
+                            if repaired != clean_response:
+                                try:
+                                    fsm_data = json.loads(repaired)
+                                    last_fsm_data = fsm_data
+                                    previous_fsm_str = json.dumps(fsm_data, indent=2, ensure_ascii=False)
+                                    with open(f"debug_repaired_commas_{cluster_name}_{attempt}.json", 'w', encoding='utf-8') as rf:
+                                        rf.write(repaired)
+                                    logger.info("Auto-repair: removed trailing commas and successfully parsed JSON")
+                                    repaired_any = True
+                                except json.JSONDecodeError:
+                                    logger.debug("Auto-repair by removing trailing commas did not fully fix the JSON")
+                        except Exception as e:
+                            logger.debug(f"Comma-removal repair raised: {e}")
+
+                        # Strategy 2: Truncate at the last closing brace '}' and try parse
+                        try:
+                            last_closing = clean_response.rfind('}')
+                            if last_closing > 0 and last_closing < len(clean_response) - 1:
+                                truncated = clean_response[:last_closing + 1]
+                                try:
+                                    fsm_data = json.loads(truncated)
+                                    last_fsm_data = fsm_data
+                                    previous_fsm_str = json.dumps(fsm_data, indent=2, ensure_ascii=False)
+                                    with open(f"debug_repaired_truncated_{cluster_name}_{attempt}.json", 'w', encoding='utf-8') as rf:
+                                        rf.write(truncated)
+                                    logger.info("Auto-repair: truncated after the last '}' and successfully parsed JSON")
+                                    repaired_any = True
+                                except json.JSONDecodeError:
+                                    logger.debug("Auto-repair by truncation did not fully fix the JSON")
+                        except Exception as e:
+                            logger.debug(f"Truncation repair raised: {e}")
+
+                        # Strategy 3: Combine truncation and comma removal
+                        if not repaired_any:
+                            try:
+                                if last_closing > 0:
+                                    combo = re.sub(r',\s*([\]}])', r'\1', clean_response[:last_closing + 1])
+                                    try:
+                                        fsm_data = json.loads(combo)
+                                        last_fsm_data = fsm_data
+                                        previous_fsm_str = json.dumps(fsm_data, indent=2, ensure_ascii=False)
+                                        with open(f"debug_repaired_combo_{cluster_name}_{attempt}.json", 'w', encoding='utf-8') as rf:
+                                            rf.write(combo)
+                                        logger.info("Auto-repair: truncated + removed trailing commas succeeded")
+                                        repaired_any = True
+                                    except json.JSONDecodeError:
+                                        logger.debug("Combo repair did not succeed")
+                            except Exception as e:
+                                logger.debug(f"Combo repair raised: {e}")
+
+                    except Exception as e:
+                        logger.error(f"Auto-repair attempt failed with exception: {e}")
+
+                    # If a repair worked, proceed to judge that repaired FSM
+                    if last_fsm_data:
+                        logger.warning("Using auto-repaired FSM for this attempt (may be incomplete). Proceeding to judge.")
+                        clean_response = previous_fsm_str
+                    else:
+                        logger.warning("No auto-repair succeeded. Retrying...")
+                        continue
 
                 judge_response = self.judge_fsm(
                     clean_response, cluster_info_str)

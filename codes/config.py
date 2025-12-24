@@ -17,7 +17,7 @@ LLM_MODEL = "gpt-5.1"
 MODEL_PROVIDER = "openai"
 LLM_TEMPERATURE = 0.0  # More deterministic for detailed extraction
 # Significantly increased for comprehensive behavioral extraction
-LLM_MAX_OUTPUT_TOKENS = 16384
+LLM_MAX_OUTPUT_TOKENS = 32768
 
 # PDF Processin**STEP 4:**STEP 5: FEATURE VALIDATION**EMANTICS**ation
 PDF_FILENAME = "Matter-1.4-Application-Cluster-Specification.pdf"

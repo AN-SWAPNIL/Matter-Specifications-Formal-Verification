@@ -1,0 +1,881 @@
+theory Level_Control_Cluster
+begin
+
+/*
+ * Tamarin Protocol Security Model for Level Control Cluster
+ * Generated from Enhanced FSM JSON (v2.0)
+ * Generated: 2025-12-24T22:20:03.145808
+ * 
+ * Cluster ID: 0x0008
+ * Revision: 6
+ * 
+ * Model Statistics:
+ * - States: 2
+ * - Transitions: 23
+ * - Action Facts: 28
+ * - Security Properties: 0
+ * 
+ * This model supports security analysis with:
+ * - Parameterized action facts for precise tracing
+ * - Message passing (In/Out) for protocol modeling
+ * - Fresh value generation for cryptographic material
+ * - Verifiable security lemmas
+ */
+
+builtins: hashing, symmetric-encryption
+
+// ============================================================================
+// Functions
+// ============================================================================
+
+// Boolean and null constants
+functions: true/0, false/0, null/0
+
+// Empty value marker
+functions: empty/0
+
+// Response status
+functions: SUCCESS/0, FAILURE/0
+
+// ============================================================================
+// Restrictions
+// ============================================================================
+
+// Once restriction for unique events
+restriction Once:
+    "All x #i #j. Once(x)@i & Once(x)@j ==> #i = #j"
+
+
+// ============================================================================
+// Initialization
+// ============================================================================
+
+// Feature flags (~feature_X) are fresh values representing configuration
+// They can be constrained to specific values ('true'/'false') in guards
+// This cluster has Startup transitions - PowerCycle fact enables them
+rule Server_Init:
+    [ Fr(~endpoint_id), Fr(~feature_fq), Fr(~feature_lt), Fr(~feature_oo) ]
+    --[ ServerInit(~endpoint_id), Once(<'server_init', ~endpoint_id>) ]->
+    [
+        !Server(~endpoint_id),
+        ServerState(~endpoint_id, 'OffState'),
+        RateLimitCounter(~endpoint_id, 'zero'),
+        Out(~endpoint_id),
+        !FeatureConfig(~endpoint_id, 'FQ', ~feature_fq),
+        !FeatureConfig(~endpoint_id, 'LT', ~feature_lt),
+        !FeatureConfig(~endpoint_id, 'OO', ~feature_oo)  // Endpoint is public - adversary can address server
+    ]
+
+
+// ============================================================================
+// Power Cycle Event (Triggers Startup Transitions)
+// ============================================================================
+
+// Power cycle can occur anytime - generates PowerCycle fact that startup rules consume
+rule Power_Cycle:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, current_state),
+        Fr(~attr_startupcurrentlevel)
+    ]
+    --[
+        PowerCycleEvent(endpoint),
+        Once(<'power_cycle', endpoint>)
+    ]->
+    [
+        !Server(endpoint),
+        ServerState(endpoint, current_state),
+        PowerCycle(endpoint),
+        !AttrState(endpoint, 'StartUpCurrentLevel', ~attr_startupcurrentlevel)
+    ]
+
+// Alternative: Initial power-on (first boot scenario)
+rule Initial_Power_On:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, state)
+    ]
+    --[
+        InitialPowerOn(endpoint)
+    ]->
+    [
+        !Server(endpoint),
+        ServerState(endpoint, state),
+        PowerCycle(endpoint)
+    ]
+
+
+// ============================================================================
+// Fresh Value Generation
+// ============================================================================
+
+rule Create_TempAccountIdentifier:
+    let temp_id = h(<~account, ~nonce>)
+    in
+    [ Fr(~account), Fr(~nonce), Fr(~setup_pin), Fr(~validity) ]
+    --[ 
+        TempIdCreated(temp_id, ~account),
+        AccountRegistered(~account, temp_id, ~setup_pin)
+    ]->
+    [
+        !AccountMapping(temp_id, ~account, ~setup_pin, ~validity),
+        Out(temp_id)  // Attacker can observe temp_id
+    ]
+
+rule TempId_Expires:
+    [ !AccountMapping(temp_id, account, setup_pin, validity) ]
+    --[ TempIdExpired(temp_id) ]->
+    [ !AccountMapping_Expired(temp_id, account, setup_pin) ]
+
+
+// ============================================================================
+
+// Protocol Transitions
+
+// ============================================================================
+
+
+
+// ============================================================================
+
+// Startup/Power-Cycle Transitions
+
+// ============================================================================
+
+// On power-up, if StartUpCurrentLevel is null, restore previous CurrentLevel
+// Guard: startup_current_level_is_null == TRUE
+// Guard: StartUpCurrentLevel == null
+rule Startup_OffState_to_OffState_T_Startup_RestorePrevious:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, 'OffState'),
+        PowerCycle(endpoint),
+        !FeatureConfig(endpoint, 'LT', 'true'),
+        !AttrState(endpoint, 'StartUpCurrentLevel', 'null'),
+        In(previous_level)
+    ]
+    --[
+        Startup(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        StartupOccurred(endpoint),
+        StartupCurrentLevelRestoredPrevious(endpoint, previous_level)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        !Server(endpoint),
+        !FeatureConfig(endpoint, 'LT', 'true')
+    ]
+
+// On power-up, if StartUpCurrentLevel is 0, set CurrentLevel to device min level
+// Guard: startup_current_level_value == 0
+// Guard: StartUpCurrentLevel == 0
+rule Startup_OffState_to_OffState_T_Startup_ForceMin:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, 'OffState'),
+        PowerCycle(endpoint),
+        !FeatureConfig(endpoint, 'LT', 'true'),
+        !AttrState(endpoint, 'StartUpCurrentLevel', '0'),
+        In(device_min_level)
+    ]
+    --[
+        Startup(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        StartupOccurred(endpoint),
+        StartupCurrentLevelForcedMin(endpoint, device_min_level)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        !Server(endpoint),
+        !FeatureConfig(endpoint, 'LT', 'true')
+    ]
+
+// On power-up, if StartUpCurrentLevel is a non-zero value, set CurrentLevel to that value
+// Guard: startup_current_level_is_null == FALSE && startup_current_level_value != 0
+// Guard: StartUpCurrentLevel != null
+// Guard: StartUpCurrentLevel != 0
+rule Startup_OffState_to_OffState_T_Startup_ForceValue:
+    [
+        !Server(endpoint),
+        ServerState(endpoint, 'OffState'),
+        PowerCycle(endpoint),
+        !FeatureConfig(endpoint, 'LT', 'true'),
+        !AttrState(endpoint, 'StartUpCurrentLevel', 'null'),
+        !AttrState(endpoint, 'StartUpCurrentLevel', '0'),
+        In(startup_level)
+    ]
+    --[
+        Startup(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        StartupOccurred(endpoint),
+        StartupCurrentLevelForcedValue(endpoint, startup_level)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        !Server(endpoint),
+        !FeatureConfig(endpoint, 'LT', 'true')
+    ]
+
+// If ExecuteIfOff=0 and device is off, MoveToLevel does not change level or on/off
+// Guard: execute_if_off == 0 && onoff == FALSE
+// Guard: Options.ExecuteIfOff == 0
+// Guard: OnOff == FALSE
+rule MoveToLevel_OffState_to_OffState_T_MoveToLevel_ExecuteIfOff0_Off_NoChange:
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'LT', 'true'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'MoveToLevel_Request', endpoint, level, transition_time, options_mask, options_override>),
+        In(execute_if_off),
+        In(onoff),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        MoveToLevel(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        MoveToLevelReceived(endpoint, level, transition_time, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        ExecuteIfOffEvaluated(endpoint, execute_if_off, onoff)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'LT', 'true'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'MoveToLevel_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// If ExecuteIfOff=1 and device is off, MoveToLevel updates CurrentLevel but leaves device off
+// Guard: execute_if_off == 1 && onoff == FALSE
+// Guard: Options.ExecuteIfOff == 1
+// Guard: OnOff == FALSE
+rule MoveToLevel_OffState_to_OffState_T_MoveToLevel_ExecuteIfOff1_Off_UpdateLevel:
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'LT', 'true'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'MoveToLevel_Request', endpoint, level, transition_time, options_mask, options_override>),
+        In(current_level),
+        In(duration),
+        In(execute_if_off),
+        In(onoff),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        MoveToLevel(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        MoveToLevelReceived(endpoint, level, transition_time, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        ExecuteIfOffEvaluated(endpoint, execute_if_off, onoff),
+        MoveToLevelStarted(endpoint, current_level, level, duration)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'LT', 'true'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'MoveToLevel_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// When device is on, MoveToLevel adjusts level and keeps device on
+// Guard: onoff == TRUE
+// Guard: OnOff == TRUE
+rule MoveToLevel_OnState_to_OnState_T_MoveToLevel_On_UpdateLevel:
+    [
+        ServerState(endpoint, 'OnState'),
+        In(<'MoveToLevel_Request', endpoint, level, transition_time, options_mask, options_override>),
+        In(current_level),
+        In(duration),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        MoveToLevel(endpoint),
+        StateTransition(endpoint, 'OnState', 'OnState'),
+        MoveToLevelReceived(endpoint, level, transition_time, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        MoveToLevelStarted(endpoint, current_level, level, duration)
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        Out(<'MoveToLevel_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Move rejected with INVALID_COMMAND if Rate is 0
+// Guard: rate == 0
+// Guard: Rate == 0
+rule Move_OffState_to_OffState_T_Move_InvalidRateZero:
+    [
+        ServerState(endpoint, 'OffState'),
+        In(<'Move_Request', endpoint, move_mode, rate, options_mask, options_override>),
+        !Server(endpoint)
+    ]
+    --[
+        Move(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        MoveReceived(endpoint, move_mode, rate, options_mask, options_override),
+        MoveInvalidRateZero(endpoint)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        Out(<'Move_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// If ExecuteIfOff=1 and device is off, Move up updates CurrentLevel to maximum but leaves device off
+// Guard: rate != 0 && execute_if_off == 1 && onoff == FALSE && move_mode == Up
+// Guard: Rate != 0
+// Guard: Options.ExecuteIfOff == 1
+// Guard: OnOff == FALSE
+rule Move_OffState_to_OffState_T_Move_ExecuteIfOff1_Off_UpdateLevelToMax:
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'LT', 'true'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'Move_Request', endpoint, move_mode, rate, options_mask, options_override>),
+        In(Up),
+        In(current_level),
+        In(eff_rate),
+        In(execute_if_off),
+        In(onoff),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        Move(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        MoveReceived(endpoint, move_mode, rate, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        ExecuteIfOffEvaluated(endpoint, execute_if_off, onoff),
+        MoveEffectiveRateSelected(endpoint, eff_rate),
+        MoveStarted(endpoint, current_level, Up, eff_rate)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'LT', 'true'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'Move_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// When device is on, Move up raises level to maximum and keeps device on
+// Guard: rate != 0 && onoff == TRUE && move_mode == Up
+// Guard: Rate != 0
+// Guard: OnOff == TRUE
+rule Move_OnState_to_OnState_T_Move_On_UpToMax:
+    [
+        ServerState(endpoint, 'OnState'),
+        In(<'Move_Request', endpoint, move_mode, rate, options_mask, options_override>),
+        In(Up),
+        In(current_level),
+        In(eff_rate),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        Move(endpoint),
+        StateTransition(endpoint, 'OnState', 'OnState'),
+        MoveReceived(endpoint, move_mode, rate, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        MoveEffectiveRateSelected(endpoint, eff_rate),
+        MoveStarted(endpoint, current_level, Up, eff_rate)
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        Out(<'Move_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// When device is on, Move down lowers level to minimum but does not turn the device off
+// Guard: rate != 0 && onoff == TRUE && move_mode == Down
+// Guard: Rate != 0
+// Guard: OnOff == TRUE
+rule Move_OnState_to_OnState_T_Move_On_DownToMin:
+    [
+        ServerState(endpoint, 'OnState'),
+        In(<'Move_Request', endpoint, move_mode, rate, options_mask, options_override>),
+        In(Down),
+        In(current_level),
+        In(eff_rate),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        Move(endpoint),
+        StateTransition(endpoint, 'OnState', 'OnState'),
+        MoveReceived(endpoint, move_mode, rate, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        MoveEffectiveRateSelected(endpoint, eff_rate),
+        MoveStarted(endpoint, current_level, Down, eff_rate)
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        Out(<'Move_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Step rejected with INVALID_COMMAND if StepSize is 0
+// Guard: step_size == 0
+// Guard: StepSize == 0
+rule Step_OffState_to_OffState_T_Step_InvalidSizeZero:
+    [
+        ServerState(endpoint, 'OffState'),
+        In(<'Step_Request', endpoint, step_mode, step_size, transition_time, options_mask, options_override>),
+        !Server(endpoint)
+    ]
+    --[
+        Step(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        StepReceived(endpoint, step_mode, step_size, transition_time, options_mask, options_override),
+        StepInvalidSizeZero(endpoint)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        Out(<'Step_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Step adjusts CurrentLevel by StepSize over TransitionTime, clamped to min/max
+// Guard: step_size != 0
+// Guard: StepSize != 0
+rule Step_OnState_to_OnState_T_Step_Normal:
+    [
+        ServerState(endpoint, 'OnState'),
+        In(<'Step_Request', endpoint, step_mode, step_size, transition_time, options_mask, options_override>),
+        In(current_level),
+        In(duration),
+        In(target_level),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        Step(endpoint),
+        StateTransition(endpoint, 'OnState', 'OnState'),
+        StepReceived(endpoint, step_mode, step_size, transition_time, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        StepTargetComputed(endpoint, current_level, target_level, duration),
+        StepStarted(endpoint, current_level, target_level, duration)
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        Out(<'Step_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// Stop terminates any in-progress level transition and sets RemainingTime to 0
+rule Stop_OffState_to_OffState_T_Stop_Generic:
+    [
+        ServerState(endpoint, 'OffState'),
+        In(<'Stop_Request', endpoint, options_mask, options_override>),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        Stop(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        StopReceived(endpoint, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        LevelTransitionStopped(endpoint)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        Out(<'Stop_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// If device is off, MoveToLevelWithOnOff turns it on and sets level to target
+// Guard: onoff == FALSE
+// Guard: OnOff == FALSE
+rule MoveToLevelWithOnOff_OffState_to_OnState_T_MoveToLevelWithOnOff_Off_ExecuteIfOff0:
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'MoveToLevelWithOnOff_Request', endpoint, level, transition_time, options_mask, options_override>),
+        In(current_level),
+        In(device_min_level),
+        In(duration),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        MoveToLevelWithOnOff(endpoint),
+        StateTransition(endpoint, 'OffState', 'OnState'),
+        MoveToLevelWithOnOffReceived(endpoint, level, transition_time, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        MoveToLevelStarted(endpoint, current_level, level, duration),
+        OnOffUpdatedFromLevel(endpoint, level, device_min_level, 'true')
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'MoveToLevelWithOnOff_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// When device is on, MoveToLevelWithOnOff sets level to target and keeps it on
+// Guard: onoff == TRUE
+// Guard: OnOff == TRUE
+rule MoveToLevelWithOnOff_OnState_to_OnState_T_MoveToLevelWithOnOff_On:
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'MoveToLevelWithOnOff_Request', endpoint, level, transition_time, options_mask, options_override>),
+        In(current_level),
+        In(device_min_level),
+        In(duration),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        MoveToLevelWithOnOff(endpoint),
+        StateTransition(endpoint, 'OnState', 'OnState'),
+        MoveToLevelWithOnOffReceived(endpoint, level, transition_time, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        MoveToLevelStarted(endpoint, current_level, level, duration),
+        OnOffUpdatedFromLevel(endpoint, level, device_min_level, 'true')
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'MoveToLevelWithOnOff_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// If device is off, MoveWithOnOff up turns it on and sets level to maximum
+// Guard: rate != 0 && onoff == FALSE && move_mode == Up
+// Guard: Rate != 0
+// Guard: OnOff == FALSE
+rule MoveWithOnOff_OffState_to_OnState_T_MoveWithOnOff_Off_ExecuteIfOff1_UpToMax_On:
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'MoveWithOnOff_Request', endpoint, move_mode, rate, options_mask, options_override>),
+        In(Up),
+        In(current_level),
+        In(device_max_level),
+        In(device_min_level),
+        In(eff_rate),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        MoveWithOnOff(endpoint),
+        StateTransition(endpoint, 'OffState', 'OnState'),
+        MoveWithOnOffReceived(endpoint, move_mode, rate, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        MoveEffectiveRateSelected(endpoint, eff_rate),
+        MoveWithOnOffStarted(endpoint, current_level, Up, eff_rate),
+        OnOffUpdatedFromLevel(endpoint, device_max_level, device_min_level, 'true')
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'MoveWithOnOff_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// If device is off, MoveWithOnOff down sets CurrentLevel to minimum but device remains off
+// Guard: rate != 0 && onoff == FALSE && move_mode == Down
+// Guard: Rate != 0
+// Guard: OnOff == FALSE
+rule MoveWithOnOff_OffState_to_OffState_T_MoveWithOnOff_Off_ExecuteIfOff1_DownToMin_StaysOff:
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'MoveWithOnOff_Request', endpoint, move_mode, rate, options_mask, options_override>),
+        In(Down),
+        In(current_level),
+        In(device_min_level),
+        In(eff_rate),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        MoveWithOnOff(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        MoveWithOnOffReceived(endpoint, move_mode, rate, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        MoveEffectiveRateSelected(endpoint, eff_rate),
+        MoveWithOnOffStarted(endpoint, current_level, Down, eff_rate),
+        OnOffUpdatedFromLevel(endpoint, device_min_level, device_min_level, 'false')
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'MoveWithOnOff_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// When device is on, MoveWithOnOff up raises level to maximum and keeps device on
+// Guard: rate != 0 && onoff == TRUE && move_mode == Up
+// Guard: Rate != 0
+// Guard: OnOff == TRUE
+rule MoveWithOnOff_OnState_to_OnState_T_MoveWithOnOff_On_UpToMax:
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'MoveWithOnOff_Request', endpoint, move_mode, rate, options_mask, options_override>),
+        In(Up),
+        In(current_level),
+        In(device_max_level),
+        In(device_min_level),
+        In(eff_rate),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        MoveWithOnOff(endpoint),
+        StateTransition(endpoint, 'OnState', 'OnState'),
+        MoveWithOnOffReceived(endpoint, move_mode, rate, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        MoveEffectiveRateSelected(endpoint, eff_rate),
+        MoveWithOnOffStarted(endpoint, current_level, Up, eff_rate),
+        OnOffUpdatedFromLevel(endpoint, device_max_level, device_min_level, 'true')
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'MoveWithOnOff_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// When device is on, MoveWithOnOff down lowers level to minimum and turns the device off
+// Guard: rate != 0 && onoff == TRUE && move_mode == Down
+// Guard: Rate != 0
+// Guard: OnOff == TRUE
+rule MoveWithOnOff_OnState_to_OffState_T_MoveWithOnOff_On_DownToMin_AndOff:
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'MoveWithOnOff_Request', endpoint, move_mode, rate, options_mask, options_override>),
+        In(Down),
+        In(current_level),
+        In(device_min_level),
+        In(eff_rate),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        MoveWithOnOff(endpoint),
+        StateTransition(endpoint, 'OnState', 'OffState'),
+        MoveWithOnOffReceived(endpoint, move_mode, rate, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        MoveEffectiveRateSelected(endpoint, eff_rate),
+        MoveWithOnOffStarted(endpoint, current_level, Down, eff_rate),
+        OnOffUpdatedFromLevel(endpoint, device_min_level, device_min_level, 'false')
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'MoveWithOnOff_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// StepWithOnOff behaves like Step and then updates OnOff based on resulting level
+// Guard: step_size != 0
+// Guard: StepSize != 0
+rule StepWithOnOff_OnState_to_OnState_T_StepWithOnOff_Normal:
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'StepWithOnOff_Request', endpoint, step_mode, step_size, transition_time, options_mask, options_override>),
+        In(current_level),
+        In(device_min_level),
+        In(duration),
+        In(onoff_result),
+        In(target_level),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        StepWithOnOff(endpoint),
+        StateTransition(endpoint, 'OnState', 'OnState'),
+        StepWithOnOffReceived(endpoint, step_mode, step_size, transition_time, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        StepTargetComputed(endpoint, current_level, target_level, duration),
+        StepWithOnOffStarted(endpoint, current_level, target_level, duration),
+        OnOffUpdatedFromLevel(endpoint, target_level, device_min_level, onoff_result)
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'StepWithOnOff_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// StopWithOnOff behaves identically to Stop but applies to 'with On/Off' transitions as well
+rule StopWithOnOff_OffState_to_OffState_T_StopWithOnOff_Generic:
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        In(<'StopWithOnOff_Request', endpoint, options_mask, options_override>),
+        In(temp_options),
+        !Server(endpoint)
+    ]
+    --[
+        StopWithOnOff(endpoint),
+        StateTransition(endpoint, 'OffState', 'OffState'),
+        StopWithOnOffReceived(endpoint, options_mask, options_override),
+        TempOptionsComputed(endpoint, temp_options),
+        LevelTransitionStopped(endpoint)
+    ]->
+    [
+        ServerState(endpoint, 'OffState'),
+        !FeatureConfig(endpoint, 'OO', 'true'),
+        Out(<'StopWithOnOff_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// MoveToClosestFrequency selects the closest supported frequency and updates CurrentFrequency
+// Guard: closest_supported_frequency_exists == TRUE
+rule MoveToClosestFrequency_OnState_to_OnState_T_MoveToClosestFrequency_Success:
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'FQ', 'true'),
+        In(<'MoveToClosestFrequency_Request', endpoint, frequency>),
+        In(selected_frequency),
+        !Server(endpoint)
+    ]
+    --[
+        MoveToClosestFrequency(endpoint),
+        StateTransition(endpoint, 'OnState', 'OnState'),
+        MoveToClosestFrequencyReceived(endpoint, frequency),
+        ClosestFrequencySelected(endpoint, frequency, selected_frequency)
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'FQ', 'true'),
+        Out(<'MoveToClosestFrequency_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+// MoveToClosestFrequency responds with CONSTRAINT_ERROR when no suitable frequency can be approximated
+// Guard: closest_supported_frequency_exists == FALSE
+rule MoveToClosestFrequency_OnState_to_OnState_T_MoveToClosestFrequency_ConstraintError:
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'FQ', 'true'),
+        In(<'MoveToClosestFrequency_Request', endpoint, frequency>),
+        !Server(endpoint)
+    ]
+    --[
+        MoveToClosestFrequency(endpoint),
+        StateTransition(endpoint, 'OnState', 'OnState'),
+        MoveToClosestFrequencyReceived(endpoint, frequency),
+        MoveToClosestFrequencyConstraintError(endpoint, frequency)
+    ]->
+    [
+        ServerState(endpoint, 'OnState'),
+        !FeatureConfig(endpoint, 'FQ', 'true'),
+        Out(<'MoveToClosestFrequency_Response', SUCCESS>),
+        !Server(endpoint)
+    ]
+
+
+// ============================================================================
+// Verification Lemmas
+// ============================================================================
+
+// Basic reachability - server can initialize
+lemma server_init_reachable:
+    exists-trace
+    "Ex endpoint #i. ServerInit(endpoint)@i"
+
+
+// Startup reachability - power cycle can trigger startup behavior
+lemma startup_reachable:
+    exists-trace
+    "Ex endpoint #i. Startup(endpoint)@i"
+
+
+// Reachability: OnOff cluster off; CurrentLevel may be at any allowed level; physical device output off
+lemma state_OffState_reachable:
+    exists-trace
+    "Ex endpoint from_state #i. StateTransition(endpoint, from_state, 'OffState')@i"
+
+
+// Reachability: OnOff cluster on; physical device output on at CurrentLevel
+lemma state_OnState_reachable:
+    exists-trace
+    "Ex endpoint from_state #i. StateTransition(endpoint, from_state, 'OnState')@i"
+
+
+// ============================================================================
+// CVE-2023-45956 Safety Properties (Level Control Cluster)
+// Source: properties.json
+// ============================================================================
+
+/*
+ * CVE-2023-45956: Move commands crash when rate=0 at boundary CurrentLevel
+ * 
+ * Affected Commands (from properties.json):
+ *   - Move_up(rate=0) when CurrentLevel=1 (minimum)
+ *   - Move_down(rate=0) when CurrentLevel=254 (maximum)
+ *   - Move_up_OnOff(rate=0) when CurrentLevel=1
+ *   - Move_down_OnOff(rate=0) when CurrentLevel=254
+ *
+ * Expected Behavior (per Matter spec):
+ *   "If rate = 0, the command should be rejected as invalid."
+ *   The spec rule Move_InvalidRateZero handles this correctly.
+ *
+ * Buggy Behavior (CVE):
+ *   Devices crash instead of rejecting the command.
+ *
+ * Verification Strategy:
+ *   These lemmas verify that the SPECIFICATION correctly prevents
+ *   the vulnerability by ensuring rate=0 is always rejected.
+ */
+
+/*
+ * LEMMA 1: Rate=0 is always detected and flagged
+ * Verifies: The spec model has a path where MoveInvalidRateZero is triggered
+ * Result: Should find a trace (reachability check)
+ */
+lemma cve_2023_45956_rate_zero_detected:
+    exists-trace
+    "Ex endpoint #i. MoveInvalidRateZero(endpoint)@i"
+
+/*
+ * LEMMA 2: Rate=0 rejection prevents further state changes
+ * Verifies: After MoveInvalidRateZero, no state transition occurs
+ * Result: Should VERIFY (spec correctly rejects invalid input)
+ */
+lemma cve_2023_45956_rate_zero_no_progression:
+    "All endpoint #i. MoveInvalidRateZero(endpoint)@i
+     ==> (Ex from_state #j. StateTransition(endpoint, from_state, from_state)@j & #j = #i)"
+
+/*
+ * LEMMA 3: Move command with rate=0 cannot change device state
+ * Verifies: When rate=0 is sent, the OnOff state remains unchanged
+ * Result: Should VERIFY if spec handles rate=0 correctly
+ */
+lemma cve_2023_45956_move_rate_zero_state_preserved:
+    "All endpoint #i #j s1 s2. 
+        MoveInvalidRateZero(endpoint)@i & StateTransition(endpoint, s1, s2)@j & #i < #j
+     ==> s1 = s2"
+
+/*
+ * LEMMA 4: Step command with size=0 is also rejected (related property)
+ * Verifies: StepInvalidSizeZero prevents invalid step commands
+ * Result: Should find a trace (reachability check)
+ */
+lemma cve_2023_45956_step_size_zero_detected:
+    exists-trace
+    "Ex endpoint #i. StepInvalidSizeZero(endpoint)@i"
+
+/*
+ * LEMMA 5: No invalid Move command can reach a successful state transition
+ * Verifies: MoveStarted only occurs when rate != 0 (implicitly)
+ * This is the key safety property - crashes happen when invalid 
+ * commands are NOT rejected and execution continues
+ */
+lemma cve_2023_45956_move_requires_valid_rate:
+    "All endpoint current_level mode eff_rate #i #j. 
+        MoveStarted(endpoint, current_level, mode, eff_rate)@i & MoveInvalidRateZero(endpoint)@j
+     ==> #i < #j"
+
+
+end

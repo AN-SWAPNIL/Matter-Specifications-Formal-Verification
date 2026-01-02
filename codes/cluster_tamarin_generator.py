@@ -513,6 +513,12 @@ If there were parse errors, fix the syntax first to ensure the model is parseabl
                 f.write(theory_code)
             logger.info(f"✓ Saved Tamarin theory to: {spthy_output}")
             
+            # Also save as .txt file
+            txt_output = os.path.join(output_dir, f"{filename_base}_tamarin.txt")
+            with open(txt_output, 'w', encoding='utf-8') as f:
+                f.write(theory_code)
+            logger.info(f"✓ Saved Tamarin theory to: {txt_output}")
+            
             # Save JSON file (with metadata)
             json_output = os.path.join(output_dir, f"{filename_base}_tamarin.json")
             with open(json_output, 'w', encoding='utf-8') as f:

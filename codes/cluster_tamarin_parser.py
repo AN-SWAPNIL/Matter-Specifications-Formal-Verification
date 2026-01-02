@@ -527,6 +527,12 @@ rule TempId_Expires:
         # Classify variables
         constant_vars = {v for v in all_action_vars if v.isupper() or v in ['TRUE', 'FALSE', 'on', 'off']}
         
+        # Identify unbound variables (in action facts but not bound from known sources)
+        unbound_vars = all_action_vars - bound_variables - constant_vars
+        
+        # Variables that should come from adversary input
+        adversary_input_vars = unbound_vars - {v for v in unbound_vars if v in self.fresh_values}
+        
         # Build premise (LHS)
         premise_facts = []
         
@@ -559,6 +565,10 @@ rule TempId_Expires:
                 if 'StartUp' in attr_name or 'Previous' in attr_name:
                     safe_value = value.lower() if value in ['TRUE', 'FALSE'] else value
                     premise_facts.append(f"!AttrState(endpoint, '{attr_name}', '{safe_value}')")
+        
+        # Add adversary-controlled inputs for unbound variables
+        for var in sorted(adversary_input_vars):
+            premise_facts.append(f"In({var})")
         
         # Build action labels
         action_labels = []
@@ -1156,10 +1166,16 @@ class GeneralizedFSMParserV2:
         return generator.generate()
     
     def save_tamarin_code(self, output_file: Path, code: str):
-        """Save generated Tamarin code."""
+        """Save generated Tamarin code (both .spthy and .txt formats)."""
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(code)
         print(f"✓ Saved Tamarin code to: {output_file}")
+        
+        # Also save as .txt file
+        txt_file = Path(str(output_file).replace('.spthy', '.txt'))
+        with open(txt_file, 'w', encoding='utf-8') as f:
+            f.write(code)
+        print(f"✓ Saved Tamarin code to: {txt_file}")
     
     def validate_tamarin_code(self, tamarin_file: Path) -> Tuple[bool, str]:
         """Validate Tamarin code using tamarin-prover."""

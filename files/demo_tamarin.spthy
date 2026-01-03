@@ -1,0 +1,64 @@
+theory Simple_Secure_Channel
+begin
+
+/* 1. Setup and Built-ins */
+builtins: asymmetric-encryption, signing
+
+/* 2. Key Generation (PKI)
+   Equivalent to ProVerif: new skA; out(c, pk(skA)) ... */
+rule Register_Key:
+    [ Fr(~sk) ]  // Generate a fresh private key
+  --[ ]->
+    [ !Ltk($A, ~sk),       // Store Long-term Key (persistent fact)
+      !Pk($A, pk(~sk)),    // Store Public Key (persistent fact)
+      Out(pk(~sk))         // Publish Public Key to network
+    ]
+
+/* 3. Alice Process - Sender 
+   Equivalent to ProVerif: out(c, encrypt(secretMessage, pkB)) */
+rule Alice_Send:
+    let
+        m = ~secretMessage      // Create a fresh secret message
+        ciphertext = aenc(m, pkB) // Encrypt with Receiver's PK
+    in
+    [ 
+      Fr(~secretMessage),       // Generate fresh nonce/message
+      !Pk($B, pkB)              // Lookup Receiver's Public Key
+    ]
+  --[ 
+      SendMsg($A, $B, m),       // Log Event: A sent m to B
+      Secret(m)                 // Log Event: m is intended to be secret
+    ]->
+    [ Out(ciphertext) ]
+
+/* 4. Bob Process - Receiver 
+   Equivalent to ProVerif: in(c, msg); let plaintext = decrypt(msg, skB) */
+rule Bob_Recv:
+    let
+        m = adec(ciphertext, ~skB) // Decrypt using own Private Key
+    in
+    [ 
+      In(ciphertext),           // Receive message from network
+      !Ltk($B, ~skB)            // Lookup own Private Key
+    ]
+  --[ 
+      RecvMsg($A, $B, m)        // Log Event: B received m (assumed from A)
+    ]->
+    [ ]
+
+/* 5. Lemmas (Security Properties) */
+
+/* Secrecy 
+   Equivalent to ProVerif: query attacker(secretMessage). */
+lemma Secrecy:
+    "All m #i. 
+      Secret(m) @i ==> not (Ex #j. K(m) @j)"
+
+/* Authentication / Correspondence
+   Equivalent to ProVerif: query ... event(RecvMsg) ==> event(SendMsg) */
+lemma Authentication:
+    "All x y m #i. 
+      RecvMsg(x, y, m) @i ==> 
+      (Ex #j. SendMsg(x, y, m) @j & j < i)"
+
+end

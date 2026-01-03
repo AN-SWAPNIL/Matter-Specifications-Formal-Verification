@@ -1062,7 +1062,7 @@ Split into **TWO transitions:**
 - ✅ Action: `["tempOptions := apply_options(...)"]`
 
 ---
-## ANALYSIS METHODOLOGY (15-STEP PROCEDURE)
+## ANALYSIS METHODOLOGY (16-STEP PROCEDURE)
 
 1. **Identify cluster type**: state-based, timer-driven, mode-based, measurement, etc.
 2. **Extract key attributes**: Attributes that define operational states (consider quality flags: read-only, reportable, writable)
@@ -1077,8 +1077,28 @@ Split into **TWO transitions:**
 11. **Add stay transitions**: Include state continuation for timer extensions and command repetitions
 12. **Enforce feature constraints**: Add guard conditions that block prohibited commands
 13. **Create definitions**: Document all technical terms, functions, and domain-specific concepts
-14. **Validate against spec**: Ensure all features and constraints are correctly represented
-15. **Ensure complete coverage**: All commands, events, and data type interactions included
+14. **Extract security properties**: Identify security-critical behaviors and formal properties to verify
+15. **Validate against spec**: Ensure all features and constraints are correctly represented
+16. **Ensure complete coverage**: All commands, events, and data type interactions included
+
+---
+## STEP 10: SECURITY PROPERTY EXTRACTION (CRITICAL FOR FORMAL VERIFICATION)
+
+**Identify security-critical properties that can be formally verified:**
+
+### Property Types:
+1. **Reachability**: Can certain states be reached? Should invalid states be unreachable?
+2. **Secrecy**: Are sensitive values (keys, credentials) protected?
+3. **Authentication**: Are command sources properly verified?
+4. **Integrity**: Can attribute values be corrupted or manipulated?
+5. **Availability**: Can the device be made unresponsive (DoS)?
+
+### Security Property Extraction Guidelines:
+1. **Identify boundary conditions**: min/max attribute values, empty lists, reserved values
+2. **Find input validation requirements**: valid ranges, mandatory fields, format constraints
+3. **Locate state invariant violations**: invalid attribute combinations, undefined states
+4. **Check command authorization**: fabric-scoped, access-controlled operations
+5. **Document expected vs. actual behavior**: spec requirement vs. implementation risk
 
 ---
 ## OUTPUT STRUCTURE
@@ -1137,6 +1157,16 @@ Return raw JSON only:
         "description": "reason_for_dependency"
       }}
     ],
+    "security_properties": [
+      {{
+        "property_name": "descriptive_name",
+        "property_type": "reachability|secrecy|authentication|integrity|availability",
+        "description": "what_the_property_verifies",
+        "formal_specification": "formal_logic_or_query_pattern",
+        "attack_vector": "description_of_potential_attack",
+        "mitigation": "how_spec_prevents_this_attack"
+      }}
+    ],
     "metadata": {{
       "generation_timestamp": "ISO_8601",
       "generation_attempts": 1,
@@ -1166,6 +1196,9 @@ Return raw JSON only:
 - [ ] Data type enums/bitmaps applied in guards
 - [ ] Definitions explain terms clearly (no algorithms)
 - [ ] References properly document external dependencies
+- [ ] Security properties extracted for formal verification
+- [ ] Boundary conditions identified and documented
+- [ ] Input validation requirements captured
 - [ ] Metadata complete and accurate
 - [ ] JSON is valid and parseable
 - [ ] NO markdown code blocks in output
@@ -1175,13 +1208,14 @@ Return raw JSON only:
 ---
 ## CRITICAL REMINDERS
 
-1. **Tamarin Compatibility**: This FSM will be converted to Tamarin. Actions must be atomic.
+1. **Tamarin/ProVerif Compatibility**: This FSM will be converted to formal models. Actions must be atomic.
 2. **Specification Accuracy**: Adhere strictly to provided text. Do not hallucinate features.
 3. **Completeness**: Cover all commands, events, timers, and feature combinations.
 4. **Clarity**: States and transitions should be self-documenting.
 5. **Data Type Usage**: Apply enums, bitmaps, and constraints from specification.
 6. **Quality Flags**: Model read-only, writable, and reportable attribute behaviors.
 7. **Fabric Sensitivity**: Consider fabric-scoped attributes where applicable.
+8. **Security Properties**: Extract verifiable security properties for formal analysis.
 """
 
 
@@ -3544,14 +3578,14 @@ Expert converter for Matter FSM → Tamarin theories. Focus: **termination, effi
 
 ### ✅ VALID Patterns
 ```tamarin
-// Single functions block
+// Single functions block - NO action facts, NO command constants (use strings instead)
 functions: b_true/0, b_false/0, st_Off/0, st_On/0, tv_zero/0, tv_pos/0, tv_ffff/0
 
 // Rule structure - premises are ONLY facts, no logic operators
 rule RuleName:
   let var1 = term1 in
   [ Premise(x), !Config(tid, f) ]
---[ Action(x) ]->
+--[ Action(x, 'command_name') ]->
   [ Conclusion(z) ]
 
 // Persistent config: !Config(tid, feature1, feature2)
@@ -3561,8 +3595,20 @@ rule RuleName:
 
 ### ❌ INVALID Patterns (PARSING ERRORS)
 ```tamarin
+theory MyTheory:    // WRONG: no colon after theory name
+begin
+
 functions: true/0
 functions: false/0   // WRONG: multiple blocks
+
+facts:              // WRONG: no facts: section exists in Tamarin
+  St/7,
+  Config/2
+
+functions: ClusterInit/1, Command/2  // WRONG: action facts in functions
+functions: MoveToLevel/0, MoveToLevelWithOnOff/0  // WRONG: prefix conflict
+
+--[ Command(tid, MoveToLevel) ]->  // WRONG: use strings not functions
 
 [ St(tid, s1) | St(tid, s2) ]  // WRONG: disjunctions in premises
 [ St(~tid, _, GSC) ]           // WRONG: underscore wildcards
@@ -3618,10 +3664,10 @@ rule Init_LT_DF:
   [ St(~tid, st_OffIdle, b_true, tv_zero, tv_zero),
     !Config(~tid, f_LT, f_DF) ]
 
-// Rules check config
-rule Cmd_On [requires LT]:
+// Rules check config and use QUOTED STRINGS for command names
+rule Cmd_On:
   [ St(~tid, st_OffIdle, GSC, OT, OW), !Config(~tid, f_LT, DF) ]
---[ Command(~tid, 'On') ]->
+--[ Command(~tid, 'On'), StateTransition(~tid, st_OffIdle, st_OnIdle) ]->
   [ St(~tid, st_OnIdle, GSC, OT, OW) ]
 ```
 
@@ -3694,15 +3740,19 @@ begin
 //========================================
 // SECTION 1: Function Declarations (SINGLE BLOCK)
 //========================================
+builtins: hashing
+
 functions:
   // Boolean values
   b_true/0, b_false/0,
   // State enumerations
-  st_State1/0, st_State2/0, ...,
+  st_State1/0, st_State2/0,
   // Abstract timer values
   tv_zero/0, tv_pos/0, tv_ffff/0,
   // Feature flags
   f_Feature1/0, f_Feature2/0
+  // NOTE: Do NOT declare action facts like ClusterInit/1, Command/2 here
+  // NOTE: Do NOT declare command name constants - use quoted strings instead
 
 //========================================
 // SECTION 2: Initialization Rules
@@ -3718,8 +3768,11 @@ rule Init_FeatureCombo:
 //========================================
 rule Cmd_CommandName_GuardVariant:
   [ St(~tid, st_SourceState, attrs...), !Config(~tid, features...) ]
---[ Command(~tid, 'CommandName'), StateTransition(~tid, st_Source, st_Target) ]->
+--[ Command(~tid, 'CommandName'), StateTransition(~tid, st_SourceState, st_TargetState) ]->
   [ St(~tid, st_TargetState, new_attrs...) ]
+
+// CRITICAL: Use QUOTED STRINGS like 'MoveToLevel' not function symbols
+// This avoids prefix conflicts (e.g., MoveToLevel vs MoveToLevelWithOnOff)
 
 //========================================
 // SECTION 4: Timer Rules
@@ -3940,6 +3993,151 @@ Return ONLY valid Tamarin theory code:
 - Directly parseable by: `tamarin-prover --parse-only <file>.spthy`
 """
 
+
+# Tamarin Judge Prompt Template
+TAMARIN_JUDGE_PROMPT_TEMPLATE = """
+You are a Tamarin prover expert evaluating FSM-to-Tamarin conversions for Matter protocol clusters.
+
+Your task: Identify syntax/semantic errors and provide EXACT fixes with line-level guidance.
+
+## TAMARIN SYNTAX VALIDATION RULES
+
+### 1. FACT ARGUMENT SYNTAX (MOST COMMON ERROR)
+**Every argument MUST be separated by comma** - no exceptions!
+
+**Common Parse Errors:**
+- `unexpected "W" expecting "," or ")"` → Missing comma before variable starting with "W"
+- `unexpected letter expecting ","` → Missing comma between arguments
+- `unexpected "." expecting ","` → Period instead of comma (typo)
+
+**Examples:**
+```
+❌ St(~tid, state, OnTime OffWaitTime, GSC)     // Missing comma before OffWaitTime
+✅ St(~tid, state, OnTime, OffWaitTime, GSC)    // Correct
+
+❌ !Config(~tid, f_LT f_DF, f_OFFONLY)          // Missing comma before f_DF  
+✅ !Config(~tid, f_LT, f_DF, f_OFFONLY)         // Correct
+
+❌ StateTransition(~tid st_OnIdle, st_OffIdle)  // Missing comma after ~tid
+✅ StateTransition(~tid, st_OnIdle, st_OffIdle) // Correct
+```
+
+### 2. THEORY STRUCTURE
+Valid: `theory Name begin ... end`
+Invalid: `theory Name { ... }` (wrong braces)
+Invalid: Missing `begin` or `end`
+
+### 3. BUILTINS
+Valid: `builtins: hashing, symmetric-encryption`
+Invalid: `builtin: hashing` (wrong keyword)
+
+### 4. FUNCTIONS BLOCK
+Valid: `functions: name/arity, name2/arity2`
+Invalid: Multiple `functions:` blocks
+Invalid: `function: name/arity` (wrong keyword)
+
+### 5. RULE SYNTAX
+Valid: `rule RuleName: [ Facts ] --[ Actions ]-> [ Facts ]`
+Valid: `rule RuleName [variant]: ...`
+Invalid: `rule RuleName { ... }` (wrong syntax)
+Invalid: Missing `--[ ]->` structure
+
+### 6. FACT SYNTAX
+- Linear facts: `St(args)`
+- Persistent facts: `!Config(args)`
+- Fresh: `Fr(~x)`
+- Public input: `In($x)`
+- Output: `Out(x)`
+
+### 7. VARIABLE NAMING
+- Fresh variables: `~tid`, `~key`
+- Public variables: `$pk`
+- Regular variables: lowercase start
+
+### 8. RESTRICTION SYNTAX
+Valid: `restriction name: "All x #i. Fact(x)@i ==> condition"`
+Invalid: `not()` in rule premises (must use restrictions)
+
+### 9. LEMMA SYNTAX
+Valid: `lemma name: "All x #i. Fact(x)@i ==> ..."`
+Valid: `lemma name [sources]: "..."`
+Valid: `lemma name: exists-trace "Ex x #i. Fact(x)@i"`
+Invalid: Missing quotes around formula
+
+### 10. COMMENT SYNTAX
+Valid: `// Single line comment`
+Valid: `/* Block comment */`
+Invalid: Colons in comments can cause issues
+
+## SEMANTIC CHECKS
+
+1. **Arity Consistency**: All `St(...)` facts must have same number of arguments
+2. **Action Facts**: Must be declared or be standard facts
+3. **Variable Binding**: Variables in conclusions must appear in premises or be fresh
+4. **Function Usage**: Only use declared functions
+5. **No Negation in Premises**: Use restrictions for inequality checks
+
+## FSM COVERAGE CHECKS
+
+1. Every FSM state has a corresponding `st_StateName` constant
+2. Every FSM transition has a corresponding Tamarin rule
+3. Guards are pattern-matched in premises
+4. Inequality guards are split into multiple rules
+5. Timer values abstracted: `tv_zero`, `tv_pos`, `tv_ffff`
+6. Config vs State separation: Immutable in `!Config`, mutable in `St`
+7. Feature combinations handled via init rules
+
+## SECURITY PROPERTY CHECKS
+
+1. **Reachability lemmas**: `exists-trace` for valid executions
+2. **Sources lemmas**: Ensure all action facts have valid origins
+3. **Secrecy queries**: Check for attacker knowledge
+4. **Authentication**: Command sources verified
+5. **State invariants**: Invalid states should be unreachable
+
+## OUTPUT FORMAT (JSON ONLY)
+
+{{
+    "correct": true/false,
+    "explanation": "Detailed explanation with line-level diagnosis for parse errors",
+    "issues": [
+        "Line X: Specific issue description",
+        "Check all St(...) and !Config(...) facts for missing commas"
+    ],
+    "parse_errors": ["Exact errors from tamarin-prover"],
+    "syntax_fixes": [
+        {{
+            "line": 274,
+            "error": "St(~tid, state, OnTime OffWaitTime, GSC)",
+            "fix": "St(~tid, state, OnTime, OffWaitTime, GSC)",
+            "explanation": "Added missing comma between arguments"
+        }}
+    ],
+    "semantic_issues": [
+        "Fact X has inconsistent arity"
+    ],
+    "fsm_coverage": {{
+        "states_covered": ["st_Off", "st_On"],
+        "states_missing": [],
+        "transitions_covered": 5,
+        "transitions_missing": []
+    }},
+    "security_properties": {{
+        "reachability_lemmas": ["exec_turnon", "exec_turnoff"],
+        "sources_lemmas": ["sources"],
+        "missing_properties": []
+    }}
+}}
+
+Now evaluate:
+
+TAMARIN MODEL:
+{tamarin_model}
+
+SOURCE FSM JSON:
+{fsm_json}
+"""
+
 # FSM_TO_TAMARIN_PROMPT_TEMPLATE = """
 # # MATTER FSM → TAMARIN CONVERTER (COMPACT)
 
@@ -4060,3 +4258,915 @@ Return ONLY valid Tamarin theory code:
 
 # RETURN ONLY VALID TAMARIN CODE.
 # """
+
+# =============================================================================
+# PROVERIF MODEL GENERATION PROMPT
+# =============================================================================
+# Converts FSM JSON to ProVerif protocol specification for security verification
+# ProVerif uses applied pi calculus for modeling protocols and checking properties
+
+FSM_TO_PROVERIF_PROMPT_TEMPLATE = """
+# FSM to ProVerif Model Converter for Matter Protocol Clusters
+
+You are an expert in formal security verification using ProVerif (version 2.05+).
+Convert the provided FSM JSON model into a complete, syntactically correct ProVerif 
+specification (.pv file) that models the Matter protocol cluster behavior for security analysis.
+
+**FSM INPUT**: {fsm_json}
+
+================================================================================
+## CRITICAL ProVerif SYNTAX RULES (FROM OFFICIAL MANUAL v2.05)
+================================================================================
+
+EVERY declaration and statement MUST end with a PERIOD (.)
+
+### COMMENTS SYNTAX (VERY IMPORTANT)
+(* ProVerif uses (* ... *) for comments - NOT // or /* */ *)
+(* Nested comments ARE supported: (* outer (* inner *) outer *) *)
+(* WRONG: // this is not valid *)
+(* WRONG: /* this is not valid */ *)
+(* RIGHT: (* this is a valid comment *) *)
+
+**CRITICAL: ProVerif does NOT support string literals like "text"**
+- Use constants instead: const val_FALSE: bitstring. then use val_FALSE
+- NEVER use "TRUE", "FALSE", "On", etc. in code - always use declared constants
+
+================================================================================
+## 1. TYPE DECLARATIONS
+================================================================================
+type state.                  (* Custom types end with period *)
+type command.
+type endpoint.
+type duration.               (* Use this instead of time! *)
+type level.
+type attribute.
+type boolval.                (* REQUIRED: Custom boolean for function returns *)
+
+(* RESERVED/BUILT-IN TYPES - DO NOT REDECLARE (Manual p.17): *)
+(* time      - RESERVED! Use "duration" or "timestamp" instead *)
+(* bitstring - built-in base type for binary data *)
+(* channel   - built-in for channel declarations *)
+(* bool      - built-in boolean (has true, false constants) *)
+(* nat       - built-in natural numbers *)
+(* any_type  - internal polymorphic type *)
+(* sid       - session identifier type *)
+
+(* WRONG: type time.      ERROR: "identifier time already defined" *)
+(* WRONG: type bitstring. ERROR: already built-in *)
+(* WRONG: type bool.      ERROR: already built-in *)
+(* RIGHT: type duration.  Use custom name instead of time *)
+
+(* CRITICAL LIMITATION: Functions cannot return built-in 'bool' type *)
+(* - Built-in bool has constants: true, false *)
+(* - User functions CAN use bool in IF statements: if true then ... *)
+(* - User functions CANNOT return bool: fun f(): bool causes type error *)
+(* - Solution: Define custom boolval type with btrue, bfalse constants *)
+(* - Use pattern matching: let btrue = f() in ... else ... *)
+
+================================================================================
+## 2. CHANNEL DECLARATIONS
+================================================================================
+free c: channel.                     (* Public channel - attacker can read/write *)
+free internal: channel [private].    (* Private channel - no attacker access *)
+channel pub.                         (* Shorthand for: free pub: channel. *)
+
+================================================================================
+## 3. FREE NAME DECLARATIONS
+================================================================================
+free secret_value: bitstring [private].  (* Private name, unknown to attacker *)
+free public_value: bitstring.            (* Public name, known to attacker *)
+
+================================================================================
+## 4. CONSTANT DECLARATIONS
+================================================================================
+(* Custom boolean constants - REQUIRED for functions returning boolval *)
+const btrue: boolval.
+const bfalse: boolval.
+
+const st_Off: state.                 (* Each const ends with period *)
+const st_On: state.
+const cmd_On: command.
+const cmd_Off: command.
+const val_TRUE: bitstring.           (* Use constants, NOT "TRUE" string *)
+const val_FALSE: bitstring.          (* Use constants, NOT "FALSE" string *)
+
+(* Multiple constants of same type *)
+const st_Idle, st_Moving, st_Done: state.
+
+(* Data constructors - projection destructors auto-generated *)
+const marker: bitstring [data].
+
+================================================================================
+## 5. FUNCTION (CONSTRUCTOR) DECLARATIONS
+================================================================================
+fun senc(bitstring, bitstring): bitstring.    (* Symmetric encryption *)
+fun pk(bitstring): bitstring.                  (* Public key from private *)
+fun aenc(bitstring, bitstring): bitstring.    (* Asymmetric encryption *)
+fun h(bitstring): bitstring.                   (* Hash function *)
+fun pair(bitstring, bitstring): bitstring.    (* Pairing function *)
+
+(* Data constructor - auto-generates projection destructors *)
+fun tuple3(bitstring, bitstring, bitstring): bitstring [data].
+
+(* Private constructor - not available to attacker *)
+fun internal_op(bitstring): bitstring [private].
+
+(* Type converter - allows silent type conversion *)
+fun bits_to_state(bitstring): state [typeConverter].
+
+(* CRITICAL: Comparison functions MUST return boolval, NOT bool *)
+fun eq_state(state, state): boolval.
+fun eq_command(command, command): boolval.
+fun eq_level(level, level): boolval.
+fun gt_level(level, level): boolval.
+fun lte_level(level, level): boolval.
+
+(* Boolean operations on boolval type *)
+fun band(boolval, boolval): boolval.    (* AND operation *)
+fun bor(boolval, boolval): boolval.     (* OR operation *)
+
+(* Message constructors MUST have [data] attribute for pattern matching *)
+fun cmdMsg(command, level, duration): bitstring [data].
+fun stateMsg(state, level, duration): bitstring [data].
+
+(* WRONG: fun eq_state(state, state): bool.  Cannot return built-in bool! *)
+(* WRONG: fun cmdMsg(...): bitstring.        Missing [data] for pattern match! *)
+(* RIGHT: fun eq_state(state, state): boolval.  Returns custom type *)
+(* RIGHT: fun cmdMsg(...): bitstring [data].   Enables let cmdMsg(...) = m in *)
+
+================================================================================
+## 6. DESTRUCTOR DECLARATIONS (reduc)
+================================================================================
+(* Basic destructor *)
+reduc forall m: bitstring, k: bitstring; sdec(senc(m,k),k) = m.
+reduc forall m: bitstring, sk: bitstring; adec(aenc(m,pk(sk)),sk) = m.
+
+(* Multiple rewrite rules for same destructor *)
+reduc forall x: bitstring; fst((x,y)) = x;
+      forall y: bitstring; snd((x,y)) = y.
+
+(* Extended destructor with otherwise - evaluated in order *)
+fun eq(bitstring, bitstring): bool
+reduc forall x: bitstring; eq(x, x) = true
+otherwise forall x: bitstring, y: bitstring; eq(x, y) = false.
+
+(* Destructor that handles failure *)
+fun test(bool, bitstring, bitstring): bitstring
+reduc forall x: bitstring, y: bitstring; test(true, x, y) = x
+otherwise forall c: bool, x: bitstring, y: bitstring; test(c, x, y) = y
+otherwise forall x: bitstring, y: bitstring; test(fail, x, y) = y.
+
+================================================================================
+## 7. EVENT DECLARATIONS
+================================================================================
+(* CRITICAL: Events use types ONLY, no variable names *)
+event CommandReceived(command).
+event StateTransition(state, state).
+event CommandProcessed(command, state, state).
+event InvalidCommand(command).
+event AttributeChanged(attribute, bitstring).
+event TimerExpired(endpoint).
+
+(* WRONG: event E(x: state).     NO variable names in declaration! *)
+(* WRONG: event E(state)         Missing period! *)
+(* RIGHT: event E(state, state). Types only, ends with period *)
+
+================================================================================
+## 8. QUERY DECLARATIONS  
+================================================================================
+(* CRITICAL: event() and inj-event() MUST wrap the event call in parentheses *)
+
+(* === Reachability Queries === *)
+(* Test if an event can be executed - returns "not F is true" if unreachable *)
+query event(StateTransition(st_Off, st_On)).
+
+(* With variables - declare variable types before semicolon *)
+query ep: endpoint; event(TimerExpired(ep)).
+query s1: state, s2: state; event(StateTransition(s1, s2)).
+
+(* === Secrecy Queries === *)
+(* Can attacker learn this value? Returns true if secret *)
+query attacker(secret_value).
+
+(* Secrecy in specific phase *)
+query attacker(secret_value) phase 1.
+
+(* Message on channel *)
+query mess(internal, secret_value).
+
+(* === Correspondence Queries === *)
+(* Non-injective: if A happened then B happened before *)
+query s1: state, s2: state; 
+    event(StateTransition(s1, s2)) ==> event(CommandReceived(cmd_On)).
+
+(* Disjunction in conclusion *)
+query cmd: command;
+    event(CommandExecuted(cmd)) ==> 
+    event(CommandReceived(cmd_On)) || event(CommandReceived(cmd_Off)).
+
+(* Conjunction in conclusion *)
+query cmd: command, s: state;
+    event(CommandExecuted(cmd)) ==> 
+    event(CommandReceived(cmd)) && event(StateEntered(s)).
+
+(* === Injective Correspondence === *)
+(* One-to-one: each A corresponds to distinct B *)
+query cmd: command;
+    inj-event(CommandProcessed(cmd, st_Off, st_On)) ==> 
+    inj-event(CommandReceived(cmd)).
+
+(* With equality constraint *)
+query x: command, y: state;
+    event(Done(x)) ==> event(Started(y)) && x = cmd_On.
+
+(* === Public Variables in Queries === *)
+(* Declare variables as known to attacker *)
+query x: bitstring; event(E(x)) public_vars x.
+
+================================================================================
+## 9. EQUATION DECLARATIONS (for algebraic properties)
+================================================================================
+(* Boolean algebra equations - REQUIRED for band/bor operations *)
+equation forall x: boolval, y: boolval; band(btrue, btrue) = btrue.
+equation forall x: boolval, y: boolval; band(btrue, bfalse) = bfalse.
+equation forall x: boolval, y: boolval; band(bfalse, x) = bfalse.
+equation forall x: boolval, y: boolval; bor(btrue, x) = btrue.
+equation forall x: boolval, y: boolval; bor(bfalse, bfalse) = bfalse.
+equation forall x: boolval, y: boolval; bor(bfalse, btrue) = btrue.
+
+(* Diffie-Hellman style equation *)
+equation forall x: bitstring, y: bitstring; 
+    exp(exp(g, x), y) = exp(exp(g, y), x).
+
+(* Symmetric encryption property *)
+equation forall m: bitstring, k: bitstring; sdec(senc(m, k), k) = m.
+equation forall m: bitstring, k: bitstring; senc(sdec(m, k), k) = m.
+
+================================================================================
+## 10. FUNCTION MACROS (letfun)
+================================================================================
+(* Define reusable term expressions *)
+letfun aenc_fresh(x: bitstring, y: bitstring) = 
+    new r: bitstring; internal_aenc(x, y, r).
+
+letfun check_and_decrypt(cipher: bitstring, sk: bitstring) =
+    let msg = adec(cipher, sk) in msg.
+
+(* WARNING: letfun defines TERMS not processes - cannot use in/out/events *)
+(* For FSM logic, use process macros (let MacroName() = ...) instead *)
+
+================================================================================
+## 11. PROCESS MACRO DEFINITIONS
+================================================================================
+(* CRITICAL: ProVerif does NOT support direct recursion in process macros *)
+(* WRONG: let P(x) = ... P(y). causes "process P not defined" error *)
+(* Solution: Use channel-based state loop with replication *)
+
+(* Channel-based FSM loop - NO parameters, reads state from channel *)
+let DeviceFSM() =
+    (* Read current state from private channel *)
+    in(c_int_state, stMsg: bitstring);
+    let stateMsg(curState: state, curLevel: level, remTime: duration) = stMsg in
+    
+    (* Process command *)
+    in(c_cmd, m: bitstring);
+    let cmdMsg(rcmd: command, rLevel: level, rTime: duration) = m in
+    event CommandReceived(rcmd, curState);
+    
+    (* Conditionals use let btrue = ... in pattern, NOT if-then *)
+    let btrue = eq_command(rcmd, cmd_Start) in
+        (
+            event StateTransition(curState, st_Active);
+            (* Write new state to channel instead of recursion *)
+            out(c_int_state, stateMsg(st_Active, rLevel, rTime))
+        )
+    else let btrue = eq_command(rcmd, cmd_Stop) in
+        (
+            event StateTransition(curState, st_Idle);
+            out(c_int_state, stateMsg(st_Idle, curLevel, dur_zero))
+        )
+    else
+        (
+            event InvalidCommand(rcmd, curState);
+            out(c_int_state, stateMsg(curState, curLevel, remTime))
+        ).
+
+(* CRITICAL: Conditionals with boolval MUST use let btrue = ... in pattern *)
+(* WRONG: if eq_state(s1, s2) then ... causes type error *)
+(* RIGHT: let btrue = eq_state(s1, s2) in ... *)
+
+================================================================================
+## 12. PROCESS CONSTRUCTS
+================================================================================
+(* Null process *)
+0
+
+(* Parallel composition *)
+P | Q
+
+(* Replication - unbounded copies *)
+!P
+
+(* Name restriction - create fresh value *)
+new n: type; P
+
+(* Input from channel with type *)
+in(c, x: type); P
+
+(* Output to channel *)  
+out(c, M); P
+
+(* Conditional with built-in equality - native bool type *)
+if M = N then P else Q       (* = returns built-in bool *)
+
+(* Conditional with custom boolval - MUST use let pattern matching *)
+let btrue = eq_state(s1, s2) in P else Q
+let btrue = band(eq_state(s1, s2), eq_level(l1, l2)) in P else Q
+
+(* Complex conditions with boolean operations *)
+let btrue = band(eq_state(cur, st_On), gt_level(lv, min)) in 
+    (* Both conditions true *)
+    out(c, success)
+else
+    (* At least one condition false *)
+    out(c, failure)
+
+(* CRITICAL: Pattern matching is the ONLY way to check boolval results *)
+(* - IF statements work with: built-in = operator, true/false constants *)
+(* - IF statements fail with: custom functions returning boolval *)
+(* - LET pattern works with: any function returning boolval *)
+(* Example: let btrue = condition in (true_branch) else (false_branch) *)
+
+(* Let binding with pattern matching *)
+let x = M in P else Q        (* else branch for pattern match failure *)
+let x: type = M in P         (* explicit type *)
+let (x: type, y: type) = M in P else Q    (* Tuple pattern *)
+let (=expected, x: type) = M in P else Q  (* Equality in pattern *)
+
+(* Event execution - then continue with P *)
+event e(M1, ..., Mn); P
+
+(* Insert into table *)
+insert tbl(M1, ..., Mn); P
+
+(* Get from table with pattern *)
+get tbl(=pattern, x: type) in P else Q
+
+(* Phase for multi-phase protocols *)
+phase 1; P
+
+================================================================================
+## 13. MAIN PROCESS (REQUIRED)
+================================================================================
+(* For channel-based FSM loop: initialize state on channel then start replication *)
+process
+    (* Initialize FSM parameters *)
+    new initLevel: level;
+    let initRemTime: duration = dur_zero in
+    (* Send initial state to private channel *)
+    out(c_int_state, stateMsg(st_Idle, initLevel, initRemTime)) |
+    (* Start replicated FSM loop - reads state, processes command, writes new state *)
+    !DeviceFSM()
+
+(* Traditional process with secrets *)
+process
+    new secret: bitstring;
+    (
+        !DeviceProcess(st_Off)
+        |
+        out(c, pk(secret))
+    )
+
+================================================================================
+## COMPLETE WORKING EXAMPLE (OnOff Cluster)
+================================================================================
+
+(* ProVerif model for Matter OnOff Cluster *)
+(* Generated from FSM specification *)
+
+(* === Type Declarations === *)
+type state.
+type command.
+type boolval.           (* Custom boolean type *)
+
+(* === Channel Declarations === *)
+free c: channel.                    (* Public command channel *)
+free c_int_state: channel [private].   (* Internal state channel *)
+
+(* === State Constants === *)
+const st_Off: state.
+const st_On: state.
+
+(* === Command Constants === *)
+const cmd_Off: command.
+const cmd_On: command.
+const cmd_Toggle: command.
+
+(* === Boolean Constants === *)
+const btrue: boolval.
+const bfalse: boolval.
+
+(* === Functions === *)
+fun eq_state(state, state): boolval.
+fun eq_command(command, command): boolval.
+fun stateMsg(state): bitstring [data].
+fun cmdMsg(command): bitstring [data].
+
+(* === Boolean Algebra Equations === *)
+equation forall x: boolval, y: boolval; band(btrue, btrue) = btrue.
+equation forall x: boolval, y: boolval; band(btrue, bfalse) = bfalse.
+equation forall x: boolval, y: boolval; band(bfalse, x) = bfalse.
+
+(* === Events === *)
+event CommandReceived(command).
+event StateChanged(state, state).
+event CommandExecuted(command, state).
+
+(* === Queries === *)
+(* Can we reach the On state? *)
+query event(StateChanged(st_Off, st_On)).
+
+(* Commands must be received before state changes *)
+query s1: state, s2: state;
+    event(StateChanged(s1, s2)) ==> event(CommandReceived(cmd_On)) || event(CommandReceived(cmd_Off)) || event(CommandReceived(cmd_Toggle)).
+
+(* === Device FSM - Channel-based loop === *)
+let DeviceFSM() =
+    (* Read current state from channel *)
+    in(c_int_state, stMsg: bitstring);
+    let stateMsg(curState: state) = stMsg in
+    
+    (* Read command *)
+    in(c, m: bitstring);
+    let cmdMsg(cmd: command) = m in
+    event CommandReceived(cmd);
+    
+    (* Process based on current state - use let btrue pattern *)
+    let btrue = eq_state(curState, st_Off) in
+        (
+            (* State is Off - check which command *)
+            let btrue = eq_command(cmd, cmd_On) in
+                (
+                    event StateChanged(st_Off, st_On);
+                    out(c_int_state, stateMsg(st_On));
+                    out(c, st_On)
+                )
+            else let btrue = eq_command(cmd, cmd_Toggle) in
+                (
+                    event StateChanged(st_Off, st_On);
+                    out(c_int_state, stateMsg(st_On));
+                    out(c, st_On)
+                )
+            else
+                (
+                    (* Invalid command for Off state *)
+                    out(c_int_state, stateMsg(st_Off));
+                    out(c, st_Off)
+                )
+        )
+    else
+        (
+            (* State is On - check which command *)
+            let btrue = eq_command(cmd, cmd_Off) in
+                (
+                    event StateChanged(st_On, st_Off);
+                    out(c_int_state, stateMsg(st_Off));
+                    out(c, st_Off)
+                )
+            else let btrue = eq_command(cmd, cmd_Toggle) in
+                (
+                    event StateChanged(st_On, st_Off);
+                    out(c_int_state, stateMsg(st_Off));
+                    out(c, st_Off)
+                )
+            else
+                (
+                    (* Invalid command for On state *)
+                    out(c_int_state, stateMsg(st_On));
+                    out(c, st_On)
+                )
+        ).
+
+(* === Main Process === *)
+process
+    (* Initialize state on channel *)
+    out(c_int_state, stateMsg(st_Off)) |
+    (* Start replicated FSM loop *)
+    !DeviceFSM()
+
+================================================================================
+## FSM TO PROVERIF MAPPING
+================================================================================
+
+### States -> const declarations
+FSM state "Off" -> const st_Off: state.
+FSM state "On"  -> const st_On: state.
+
+### Commands/Triggers -> const declarations  
+FSM trigger "On()" -> const cmd_On: command.
+FSM trigger "Off()" -> const cmd_Off: command.
+
+### Transitions -> let btrue pattern branches
+FSM transition Off --On()--> On becomes:
+    let btrue = eq_state(curState, st_Off) in
+        let btrue = eq_command(cmd, cmd_On) in
+            event StateChanged(st_Off, st_On);
+            out(c_int_state, stateMsg(st_On))
+
+### Guards -> additional boolval conditions with band
+FSM guard "[LT feature AND level > 0]" becomes:
+    let btrue = band(eq_feature(hasLT, btrue), gt_level(lv, lv_zero)) in ...
+
+### Actions -> events and state updates
+FSM action "set OnOff=TRUE, transition to On" becomes:
+    event AttributeSet(attr_OnOff, val_TRUE);
+    event StateChanged(oldState, st_On);
+    out(c_int_state, stateMsg(st_On, newAttrs))
+
+### FSM loop structure
+FSM with recursive state transitions becomes:
+    1. Define stateMsg() function with [data] attribute
+    2. Create DeviceFSM() process macro (no parameters)
+    3. Read state from c_int_state channel
+    4. Process command with let btrue = ... patterns
+    5. Write new state to c_int_state channel
+    6. Main process: initialize state, then !DeviceFSM()
+
+### Timer events -> separate process or phase
+FSM timer expiry becomes:
+    phase 1; event TimerExpired(ep); ... 
+    OR use a separate replicated process monitoring timers
+
+================================================================================
+## CRITICAL SYNTAX WARNINGS (COMMON ERRORS)
+================================================================================
+
+1. **NO STRING LITERALS**: ProVerif does NOT support "quoted strings"
+   - WRONG: event AttributeSet(attr_OnOff, "FALSE");
+   - WRONG: out(c, "hello");
+   - RIGHT: event AttributeSet(attr_OnOff, val_FALSE);
+   - Always declare constants first, then use them!
+
+2. **ALL DECLARATIONS NEED PERIODS**: Every type, const, free, event, query, let ends with .
+   - WRONG: type state
+   - WRONG: const cmd_On: command
+   - RIGHT: type state.
+   - RIGHT: const cmd_On: command.
+
+3. **COMMENTS USE (* ... *) ONLY**:
+   - WRONG: // this is a comment
+   - WRONG: /* this is a comment */
+   - RIGHT: (* this is a comment *)
+   - Nested comments work: (* outer (* inner *) outer *)
+
+4. **EVENT DECLARATIONS - TYPES ONLY, NO VARIABLES**:
+   - WRONG: event E(x: state).
+   - WRONG: event E(cmd: command, st: state).
+   - RIGHT: event E(state).
+   - RIGHT: event E(command, state).
+
+5. **QUERY SYNTAX - MUST USE event() WRAPPER**:
+   - WRONG: query event StateChanged(st_Off, st_On).
+   - WRONG: query StateChanged(st_Off, st_On).
+   - RIGHT: query event(StateChanged(st_Off, st_On)).
+   - RIGHT: query x: state; event(E(x)).
+
+6. **RESERVED TYPES - DO NOT REDECLARE** (from ProVerif manual p.17):
+   RESERVED IDENTIFIERS (will cause "identifier already defined" error):
+   - time      - Use "duration" or "timestamp" instead
+   - bitstring - Built-in for binary data
+   - channel   - Built-in for channels
+   - bool      - Built-in boolean (true, false are constants)
+   - nat       - Built-in natural numbers
+   - any_type  - Internal polymorphic type
+   - sid       - Session identifier type
+   - true      - Built-in bool constant
+   - false     - Built-in bool constant
+   
+   WRONG: type time.        (* Error: identifier time already defined *)
+   WRONG: type bitstring.   (* Error: already built-in *)
+   WRONG: const true: bool. (* Error: true already defined *)
+   RIGHT: type duration.    (* Use custom names *)
+
+7. **FUNCTION RETURN TYPES - CANNOT RETURN BUILT-IN BOOL**:
+   CRITICAL LIMITATION: User-defined functions CANNOT return built-in 'bool' type
+   - Built-in bool can ONLY be used in IF statements: if true then ...
+   - User functions attempting to return bool cause type errors
+   - Solution: Define custom type boolval with constants btrue, bfalse
+   
+   WRONG: fun eq_state(state, state): bool.        (* Type error! *)
+   WRONG: if eq_state(s1, s2) then P else Q         (* Cannot call! *)
+   RIGHT: type boolval.                             (* Custom type *)
+   RIGHT: const btrue: boolval.                     (* Custom constants *)
+   RIGHT: const bfalse: boolval.
+   RIGHT: fun eq_state(state, state): boolval.      (* Returns custom type *)
+   RIGHT: let btrue = eq_state(s1, s2) in P else Q  (* Pattern matching *)
+   
+   REASON: ProVerif's type system restricts bool to built-in operations only
+
+8. **PROCESS MACRO CALLS END WITH PERIOD**:
+   - WRONG: MacroA(x); MacroB(y).    (* Cannot have ; after macro call *)
+   - WRONG: if cond then MacroA(x); MacroB(y).
+   - RIGHT: MacroA(x).               (* Period ends the branch *)
+   - RIGHT: if cond then MacroA(x) else MacroB(y).
+   - For recursion, put recursive call INSIDE the macro, not after
+
+9. **PROCESS MACRO RECURSION - NOT SUPPORTED DIRECTLY**:
+   CRITICAL: ProVerif does NOT support direct recursive process macro calls
+   - Recursive calls like let P(x) = ... P(y). cause "process P not defined"
+   - Solution: Channel-based state loop with replication
+   
+   WRONG: let FSM(state) = ... FSM(newState).       (* Parse error! *)
+   RIGHT: let FSM() = in(c_state, s); ... out(c_state, s'). (* Channel loop *)
+   RIGHT: process out(c_state, initState) | !FSM()  (* Initialize and replicate *)
+   
+   PATTERN: (1) Define stateMsg(...) with [data], (2) FSM reads/writes channel,
+            (3) Main initializes state then starts !FSM()
+
+10. **PROCESS GROUPING - USE PARENTHESES**:
+   - else binds to nearest if/let, use parens to override
+   - AMBIGUOUS: if A then if B then P else Q else R
+   - CLEAR: if A then (if B then P else Q) else R
+
+11. **INPUT/OUTPUT SYNTAX**:
+   - WRONG: receive(c, x)     (* Use 'in' not 'receive' *)
+   - WRONG: send(c, x)        (* Use 'out' not 'send' *)
+   - WRONG: in(c, x)          (* Missing type annotation *)
+   - RIGHT: in(c, x: type); P
+   - RIGHT: out(c, M); P
+
+12. **LET BINDING PATTERN MATCHING**:
+    - For destructors that can fail, use else branch
+    - WRONG: let x = adec(cipher, sk) in P  (* No else for failure *)
+    - RIGHT: let x = adec(cipher, sk) in P else Q
+    
+13. **MESSAGE CONSTRUCTORS - REQUIRE [data] ATTRIBUTE**:
+    - Functions used in pattern matching MUST have [data] attribute
+    - Without [data], pattern matching will fail
+    
+    WRONG: fun stateMsg(state, level): bitstring.
+    WRONG: let stateMsg(s, l) = msg in ...           (* Pattern fails! *)
+    RIGHT: fun stateMsg(state, level): bitstring [data].
+    RIGHT: let stateMsg(s, l) = msg in ...           (* Works! *)
+
+================================================================================
+## OUTPUT REQUIREMENTS
+================================================================================
+
+Return ONLY valid ProVerif code. Do NOT include:
+- Markdown code blocks (no ``` markers)
+- Explanatory text before or after
+- Line numbers
+- String literals like "TRUE" or "FALSE" - use constants instead
+- C-style comments (// or /* */)
+
+The output must be directly parseable by: proverif filename.pv
+
+Required sections in order:
+1. Comment header with cluster name (* ... *)
+2. Type declarations (NOT reserved types)
+3. Channel declarations
+4. Constant declarations (states, commands, attributes, values)
+5. Event declarations (types only)
+6. Query declarations
+7. Process macro definitions
+8. Main process
+
+Generate the complete ProVerif model now.
+"""
+
+
+# ProVerif Judge Prompt Template
+PROVERIF_JUDGE_PROMPT_TEMPLATE = """
+You are a ProVerif expert evaluating FSM-to-ProVerif conversions for Matter protocol clusters.
+
+Your task: Identify syntax/semantic errors and provide fixes with line-level guidance.
+
+================================================================================
+## ProVerif SYNTAX VALIDATION RULES (Official Manual v2.05)
+================================================================================
+
+### 1. DECLARATIONS END WITH PERIOD
+Valid: `type state.`
+Valid: `const st_Off: state.`  
+Valid: `free c: channel.`
+Invalid: `type state` (missing period)
+Invalid: `const st_Off: state` (missing period)
+
+### 2. TYPE DECLARATIONS
+Valid: `type state.`
+Valid: `type duration.`
+Invalid: `type: state.` (colon before name)
+Invalid: `type time.` (RESERVED - use duration instead)
+Invalid: `type bitstring.` (built-in, cannot redeclare)
+Invalid: `type bool.` (built-in, cannot redeclare)
+Invalid: `type nat.` (built-in, cannot redeclare)
+Invalid: `type channel.` (built-in, cannot redeclare)
+
+### 3. CHANNEL DECLARATIONS
+Valid: `free c: channel.`
+Valid: `free secret: channel [private].`
+Valid: `channel c.`  (* Shorthand for free c: channel. *)
+Invalid: `channel: c.` (wrong syntax)
+
+### 4. CONSTANT DECLARATIONS
+Valid: `const st_Off: state.`
+Valid: `const cmd_On: command.`
+Valid: `const c1, c2, c3: state.` (multiple)
+Invalid: `const st_Off = state.` (wrong syntax)
+Invalid: `const st_Off: state` (missing period)
+
+### 5. FUNCTION DECLARATIONS
+Valid: `fun senc(bitstring, bitstring): bitstring.`
+Valid: `fun pk(bitstring): bitstring.`
+Valid: `fun tuple(bitstring, bitstring): bitstring [data].`
+Invalid: `fun hash(bitstring) -> bitstring.` (wrong arrow)
+Invalid: `function hash(bitstring): bitstring.` (wrong keyword)
+
+### 6. DESTRUCTOR DECLARATIONS (reduc)
+Valid: `reduc forall m: bitstring, k: bitstring; sdec(senc(m,k),k) = m.`
+Valid: `reduc forall x: bitstring; getFirst((x,y)) = x.`
+(* Extended destructors with otherwise *)
+Valid: `fun eq(...): bool reduc forall x: t; eq(x,x) = true otherwise forall x:t, y:t; eq(x,y) = false.`
+Invalid: `reduc sdec(senc(m,k),k) = m.` (missing forall for variables)
+
+### 7. EVENT DECLARATIONS (TYPES ONLY - NO VARIABLE NAMES)
+Valid: `event CommandReceived(command).`
+Valid: `event StateTransition(state, state).`
+Valid: `event E().` (no-argument event)
+Invalid: `event CommandReceived(cmd: command).` (NO variable names!)
+Invalid: `event CommandReceived(command)` (missing period)
+Invalid: `event E(x: state, y: state).` (NO variable names!)
+
+### 8. QUERY SYNTAX - CRITICAL: event() WRAPPER REQUIRED
+Valid: `query event(StateTransition(st_Off, st_On)).`
+Valid: `query attacker(secret_val).`
+Valid: `query x: state; event(StateTransition(x, st_On)).`
+Valid: `query x: state, y: state; event(A(x)) ==> event(B(y)).`
+Valid: `query x: command; inj-event(A(x)) ==> inj-event(B(x)).`
+Valid: `query event(A(x)) ==> event(B(y)) || event(C(z)).` (disjunction)
+Valid: `query event(A(x)) ==> event(B(y)) && event(C(z)).` (conjunction)
+Invalid: `query event E(x).` (MISSING PARENTHESES around event call)
+Invalid: `query event(E(x)).` (missing variable declaration for x)
+Invalid: `query StateTransition(st_Off, st_On).` (missing event() wrapper)
+
+### 9. PROCESS MACRO SYNTAX
+Valid: `let Device(x: state) = in(c, cmd: command); out(c, x).`
+Valid: `let Device() = 0.`
+Valid: `let Device(x: bitstring or fail) = let y = x in P else Q.`
+Invalid: `let Device(x) = ...` (missing type annotation)
+Invalid: `process Device(x: state) = ...` (wrong keyword - use let)
+
+### 10. PROCESS CONSTRUCTS
+Valid: `in(c, x: type); P`
+Valid: `out(c, M); P`
+Valid: `if M then P else Q`
+Valid: `if M = N then P`
+Valid: `let x = M in P else Q`
+Valid: `new n: type; P`
+Valid: `event e(M); P`
+Valid: `!P` (replication)
+Valid: `P | Q` (parallel)
+Valid: `0` (null process)
+Valid: `phase 1; P` (phase transition)
+Invalid: `if cond { P }` (wrong - no braces, use then/else)
+Invalid: `receive(c, x)` (wrong - use 'in' not 'receive')
+Invalid: `send(c, M)` (wrong - use 'out' not 'send')
+Invalid: `in(c, x); P` (missing type on x)
+
+### 11. MAIN PROCESS
+Valid: `process P`
+Valid: `process (P | Q)`
+Invalid: `main = P` (wrong syntax)
+Invalid: `process: P` (no colon)
+
+### 12. PARENTHESES IN PROCESSES
+- Use parentheses to group branches: `(P | Q)`
+- Use parentheses in nested if: `if A then (if B then P else Q) else R`
+- CRITICAL: else binds to nearest if/let, use parens to override
+
+### 13. RESERVED IDENTIFIERS (DO NOT REDECLARE) - Manual p.17
+(* These are built-in and CANNOT be redeclared: *)
+TYPES:
+- `time` - RESERVED! Error: "identifier time already defined"
+- `bitstring` - built-in for binary data
+- `channel` - built-in for channels  
+- `bool` - built-in boolean type
+- `nat` - built-in natural numbers
+- `any_type` - internal polymorphic type
+- `sid` - session identifier type
+
+CONSTANTS:
+- `true` - built-in bool constant
+- `false` - built-in bool constant
+
+DESTRUCTORS:
+- `is_nat` - built-in for natural number check
+
+PREDICATES (for queries):
+- `attacker` - attacker knowledge predicate
+- `mess` - message on channel predicate
+- `subterm` - subterm relation predicate
+- `table` - table membership predicate
+
+### 14. PROCESS MACRO CALL TERMINATION
+(* Process macro call MUST end with period, not semicolon *)
+Invalid: `DeviceStep(...); MainProcess(x).` (* Syntax error! *)
+Invalid: `if c then MacroA(x); MacroB(y).` (* Error after ; *)
+Valid: `DeviceStep(...).` (* Period ends the branch *)
+Valid: `if c then MacroA(x) else MacroB(y).`
+(* For recursion: put recursive call INSIDE the macro definition *)
+
+### 15. COMMENTS SYNTAX
+Valid: `(* This is a comment *)`
+Valid: `(* Nested (* comments *) are supported *)`
+Invalid: `// This is NOT valid in ProVerif`
+Invalid: `/* This is NOT valid in ProVerif */`
+
+### 16. NO STRING LITERALS
+Invalid: `out(c, "hello")` (* ProVerif does not support strings! *)
+Invalid: `event E("value")` (* NO quoted strings *)
+Valid: `const hello: bitstring. out(c, hello)`
+(* Always use declared constants instead of string literals *)
+
+================================================================================
+## SEMANTIC VALIDATION
+================================================================================
+
+1. **Type Consistency**: Variables must use declared types consistently
+2. **Event Declaration**: All events used in processes must be declared first  
+3. **Constant Usage**: All constants in processes must be declared
+4. **Channel Scope**: Private channels should not leak secrets unintentionally
+5. **Query Variables**: All variables in queries must be declared with types before ;
+6. **Destructor Variables**: Variables in reduc RHS must appear in LHS pattern
+7. **Let Else Branch**: For destructors that can fail, include else branch
+
+================================================================================
+## FSM COVERAGE VALIDATION
+================================================================================
+
+1. Every FSM state has a corresponding const declaration
+2. Every FSM transition has a corresponding if-then branch
+3. Every FSM command has a corresponding command const  
+4. Guard conditions are properly translated as if conditions
+5. Initial state is correctly initialized (in main process or via channel)
+6. Feature dependencies (LT, DF, etc.) are properly checked
+7. Actions translate to events and/or outputs
+
+================================================================================
+## OUTPUT FORMAT (JSON)
+================================================================================
+
+{{
+    "correct": true/false,
+    "explanation": "Brief overall assessment",
+    "issues": [
+        "Line X: Description of issue"
+    ],
+    "syntax_fixes": [
+        {{
+            "line": 42,
+            "error": "const st_Off: state",
+            "fix": "const st_Off: state.",
+            "explanation": "Missing period at end of declaration"
+        }},
+        {{
+            "line": 11,
+            "error": "type time.",
+            "fix": "type duration.",
+            "explanation": "time is a reserved identifier, use duration instead"
+        }},
+        {{
+            "line": 55,
+            "error": "event E(x: state).",
+            "fix": "event E(state).",
+            "explanation": "Event declarations use types only, not variable names"
+        }},
+        {{
+            "line": 72,
+            "error": "// comment",
+            "fix": "(* comment *)",
+            "explanation": "ProVerif uses (* *) for comments, not //"
+        }}
+    ],
+    "semantic_issues": [
+        "Event X used in process but not declared",
+        "Variable x used without type declaration in query"
+    ],
+    "fsm_coverage": {{
+        "states_covered": ["st_Off", "st_On"],
+        "states_missing": [],
+        "transitions_covered": 5,
+        "transitions_missing": ["Off->TimedOn"]
+    }}
+}}
+
+================================================================================
+Now evaluate:
+
+PROVERIF MODEL:
+{proverif_model}
+
+SOURCE FSM JSON:
+{fsm_json}
+"""

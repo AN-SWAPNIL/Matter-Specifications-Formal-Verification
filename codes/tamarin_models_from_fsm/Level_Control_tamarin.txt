@@ -1,0 +1,368 @@
+theory LevelControl_Matter_FSM
+begin
+
+builtins: hashing
+
+functions:
+  // Booleans
+  b_true/0, b_false/0,
+  // State enumerations
+  st_IdleOff/0,
+  st_IdleOn/0,
+  st_LevelTransitionOff/0,
+  st_LevelTransitionOnBase/0,
+  st_LevelTransitionOnWithOnOff/0,
+  // Abstract RemainingTime values
+  tv_zero/0,
+  tv_pos/0,
+  // Feature flags (only Frequency modeled explicitly)
+  f_FQ/0,
+  // Current level abstraction
+  cl_null/0,
+  cl_inrange/0
+
+// Unified state fact:
+// St(tid, State, OnOff, RemainingTimeClass, CurrentLevelClass, FeatureFQ)
+// - OnOff: b_true / b_false
+// - RemainingTimeClass: tv_zero (==0), tv_pos (>0)
+// - CurrentLevelClass: cl_null, cl_inrange (we abstract to single in-range value)
+
+// Configuration fact for features
+// !Config(tid, FeatureFQFlag)
+
+// Initialization: IdleOff, OnOff == FALSE, RemainingTime == 0, CurrentLevel in range.
+// We provide two feature-combination inits for FQ on/off.
+
+rule Init_FQ_Enabled:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, cl_inrange, f_FQ),
+    !Config(~tid, f_FQ) ]
+
+rule Init_FQ_Disabled:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, cl_inrange, b_false) ]
+
+//=============================================================
+// SECTION: Commands - MoveToLevel (base)
+//=============================================================
+
+// IdleOff, ExecuteIfOff == FALSE case is modeled as self-loop IdleOff with no RT change.
+rule Cmd_MoveToLevel_IdleOff_Ignored:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveToLevel'), StateTransition(~tid, st_IdleOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+// IdleOff, ExecuteIfOff == TRUE → enter LevelTransitionOff with RT>0
+rule Cmd_MoveToLevel_IdleOff_Execute:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveToLevel'), StateTransition(~tid, st_IdleOff, st_LevelTransitionOff) ]->
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, cl_inrange, FQ) ]
+
+// IdleOn, OnOff == TRUE → LevelTransitionOnBase with RT>0
+rule Cmd_MoveToLevel_IdleOn:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveToLevel'), StateTransition(~tid, st_IdleOn, st_LevelTransitionOnBase) ]->
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, cl_inrange, FQ) ]
+
+//=============================================================
+// SECTION: internal_timer_tick during transitions
+//=============================================================
+
+// LevelTransitionOnBase, RemainingTime > 1  → stay in LevelTransitionOnBase, RT still >0
+rule TimerTick_OnBase_Progress:
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'internal_timer_tick'), StateTransition(~tid, st_LevelTransitionOnBase, st_LevelTransitionOnBase) ]->
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, cl_inrange, FQ) ]
+
+// LevelTransitionOff, RemainingTime > 1  → stay in LevelTransitionOff
+rule TimerTick_Off_Progress:
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'internal_timer_tick'), StateTransition(~tid, st_LevelTransitionOff, st_LevelTransitionOff) ]->
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, cl_inrange, FQ) ]
+
+// LevelTransitionOnWithOnOff, RemainingTime > 1  → stay in LevelTransitionOnWithOnOff
+rule TimerTick_OnWithOnOff_Progress:
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'internal_timer_tick'), StateTransition(~tid, st_LevelTransitionOnWithOnOff, st_LevelTransitionOnWithOnOff) ]->
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, cl_inrange, FQ) ]
+
+// Completion for LevelTransitionOnBase: RemainingTime == 1 (abstracted) → IdleOn, RT=0, OnOff stays TRUE
+rule TimerTick_OnBase_Complete:
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'internal_timer_tick'), StateTransition(~tid, st_LevelTransitionOnBase, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, tv_zero, cl_inrange, FQ) ]
+
+// Completion for LevelTransitionOff: RemainingTime == 1 (abstracted) → IdleOff, RT=0, OnOff stays FALSE
+rule TimerTick_Off_Complete:
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'internal_timer_tick'), StateTransition(~tid, st_LevelTransitionOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, cl_inrange, FQ) ]
+
+// Completion for LevelTransitionOnWithOnOff above minimum: IdleOn, RT=0, OnOff TRUE
+rule TimerTick_OnWithOnOff_Complete_StayOn:
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'internal_timer_tick'), StateTransition(~tid, st_LevelTransitionOnWithOnOff, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, tv_zero, cl_inrange, FQ) ]
+
+// Completion for LevelTransitionOnWithOnOff at minimum: IdleOff, RT=0, OnOff FALSE
+rule TimerTick_OnWithOnOff_Complete_TurnOff:
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'internal_timer_tick'), StateTransition(~tid, st_LevelTransitionOnWithOnOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, cl_inrange, FQ) ]
+
+//=============================================================
+// SECTION: Move (base)
+//=============================================================
+
+// IdleOff, Rate == 0 → invalid, no state change (self-loop)
+rule Cmd_Move_IdleOff_RateZero:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'Move'), StateTransition(~tid, st_IdleOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+// IdleOff, Rate != 0 and ExecuteIfOff TRUE → LevelTransitionOff
+rule Cmd_Move_IdleOff_Execute:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'Move'), StateTransition(~tid, st_IdleOff, st_LevelTransitionOff) ]->
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, cl_inrange, FQ) ]
+
+// IdleOn, Rate != 0 → LevelTransitionOnBase
+rule Cmd_Move_IdleOn:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'Move'), StateTransition(~tid, st_IdleOn, st_LevelTransitionOnBase) ]->
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, cl_inrange, FQ) ]
+
+// LevelTransitionOnBase, new Move overrides movement but keeps same state kind
+rule Cmd_Move_OnBase_Override:
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'Move'), StateTransition(~tid, st_LevelTransitionOnBase, st_LevelTransitionOnBase) ]->
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, cl_inrange, FQ) ]
+
+// LevelTransitionOff, new Move overrides movement while off when ExecuteIfOff TRUE
+rule Cmd_Move_Off_Override:
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'Move'), StateTransition(~tid, st_LevelTransitionOff, st_LevelTransitionOff) ]->
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, cl_inrange, FQ) ]
+
+//=============================================================
+// SECTION: Step (base)
+//=============================================================
+
+// IdleOff, StepSize == 0 → invalid, self-loop
+rule Cmd_Step_IdleOff_StepZero:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'Step'), StateTransition(~tid, st_IdleOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+// IdleOff, StepSize != 0, ExecuteIfOff FALSE → ignored, self-loop
+rule Cmd_Step_IdleOff_Ignored:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'Step'), StateTransition(~tid, st_IdleOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+// IdleOff, StepSize != 0, ExecuteIfOff TRUE → LevelTransitionOff
+rule Cmd_Step_IdleOff_Execute:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'Step'), StateTransition(~tid, st_IdleOff, st_LevelTransitionOff) ]->
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, cl_inrange, FQ) ]
+
+// IdleOn, StepSize != 0 → LevelTransitionOnBase
+rule Cmd_Step_IdleOn:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'Step'), StateTransition(~tid, st_IdleOn, st_LevelTransitionOnBase) ]->
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, cl_inrange, FQ) ]
+
+//=============================================================
+// SECTION: Stop (base)
+//=============================================================
+
+// Stop when IdleOff, RemainingTime == 0 → no effect
+rule Cmd_Stop_IdleOff:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'Stop'), StateTransition(~tid, st_IdleOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+// Stop when IdleOn, RemainingTime == 0 → no effect
+rule Cmd_Stop_IdleOn:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'Stop'), StateTransition(~tid, st_IdleOn, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+
+// Stop during LevelTransitionOnBase → IdleOn, RT=0, OnOff TRUE
+rule Cmd_Stop_OnBase:
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'Stop'), StateTransition(~tid, st_LevelTransitionOnBase, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+
+// Stop during LevelTransitionOnWithOnOff → IdleOn, RT=0, OnOff TRUE
+rule Cmd_Stop_OnWithOnOff:
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'Stop'), StateTransition(~tid, st_LevelTransitionOnWithOnOff, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+
+// Stop during LevelTransitionOff → IdleOff, RT=0, OnOff FALSE
+rule Cmd_Stop_Off:
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'Stop'), StateTransition(~tid, st_LevelTransitionOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+//=============================================================
+// SECTION: MoveToLevelWithOnOff
+//=============================================================
+
+// IdleOff → LevelTransitionOnWithOnOff, OnOff set TRUE
+rule Cmd_MoveToLevelWithOnOff_IdleOff:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveToLevelWithOnOff'), StateTransition(~tid, st_IdleOff, st_LevelTransitionOnWithOnOff) ]->
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, cl_inrange, FQ) ]
+
+// IdleOn → LevelTransitionOnWithOnOff, OnOff TRUE
+rule Cmd_MoveToLevelWithOnOff_IdleOn:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveToLevelWithOnOff'), StateTransition(~tid, st_IdleOn, st_LevelTransitionOnWithOnOff) ]->
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, cl_inrange, FQ) ]
+
+// LevelTransitionOff, OnOff FALSE → overridden, OnOff TRUE, move to OnWithOnOff
+rule Cmd_MoveToLevelWithOnOff_FromOffTransition:
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'MoveToLevelWithOnOff'), StateTransition(~tid, st_LevelTransitionOff, st_LevelTransitionOnWithOnOff) ]->
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, cl_inrange, FQ) ]
+
+//=============================================================
+// SECTION: MoveWithOnOff
+//=============================================================
+
+// IdleOff, Rate == 0 → invalid, self-loop
+rule Cmd_MoveWithOnOff_IdleOff_RateZero:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveWithOnOff'), StateTransition(~tid, st_IdleOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+// IdleOff, Rate != 0, MoveMode Up → LevelTransitionOnWithOnOff, OnOff TRUE
+rule Cmd_MoveWithOnOff_IdleOff_Up:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveWithOnOff'), StateTransition(~tid, st_IdleOff, st_LevelTransitionOnWithOnOff) ]->
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, cl_inrange, FQ) ]
+
+// IdleOff, Rate != 0, MoveMode Down → LevelTransitionOff, OnOff FALSE
+rule Cmd_MoveWithOnOff_IdleOff_Down:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveWithOnOff'), StateTransition(~tid, st_IdleOff, st_LevelTransitionOff) ]->
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, cl_inrange, FQ) ]
+
+// IdleOn, Rate != 0, MoveMode Up → LevelTransitionOnWithOnOff, OnOff TRUE
+rule Cmd_MoveWithOnOff_IdleOn_Up:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveWithOnOff'), StateTransition(~tid, st_IdleOn, st_LevelTransitionOnWithOnOff) ]->
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, cl_inrange, FQ) ]
+
+// IdleOn, Rate != 0, MoveMode Down → LevelTransitionOnWithOnOff, OnOff TRUE
+rule Cmd_MoveWithOnOff_IdleOn_Down:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'MoveWithOnOff'), StateTransition(~tid, st_IdleOn, st_LevelTransitionOnWithOnOff) ]->
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, cl_inrange, FQ) ]
+
+//=============================================================
+// SECTION: StepWithOnOff
+//=============================================================
+
+// IdleOn, StepSize != 0 → LevelTransitionOnWithOnOff
+rule Cmd_StepWithOnOff_IdleOn:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'StepWithOnOff'), StateTransition(~tid, st_IdleOn, st_LevelTransitionOnWithOnOff) ]->
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, cl_inrange, FQ) ]
+
+// IdleOff, StepSize == 0 → invalid, self-loop
+rule Cmd_StepWithOnOff_IdleOff_StepZero:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'StepWithOnOff'), StateTransition(~tid, st_IdleOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+// IdleOff, StepSize != 0 → LevelTransitionOff, OnOff FALSE
+rule Cmd_StepWithOnOff_IdleOff:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'StepWithOnOff'), StateTransition(~tid, st_IdleOff, st_LevelTransitionOff) ]->
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, cl_inrange, FQ) ]
+
+//=============================================================
+// SECTION: StopWithOnOff
+//=============================================================
+
+// LevelTransitionOff → IdleOff
+rule Cmd_StopWithOnOff_Off:
+  [ St(~tid, st_LevelTransitionOff, b_false, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'StopWithOnOff'), StateTransition(~tid, st_LevelTransitionOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+// LevelTransitionOnBase → IdleOn
+rule Cmd_StopWithOnOff_OnBase:
+  [ St(~tid, st_LevelTransitionOnBase, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'StopWithOnOff'), StateTransition(~tid, st_LevelTransitionOnBase, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+
+// LevelTransitionOnWithOnOff → IdleOn (OnOff unchanged TRUE)
+rule Cmd_StopWithOnOff_OnWithOnOff:
+  [ St(~tid, st_LevelTransitionOnWithOnOff, b_true, tv_pos, CL, FQ) ]
+--[ Command(~tid, 'StopWithOnOff'), StateTransition(~tid, st_LevelTransitionOnWithOnOff, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+
+// StopWithOnOff when IdleOff, RemainingTime == 0 → no effect
+rule Cmd_StopWithOnOff_IdleOff:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'StopWithOnOff'), StateTransition(~tid, st_IdleOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, FQ) ]
+
+// StopWithOnOff when IdleOn, RemainingTime == 0 → no effect
+rule Cmd_StopWithOnOff_IdleOn:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+--[ Command(~tid, 'StopWithOnOff'), StateTransition(~tid, st_IdleOn, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, FQ) ]
+
+//=============================================================
+// SECTION: MoveToClosestFrequency (FeatureFQ)
+//=============================================================
+
+// IdleOff, FeatureFQ TRUE and valid frequency → IdleOff with same abstract CL, FQ flag
+rule Cmd_MoveToClosestFrequency_IdleOff_FQ:
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, f_FQ), !Config(~tid, f_FQ) ]
+--[ Command(~tid, 'MoveToClosestFrequency'), StateTransition(~tid, st_IdleOff, st_IdleOff) ]->
+  [ St(~tid, st_IdleOff, b_false, tv_zero, CL, f_FQ) ]
+
+// IdleOn, FeatureFQ TRUE and valid frequency → IdleOn with same abstract CL, FQ flag
+rule Cmd_MoveToClosestFrequency_IdleOn_FQ:
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, f_FQ), !Config(~tid, f_FQ) ]
+--[ Command(~tid, 'MoveToClosestFrequency'), StateTransition(~tid, st_IdleOn, st_IdleOn) ]->
+  [ St(~tid, st_IdleOn, b_true, tv_zero, CL, f_FQ) ]
+
+//=============================================================
+// SECTION: Restrictions
+//=============================================================
+
+restriction unique_init:
+  "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
+
+//=============================================================
+// SECTION: Source Lemma
+//=============================================================
+
+lemma sources [sources]:
+  "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i ==>
+     Ex #j. ClusterInit(tid)@j & #j < #i"
+
+//=============================================================
+// SECTION: Reachability and Placeholder Lemmas
+//=============================================================
+
+// Dummy lemma to match possible command-line selection like --prove=dummy
+lemma dummy:
+  exists-trace
+  "Ex tid #i. ClusterInit(tid)@i"
+
+// Simple reachability example for IdleOn, phrased over an action fact
+lemma reach_IdleOn:
+  exists-trace
+  "Ex tid s1 s2 #i. StateTransition(tid, s1, s2)@i & s2 = st_IdleOn"
+
+end

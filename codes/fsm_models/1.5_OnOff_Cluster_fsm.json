@@ -6,304 +6,214 @@
     "states": [
       {
         "name": "Off_Idle",
-        "description": "Device is off, with no active finite OnWithTimedOff timing behavior in progress. Represents the normal off state when either Lighting feature is absent or timers are not actively counting down.",
+        "description": "Device is off (OnOff == FALSE). OnWithTimedOff Delayed Off countdown may be active when OffWaitTime > 0, OnTime != 0xFFFF, and OffWaitTime != 0xFFFF.",
         "is_initial": true,
         "invariants": [
-          "OnOff == FALSE",
-          "feature_LT == FALSE || OnTime == 0 || OnTime == 0xFFFF",
-          "feature_LT == FALSE || OffWaitTime == 0 || OffWaitTime == 0xFFFF"
+          "OnOff == FALSE"
         ],
         "attributes_monitored": [
           "OnOff",
           "OnTime",
           "OffWaitTime",
           "GlobalSceneControl",
-          "StartUpOnOff",
           "FeatureMap"
         ]
       },
       {
         "name": "On_Idle",
-        "description": "Device is on with no active finite OnWithTimedOff timing behavior in progress. Represents the normal on state when either Lighting feature is absent or timers are not actively counting down.",
+        "description": "Device is on (OnOff == TRUE). OnWithTimedOff Timed On countdown may be active when OnTime > 0, OnTime != 0xFFFF, and OffWaitTime != 0xFFFF.",
         "is_initial": false,
         "invariants": [
-          "OnOff == TRUE",
-          "feature_LT == FALSE || OnTime == 0 || OnTime == 0xFFFF",
-          "feature_LT == FALSE || OffWaitTime == 0 || OffWaitTime == 0xFFFF"
+          "OnOff == TRUE"
         ],
         "attributes_monitored": [
           "OnOff",
           "OnTime",
           "OffWaitTime",
           "GlobalSceneControl",
-          "StartUpOnOff",
-          "FeatureMap"
-        ]
-      },
-      {
-        "name": "Timed_On",
-        "description": "Device is on and under control of OnWithTimedOff Timed On behavior. OnOff is TRUE and OnTime is a finite non-zero value, with finite OffWaitTime; when OnTime reaches 0, OffWaitTime is forced to 0 and the device turns off.",
-        "is_initial": false,
-        "invariants": [
-          "feature_LT == TRUE",
-          "OnOff == TRUE",
-          "OnTime > 0",
-          "OnTime != 0xFFFF",
-          "OffWaitTime != 0xFFFF"
-        ],
-        "attributes_monitored": [
-          "OnOff",
-          "OnTime",
-          "OffWaitTime",
-          "FeatureMap"
-        ]
-      },
-      {
-        "name": "Delayed_Off",
-        "description": "Device is off and guarded from immediate re-on by OnWithTimedOff Delayed Off behavior. OnOff is FALSE and OffWaitTime is a finite non-zero value, with finite OnTime; used when OnWithTimedOff is invoked while off and OffWaitTime is already positive.",
-        "is_initial": false,
-        "invariants": [
-          "feature_LT == TRUE",
-          "OnOff == FALSE",
-          "OffWaitTime > 0",
-          "OnTime != 0xFFFF",
-          "OffWaitTime != 0xFFFF"
-        ],
-        "attributes_monitored": [
-          "OnOff",
-          "OnTime",
-          "OffWaitTime",
           "FeatureMap"
         ]
       }
     ],
     "transitions": [
       {
+        "from_state": "Off_Idle",
+        "to_state": "Off_Idle",
+        "trigger": "command:Off",
+        "guard_condition": "true",
+        "actions": [
+          "OnOff := FALSE",
+          "clear_OnTime_if_supported()"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate on receipt of Off."
+      },
+      {
         "from_state": "On_Idle",
         "to_state": "Off_Idle",
-        "trigger": "Off",
+        "trigger": "command:Off",
         "guard_condition": "true",
         "actions": [
           "OnOff := FALSE",
-          "OnTime := 0"
+          "clear_OnTime_if_supported()"
         ],
         "response_command": null,
-        "timing_requirements": null
-      },
-      {
-        "from_state": "Timed_On",
-        "to_state": "Off_Idle",
-        "trigger": "Off",
-        "guard_condition": "true",
-        "actions": [
-          "OnOff := FALSE",
-          "OnTime := 0",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stops any active OnWithTimedOff timers"
-      },
-      {
-        "from_state": "Delayed_Off",
-        "to_state": "Off_Idle",
-        "trigger": "Off",
-        "guard_condition": "true",
-        "actions": [
-          "OnOff := FALSE",
-          "OnTime := 0",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stops any active OnWithTimedOff timers"
+        "timing_requirements": "Immediate on receipt of Off."
       },
       {
         "from_state": "Off_Idle",
         "to_state": "Off_Idle",
-        "trigger": "Off",
-        "guard_condition": "true",
+        "trigger": "command:On",
+        "guard_condition": "FeatureMap.OFFONLY == 1",
         "actions": [
-          "OnOff := FALSE",
-          "OnTime := 0"
+          "generate_status(UNSUPPORTED_COMMAND)"
         ],
         "response_command": null,
-        "timing_requirements": null
+        "timing_requirements": "Immediate rejection when OffOnly feature enabled."
       },
       {
-        "from_state": "Off_Idle",
-        "to_state": "Off_Idle",
-        "trigger": "On",
-        "guard_condition": "feature_OFFONLY == TRUE",
-        "actions": [],
+        "from_state": "On_Idle",
+        "to_state": "On_Idle",
+        "trigger": "command:On",
+        "guard_condition": "FeatureMap.OFFONLY == 1",
+        "actions": [
+          "generate_status(UNSUPPORTED_COMMAND)"
+        ],
         "response_command": null,
-        "timing_requirements": "Command rejected with UNSUPPORTED_COMMAND at Interaction Model layer when OffOnly feature is enabled"
+        "timing_requirements": "Immediate rejection when OffOnly feature enabled."
       },
       {
         "from_state": "Off_Idle",
         "to_state": "On_Idle",
-        "trigger": "On",
-        "guard_condition": "feature_OFFONLY == FALSE && feature_LT == FALSE",
+        "trigger": "command:On",
+        "guard_condition": "FeatureMap.OFFONLY == 0 && !(OnTime_supported == 1 && OffWaitTime_supported == 1 && OnTime == 0)",
         "actions": [
           "OnOff := TRUE"
         ],
         "response_command": null,
-        "timing_requirements": "Simple on behavior without Lighting feature"
+        "timing_requirements": "On turns device on without clearing OffWaitTime when clearing condition not met."
       },
       {
         "from_state": "Off_Idle",
         "to_state": "On_Idle",
-        "trigger": "On",
-        "guard_condition": "feature_OFFONLY == FALSE && feature_LT == TRUE && !(OnTime == 0 && OffWaitTime > 0)",
-        "actions": [
-          "OnOff := TRUE"
-        ],
-        "response_command": null,
-        "timing_requirements": "Lighting feature present; OffWaitTime cleared separately when OnTime == 0"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "On_Idle",
-        "trigger": "On",
-        "guard_condition": "feature_OFFONLY == FALSE && feature_LT == TRUE && OnTime == 0 && OffWaitTime > 0",
+        "trigger": "command:On",
+        "guard_condition": "FeatureMap.OFFONLY == 0 && OnTime_supported == 1 && OffWaitTime_supported == 1 && OnTime == 0",
         "actions": [
           "OnOff := TRUE",
           "OffWaitTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "Implements Lighting rule: when turning on and OnTime == 0, OffWaitTime is set to 0"
+        "timing_requirements": "On turns device on and clears OffWaitTime when both timers supported and OnTime is zero."
       },
       {
         "from_state": "On_Idle",
         "to_state": "On_Idle",
-        "trigger": "On",
-        "guard_condition": "feature_OFFONLY == FALSE",
+        "trigger": "command:On",
+        "guard_condition": "FeatureMap.OFFONLY == 0 && !(OnTime_supported == 1 && OffWaitTime_supported == 1 && OnTime == 0)",
         "actions": [
           "OnOff := TRUE"
         ],
         "response_command": null,
-        "timing_requirements": "On command keeps device on when already on"
+        "timing_requirements": "On keeps device on; OffWaitTime unchanged when clearing condition not met."
       },
       {
-        "from_state": "Timed_On",
-        "to_state": "Timed_On",
-        "trigger": "On",
-        "guard_condition": "feature_OFFONLY == FALSE && feature_LT == TRUE",
-        "actions": [
-          "OnOff := TRUE"
-        ],
-        "response_command": null,
-        "timing_requirements": "On command does not alter timers while in Timed_On"
-      },
-      {
-        "from_state": "Delayed_Off",
+        "from_state": "On_Idle",
         "to_state": "On_Idle",
-        "trigger": "On",
-        "guard_condition": "feature_OFFONLY == FALSE && feature_LT == TRUE && OnTime == 0",
+        "trigger": "command:On",
+        "guard_condition": "FeatureMap.OFFONLY == 0 && OnTime_supported == 1 && OffWaitTime_supported == 1 && OnTime == 0",
         "actions": [
           "OnOff := TRUE",
           "OffWaitTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "On cancels delayed off guard when OnTime is 0"
+        "timing_requirements": "On keeps device on and clears OffWaitTime when both timers supported and OnTime is zero."
       },
       {
         "from_state": "Off_Idle",
         "to_state": "Off_Idle",
-        "trigger": "Toggle",
-        "guard_condition": "feature_OFFONLY == TRUE",
-        "actions": [],
+        "trigger": "command:Toggle",
+        "guard_condition": "FeatureMap.OFFONLY == 1",
+        "actions": [
+          "generate_status(UNSUPPORTED_COMMAND)"
+        ],
         "response_command": null,
-        "timing_requirements": "Command rejected with UNSUPPORTED_COMMAND at Interaction Model layer when OffOnly feature is enabled"
+        "timing_requirements": "Immediate rejection when OffOnly feature enabled."
+      },
+      {
+        "from_state": "On_Idle",
+        "to_state": "On_Idle",
+        "trigger": "command:Toggle",
+        "guard_condition": "FeatureMap.OFFONLY == 1",
+        "actions": [
+          "generate_status(UNSUPPORTED_COMMAND)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate rejection when OffOnly feature enabled."
       },
       {
         "from_state": "Off_Idle",
         "to_state": "On_Idle",
-        "trigger": "Toggle",
-        "guard_condition": "feature_OFFONLY == FALSE && feature_LT == FALSE",
+        "trigger": "command:Toggle",
+        "guard_condition": "FeatureMap.OFFONLY == 0 && OnTime_supported == 0",
         "actions": [
           "OnOff := TRUE"
         ],
         "response_command": null,
-        "timing_requirements": "Toggle turns device on when off and Lighting feature is not present"
+        "timing_requirements": "Toggle from off turns device on when OnTime is not supported."
       },
       {
         "from_state": "Off_Idle",
         "to_state": "On_Idle",
-        "trigger": "Toggle",
-        "guard_condition": "feature_OFFONLY == FALSE && feature_LT == TRUE && !(OnTime == 0 && OffWaitTime > 0)",
+        "trigger": "command:Toggle",
+        "guard_condition": "FeatureMap.OFFONLY == 0 && OnTime_supported == 1",
         "actions": [
           "OnOff := TRUE",
           "OnTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "Lighting feature present; when toggling to on, OnTime is set to 0"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "On_Idle",
-        "trigger": "Toggle",
-        "guard_condition": "feature_OFFONLY == FALSE && feature_LT == TRUE && OnTime == 0 && OffWaitTime > 0",
-        "actions": [
-          "OnOff := TRUE",
-          "OnTime := 0",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Implements Lighting rules: when turning on and OnTime == 0, OffWaitTime is set to 0; OnTime is also set to 0 on transition to on"
+        "timing_requirements": "Toggle from off turns device on and clears OnTime when supported."
       },
       {
         "from_state": "On_Idle",
         "to_state": "Off_Idle",
-        "trigger": "Toggle",
-        "guard_condition": "feature_OFFONLY == FALSE",
+        "trigger": "command:Toggle",
+        "guard_condition": "FeatureMap.OFFONLY == 0 && (OnTime_supported == 0 || OffWaitTime_supported == 0 || OnTime != 0)",
         "actions": [
           "OnOff := FALSE"
         ],
         "response_command": null,
-        "timing_requirements": "Toggle turns device off from idle on state"
-      },
-      {
-        "from_state": "Timed_On",
-        "to_state": "Off_Idle",
-        "trigger": "Toggle",
-        "guard_condition": "feature_OFFONLY == FALSE",
-        "actions": [
-          "OnOff := FALSE",
-          "OnTime := 0",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Toggle aborts Timed_On behavior and turns device off"
-      },
-      {
-        "from_state": "Delayed_Off",
-        "to_state": "On_Idle",
-        "trigger": "Toggle",
-        "guard_condition": "feature_OFFONLY == FALSE",
-        "actions": [
-          "OnOff := TRUE",
-          "OnTime := 0",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Toggle cancels delayed off guard and turns device on"
+        "timing_requirements": "Toggle from on turns device off; OffWaitTime unchanged when timers unsupported or OnTime not zero."
       },
       {
         "from_state": "On_Idle",
         "to_state": "Off_Idle",
-        "trigger": "OffWithEffect",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE",
+        "trigger": "command:Toggle",
+        "guard_condition": "FeatureMap.OFFONLY == 0 && OnTime_supported == 1 && OffWaitTime_supported == 1 && OnTime == 0",
         "actions": [
           "OnOff := FALSE",
-          "OnTime := 0"
+          "OffWaitTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "No global scene stored when GlobalSceneControl is FALSE"
+        "timing_requirements": "Toggle from on turns device off and clears OffWaitTime when timers supported and OnTime is zero."
       },
       {
         "from_state": "On_Idle",
         "to_state": "Off_Idle",
-        "trigger": "OffWithEffect",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == TRUE",
+        "trigger": "command:OffWithEffect",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == TRUE && OnTime_supported == 0",
+        "actions": [
+          "store_global_scene()",
+          "GlobalSceneControl := FALSE",
+          "OnOff := FALSE"
+        ],
+        "response_command": null,
+        "timing_requirements": "Stores global scene once, disables further storage, and turns device off with effect."
+      },
+      {
+        "from_state": "On_Idle",
+        "to_state": "Off_Idle",
+        "trigger": "command:OffWithEffect",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == TRUE && OnTime_supported == 1",
         "actions": [
           "store_global_scene()",
           "GlobalSceneControl := FALSE",
@@ -311,449 +221,199 @@
           "OnTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "Stores global scene before turning off"
+        "timing_requirements": "Stores global scene, disables further storage, turns device off, and clears OnTime when supported."
       },
       {
-        "from_state": "Timed_On",
+        "from_state": "On_Idle",
         "to_state": "Off_Idle",
-        "trigger": "OffWithEffect",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == TRUE",
+        "trigger": "command:OffWithEffect",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == FALSE && OnTime_supported == 0",
         "actions": [
-          "store_global_scene()",
-          "GlobalSceneControl := FALSE",
-          "OnOff := FALSE",
-          "OnTime := 0",
-          "OffWaitTime := 0"
+          "OnOff := FALSE"
         ],
         "response_command": null,
-        "timing_requirements": "Stores global scene and stops any active timers"
+        "timing_requirements": "Turns device off with effect; global scene not overwritten."
       },
       {
-        "from_state": "Timed_On",
+        "from_state": "On_Idle",
         "to_state": "Off_Idle",
-        "trigger": "OffWithEffect",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE",
-        "actions": [
-          "OnOff := FALSE",
-          "OnTime := 0",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Turns off and stops any active timers without storing global scene"
-      },
-      {
-        "from_state": "Delayed_Off",
-        "to_state": "Off_Idle",
-        "trigger": "OffWithEffect",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == TRUE",
-        "actions": [
-          "store_global_scene()",
-          "GlobalSceneControl := FALSE",
-          "OnOff := FALSE",
-          "OnTime := 0",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stores global scene and clears delayed off behavior"
-      },
-      {
-        "from_state": "Delayed_Off",
-        "to_state": "Off_Idle",
-        "trigger": "OffWithEffect",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE",
-        "actions": [
-          "OnOff := FALSE",
-          "OnTime := 0",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Turns off and clears delayed off behavior without storing global scene"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "Off_Idle",
-        "trigger": "OffWithEffect",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == TRUE",
-        "actions": [
-          "store_global_scene()",
-          "GlobalSceneControl := FALSE",
-          "OnOff := FALSE",
-          "OnTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stores global scene even if already off, then keeps device off"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "Off_Idle",
-        "trigger": "OffWithEffect",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE",
+        "trigger": "command:OffWithEffect",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == FALSE && OnTime_supported == 1",
         "actions": [
           "OnOff := FALSE",
           "OnTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "Keeps device off with no global scene changes"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "On_Idle",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE && OnTime == 0",
-        "actions": [
-          "recall_global_scene()",
-          "GlobalSceneControl := TRUE",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Implements Lighting rule: after recall, if OnTime == 0 then OffWaitTime is set to 0"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "On_Idle",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE && OnTime != 0",
-        "actions": [
-          "recall_global_scene()",
-          "GlobalSceneControl := TRUE"
-        ],
-        "response_command": null,
-        "timing_requirements": "OnWithRecallGlobalScene accepted but OnTime is non-zero so OffWaitTime is not modified"
+        "timing_requirements": "Turns device off with effect and clears OnTime; existing global scene preserved."
       },
       {
         "from_state": "Off_Idle",
         "to_state": "Off_Idle",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == TRUE",
-        "actions": [],
-        "response_command": null,
-        "timing_requirements": "Command discarded when GlobalSceneControl == TRUE; no scene recall"
-      },
-      {
-        "from_state": "On_Idle",
-        "to_state": "On_Idle",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE && OnTime == 0",
+        "trigger": "command:OffWithEffect",
+        "guard_condition": "FeatureMap.LT == 1",
         "actions": [
-          "recall_global_scene()",
-          "GlobalSceneControl := TRUE",
-          "OffWaitTime := 0"
+          "OnOff := FALSE",
+          "clear_OnTime_if_supported()"
         ],
         "response_command": null,
-        "timing_requirements": "Implements Lighting rule: after recall, if OnTime == 0 then OffWaitTime is set to 0; OnOff remains TRUE"
-      },
-      {
-        "from_state": "On_Idle",
-        "to_state": "On_Idle",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE && OnTime != 0",
-        "actions": [
-          "recall_global_scene()",
-          "GlobalSceneControl := TRUE"
-        ],
-        "response_command": null,
-        "timing_requirements": "OnWithRecallGlobalScene accepted but OnTime is non-zero so OffWaitTime is not modified; OnOff remains TRUE"
-      },
-      {
-        "from_state": "On_Idle",
-        "to_state": "On_Idle",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == TRUE",
-        "actions": [],
-        "response_command": null,
-        "timing_requirements": "Command discarded when GlobalSceneControl == TRUE; no scene recall"
-      },
-      {
-        "from_state": "Timed_On",
-        "to_state": "Timed_On",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE && OnTime == 0",
-        "actions": [
-          "recall_global_scene()",
-          "GlobalSceneControl := TRUE",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "OnWithRecallGlobalScene accepted during Timed_On; if OnTime has reached 0, OffWaitTime is cleared per Lighting rule"
-      },
-      {
-        "from_state": "Timed_On",
-        "to_state": "Timed_On",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE && OnTime != 0",
-        "actions": [
-          "recall_global_scene()",
-          "GlobalSceneControl := TRUE"
-        ],
-        "response_command": null,
-        "timing_requirements": "OnWithRecallGlobalScene accepted; Timed_On continues and OffWaitTime is unchanged because OnTime is non-zero"
-      },
-      {
-        "from_state": "Timed_On",
-        "to_state": "Timed_On",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == TRUE",
-        "actions": [],
-        "response_command": null,
-        "timing_requirements": "Command discarded when GlobalSceneControl == TRUE during Timed_On"
-      },
-      {
-        "from_state": "Delayed_Off",
-        "to_state": "Delayed_Off",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE && OnTime == 0",
-        "actions": [
-          "recall_global_scene()",
-          "GlobalSceneControl := TRUE",
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "OnWithRecallGlobalScene accepted during Delayed_Off; Lighting rule clears OffWaitTime when OnTime == 0"
-      },
-      {
-        "from_state": "Delayed_Off",
-        "to_state": "Delayed_Off",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == FALSE && OnTime != 0",
-        "actions": [
-          "recall_global_scene()",
-          "GlobalSceneControl := TRUE"
-        ],
-        "response_command": null,
-        "timing_requirements": "OnWithRecallGlobalScene accepted during Delayed_Off; OffWaitTime is unchanged because OnTime is non-zero"
-      },
-      {
-        "from_state": "Delayed_Off",
-        "to_state": "Delayed_Off",
-        "trigger": "OnWithRecallGlobalScene",
-        "guard_condition": "feature_LT == TRUE && GlobalSceneControl == TRUE",
-        "actions": [],
-        "response_command": null,
-        "timing_requirements": "Command discarded when GlobalSceneControl == TRUE during Delayed_Off"
+        "timing_requirements": "Command processed while already off without storing or overwriting global scene."
       },
       {
         "from_state": "Off_Idle",
         "to_state": "Off_Idle",
-        "trigger": "OnWithTimedOff",
-        "guard_condition": "feature_LT == TRUE && OnOffControl_AcceptOnlyWhenOn == 1 && OnOff == FALSE",
+        "trigger": "command:OnWithRecallGlobalScene",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == TRUE",
         "actions": [],
         "response_command": null,
-        "timing_requirements": "Command discarded when AcceptOnlyWhenOn is set and device is off"
+        "timing_requirements": "Command is discarded when GlobalSceneControl is TRUE."
       },
       {
         "from_state": "Off_Idle",
-        "to_state": "Timed_On",
-        "trigger": "OnWithTimedOff",
-        "guard_condition": "feature_LT == TRUE && OnOffControl_AcceptOnlyWhenOn == 0 && !(OffWaitTime > 0 && OnOff == FALSE)",
+        "to_state": "On_Idle",
+        "trigger": "command:OnWithRecallGlobalScene",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == FALSE && !(OnTime_supported == 1 && OffWaitTime_supported == 1 && OnTime == 0)",
         "actions": [
-          "OnTime := OnTimeField_effective_max",
+          "recall_global_scene()",
+          "GlobalSceneControl := TRUE"
+        ],
+        "response_command": null,
+        "timing_requirements": "Recalls stored global scene and sets GlobalSceneControl TRUE; OffWaitTime unchanged when clearing condition not met."
+      },
+      {
+        "from_state": "Off_Idle",
+        "to_state": "On_Idle",
+        "trigger": "command:OnWithRecallGlobalScene",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == FALSE && OnTime_supported == 1 && OffWaitTime_supported == 1 && OnTime == 0",
+        "actions": [
+          "recall_global_scene()",
+          "GlobalSceneControl := TRUE",
+          "OffWaitTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Recalls global scene, sets GlobalSceneControl TRUE, and clears OffWaitTime when OnTime is zero and timers supported."
+      },
+      {
+        "from_state": "On_Idle",
+        "to_state": "On_Idle",
+        "trigger": "command:OnWithRecallGlobalScene",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == TRUE",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": "Command is discarded when GlobalSceneControl is TRUE, leaving device on."
+      },
+      {
+        "from_state": "On_Idle",
+        "to_state": "On_Idle",
+        "trigger": "command:OnWithRecallGlobalScene",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == FALSE && !(OnTime_supported == 1 && OffWaitTime_supported == 1 && OnTime == 0)",
+        "actions": [
+          "recall_global_scene()",
+          "GlobalSceneControl := TRUE"
+        ],
+        "response_command": null,
+        "timing_requirements": "While already on, recalls global scene and sets GlobalSceneControl TRUE; OffWaitTime unchanged when clearing condition not met."
+      },
+      {
+        "from_state": "On_Idle",
+        "to_state": "On_Idle",
+        "trigger": "command:OnWithRecallGlobalScene",
+        "guard_condition": "FeatureMap.LT == 1 && GlobalSceneControl == FALSE && OnTime_supported == 1 && OffWaitTime_supported == 1 && OnTime == 0",
+        "actions": [
+          "recall_global_scene()",
+          "GlobalSceneControl := TRUE",
+          "OffWaitTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "While already on, recalls scene, sets GlobalSceneControl TRUE, and clears OffWaitTime when timers supported and OnTime is zero."
+      },
+      {
+        "from_state": "Off_Idle",
+        "to_state": "Off_Idle",
+        "trigger": "command:OnWithTimedOff",
+        "guard_condition": "FeatureMap.LT == 1 && OnOffControl.AcceptOnlyWhenOn == 1 && OnOff == FALSE",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": "Command discarded when AcceptOnlyWhenOn is set and device is off."
+      },
+      {
+        "from_state": "Off_Idle",
+        "to_state": "Off_Idle",
+        "trigger": "command:OnWithTimedOff",
+        "guard_condition": "FeatureMap.LT == 1 && OnOffControl.AcceptOnlyWhenOn == 0 && OnOff == FALSE && OffWaitTime_supported == 1 && OffWaitTime > 0",
+        "actions": [
+          "OffWaitTime := min(OffWaitTime, OffWaitTimeField)"
+        ],
+        "response_command": null,
+        "timing_requirements": "Implements Delayed Off guarded case: OffWaitTime reduced to minimum of current and field value."
+      },
+      {
+        "from_state": "Off_Idle",
+        "to_state": "On_Idle",
+        "trigger": "command:OnWithTimedOff",
+        "guard_condition": "FeatureMap.LT == 1 && OnOffControl.AcceptOnlyWhenOn == 0 && OnOff == FALSE && !(OffWaitTime_supported == 1 && OffWaitTime > 0)",
+        "actions": [
+          "OnTime := max(OnTime, OnTimeField)",
           "OffWaitTime := OffWaitTimeField",
           "OnOff := TRUE"
         ],
         "response_command": null,
-        "timing_requirements": "Starts Timed_On when device is commanded on with finite timers; OnTime is set to max(current OnTime, OnTimeField)"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "Delayed_Off",
-        "trigger": "OnWithTimedOff",
-        "guard_condition": "feature_LT == TRUE && OnOffControl_AcceptOnlyWhenOn == 0 && OffWaitTime > 0 && OnOff == FALSE",
-        "actions": [
-          "OffWaitTime := OffWaitTimeField_effective_min",
-          "OnTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Remains or enters Delayed_Off when already off and OffWaitTime remains positive; OffWaitTime set to min(current OffWaitTime, OffWaitTimeField)"
+        "timing_requirements": "Timed On behavior when previously off without positive OffWaitTime guarded-off period."
       },
       {
         "from_state": "On_Idle",
-        "to_state": "Timed_On",
-        "trigger": "OnWithTimedOff",
-        "guard_condition": "feature_LT == TRUE && OnOff == TRUE && OnTimeField > OnTime",
+        "to_state": "On_Idle",
+        "trigger": "command:OnWithTimedOff",
+        "guard_condition": "FeatureMap.LT == 1 && OnOff == TRUE",
         "actions": [
-          "OnTime := OnTimeField",
-          "OffWaitTime := OffWaitTimeField"
-        ],
-        "response_command": null,
-        "timing_requirements": "Extends or sets OnTime based on maximum of existing and field value"
-      },
-      {
-        "from_state": "On_Idle",
-        "to_state": "Timed_On",
-        "trigger": "OnWithTimedOff",
-        "guard_condition": "feature_LT == TRUE && OnOff == TRUE && OnTimeField <= OnTime",
-        "actions": [
-          "OffWaitTime := OffWaitTimeField"
-        ],
-        "response_command": null,
-        "timing_requirements": "Keeps existing OnTime when it is already larger than the requested value; updates OffWaitTime"
-      },
-      {
-        "from_state": "Timed_On",
-        "to_state": "Timed_On",
-        "trigger": "OnWithTimedOff",
-        "guard_condition": "feature_LT == TRUE && OnOff == TRUE && OnTimeField > OnTime",
-        "actions": [
-          "OnTime := OnTimeField",
-          "OffWaitTime := OffWaitTimeField"
-        ],
-        "response_command": null,
-        "timing_requirements": "Updates Timed_On state with extended OnTime and new OffWaitTime"
-      },
-      {
-        "from_state": "Timed_On",
-        "to_state": "Timed_On",
-        "trigger": "OnWithTimedOff",
-        "guard_condition": "feature_LT == TRUE && OnOff == TRUE && OnTimeField <= OnTime",
-        "actions": [
-          "OffWaitTime := OffWaitTimeField"
-        ],
-        "response_command": null,
-        "timing_requirements": "Keeps existing longer OnTime and updates OffWaitTime"
-      },
-      {
-        "from_state": "Delayed_Off",
-        "to_state": "Delayed_Off",
-        "trigger": "OnWithTimedOff",
-        "guard_condition": "feature_LT == TRUE && OnOff == FALSE && OffWaitTimeField < OffWaitTime",
-        "actions": [
+          "OnTime := max(OnTime, OnTimeField)",
           "OffWaitTime := OffWaitTimeField",
-          "OnTime := 0"
+          "OnOff := TRUE"
         ],
         "response_command": null,
-        "timing_requirements": "Shortens OffWaitTime based on minimum of field and current value"
+        "timing_requirements": "Timed On behavior when already on: OnTime and OffWaitTime updated."
       },
       {
-        "from_state": "Delayed_Off",
-        "to_state": "Delayed_Off",
-        "trigger": "OnWithTimedOff",
-        "guard_condition": "feature_LT == TRUE && OnOff == FALSE && OffWaitTimeField >= OffWaitTime",
-        "actions": [
-          "OnTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Keeps existing smaller OffWaitTime when new value is larger"
-      },
-      {
-        "from_state": "Timed_On",
-        "to_state": "Timed_On",
-        "trigger": "OnWithTimedOff_timer_tick",
-        "guard_condition": "feature_LT == TRUE && OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == TRUE && OnTime > 1",
+        "from_state": "On_Idle",
+        "to_state": "On_Idle",
+        "trigger": "timer:OnWithTimedOff_tick",
+        "guard_condition": "OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == TRUE && OnTime > 1",
         "actions": [
           "OnTime := OnTime - 1"
         ],
         "response_command": null,
-        "timing_requirements": "Timer tick every 0.1 s while OnTime > 1"
+        "timing_requirements": "Every 0.1 s while device is on and OnTime > 1, decrement OnTime by 1."
       },
       {
-        "from_state": "Timed_On",
+        "from_state": "On_Idle",
         "to_state": "Off_Idle",
-        "trigger": "OnWithTimedOff_timer_tick",
-        "guard_condition": "feature_LT == TRUE && OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == TRUE && OnTime == 1",
+        "trigger": "timer:OnWithTimedOff_tick",
+        "guard_condition": "OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == TRUE && OnTime == 1",
         "actions": [
           "OnTime := 0",
           "OffWaitTime := 0",
           "OnOff := FALSE"
         ],
         "response_command": null,
-        "timing_requirements": "At the tick where OnTime reaches 0, OffWaitTime is forced to 0 and the device turns off, terminating periodic updates"
+        "timing_requirements": "When OnTime reaches 1, next tick sets OnTime to 0, OffWaitTime to 0, and turns device off."
       },
       {
-        "from_state": "Delayed_Off",
-        "to_state": "Delayed_Off",
-        "trigger": "OnWithTimedOff_timer_tick",
-        "guard_condition": "feature_LT == TRUE && OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == FALSE && OffWaitTime > 1",
+        "from_state": "Off_Idle",
+        "to_state": "Off_Idle",
+        "trigger": "timer:OnWithTimedOff_tick",
+        "guard_condition": "OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == FALSE && OffWaitTime > 0",
         "actions": [
           "OffWaitTime := OffWaitTime - 1"
         ],
         "response_command": null,
-        "timing_requirements": "Timer tick every 0.1 s while OffWaitTime > 1 in Delayed Off behavior that began while already off"
-      },
-      {
-        "from_state": "Delayed_Off",
-        "to_state": "Off_Idle",
-        "trigger": "OnWithTimedOff_timer_tick",
-        "guard_condition": "feature_LT == TRUE && OnTime != 0xFFFF && OffWaitTime != 0xFFFF && OnOff == FALSE && OffWaitTime == 1",
-        "actions": [
-          "OffWaitTime := 0"
-        ],
-        "response_command": null,
-        "timing_requirements": "Last timer tick for Delayed Off; OffWaitTime reaches 0 and periodic updates terminate, returning to Off_Idle"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "On_Idle",
-        "trigger": "Startup",
-        "guard_condition": "feature_LT == TRUE && StartUpOnOff_is_null == TRUE && PreviousOnOff == TRUE",
-        "actions": [
-          "OnOff := TRUE"
-        ],
-        "response_command": null,
-        "timing_requirements": "Restores previous on state on startup when StartUpOnOff is null"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "Off_Idle",
-        "trigger": "Startup",
-        "guard_condition": "feature_LT == TRUE && StartUpOnOff_is_null == TRUE && PreviousOnOff == FALSE",
-        "actions": [
-          "OnOff := FALSE"
-        ],
-        "response_command": null,
-        "timing_requirements": "Restores previous off state on startup when StartUpOnOff is null"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "Off_Idle",
-        "trigger": "Startup",
-        "guard_condition": "feature_LT == TRUE && StartUpOnOff_value == StartUpOnOffEnum_Off",
-        "actions": [
-          "OnOff := FALSE"
-        ],
-        "response_command": null,
-        "timing_requirements": "Forces off at startup when StartUpOnOff is Off"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "On_Idle",
-        "trigger": "Startup",
-        "guard_condition": "feature_LT == TRUE && StartUpOnOff_value == StartUpOnOffEnum_On",
-        "actions": [
-          "OnOff := TRUE"
-        ],
-        "response_command": null,
-        "timing_requirements": "Forces on at startup when StartUpOnOff is On"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "On_Idle",
-        "trigger": "Startup",
-        "guard_condition": "feature_LT == TRUE && StartUpOnOff_value == StartUpOnOffEnum_Toggle && PreviousOnOff == FALSE",
-        "actions": [
-          "OnOff := TRUE"
-        ],
-        "response_command": null,
-        "timing_requirements": "Toggles state at startup based on previous off state"
-      },
-      {
-        "from_state": "Off_Idle",
-        "to_state": "Off_Idle",
-        "trigger": "Startup",
-        "guard_condition": "feature_LT == TRUE && StartUpOnOff_value == StartUpOnOffEnum_Toggle && PreviousOnOff == TRUE",
-        "actions": [
-          "OnOff := FALSE"
-        ],
-        "response_command": null,
-        "timing_requirements": "Toggles state at startup based on previous on state"
+        "timing_requirements": "Every 0.1 s in Delayed Off, while OffWaitTime > 0, decrement OffWaitTime by 1."
       }
     ],
     "initial_state": "Off_Idle",
     "attributes_used": [
       "OnOff",
+      "GlobalSceneControl",
       "OnTime",
       "OffWaitTime",
-      "GlobalSceneControl",
-      "StartUpOnOff",
       "FeatureMap"
     ],
     "commands_handled": [
@@ -762,139 +422,181 @@
       "Toggle",
       "OffWithEffect",
       "OnWithRecallGlobalScene",
-      "OnWithTimedOff",
-      "Startup"
+      "OnWithTimedOff"
     ],
-    "events_generated": [],
+    "events_generated": [
+      "UNSUPPORTED_COMMAND"
+    ],
     "data_types_used": [
       "OnOffControlBitmap",
       "StartUpOnOffEnum",
       "EffectIdentifierEnum",
       "DelayedAllOffEffectVariantEnum",
-      "DyingLightEffectVariantEnum"
+      "DyingLightEffectVariantEnum",
+      "bool",
+      "uint16",
+      "enum8",
+      "map8"
     ],
     "scene_behaviors": [
-      "When GlobalSceneControl is TRUE and OffWithEffect is received, the server stores the current settings as a global scene via store_global_scene() and then sets GlobalSceneControl to FALSE so subsequent OffWithEffect calls do not overwrite the stored global scene.",
-      "When GlobalSceneControl is FALSE and OnWithRecallGlobalScene is received, the server recalls the previously stored global scene via recall_global_scene() from the Scenes Management cluster and sets GlobalSceneControl to TRUE so future OffWithEffect can store a new scene.",
-      "The OnOff attribute is scene-capable and may be included in scenes stored and recalled by the Scenes Management cluster as part of the ExtensionFieldSetStruct."
+      "When Lighting feature (LT) is present and OffWithEffect is invoked while GlobalSceneControl is TRUE and the device is on, the server calls store_global_scene(), sets GlobalSceneControl to FALSE, sets OnOff to FALSE, and clears OnTime when supported.",
+      "When OnWithRecallGlobalScene is invoked while LT is present and GlobalSceneControl is FALSE, the server calls recall_global_scene() on the Scenes Management cluster, which updates OnOff and other attributes as part of scene recall, and then sets GlobalSceneControl to TRUE. If OnTime is 0 and both OnTime and OffWaitTime are supported, OffWaitTime is cleared.",
+      "The OnOff attribute is scene-capable and can be stored and restored via the Scenes Management cluster, including as part of the global scene."
     ],
     "definitions": [
       {
-        "term": "feature_LT",
-        "definition": "A boolean derived from the FeatureMap attribute indicating whether the Lighting feature (LT) is present for this On/Off cluster instance. When true, attributes such as GlobalSceneControl, OnTime, OffWaitTime, StartUpOnOff and commands such as OffWithEffect, OnWithRecallGlobalScene and OnWithTimedOff are supported and have defined behavior.",
-        "usage_context": "Used in guards to enable or disable lighting-specific behaviors and commands."
+        "term": "OnOff",
+        "definition": "Boolean attribute indicating whether the device is considered off (FALSE) or on (TRUE) from the perspective of the On/Off cluster.",
+        "usage_context": "Used to distinguish Off_Idle and On_Idle states and to select branches in command and timer processing."
       },
       {
-        "term": "feature_DF",
-        "definition": "A boolean derived from the FeatureMap attribute indicating whether the Dead Front Behavior feature (DF) is present. When OnOff is FALSE and this feature is enabled, other clusters on the same endpoint may reject certain Invokes or Writes with INVALID_IN_STATE while continuing to report best-effort attribute values.",
-        "usage_context": "Relevant for endpoint-wide behavior when OnOff is FALSE; not directly changing the On/Off FSM states."
+        "term": "OnTime",
+        "definition": "Unsigned 16-bit attribute in 1/10 second units used by OnWithTimedOff to represent a period during which the device should remain on. Zero means no remaining timed-on period; 0xFFFF disables automatic decrement.",
+        "usage_context": "Updated by Off, Toggle, OffWithEffect, OnWithRecallGlobalScene, and OnWithTimedOff, and decremented by timer transitions while OnOff is TRUE when both OnTime and OffWaitTime are finite."
       },
       {
-        "term": "feature_OFFONLY",
-        "definition": "A boolean derived from the FeatureMap attribute indicating whether the OffOnly feature (OFFONLY) is present. When this feature is enabled, the server supports only the Off command and must treat On and Toggle as unsupported.",
-        "usage_context": "Used in guards to reject On and Toggle commands when OffOnly is enabled."
+        "term": "OffWaitTime",
+        "definition": "Unsigned 16-bit attribute in 1/10 second units used with OnWithTimedOff to guard the off state. Zero means there is no remaining guarded-off period; 0xFFFF disables automatic decrement.",
+        "usage_context": "Updated by On, Toggle, Off, OffWithEffect, OnWithRecallGlobalScene, and OnWithTimedOff, and decremented by timer transitions while OnOff is FALSE when both timers are finite."
       },
       {
-        "term": "OnOffControl_AcceptOnlyWhenOn",
-        "definition": "A boolean flag derived from the AcceptOnlyWhenOn bit of the OnOffControlBitmap field in the OnWithTimedOff command. When this bit is set, the OnWithTimedOff command is processed only if the device is already on.",
-        "usage_context": "Used in guards for OnWithTimedOff to determine whether the command is accepted or discarded when the device is off."
+        "term": "GlobalSceneControl",
+        "definition": "Boolean attribute controlling when a global scene may be overwritten. When TRUE, the next OffWithEffect that turns the device off stores the global scene and then sets this attribute to FALSE to prevent overwriting; when FALSE, OffWithEffect does not store a new global scene.",
+        "usage_context": "Used in guards for OffWithEffect and OnWithRecallGlobalScene transitions."
       },
       {
-        "term": "StartUpOnOff_is_null",
-        "definition": "A condition indicating that the StartUpOnOff attribute has a null value, meaning that on startup the device shall restore the previous OnOff attribute value instead of applying a fixed startup behavior.",
-        "usage_context": "Used in startup-related guards to determine whether to restore PreviousOnOff or use an explicit StartUpOnOffEnum value."
+        "term": "FeatureMap",
+        "definition": "Bitmap attribute indicating which optional On/Off cluster features are enabled on the server, including Lighting (LT), DeadFrontBehavior (DF), and OffOnly (OFFONLY).",
+        "usage_context": "Used in guards for feature-dependent behavior, such as lighting commands and OffOnly restrictions."
       },
       {
-        "term": "StartUpOnOff_value",
-        "definition": "The non-null value of the StartUpOnOff attribute interpreted as one of the StartUpOnOffEnum constants Off, On, or Toggle.",
-        "usage_context": "Used in startup-related guards when StartUpOnOff_is_null is false."
+        "term": "Lighting feature (LT)",
+        "definition": "Cluster feature enabling lighting-specific attributes and commands, including GlobalSceneControl, OnTime, OffWaitTime, OffWithEffect, OnWithRecallGlobalScene, and OnWithTimedOff.",
+        "usage_context": "Required in guards for transitions that rely on lighting semantics such as timed on and delayed off behavior."
       },
       {
-        "term": "StartUpOnOffEnum_Off",
-        "definition": "The Off enumerator of StartUpOnOffEnum, indicating that OnOff shall be set to FALSE at startup.",
-        "usage_context": "Used in startup-related guards when applying StartUpOnOff behavior."
+        "term": "OffOnly feature (OFFONLY)",
+        "definition": "Cluster feature indicating only the Off command is supported; On and Toggle must be rejected with an UNSUPPORTED_COMMAND status.",
+        "usage_context": "Used in guards for On and Toggle transitions to generate UNSUPPORTED_COMMAND without changing OnOff."
       },
       {
-        "term": "StartUpOnOffEnum_On",
-        "definition": "The On enumerator of StartUpOnOffEnum, indicating that OnOff shall be set to TRUE at startup.",
-        "usage_context": "Used in startup-related guards when applying StartUpOnOff behavior."
+        "term": "OnOffControlBitmap",
+        "definition": "8-bit bitmap used as the OnOffControl field of the OnWithTimedOff command. It contains the AcceptOnlyWhenOn flag that can restrict command acceptance.",
+        "usage_context": "The AcceptOnlyWhenOn bit is referenced in guards for OnWithTimedOff transitions from the off state."
       },
       {
-        "term": "StartUpOnOffEnum_Toggle",
-        "definition": "The Toggle enumerator of StartUpOnOffEnum, indicating that OnOff shall be set to the inverse of the previous OnOff state at startup.",
-        "usage_context": "Used in startup-related guards together with PreviousOnOff."
-      },
-      {
-        "term": "PreviousOnOff",
-        "definition": "The effective OnOff value that was stored before a power cycle, used together with StartUpOnOff to determine the initial OnOff state after restart.",
-        "usage_context": "Used in guards for Startup-triggered transitions."
-      },
-      {
-        "term": "0xFFFF timer sentinel",
-        "definition": "A special attribute value for OnTime and OffWaitTime that disables automatic decrementing of that timer during OnWithTimedOff behavior.",
-        "usage_context": "Used in invariants and guards for timer-related transitions in Timed_On and Delayed_Off states."
+        "term": "AcceptOnlyWhenOn",
+        "definition": "Bit within the OnOffControlBitmap that, when set to 1, restricts OnWithTimedOff so it is only accepted if the device is already on.",
+        "usage_context": "Used in guards to discard OnWithTimedOff commands when the device is off and this bit is set."
       },
       {
         "term": "store_global_scene()",
-        "definition": "An abstract operation that stores the current settings, including scene-capable attributes such as OnOff, into the Scenes Management cluster as the global scene with group ID 0 and scene ID 0.",
-        "usage_context": "Used as an atomic action in OffWithEffect transitions when GlobalSceneControl is TRUE."
+        "definition": "Abstract operation on the Scenes Management cluster that stores the current configuration as a special global scene identified by group 0 and scene 0.",
+        "usage_context": "Invoked by OffWithEffect when GlobalSceneControl is TRUE and the device is on to preserve current settings before turning off."
       },
       {
         "term": "recall_global_scene()",
-        "definition": "An abstract operation that invokes the Scenes Management cluster to recall the previously stored global scene, restoring scene-capable attributes such as OnOff.",
-        "usage_context": "Used as an atomic action in OnWithRecallGlobalScene transitions when GlobalSceneControl is FALSE."
+        "definition": "Abstract operation on the Scenes Management cluster that restores the previously stored global scene, updating attributes on the endpoint based on that scene.",
+        "usage_context": "Invoked by OnWithRecallGlobalScene when GlobalSceneControl is FALSE to restore configuration and set GlobalSceneControl back to TRUE."
       },
       {
-        "term": "OnWithTimedOff_timer_tick",
-        "definition": "A periodic internal trigger that occurs every 0.1 second while an OnWithTimedOff operation is active and both OnTime and OffWaitTime are finite, driving the countdown of these attributes.",
-        "usage_context": "Used as the trigger for timer-related transitions in Timed_On and Delayed_Off states."
+        "term": "generate_status(UNSUPPORTED_COMMAND)",
+        "definition": "Abstract action representing that the server responds to a command with an UNSUPPORTED_COMMAND status code without modifying application-visible attributes.",
+        "usage_context": "Used in transitions where On or Toggle are invoked on a device with the OffOnly feature."
       },
       {
-        "term": "OnTimeField_effective_max",
-        "definition": "An abstract value representing the result of taking the maximum of the current OnTime attribute and the OnTime field from the OnWithTimedOff command, within valid range.",
-        "usage_context": "Used in the action list of OnWithTimedOff transitions that may extend the OnTime duration."
+        "term": "OnTime_supported",
+        "definition": "Abstract boolean indicating that the OnTime attribute is implemented and writable on the server.",
+        "usage_context": "Used when applying timer-related side effects only if OnTime exists."
       },
       {
-        "term": "OffWaitTimeField_effective_min",
-        "definition": "An abstract value representing the result of taking the minimum of the current OffWaitTime attribute and the OffWaitTime field from the OnWithTimedOff command, within valid range.",
-        "usage_context": "Used in the action list of OnWithTimedOff transitions that adjust OffWaitTime when OnOff is FALSE."
+        "term": "OffWaitTime_supported",
+        "definition": "Abstract boolean indicating that the OffWaitTime attribute is implemented and writable on the server.",
+        "usage_context": "Used in guards and helper logic for transitions that modify or inspect OffWaitTime, including OnWithTimedOff guarded-off behavior."
+      },
+      {
+        "term": "clear_OnTime_if_supported()",
+        "definition": "Abstract helper that represents clearing the OnTime attribute to zero when the OnTime attribute is implemented; when OnTime is not implemented, it has no effect.",
+        "usage_context": "Used in Off and OffWithEffect transitions to express conditional clearing of OnTime without embedding control flow in actions."
       }
     ],
     "references": [
       {
-        "id": "0xFFFD",
-        "name": "FeatureMap",
-        "description": "Bitmap attribute used to determine whether LT, DF, and OFFONLY features are enabled for this On/Off cluster instance."
+        "id": "0x0006",
+        "name": "On/Off cluster",
+        "description": "Defines OnOff attribute, commands Off, On, Toggle, OffWithEffect, OnWithRecallGlobalScene, OnWithTimedOff, and features LT, DF, OFFONLY that are modeled in this FSM."
+      },
+      {
+        "id": "0x0008",
+        "name": "Level Control cluster",
+        "description": "Interacts with On/Off under Lighting feature to adjust OnOff, OnTime, and OffWaitTime; detailed level interactions are abstracted here."
       },
       {
         "id": "Scenes Management Cluster",
         "name": "Scenes Management server cluster",
-        "description": "Provides global scene storage and recall referenced by OffWithEffect and OnWithRecallGlobalScene via store_global_scene() and recall_global_scene()."
+        "description": "Provides global scene storage and recall used by OffWithEffect and OnWithRecallGlobalScene."
       },
       {
-        "id": "0x0008",
-        "name": "Level Control Cluster",
-        "description": "May affect OnOff, OnTime, and OffWaitTime attributes under the Lighting feature; its detailed behavior is outside this FSM but influences the overall state."
-      },
-      {
-        "id": null,
-        "name": "INVALID_IN_STATE status code",
-        "description": "Status code used by other clusters when DF feature is enabled and OnOff is FALSE; not explicitly modeled as a state but relevant for endpoint behavior."
-      },
-      {
-        "id": null,
-        "name": "UNSUPPORTED_COMMAND status",
-        "description": "Returned by the server for On and Toggle commands when the OffOnly feature is enabled; modeled via guards where commands cause no state change."
+        "id": "0xFFFD",
+        "name": "FeatureMap",
+        "description": "Bitmap attribute containing LT, DF, and OFFONLY feature bits, used in guards for feature-dependent behavior."
       },
       {
         "id": "0xFFFC",
         "name": "ClusterRevision",
-        "description": "Global attribute indicating the revision of the On/Off cluster; ensures that the modeled behaviors correspond to the highest defined revision."
+        "description": "Global attribute indicating cluster revision; ensures device behavior aligns with described revisions such as inclusion of FeatureMap and StartUpOnOff."
+      },
+      {
+        "id": null,
+        "name": "UNSUPPORTED_COMMAND status",
+        "description": "Interaction Model error status returned when unsupported commands, such as On or Toggle under OffOnly, are invoked."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "OffOnly_blocks_On_and_Toggle",
+        "property_type": "integrity",
+        "description": "When the OffOnly feature is enabled, On and Toggle commands never change OnOff and always result in UNSUPPORTED_COMMAND.",
+        "formal_specification": "For all transitions where FeatureMap.OFFONLY == 1 and trigger is command:On or command:Toggle, the post-state OnOff equals the pre-state OnOff and an action generate_status(UNSUPPORTED_COMMAND) occurs.",
+        "attack_vector": "A client may attempt to circumvent regulatory restrictions by issuing On or Toggle commands on an OffOnly device.",
+        "mitigation": "FSM enforces guards that block OnOff changes and generate UNSUPPORTED_COMMAND whenever OFFONLY is set."
+      },
+      {
+        "property_name": "OnWithTimedOff_respects_AcceptOnlyWhenOn",
+        "property_type": "integrity",
+        "description": "If AcceptOnlyWhenOn is set and the device is off, OnWithTimedOff has no effect on attributes.",
+        "formal_specification": "For all transitions with trigger command:OnWithTimedOff where OnOffControl.AcceptOnlyWhenOn == 1 and OnOff == FALSE in the pre-state, OnOff, OnTime, and OffWaitTime in the post-state equal their pre-state values.",
+        "attack_vector": "A client could try to pre-configure timed-on behavior while the device is off despite AcceptOnlyWhenOn being set.",
+        "mitigation": "FSM includes a transition from Off_Idle that discards the command under these conditions without attribute changes."
+      },
+      {
+        "property_name": "OnWithTimedOff_delayed_off_countdown",
+        "property_type": "integrity",
+        "description": "When OnWithTimedOff uses finite OnTime and OffWaitTime, the Timed On and Delayed Off countdowns follow the specified decrement rules for OnTime and OffWaitTime.",
+        "formal_specification": "In any run where OnTime != 0xFFFF and OffWaitTime != 0xFFFF, all timer:OnWithTimedOff_tick transitions satisfy: if OnOff == TRUE and OnTime > 1, the post-state OnTime equals pre-state OnTime minus 1 and OffWaitTime is unchanged; if OnOff == TRUE and OnTime == 1, the post-state has OnTime == 0, OffWaitTime == 0, and OnOff == FALSE; if OnOff == FALSE and OffWaitTime > 0, the post-state OffWaitTime equals pre-state OffWaitTime minus 1 and OnTime and OnOff are unchanged.",
+        "attack_vector": "An implementation might incorrectly omit the Delayed Off countdown or mishandle timer decrements, causing unexpected guarded-off durations.",
+        "mitigation": "FSM contains explicit timer transitions for both the Timed On and Delayed Off phases that decrement only the intended attribute in each phase."
+      },
+      {
+        "property_name": "Toggle_timer_side_effects_are_symmetric",
+        "property_type": "integrity",
+        "description": "Toggle always clears OnTime when the resulting OnOff is TRUE and clears OffWaitTime when the resulting OnOff is FALSE and OnTime is zero with timers supported, without relying on extra non-protocol triggers.",
+        "formal_specification": "For all command:Toggle transitions where FeatureMap.OFFONLY == 0, if the post-state OnOff == TRUE and OnTime_supported == 1 then post-state OnTime == 0; if the post-state OnOff == FALSE, OnTime_supported == 1, OffWaitTime_supported == 1, and post-state OnTime == 0 then post-state OffWaitTime == 0.",
+        "attack_vector": "Inconsistent treatment of timers on Toggle could leave stale OnTime or OffWaitTime values that influence future behavior unexpectedly.",
+        "mitigation": "FSM embeds the timer side effects directly into the Toggle transitions’ actions and does not use any artificial post-command triggers or hidden previous state variables."
+      },
+      {
+        "property_name": "Global_scene_not_overwritten_when_control_false",
+        "property_type": "integrity",
+        "description": "When GlobalSceneControl is FALSE, OffWithEffect never stores a new global scene.",
+        "formal_specification": "In all transitions with trigger command:OffWithEffect where GlobalSceneControl == FALSE in the pre-state, no action store_global_scene() occurs.",
+        "attack_vector": "A malicious or buggy client might repeatedly call OffWithEffect to overwrite a stored global scene even when scene protection should be active.",
+        "mitigation": "FSM restricts store_global_scene() to OffWithEffect transitions where GlobalSceneControl is TRUE and simultaneously sets GlobalSceneControl to FALSE so it cannot be repeatedly overwritten."
       }
     ],
     "metadata": {
-      "generation_timestamp": "2025-12-08T05:49:43.795265",
-      "generation_attempts": 4,
+      "generation_timestamp": "2026-01-03T07:37:08.158199",
+      "generation_attempts": 10,
       "judge_approved": true,
       "source_pages": "64-74",
       "section_number": "1.5"

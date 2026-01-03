@@ -1,0 +1,635 @@
+(* ProVerif model for Matter Level Control Cluster (0x0008) *)
+(* Generated from FSM specification in JSON form, corrected for ProVerif 2.05 syntax *)
+
+(* ======================= 1. TYPE DECLARATIONS ======================= *)
+
+type state.
+type command.
+type endpoint.
+type duration.
+type level.
+type attribute.
+type mode.
+type feature.
+type optionsbitmap.
+type frequency.
+type uint8.
+type uint16.
+type boolval.  (* Custom boolean type - cannot use built-in bool as return type *)
+
+(* Boolean constants *)
+const btrue: boolval.
+const bfalse: boolval.
+
+(* ======================= 2. CHANNEL DECLARATIONS ==================== *)
+
+free c_cmd: channel.              (* Public command channel: attacker can send commands *)
+free c_resp: channel.             (* Public response/observation channel *)
+free c_int_state: channel [private].  (* Internal state channel for FSM loop *)
+
+(* ======================= 3. CONSTANT DECLARATIONS =================== *)
+
+(* --- State constants (FSM states) --- *)
+const st_IdleOff: state.
+const st_IdleOn: state.
+const st_LevelTransitionOff: state.
+const st_LevelTransitionOnBase: state.
+const st_LevelTransitionOnWithOnOff: state.
+
+(* --- Command constants (FSM triggers) --- *)
+const cmd_MoveToLevel: command.
+const cmd_Move: command.
+const cmd_Step: command.
+const cmd_Stop: command.
+const cmd_MoveToLevelWithOnOff: command.
+const cmd_MoveWithOnOff: command.
+const cmd_StepWithOnOff: command.
+const cmd_StopWithOnOff: command.
+const cmd_MoveToClosestFrequency: command.
+const cmd_internal_timer_tick: command.
+
+(* --- Attributes (for events/queries only) --- *)
+const attr_CurrentLevel: attribute.
+const attr_RemainingTime: attribute.
+const attr_MinLevel: attribute.
+const attr_MaxLevel: attribute.
+const attr_CurrentFrequency: attribute.
+const attr_MinFrequency: attribute.
+const attr_MaxFrequency: attribute.
+const attr_OnOffTransitionTime: attribute.
+const attr_OnLevel: attribute.
+const attr_OnTransitionTime: attribute.
+const attr_OffTransitionTime: attribute.
+const attr_DefaultMoveRate: attribute.
+const attr_Options: attribute.
+const attr_StartUpCurrentLevel: attribute.
+const attr_FeatureMap: attribute.
+const attr_ClusterRevision: attribute.
+const attr_OnOff: attribute.
+const attr_tempOptions: attribute.
+
+(* --- Boolean-like constants and simple values --- *)
+const val_OnOff_TRUE: uint8.
+const val_OnOff_FALSE: uint8.
+
+(* Zero values for parameters *)
+const zero_uint16: uint16.
+const zero_uint8: uint8.
+
+(* Feature flags *)
+const feat_FrequencySupported: feature.
+
+(* Move/Step modes, simplified *)
+const mode_MoveUp: mode.
+const mode_MoveDown: mode.
+const mode_StepUp: mode.
+const mode_StepDown: mode.
+
+(* Special frequency constant used as "no result" placeholder *)
+const fq_none: frequency.
+
+(* Duration constants to approximate RemainingTime > 1 vs == 1 vs == 0 *)
+const dur_zero: duration.
+const dur_one: duration.       (* models RemainingTime == 1 *)
+const dur_gt_one: duration.    (* models RemainingTime > 1 *)
+
+(* ======================= 4. FUNCTION DECLARATIONS =================== *)
+
+(* Abstract helper functions reflecting definitions; arithmetic is abstracted. *)
+
+fun clamp_level(level, level, level): level.                 (* (req, min, max) *)
+fun derive_transition_time(uint16, uint16): duration.        (* (TransitionTime, OnOffTransitionTime) *)
+fun derive_effective_rate(uint16, uint16): uint16.           (* (Rate, DefaultMoveRate) *)
+fun derive_step_duration(uint16, level, level, uint8): duration.
+fun compute_step_target(level, mode, uint8, level, level): level.
+fun start_level_transition(level, level, duration): level.
+fun update_level_during_transition(level, level, duration): level.
+fun finalize_level_at_target(level, level, duration): level.
+fun setup_continuous_move(mode, uint16): mode.
+fun estimate_remaining_time_for_move(mode, uint16): duration.
+fun terminate_level_transition(level): level.
+fun select_closest_supported_frequency(frequency, frequency, frequency): frequency.
+fun is_min_level_reached(level, level): boolval.                (* (CurrentLevel, MinLevel) *)
+fun FeatureFQ(feature): boolval.                                (* interpret FeatureMap bit for frequency *)
+
+(* tempOptions / ExecuteIfOff abstraction *)
+fun build_temp_options(optionsbitmap, optionsbitmap, optionsbitmap): optionsbitmap.
+fun ExecuteIfOff(optionsbitmap): boolval.
+
+(* Simple comparisons for guards - declared as constructors returning boolval *)
+fun gt_duration(duration, duration): boolval.
+fun eq_duration(duration, duration): boolval.
+fun gt_uint16(uint16, uint16): boolval.
+fun eq_uint16(uint16, uint16): boolval.
+fun eq_uint8(uint8, uint8): boolval.
+fun eq_level(level, level): boolval.
+fun ge_level(level, level): boolval.
+fun le_level(level, level): boolval.
+fun ge_frequency(frequency, frequency): boolval.
+fun le_frequency(frequency, frequency): boolval.
+fun eq_frequency(frequency, frequency): boolval.
+
+(* Equality for abstract types used in conditions *)
+fun eq_state(state, state): boolval.
+fun eq_command(command, command): boolval.
+fun eq_boolval(boolval, boolval): boolval.
+
+(* Boolean operations on boolval *)
+fun band(boolval, boolval): boolval.
+fun bor(boolval, boolval): boolval.
+
+(* Boolean algebra equations *)
+equation forall x: boolval, y: boolval; band(btrue, btrue) = btrue.
+equation forall x: boolval, y: boolval; band(btrue, bfalse) = bfalse.
+equation forall x: boolval, y: boolval; band(bfalse, x) = bfalse.
+equation forall x: boolval, y: boolval; bor(btrue, x) = btrue.
+equation forall x: boolval, y: boolval; bor(bfalse, bfalse) = bfalse.
+equation forall x: boolval, y: boolval; bor(bfalse, btrue) = btrue.
+
+(* Encoded command message type: collect all command parameters in one constructor *)
+fun cmdMsg(command, mode, uint8, uint16, level, uint16, uint16, optionsbitmap, optionsbitmap, frequency): bitstring [data].
+
+(* State tuple type for passing FSM state via channel *)
+fun stateMsg(state, level, duration, level, level, frequency, frequency, frequency, uint8, optionsbitmap, feature): bitstring [data].
+
+(* Accessors (declared for completeness; not used in guards) *)
+fun getCmd(bitstring): command.
+fun getMode(bitstring): mode.
+fun getStepSize(bitstring): uint8.
+fun getRate(bitstring): uint16.
+fun getLevel(bitstring): level.
+fun getTransTime(bitstring): uint16.
+fun getOnOffTransTime(bitstring): uint16.
+fun getOptionsMask(bitstring): optionsbitmap.
+fun getOptionsOverride(bitstring): optionsbitmap.
+fun getFrequency(bitstring): frequency.
+
+(* ======================= 5. EVENT DECLARATIONS ====================== *)
+
+event CommandReceived(command, state).
+event StateTransition(state, state).
+event AttributeChanged(attribute, state).
+event TimerTick(state).
+event InvalidCommand(command, state).
+
+(* Security property related events *)
+event LevelRangeCheck(state).
+event BaseCommandWhileOffIgnored(command, state).
+event WithOnOffWhileOffExecuted(command, state).
+event OnOffCouplingChecked(state).
+event FrequencyChange(state).
+event TransitionStarted(state).
+event TransitionEnded(state).
+event ParamRejected(command, state).
+
+(* ======================= 6. QUERY DECLARATIONS ====================== *)
+
+(* CurrentLevel range integrity (approximated via reachability of checks) *)
+query event(LevelRangeCheck(st_IdleOn)).
+query event(LevelRangeCheck(st_LevelTransitionOnBase)).
+query event(LevelRangeCheck(st_LevelTransitionOnWithOnOff)).
+query event(LevelRangeCheck(st_LevelTransitionOff)).
+
+(* ExecuteIfOffAffectsBaseCommandsOnly *)
+query cmd: command, s: state;
+    event(BaseCommandWhileOffIgnored(cmd, s)) ==> event(CommandReceived(cmd, s)).
+
+(* OnOffCouplingAtMinLevelOnlyForWithOnOff *)
+query s1: state, s2: state;
+    event(StateTransition(s1, s2)) ==> event(OnOffCouplingChecked(s2)).
+
+(* FrequencyConstraintRespect *)
+query s: state;
+    event(FrequencyChange(s)) ==> event(LevelRangeCheck(s)).
+
+(* TransitionTimerProgress *)
+query s: state;
+    event(TransitionStarted(s)) ==> event(TransitionEnded(s)).
+
+(* CommandParameterValidation *)
+query cmd: command, s: state;
+    event(ParamRejected(cmd, s)) ==> event(CommandReceived(cmd, s)).
+
+(* ======================= 7. PROCESS MACRO DEFINITIONS ============== *)
+
+(* FSM encoded as a looping process - reads state from channel, processes command, writes new state *)
+
+let DeviceFSM() =
+    (* Read current state from internal channel *)
+    in(c_int_state, stMsg: bitstring);
+    let stateMsg(curState: state,
+                 curLevel: level,
+                 remTime: duration,
+                 minLevel: level,
+                 maxLevel: level,
+                 curFreq: frequency,
+                 minFreq: frequency,
+                 maxFreq: frequency,
+                 onOff: uint8,
+                 options: optionsbitmap,
+                 featureFreq: feature) = stMsg in
+
+    (* Invariant monitoring (abstract) *)
+    event AttributeChanged(attr_CurrentLevel, curState);
+    event AttributeChanged(attr_RemainingTime, curState);
+    event AttributeChanged(attr_OnOff, curState);
+    event LevelRangeCheck(curState);
+
+    (* Receive a command message as a single bitstring, then destructure *)
+    in(c_cmd, m: bitstring);
+    let cmdMsg(rcmd: command,
+               rmode: mode,
+               rStepSize: uint8,
+               rRate: uint16,
+               rLevel: level,
+               rTransTime: uint16,
+               rOnOffTransTime: uint16,
+               rOptionsMask: optionsbitmap,
+               rOptionsOverride: optionsbitmap,
+               rFrequency: frequency) = m in
+
+    event CommandReceived(rcmd, curState);
+
+    let tempOpt: optionsbitmap = build_temp_options(options, rOptionsMask, rOptionsOverride) in
+
+    (* Distinguish timer tick from other commands *)
+    let btrue = eq_command(rcmd, cmd_internal_timer_tick) in
+        (
+            (* ================= TIMER TICK BEHAVIOR ================= *)
+            event TimerTick(curState);
+
+            let btrue = band(eq_state(curState, st_LevelTransitionOnBase), eq_duration(remTime, dur_gt_one)) in
+                (
+                    (* Base transition on, RemainingTime > 1 *)
+                    let newRem: duration = dur_one in
+                    let newLevel: level = update_level_during_transition(curLevel, curLevel, remTime) in
+                    out(c_int_state, stateMsg(st_LevelTransitionOnBase,
+                              newLevel,
+                              newRem,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff, options, featureFreq))
+                )
+            else let btrue = band(eq_state(curState, st_LevelTransitionOnBase), eq_duration(remTime, dur_one)) in
+                (
+                    (* Completion of base transition while on *)
+                    let finalLevel: level = finalize_level_at_target(curLevel, curLevel, remTime) in
+                    event TransitionEnded(st_LevelTransitionOnBase);
+                    event StateTransition(st_LevelTransitionOnBase, st_IdleOn);
+                    event OnOffCouplingChecked(st_IdleOn);
+                    out(c_int_state, stateMsg(st_IdleOn,
+                              finalLevel,
+                              dur_zero,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff, options, featureFreq))
+                )
+            else let btrue = band(eq_state(curState, st_LevelTransitionOnWithOnOff), eq_duration(remTime, dur_gt_one)) in
+                (
+                    (* WithOnOff transition on, RemainingTime > 1 *)
+                    let newRem2: duration = dur_one in
+                    let newLevel2: level = update_level_during_transition(curLevel, curLevel, remTime) in
+                    out(c_int_state, stateMsg(st_LevelTransitionOnWithOnOff,
+                              newLevel2,
+                              newRem2,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff, options, featureFreq))
+                )
+            else let btrue = band(eq_state(curState, st_LevelTransitionOnWithOnOff), eq_duration(remTime, dur_one)) in
+                (
+                    (* Completion of WithOnOff transition while on *)
+                    let finalLevel2: level = finalize_level_at_target(curLevel, curLevel, remTime) in
+                    event TransitionEnded(st_LevelTransitionOnWithOnOff);
+                    let btrue = is_min_level_reached(finalLevel2, minLevel) in
+                        (
+                            event StateTransition(st_LevelTransitionOnWithOnOff, st_IdleOff);
+                            event OnOffCouplingChecked(st_IdleOff);
+                            out(c_int_state, stateMsg(st_IdleOff,
+                                      finalLevel2,
+                                      dur_zero,
+                                      minLevel, maxLevel,
+                                      curFreq, minFreq, maxFreq,
+                                      val_OnOff_FALSE,
+                                      options, featureFreq))
+                        )
+                    else
+                        (
+                            event StateTransition(st_LevelTransitionOnWithOnOff, st_IdleOn);
+                            event OnOffCouplingChecked(st_IdleOn);
+                            out(c_int_state, stateMsg(st_IdleOn,
+                                      finalLevel2,
+                                      dur_zero,
+                                      minLevel, maxLevel,
+                                      curFreq, minFreq, maxFreq,
+                                      onOff,
+                                      options, featureFreq))
+                        )
+                )
+            else let btrue = band(eq_state(curState, st_LevelTransitionOff), eq_duration(remTime, dur_gt_one)) in
+                (
+                    (* Transition while off, RemainingTime > 1 *)
+                    let newRem3: duration = dur_one in
+                    let newLevel3: level = update_level_during_transition(curLevel, curLevel, remTime) in
+                    out(c_int_state, stateMsg(st_LevelTransitionOff,
+                              newLevel3,
+                              newRem3,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff,
+                              options, featureFreq))
+                )
+            else let btrue = band(eq_state(curState, st_LevelTransitionOff), eq_duration(remTime, dur_one)) in
+                (
+                    (* Completion while off *)
+                    let finalLevel3: level = finalize_level_at_target(curLevel, curLevel, remTime) in
+                    event TransitionEnded(st_LevelTransitionOff);
+                    event StateTransition(st_LevelTransitionOff, st_IdleOff);
+                    event OnOffCouplingChecked(st_IdleOff);
+                    out(c_int_state, stateMsg(st_IdleOff,
+                              finalLevel3,
+                              dur_zero,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff,
+                              options, featureFreq))
+                )
+            else
+                (
+                    (* No relevant transition: stay unchanged *)
+                    out(c_int_state, stateMsg(curState,
+                              curLevel,
+                              remTime,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff, options, featureFreq))
+                )
+        )
+    else
+        (
+            (* ================= NON-TIMER COMMANDS ================= *)
+
+            (* --- CommandParameterValidation --- *)
+
+            let btrue = band(bor(eq_command(rcmd, cmd_Move), eq_command(rcmd, cmd_MoveWithOnOff)),
+                    eq_uint16(rRate, zero_uint16)) in
+                (
+                    (* Move / MoveWithOnOff with Rate == 0 *)
+                    event ParamRejected(rcmd, curState);
+                    event InvalidCommand(rcmd, curState);
+                    out(c_int_state, stateMsg(curState,
+                              curLevel,
+                              remTime,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff, options, featureFreq))
+                )
+            else let btrue = band(bor(eq_command(rcmd, cmd_Step), eq_command(rcmd, cmd_StepWithOnOff)),
+                         eq_uint8(rStepSize, zero_uint8)) in
+                (
+                    (* Step / StepWithOnOff with StepSize == 0 *)
+                    event ParamRejected(rcmd, curState);
+                    event InvalidCommand(rcmd, curState);
+                    out(c_int_state, stateMsg(curState,
+                              curLevel,
+                              remTime,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff, options, featureFreq))
+                )
+            else let btrue = band(
+                        band(
+                            bor(eq_command(rcmd, cmd_MoveToLevel),
+                                bor(eq_command(rcmd, cmd_Move),
+                                    eq_command(rcmd, cmd_Step))),
+                            eq_uint8(onOff, val_OnOff_FALSE)),
+                        eq_boolval(ExecuteIfOff(tempOpt), bfalse)) in
+                (
+                    (* ExecuteIfOffAffectsBaseCommandsOnly: base cmds ignored when off & ExecuteIfOff FALSE *)
+                    event BaseCommandWhileOffIgnored(rcmd, curState);
+                    event InvalidCommand(rcmd, curState);
+                    out(c_int_state, stateMsg(curState,
+                              curLevel,
+                              remTime,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff, options, featureFreq))
+                )
+            else let btrue = band(eq_command(rcmd, cmd_MoveToClosestFrequency),
+                         eq_boolval(FeatureFQ(featureFreq), btrue)) in
+                (
+                    (* FrequencyConstraintRespect: MoveToClosestFrequency with feature present *)
+                    let newFreq: frequency = select_closest_supported_frequency(rFrequency, minFreq, maxFreq) in
+            let btrue = eq_frequency(newFreq, fq_none) in
+                        (
+                            (* Higher layers would signal CONSTRAINT_ERROR; here no state change. *)
+                            event InvalidCommand(rcmd, curState);
+                            out(c_int_state, stateMsg(curState,
+                                      curLevel,
+                                      remTime,
+                                      minLevel, maxLevel,
+                                      curFreq, minFreq, maxFreq,
+                                      onOff, options, featureFreq))
+                        )
+                    else
+                        (
+                            event FrequencyChange(curState);
+            let btrue = band(ge_frequency(newFreq, minFreq), le_frequency(newFreq, maxFreq)) in
+                                out(c_int_state, stateMsg(curState,
+                                          curLevel,
+                                          remTime,
+                                          minLevel, maxLevel,
+                                          newFreq, minFreq, maxFreq,
+                                          onOff, options, featureFreq))
+                            else
+                                out(c_int_state, stateMsg(curState,
+                                          curLevel,
+                                          remTime,
+                                          minLevel, maxLevel,
+                                          curFreq, minFreq, maxFreq,
+                                          onOff, options, featureFreq))
+                        )
+                )
+            else let btrue = bor(eq_command(rcmd, cmd_MoveToLevelWithOnOff),
+                        bor(eq_command(rcmd, cmd_MoveWithOnOff),
+                            eq_command(rcmd, cmd_StepWithOnOff))) in
+                (
+                    (* WithOnOff variants: allowed even when off *)
+                    event WithOnOffWhileOffExecuted(rcmd, curState);
+                    event TransitionStarted(curState);
+                    event OnOffCouplingChecked(curState);
+                    let effTime_wo: duration = derive_transition_time(rTransTime, rOnOffTransTime) in
+            let btrue = eq_uint8(onOff, val_OnOff_FALSE) in
+                        out(c_int_state, stateMsg(st_LevelTransitionOnWithOnOff,
+                                  curLevel,
+                                  effTime_wo,
+                                  minLevel, maxLevel,
+                                  curFreq, minFreq, maxFreq,
+                                  val_OnOff_TRUE,
+                                  options, featureFreq))
+                    else
+                        out(c_int_state, stateMsg(st_LevelTransitionOnWithOnOff,
+                                  curLevel,
+                                  effTime_wo,
+                                  minLevel, maxLevel,
+                                  curFreq, minFreq, maxFreq,
+                                  onOff,
+                                  options, featureFreq))
+                )
+            else let btrue = bor(eq_command(rcmd, cmd_Stop), eq_command(rcmd, cmd_StopWithOnOff)) in
+                (
+                    (* Stop / StopWithOnOff: terminate any in-progress transition or be no-op when idle *)
+                    event TransitionEnded(curState);
+                    event OnOffCouplingChecked(curState);
+            let btrue = band(eq_state(curState, st_LevelTransitionOnBase),
+                            eq_uint8(onOff, val_OnOff_TRUE)) in
+                        (
+                            event StateTransition(st_LevelTransitionOnBase, st_IdleOn);
+                            out(c_int_state, stateMsg(st_IdleOn,
+                                      terminate_level_transition(curLevel),
+                                      dur_zero,
+                                      minLevel, maxLevel,
+                                      curFreq, minFreq, maxFreq,
+                                      onOff, options, featureFreq))
+                        )
+            else let btrue = band(eq_state(curState, st_LevelTransitionOnWithOnOff),
+                                 eq_uint8(onOff, val_OnOff_TRUE)) in
+                        (
+                            event StateTransition(st_LevelTransitionOnWithOnOff, st_IdleOn);
+                            out(c_int_state, stateMsg(st_IdleOn,
+                                      terminate_level_transition(curLevel),
+                                      dur_zero,
+                                      minLevel, maxLevel,
+                                      curFreq, minFreq, maxFreq,
+                                      onOff, options, featureFreq))
+                        )
+            else let btrue = band(eq_state(curState, st_LevelTransitionOff),
+                                 eq_uint8(onOff, val_OnOff_FALSE)) in
+                        (
+                            event StateTransition(st_LevelTransitionOff, st_IdleOff);
+                            out(c_int_state, stateMsg(st_IdleOff,
+                                      terminate_level_transition(curLevel),
+                                      dur_zero,
+                                      minLevel, maxLevel,
+                                      curFreq, minFreq, maxFreq,
+                                      onOff, options, featureFreq))
+                        )
+                    else
+                        (
+                            (* Stop when idle: no effect, modeled as invalid/ignored *)
+                            event InvalidCommand(rcmd, curState);
+                            out(c_int_state, stateMsg(curState,
+                                      curLevel,
+                                      remTime,
+                                      minLevel, maxLevel,
+                                      curFreq, minFreq, maxFreq,
+                                      onOff, options, featureFreq))
+                        )
+                )
+            else let btrue = eq_command(rcmd, cmd_MoveToLevel) in
+                (
+                    (* MoveToLevel base command *)
+                    event TransitionStarted(curState);
+                    event OnOffCouplingChecked(curState);
+                    let tgtLevel: level = clamp_level(rLevel, minLevel, maxLevel) in
+                    let effTime: duration = derive_transition_time(rTransTime, rOnOffTransTime) in
+            let btrue = eq_uint8(onOff, val_OnOff_TRUE) in
+                        out(c_int_state, stateMsg(st_LevelTransitionOnBase,
+                                  start_level_transition(curLevel, tgtLevel, effTime),
+                                  effTime,
+                                  minLevel, maxLevel,
+                                  curFreq, minFreq, maxFreq,
+                                  onOff, options, featureFreq))
+                    else
+                        out(c_int_state, stateMsg(st_LevelTransitionOff,
+                                  start_level_transition(curLevel, tgtLevel, effTime),
+                                  effTime,
+                                  minLevel, maxLevel,
+                                  curFreq, minFreq, maxFreq,
+                                  onOff, options, featureFreq))
+                )
+            else let btrue = eq_command(rcmd, cmd_Move) in
+                (
+                    (* Move base command: continuous move toward limit *)
+                    event TransitionStarted(curState);
+                    event OnOffCouplingChecked(curState);
+                    let effRate: uint16 = derive_effective_rate(rRate, zero_uint16) in
+                    let moveMode: mode = setup_continuous_move(rmode, effRate) in
+                    let estTime: duration = estimate_remaining_time_for_move(rmode, effRate) in
+            let btrue = eq_uint8(onOff, val_OnOff_TRUE) in
+                        out(c_int_state, stateMsg(st_LevelTransitionOnBase,
+                                  curLevel,
+                                  estTime,
+                                  minLevel, maxLevel,
+                                  curFreq, minFreq, maxFreq,
+                                  onOff, options, featureFreq))
+                    else
+                        out(c_int_state, stateMsg(st_LevelTransitionOff,
+                                  curLevel,
+                                  estTime,
+                                  minLevel, maxLevel,
+                                  curFreq, minFreq, maxFreq,
+                                  onOff, options, featureFreq))
+                )
+            else let btrue = eq_command(rcmd, cmd_Step) in
+                (
+                    (* Step base command *)
+                    event TransitionStarted(curState);
+                    event OnOffCouplingChecked(curState);
+                    let tgt2: level = compute_step_target(curLevel, rmode, rStepSize, minLevel, maxLevel) in
+                    let stepTime: duration = derive_step_duration(rTransTime, curLevel, tgt2, rStepSize) in
+            let btrue = eq_uint8(onOff, val_OnOff_TRUE) in
+                        out(c_int_state, stateMsg(st_LevelTransitionOnBase,
+                                  start_level_transition(curLevel, tgt2, stepTime),
+                                  stepTime,
+                                  minLevel, maxLevel,
+                                  curFreq, minFreq, maxFreq,
+                                  onOff, options, featureFreq))
+                    else
+                        out(c_int_state, stateMsg(st_LevelTransitionOff,
+                                  start_level_transition(curLevel, tgt2, stepTime),
+                                  stepTime,
+                                  minLevel, maxLevel,
+                                  curFreq, minFreq, maxFreq,
+                                  onOff, options, featureFreq))
+                )
+            else
+                (
+                    (* Any other command not explicitly modeled: invalid or ignored *)
+                    event InvalidCommand(rcmd, curState);
+                    out(c_int_state, stateMsg(curState,
+                              curLevel,
+                              remTime,
+                              minLevel, maxLevel,
+                              curFreq, minFreq, maxFreq,
+                              onOff, options, featureFreq))
+                )
+        ).
+
+(* ======================= 8. MAIN PROCESS ============================ *)
+
+process
+    (* Initialize attributes to abstract constants; specific values not modeled. *)
+    new initLevel: level;
+    new initMinLevel: level;
+    new initMaxLevel: level;
+    new initFreq: frequency;
+    new initMinFreq: frequency;
+    new initMaxFreq: frequency;
+    let initRemTime: duration = dur_zero in
+    new initOptions: optionsbitmap;
+    let initOnOff: uint8 = val_OnOff_FALSE in
+    (* Initialize FSM state on the internal channel *)
+    out(c_int_state, stateMsg(st_IdleOff,
+                initLevel,
+                initRemTime,
+                initMinLevel,
+                initMaxLevel,
+                initFreq,
+                initMinFreq,
+                initMaxFreq,
+                initOnOff,
+                initOptions,
+                feat_FrequencySupported)) |
+    (* Start replicated FSM process that reads state from channel *)
+    !DeviceFSM()

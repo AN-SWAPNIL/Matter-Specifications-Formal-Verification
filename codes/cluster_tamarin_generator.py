@@ -20,7 +20,8 @@ from config import (
     MODEL_PROVIDER,
     LLM_TEMPERATURE,
     LLM_MAX_OUTPUT_TOKENS,
-    FSM_TO_TAMARIN_PROMPT_TEMPLATE
+    FSM_TO_TAMARIN_PROMPT_TEMPLATE,
+    TAMARIN_JUDGE_PROMPT_TEMPLATE
 )
 
 MAX_TRIES = 10
@@ -39,17 +40,21 @@ class FSMToTamarinConverter:
                  provider: str = MODEL_PROVIDER,
                  temperature: float = LLM_TEMPERATURE,
                  max_tokens: int = LLM_MAX_OUTPUT_TOKENS,
-                 prompt_template: str = FSM_TO_TAMARIN_PROMPT_TEMPLATE):
+                 prompt_template: str = FSM_TO_TAMARIN_PROMPT_TEMPLATE,
+                 judge_template: str = TAMARIN_JUDGE_PROMPT_TEMPLATE):
         self.api_key = api_key
         self.model = model
         self.provider = provider
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.prompt_template = prompt_template
+        self.judge_template = judge_template
 
         # Ensure API key env variable (backwards-compatible)
         if not os.environ.get("GOOGLE_API_KEY") and self.api_key:
             os.environ["GOOGLE_API_KEY"] = self.api_key
+        if not os.environ.get("OPENAI_API_KEY") and self.api_key:
+            os.environ["OPENAI_API_KEY"] = self.api_key
 
         # Initialize LLM clients
         try:
@@ -96,7 +101,7 @@ class FSMToTamarinConverter:
             # --prove=dummy loads theory and validates semantic correctness without proof search
             # This catches undeclared action facts and other semantic errors that --parse misses
             result = subprocess.run(
-                ['wsl', '/home/linuxbrew/.linuxbrew/bin/tamarin-prover', file_path_for_tamarin, '--prove=dummy'],
+                ['wsl', 'tamarin-prover', file_path_for_tamarin, '--prove=dummy'],
                 capture_output=True,
                 text=True,
                 timeout=60  # Longer timeout for semantic validation
@@ -105,8 +110,9 @@ class FSMToTamarinConverter:
             # Clean up temp file
             os.unlink(tmp_file_path)
             
-            # Check if theory loaded successfully (ignore WSL warnings in stderr)
+            # Check if theory processed successfully
             theory_loaded = "Theory loaded" in result.stdout or "Theory loaded" in result.stderr
+            theory_closed = "Theory closed" in result.stdout or "Theory closed" in result.stderr
             
             # Extract validation summary (everything after the parsed theory)
             stdout_text = result.stdout
@@ -123,25 +129,50 @@ class FSMToTamarinConverter:
                 if summary_start > 0:
                     validation_summary = stdout_text[summary_start:]
             
-            # Check for errors
-            has_errors = "Error:" in result.stderr or "error:" in result.stderr or \
-                        "wellformedness check failed" in stdout_text or \
-                        "WARNING:" in stdout_text
+            # Check for actual parse errors (not informational messages)
+            # Look for specific error patterns that indicate real problems
+            has_errors = (
+                "unexpected" in result.stderr.lower() or 
+                "Error:" in result.stderr or 
+                "error:" in result.stderr or
+                "wellformedness check failed" in stdout_text or
+                "WARNING:" in stdout_text
+            )
             
-            parse_success = result.returncode == 0 and theory_loaded and not has_errors
+            # Success: exit code 0, theory loaded and closed, no actual errors
+            parse_success = result.returncode == 0 and ( theory_loaded or theory_closed ) and not has_errors
             
-            # Filter out WSL systemd warnings from stderr
+            # Filter out informational messages from stderr
             filtered_stderr = result.stderr
-            if "wsl: Failed to start the systemd user session" in filtered_stderr or \
-               "See journalctl for more details" in filtered_stderr:
-                # Remove WSL warning lines, keep only actual Tamarin errors
-                stderr_lines = filtered_stderr.split('\n')
-                filtered_lines = [line for line in stderr_lines 
-                                 if 'wsl:' not in line.lower() and 
-                                    'systemd' not in line.lower() and 
-                                    'journalctl' not in line.lower() and
-                                    line.strip()]
-                filtered_stderr = '\n'.join(filtered_lines)
+            # Remove informational lines that aren't errors
+            stderr_lines = filtered_stderr.split('\n')
+            filtered_lines = [line for line in stderr_lines 
+                             if not any(info_msg in line for info_msg in [
+                                 'wsl:', 'systemd', 'journalctl',
+                                 'maude tool:', 'checking version:', 'checking installation:',
+                                 'Theory loaded', 'Theory translated', 
+                                 'Derivation checks', 'Theory closed'
+                             ]) and line.strip()]
+            filtered_stderr = '\n'.join(filtered_lines)
+            
+            # Print parse results for debugging
+            print(f"\n{'='*80}")
+            print(f"Tamarin parse result for {cluster_name}")
+            print(f"{'='*80}")
+            print(f"Success: {parse_success}")
+            print(f"Return code: {result.returncode}")
+            print(f"Theory loaded: {theory_loaded}")
+            print(f"Theory closed: {theory_closed}")
+            if validation_summary:
+                print(f"\n--- VALIDATION SUMMARY ---")
+                print(validation_summary[:2000])  # First 2000 chars
+            elif stdout_text:
+                print(f"\n--- STDOUT (last 1500 chars) ---")
+                print(stdout_text[-1500:])
+            if filtered_stderr:
+                print(f"\n--- STDERR (filtered) ---")
+                print(filtered_stderr[:1500])  # First 1500 chars
+            print(f"{'='*80}\n")
                         
             return {
                 "success": parse_success,
@@ -174,8 +205,6 @@ class FSMToTamarinConverter:
                 "stdout": "",
                 "stderr": f"Error: {str(e)}"
             }
-        finally:
-            print(f"Tamarin parse stdout for {cluster_name}:\n{result}")
     
     def clean_tamarin_response(self, response: str, cluster_name: str = "Unknown") -> str:
         """Clean Tamarin response by removing markdown code blocks."""
@@ -211,147 +240,26 @@ class FSMToTamarinConverter:
             elif parse_result.get("success"):
                 parse_section = "\n## TAMARIN PARSER OUTPUT\n✓ Parse successful - no syntax errors\n"
                 if parse_result.get("stdout"):
-                    parse_section += f"Output: {parse_result['stdout'][:1000]}\n"
+                    parse_section += f"Output: {parse_result['stdout'][:1500]}\n"
             else:
                 parse_section = f"\n## TAMARIN PARSER OUTPUT\n✗ Parse FAILED (exit code {parse_result.get('returncode')})\n"
                 if parse_result.get("stderr"):
-                    parse_section += f"Errors:\n{parse_result['stderr'][:1000]}\n"
+                    parse_section += f"Errors:\n{parse_result['stderr']}\n"
                 if parse_result.get("stdout"):
                     parse_section += f"Output:\n{parse_result['stdout'][:1000]}\n"
         
-        prompt = f"""
-You are an expert Tamarin prover judge evaluating FSM-to-Tamarin conversions for Matter protocol clusters.
-
-Your task: Identify syntax/semantic errors and provide EXACT fixes with line-level guidance.
-{parse_section}
-
-## CRITICAL SYNTAX RULES
-
-### 1. FACT ARGUMENT SYNTAX (MOST COMMON ERROR)
-**Every argument MUST be separated by comma** - no exceptions!
-
-**Common Parse Errors:**
-- `unexpected "W" expecting "," or ")"` → Missing comma before variable starting with "W"
-- `unexpected letter expecting ","` → Missing comma between arguments
-- `unexpected "." expecting ","` → Period instead of comma (typo)
-
-**Examples:**
-```
-❌ St(~tid, state, OnTime OffWaitTime, GSC)     // Missing comma before OffWaitTime
-✅ St(~tid, state, OnTime, OffWaitTime, GSC)    // Correct
-
-❌ !Config(~tid, f_LT f_DF, f_OFFONLY)          // Missing comma before f_DF  
-✅ !Config(~tid, f_LT, f_DF, f_OFFONLY)         // Correct
-
-❌ StateTransition(~tid st_OnIdle, st_OffIdle)  // Missing comma after ~tid
-✅ StateTransition(~tid, st_OnIdle, st_OffIdle) // Correct
-```
-
-### 2. COMMENT SYNTAX
-```
-✅ // This is valid
-✅ /* Block comment */
-❌ // Section: Description  // Colon in comment can cause issues
-❌ /*: Title */            // Leading colon causes parse error
-```
-
-### 3. VARIABLE NAMING
-- No spaces: `OffWaitTime` NOT `Off Wait Time`
-- Fresh vars: `~tid`
-- Public vars: `$pk`
-- Regular vars: lowercase start
-
-### 4. OTHER SYNTAX RULES  
-- Only ONE `functions:` block
-- No `_` wildcards in premises
-- No `|` disjunctions in premises
-- No `not()` in premises (only in formulas)
-- Consistent `St(...)` arity across all rules
-
-## PARSE ERROR DIAGNOSIS
-
-When you see parse error at **line X, column Y**:
-1. **Locate the line** in the Tamarin model
-2. **Identify the fact** at that position (St, !Config, StateTransition, etc.)
-3. **Check for missing commas** between ALL arguments
-4. **Provide exact corrected line**
-
-### Example Diagnosis Process:
-```
-Parse Error: "line 274, column 24: unexpected W expecting , or )"
-
-Step 1: Line 274 is likely a rule with a fact
-Step 2: Column 24 suggests error mid-way through argument list
-Step 3: Character "W" likely starts a variable like "OffWaitTime" or "WaitTime"
-Step 4: Missing comma BEFORE this variable
-
-Likely Error:
-St(~tid, state, OnTime OffWaitTime, GSC)
-                      ↑ Missing comma here
-
-Correct Syntax:
-St(~tid, state, OnTime, OffWaitTime, GSC)
-```
-
-## SEMANTIC CHECKS
-- Every FSM state → `st_StateName/0` function
-- Every FSM transition → Tamarin rule(s)
-- Guards → pattern matching in premises
-- Inequality guards: `X != value` MUST be split into separate rules per allowed value
-- Action facts: Commands emit `Command(tid, 'CmdName')` and `StateTransition(tid, s1, s2)`
-- Timer abstraction: `tv_zero/0`, `tv_pos/0`, `tv_ffff/0` (NO arithmetic)
-- Config vs State: Immutable in `!Config(...)`, mutable in `St(...)`
-
-## VERDICT LOGIC
-
-**If parse FAILED:**
-1. Extract line/column from error message
-2. Analyze error type:
-   - `unexpected "X" expecting ","` → Missing comma in fact arguments
-   - `unexpected ":"` → Remove colon from comments  
-   - `unexpected letter` → Variable naming or missing comma
-3. Provide EXACT line correction with before/after
-4. Set `"correct": false`
-
-**If parse SUCCESS:**
-1. Check semantic correctness
-2. Verify FSM coverage
-3. Set `"correct": true/false`
-
-## OUTPUT FORMAT (JSON ONLY)
-
-{{
-    "correct": true/false,
-    "explanation": "Detailed explanation with line-level diagnosis for parse errors",
-    "issues": [
-        "Line X: Specific issue description",
-        "Check all St(...) and !Config(...) facts for missing commas"
-    ],
-    "parse_errors": ["Exact errors from tamarin-prover"],
-    "syntax_fixes": [
-        {{
-            "line": 274,
-            "error": "St(~tid, state, OnTime OffWaitTime, GSC)",
-            "fix": "St(~tid, state, OnTime, OffWaitTime, GSC)",
-            "explanation": "Added missing comma between arguments"
-        }}
-    ]
-}}
-
-Now evaluate:
-
-TAMARIN MODEL:
-{tamarin_model}
-
-SOURCE FSM JSON:
-{fsm_json}
-"""
+        # Use replace instead of format to avoid issues with { } in JSON
+        prompt = self.judge_template.replace("{tamarin_model}", tamarin_model).replace("{fsm_json}", fsm_json)
+        
+        # Add parse section to prompt
+        prompt = f"{parse_section}\n{prompt}"
+        
         try:
             response = self.judge.invoke(prompt)
             time.sleep(30)
             return response.content
         except Exception as e:
-            logger.error(f"Error during judge evaluation: {e}")
+            logger.error(f"Error during judge evaluation: {e}", exc_info=True)
             return json.dumps({"correct": False, "explanation": f"Judge error: {str(e)}"})
 
     def convert_fsm_to_tamarin(self, fsm_data: Dict[str, Any], max_retries: int = MAX_TRIES) -> Optional[Dict[str, Any]]:
@@ -420,7 +328,17 @@ If there were parse errors, fix the syntax first to ensure the model is parseabl
                 judge_response = self.judge_tamarin(clean_response, fsm_json_str, parse_result)
                 last_judge_feedback = judge_response  # Store last feedback
 
-                if '"correct": true' in judge_response.lower():
+                # Check if judge approved (robust check)
+                is_correct = False
+                try:
+                    if judge_response and isinstance(judge_response, str):
+                        is_correct = '"correct": true' in judge_response.lower() or \
+                                   '"correct":true' in judge_response.lower()
+                except Exception as e:
+                    logger.warning(f"Error checking judge response: {e}")
+                    is_correct = False
+
+                if is_correct:
                     logger.info(f"✓ Tamarin conversion approved (attempt {attempt + 1})")
                     
                     # Build result structure

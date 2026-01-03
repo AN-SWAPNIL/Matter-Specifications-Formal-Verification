@@ -1,0 +1,1208 @@
+(* ProVerif model for Matter On/Off Cluster (extended FSM model) *)
+(* Generated from FSM specification *)
+
+(* === 1. Type Declarations === *)
+type state.
+type command.
+type status.
+type effect_id.
+type effect_variant.
+type onoff_control_t.
+type endpoint.
+type bool3.                (* three-valued StartUpOnOff: null, Off, On, Toggle *)
+type bool.                 (* logical booleans for attributes/capabilities *)
+type nat16.                (* abstract 16-bit natural values *)
+
+
+(* === 2. Channel Declarations === *)
+free c: channel.                    (* Public command/response channel *)
+free internal: channel [private].   (* Internal state & attribute channel *)
+
+
+(* === 3. Constant Declarations === *)
+
+(* ---- States ---- *)
+const st_StartupState: state.
+const st_BaseOff: state.
+const st_BaseOn: state.
+const st_TimedOn: state.
+const st_DelayedOff: state.
+
+(* ---- Commands / Triggers ---- *)
+const cmd_Off: command.
+const cmd_On: command.
+const cmd_Toggle: command.
+const cmd_OffWithEffect: command.
+const cmd_OnWithRecallGlobalScene: command.
+const cmd_OnWithTimedOff: command.
+const trig_Startup: command.
+const trig_TimerTick: command.
+
+(* ---- Status values ---- *)
+const st_SUCCESS: status.
+const st_UNSUPPORTED_COMMAND: status.
+
+(* ---- Boolean-like values ---- *)
+const b_true: bool.
+const b_false: bool.
+
+(* Three-valued StartUpOnOff constants: null, Off, On, Toggle *)
+const su_null: bool3.
+const su_Off: bool3.
+const su_On: bool3.
+const su_Toggle: bool3.
+
+(* Special nat16 constants used in guards *)
+const nat16_0: nat16.
+const nat16_1: nat16.
+const nat16_FFFF: nat16.
+
+(* Some abstract effect identifiers and variants (values not security relevant) *)
+const effid0: effect_id.
+const effvar0: effect_variant.
+
+(* Example onoff_control values *)
+const onoff_ctrl0: onoff_control_t.
+const onoff_ctrl1: onoff_control_t.
+
+(* OFFONLY feature flags *)
+const feat_OFFONLY_true: bool.
+const feat_OFFONLY_false: bool.
+
+(* Capability flags *)
+const cap_supports_OnTime_true: bool.
+const cap_supports_OnTime_false: bool.
+const cap_supports_OffWaitTime_true: bool.
+const cap_supports_OffWaitTime_false: bool.
+
+(* GlobalSceneControl flag values *)
+const gsc_true: bool.
+const gsc_false: bool.
+
+(* OnOff attribute values as bool *)
+const onoff_TRUE: bool.
+const onoff_FALSE: bool.
+
+(* Attribute/variable labels just for documentation via events *)
+const attr_OnOff: bitstring.
+const attr_OnTime: bitstring.
+const attr_OffWaitTime: bitstring.
+const attr_GlobalSceneControl: bitstring.
+const attr_StartUpOnOff: bitstring.
+const attr_PreviousOnOff: bitstring.
+const attr_supports_OnTime: bitstring.
+const attr_supports_OffWaitTime: bitstring.
+const attr_OFFONLY: bitstring.
+
+
+(* === 4. Function / Helper Declarations === *)
+
+(* We do not model arithmetic precisely; we use abstract constructors to stand for
+   min, max, decrement operations, and comparisons are abstracted by pattern
+   matching on special constants when needed. *)
+fun min(nat16, nat16): nat16.
+fun max(nat16, nat16): nat16.
+fun dec(nat16): nat16.
+
+(* Extract AcceptOnlyWhenOn bit from onoff_control_t.
+   We keep it abstract; the FSM guards refer to a bound variable representing this bit. *)
+fun accept_only_when_on(onoff_control_t): bool.
+
+
+(* === 5. Event Declarations === *)
+
+(* Generic command and state events *)
+event CommandReceived(endpoint, command).
+event StateChanged(endpoint, state, state).
+
+(* Attribute change logging (for potential correspondence properties) *)
+event AttributeSet(endpoint, bitstring, bitstring).
+
+(* ---- FSM Action Facts mapped to ProVerif events ---- *)
+
+event OffReceived(endpoint).
+event OffApplied(endpoint).
+event OnTimeClearedByOff(endpoint).
+event OffResponseSent(endpoint, status).
+
+event OnReceived(endpoint).
+event OnNotSupportedOffOnly(endpoint).
+event OnApplied(endpoint).
+event OffWaitTimeClearedByOn(endpoint).
+event OnResponseSent(endpoint, status).
+
+event ToggleReceived(endpoint).
+event ToggleNotSupportedOffOnly(endpoint).
+event ToggleAppliedToOn(endpoint).
+event ToggleAppliedToOff(endpoint).
+event OnTimeClearedByToggleToOn(endpoint).
+event OffWaitTimeClearedByToggleToOff(endpoint).
+event ToggleResponseSent(endpoint, status).
+
+event OffWithEffectReceived(endpoint, effect_id, effect_variant).
+event GlobalSceneStored(endpoint).
+event GlobalSceneControlCleared(endpoint).
+event OffAppliedByEffect(endpoint).
+event OnTimeClearedByOffWithEffect(endpoint).
+event OffWithEffectResponseSent(endpoint, status).
+
+event OnWithRecallGlobalSceneReceived(endpoint).
+event OnWithRecallGlobalSceneDiscarded(endpoint).
+event GlobalSceneRecalled(endpoint).
+event GlobalSceneControlSet(endpoint).
+event OffWaitTimeClearedByOnWithRecallGlobalScene(endpoint).
+event OnWithRecallGlobalSceneResponseSent(endpoint, status).
+
+event OnWithTimedOffReceived(endpoint, onoff_control_t, nat16, nat16).
+event OnWithTimedOffDiscardedAcceptOnlyWhenOn(endpoint).
+event OnWithTimedOffUpdateDelayedOff(endpoint).
+event OnWithTimedOffUpdateTimedOn(endpoint).
+event OnWithTimedOffTimerStarted(endpoint).
+event OnWithTimedOffResponseSent(endpoint, status).
+event OnWithTimedOffTickTimedOn(endpoint).
+event OnWithTimedOffTickDelayedOff(endpoint).
+event OnTimeDecremented(endpoint).
+event OffWaitTimeDecremented(endpoint).
+event OnWithTimedOffTransitionToOff(endpoint).
+event OnWithTimedOffTimerStopped(endpoint).
+
+event StartupOccurred(endpoint).
+event StartupRestorePrevious(endpoint, bool).
+event StartupForceOff(endpoint).
+event StartupForceOn(endpoint).
+event StartupToggleToOn(endpoint).
+event StartupToggleToOff(endpoint).
+
+
+(* === 6. Query Declarations === *)
+
+(* Example reachability: can we reach BaseOn state from startup? *)
+query ep: endpoint;
+      event(StateChanged(ep, st_StartupState, st_BaseOn)).
+
+(* Example sanity: Any Off/On/Toggle/TimedOff related state change must be caused by some command. *)
+query ep: endpoint, s1: state, s2: state;
+    event(StateChanged(ep, s1, s2))
+    ==>
+    (event(CommandReceived(ep, cmd_On))
+     || event(CommandReceived(ep, cmd_Off))
+     || event(CommandReceived(ep, cmd_Toggle))
+     || event(CommandReceived(ep, cmd_OffWithEffect))
+     || event(CommandReceived(ep, cmd_OnWithRecallGlobalScene))
+     || event(CommandReceived(ep, cmd_OnWithTimedOff))
+     || event(CommandReceived(ep, trig_Startup))
+     || event(CommandReceived(ep, trig_TimerTick))).
+
+
+(* === 7. Process Macro Definitions === *)
+
+(* The device process is modeled as a replicated process that, for each interaction,
+   takes the current abstract FSM state and attributes as input, then applies one
+   enabled transition based on the incoming command and guard conditions.           *)
+
+let Device(ep: endpoint) =
+    (* Input current FSM state and all relevant attributes on internal channel *)
+    in(internal,
+       (curst: state,
+        onoff: bool,
+        ontime: nat16,
+        offwait: nat16,
+        gsc: bool,
+        startup: bool3,
+        prev_onoff: bool,
+        supports_OnTime: bool,
+        supports_OffWaitTime: bool,
+        offonly_feat: bool));
+
+    (* Input a command/trigger and any associated parameters *)
+    in(c,
+       (cmd: command,
+        effid: effect_id,
+        effvar: effect_variant,
+        onoff_ctrl: onoff_control_t,
+        on_time_field: nat16,
+        off_wait_time_field: nat16));
+
+    (* Derive AcceptOnlyWhenOn bit from onoff_control_t *)
+    let aow: bool = accept_only_when_on(onoff_ctrl) in
+
+    event CommandReceived(ep, cmd);
+
+    (* ---- Startup transitions from StartupState ---- *)
+    if curst = st_StartupState then
+        if cmd = trig_Startup then
+            (* T_Startup_RestorePrevOff *)
+            if startup = su_null && prev_onoff = onoff_FALSE then
+                event StartupOccurred(ep);
+                event StartupRestorePrevious(ep, onoff_FALSE);
+                event StateChanged(ep, st_StartupState, st_BaseOff);
+                event AttributeSet(ep, attr_OnOff, "FALSE");
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Startup_RestorePrevOn *)
+            else if startup = su_null && prev_onoff = onoff_TRUE then
+                event StartupOccurred(ep);
+                event StartupRestorePrevious(ep, onoff_TRUE);
+                event StateChanged(ep, st_StartupState, st_BaseOn);
+                event AttributeSet(ep, attr_OnOff, "TRUE");
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Startup_ForceOff *)
+            else if startup = su_Off then
+                event StartupOccurred(ep);
+                event StartupForceOff(ep);
+                event StateChanged(ep, st_StartupState, st_BaseOff);
+                event AttributeSet(ep, attr_OnOff, "FALSE");
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Startup_ForceOn *)
+            else if startup = su_On then
+                event StartupOccurred(ep);
+                event StartupForceOn(ep);
+                event StateChanged(ep, st_StartupState, st_BaseOn);
+                event AttributeSet(ep, attr_OnOff, "TRUE");
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Startup_ToggleToOn *)
+            else if startup = su_Toggle && prev_onoff = onoff_FALSE then
+                event StartupOccurred(ep);
+                event StartupToggleToOn(ep);
+                event StateChanged(ep, st_StartupState, st_BaseOn);
+                event AttributeSet(ep, attr_OnOff, "TRUE");
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Startup_ToggleToOff *)
+            else if startup = su_Toggle && prev_onoff = onoff_TRUE then
+                event StartupOccurred(ep);
+                event StartupToggleToOff(ep);
+                event StateChanged(ep, st_StartupState, st_BaseOff);
+                event AttributeSet(ep, attr_OnOff, "FALSE");
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            else
+                (* No startup guard matched: stay in StartupState *)
+                out(internal,
+                    (curst,
+                     onoff,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+        else
+            (* Non-startup command while in StartupState: ignore *)
+            out(internal,
+                (curst,
+                 onoff,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+    else
+
+    (* ---- Off command transitions ---- *)
+    if cmd = cmd_Off then
+        (* T_Off_FromOn *)
+        if curst = st_BaseOn then
+            event OffReceived(ep);
+            event OffApplied(ep);
+            event OnTimeClearedByOff(ep);
+            event OffResponseSent(ep, st_SUCCESS);
+            event StateChanged(ep, st_BaseOn, st_BaseOff);
+            out(internal,
+                (st_BaseOff,
+                 onoff_FALSE,
+                 nat16_0,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+        (* T_Off_FromTimedOn *)
+        else if curst = st_TimedOn then
+            event OffReceived(ep);
+            event OffApplied(ep);
+            event OnTimeClearedByOff(ep);
+            event OnWithTimedOffTimerStopped(ep);
+            event OffResponseSent(ep, st_SUCCESS);
+            event StateChanged(ep, st_TimedOn, st_BaseOff);
+            out(internal,
+                (st_BaseOff,
+                 onoff_FALSE,
+                 nat16_0,
+                 nat16_0,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+        (* T_Off_FromDelayedOff *)
+        else if curst = st_DelayedOff then
+            event OffReceived(ep);
+            event OffApplied(ep);
+            event OnTimeClearedByOff(ep);
+            event OnWithTimedOffTimerStopped(ep);
+            event OffResponseSent(ep, st_SUCCESS);
+            event StateChanged(ep, st_DelayedOff, st_BaseOff);
+            out(internal,
+                (st_BaseOff,
+                 onoff_FALSE,
+                 nat16_0,
+                 nat16_0,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+        (* T_Off_FromOff *)
+        else if curst = st_BaseOff then
+            event OffReceived(ep);
+            event OffApplied(ep);
+            event OffResponseSent(ep, st_SUCCESS);
+            event StateChanged(ep, st_BaseOff, st_BaseOff);
+            out(internal,
+                (st_BaseOff,
+                 onoff_FALSE,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+        else
+            (* Off in other states not explicitly modeled: no-op *)
+            out(internal,
+                (curst,
+                 onoff,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+
+    (* ---- On command transitions ---- *)
+    else if cmd = cmd_On then
+        if curst = st_BaseOff then
+            (* T_On_OffOnly *)
+            if offonly_feat = feat_OFFONLY_true then
+                event OnReceived(ep);
+                event OnNotSupportedOffOnly(ep);
+                event OnResponseSent(ep, st_UNSUPPORTED_COMMAND);
+                event StateChanged(ep, st_BaseOff, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_UNSUPPORTED_COMMAND)
+            (* T_On_FromOff_Simple_NoOnTime *)
+            else if offonly_feat = feat_OFFONLY_false
+                 && supports_OnTime = cap_supports_OnTime_false then
+                event OnReceived(ep);
+                event OnApplied(ep);
+                event OnResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_On_FromOff_Simple_NoOffWaitTime *)
+            else if offonly_feat = feat_OFFONLY_false
+                 && supports_OnTime = cap_supports_OnTime_true
+                 && supports_OffWaitTime = cap_supports_OffWaitTime_false then
+                event OnReceived(ep);
+                event OnApplied(ep);
+                event OnResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_On_FromOff_WithTimers_ClearOffWait (OnTime == 0) *)
+            else if offonly_feat = feat_OFFONLY_false
+                 && supports_OnTime = cap_supports_OnTime_true
+                 && supports_OffWaitTime = cap_supports_OffWaitTime_true
+                 && ontime = nat16_0 then
+                event OnReceived(ep);
+                event OnApplied(ep);
+                event OffWaitTimeClearedByOn(ep);
+                event OnResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     nat16_0,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_On_FromOff_WithTimers_KeepOffWait (OnTime != 0) *)
+            else
+                (* offonly_feat = FALSE, supports_OnTime = TRUE, supports_OffWaitTime = TRUE, OnTime != 0 (abstracted) *)
+                event OnReceived(ep);
+                event OnApplied(ep);
+                event OnResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+        (* T_On_FromOn (idempotent) *)
+        else if curst = st_BaseOn && offonly_feat = feat_OFFONLY_false then
+            event OnReceived(ep);
+            event OnApplied(ep);
+            event OnResponseSent(ep, st_SUCCESS);
+            event StateChanged(ep, st_BaseOn, st_BaseOn);
+            out(internal,
+                (st_BaseOn,
+                 onoff_TRUE,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+        else
+            (* Other states: ignore On *)
+            out(internal,
+                (curst,
+                 onoff,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+
+    (* ---- Toggle command transitions ---- *)
+    else if cmd = cmd_Toggle then
+        if curst = st_BaseOff then
+            (* T_Toggle_OffOnly *)
+            if offonly_feat = feat_OFFONLY_true then
+                event ToggleReceived(ep);
+                event ToggleNotSupportedOffOnly(ep);
+                event ToggleResponseSent(ep, st_UNSUPPORTED_COMMAND);
+                event StateChanged(ep, st_BaseOff, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_UNSUPPORTED_COMMAND)
+            (* T_Toggle_OffToOn_NoOnTime *)
+            else if offonly_feat = feat_OFFONLY_false
+                 && supports_OnTime = cap_supports_OnTime_false then
+                event ToggleReceived(ep);
+                event ToggleAppliedToOn(ep);
+                event ToggleResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Toggle_OffToOn_NoOffWaitTime *)
+            else if offonly_feat = feat_OFFONLY_false
+                 && supports_OnTime = cap_supports_OnTime_true
+                 && supports_OffWaitTime = cap_supports_OffWaitTime_false then
+                event ToggleReceived(ep);
+                event ToggleAppliedToOn(ep);
+                event ToggleResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Toggle_OffToOn_WithTimers *)
+            else
+                (* supports_OnTime = TRUE and supports_OffWaitTime = TRUE case *)
+                event ToggleReceived(ep);
+                event ToggleAppliedToOn(ep);
+                event OnTimeClearedByToggleToOn(ep);
+                event ToggleResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     nat16_0,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+        else if curst = st_BaseOn then
+            (* T_Toggle_OnToOff_NoOnTime *)
+            if offonly_feat = feat_OFFONLY_false
+               && supports_OnTime = cap_supports_OnTime_false then
+                event ToggleReceived(ep);
+                event ToggleAppliedToOff(ep);
+                event ToggleResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOn, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Toggle_OnToOff_NoOffWaitTime *)
+            else if offonly_feat = feat_OFFONLY_false
+                 && supports_OnTime = cap_supports_OnTime_true
+                 && supports_OffWaitTime = cap_supports_OffWaitTime_false then
+                event ToggleReceived(ep);
+                event ToggleAppliedToOff(ep);
+                event ToggleResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOn, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Toggle_OnToOff_WithTimers_ClearOffWait when OnTime == 0 *)
+            else if offonly_feat = feat_OFFONLY_false
+                 && supports_OnTime = cap_supports_OnTime_true
+                 && supports_OffWaitTime = cap_supports_OffWaitTime_true
+                 && ontime = nat16_0 then
+                event ToggleReceived(ep);
+                event ToggleAppliedToOff(ep);
+                event OffWaitTimeClearedByToggleToOff(ep);
+                event ToggleResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOn, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     nat16_0,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_Toggle_OnToOff_WithTimers_KeepOffWait (OnTime != 0) *)
+            else
+                event ToggleReceived(ep);
+                event ToggleAppliedToOff(ep);
+                event ToggleResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOn, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+        else
+            (* Toggle in other states ignored *)
+            out(internal,
+                (curst,
+                 onoff,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+
+    (* ---- OffWithEffect command transitions (only specified from BaseOn) ---- *)
+    else if cmd = cmd_OffWithEffect then
+        if curst = st_BaseOn then
+            (* T_OffWithEffect_GlobalSceneTrue_FromOn *)
+            if gsc = gsc_true then
+                event OffWithEffectReceived(ep, effid, effvar);
+                event GlobalSceneStored(ep);
+                event GlobalSceneControlCleared(ep);
+                event OffAppliedByEffect(ep);
+                event OnTimeClearedByOffWithEffect(ep);
+                event OffWithEffectResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOn, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     nat16_0,
+                     offwait,
+                     gsc_false,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_OffWithEffect_GlobalSceneFalse_FromOn *)
+            else
+                event OffWithEffectReceived(ep, effid, effvar);
+                event OffAppliedByEffect(ep);
+                event OffWithEffectResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOn, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+        else
+            (* OffWithEffect from other states ignored *)
+            out(internal,
+                (curst,
+                 onoff,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+
+    (* ---- OnWithRecallGlobalScene command transitions (from BaseOff) ---- *)
+    else if cmd = cmd_OnWithRecallGlobalScene then
+        if curst = st_BaseOff then
+            (* T_OnWithRecallGlobalScene_Discard *)
+            if gsc = gsc_true then
+                event OnWithRecallGlobalSceneReceived(ep);
+                event OnWithRecallGlobalSceneDiscarded(ep);
+                event OnWithRecallGlobalSceneResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc_true,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_OnWithRecallGlobalScene_Recall_ClearOffWait *)
+            else if gsc = gsc_false
+                 && supports_OnTime = cap_supports_OnTime_true
+                 && supports_OffWaitTime = cap_supports_OffWaitTime_true
+                 && ontime = nat16_0 then
+                event OnWithRecallGlobalSceneReceived(ep);
+                event GlobalSceneRecalled(ep);
+                event GlobalSceneControlSet(ep);
+                event OffWaitTimeClearedByOnWithRecallGlobalScene(ep);
+                event OnWithRecallGlobalSceneResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     nat16_0,
+                     gsc_true,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_OnWithRecallGlobalScene_Recall_NoTimerUpdate_NoOnTime *)
+            else if gsc = gsc_false
+                 && supports_OnTime = cap_supports_OnTime_false then
+                event OnWithRecallGlobalSceneReceived(ep);
+                event GlobalSceneRecalled(ep);
+                event GlobalSceneControlSet(ep);
+                event OnWithRecallGlobalSceneResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc_true,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_OnWithRecallGlobalScene_Recall_NoTimerUpdate_NoOffWaitTime *)
+            else if gsc = gsc_false
+                 && supports_OnTime = cap_supports_OnTime_true
+                 && supports_OffWaitTime = cap_supports_OffWaitTime_false then
+                event OnWithRecallGlobalSceneReceived(ep);
+                event GlobalSceneRecalled(ep);
+                event GlobalSceneControlSet(ep);
+                event OnWithRecallGlobalSceneResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc_true,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_OnWithRecallGlobalScene_Recall_NoTimerUpdate_OnTimeNonZero *)
+            else
+                event OnWithRecallGlobalSceneReceived(ep);
+                event GlobalSceneRecalled(ep);
+                event GlobalSceneControlSet(ep);
+                event OnWithRecallGlobalSceneResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOn);
+                out(internal,
+                    (st_BaseOn,
+                     onoff_TRUE,
+                     ontime,
+                     offwait,
+                     gsc_true,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+        else
+            (* OnWithRecallGlobalScene from other states ignored *)
+            out(internal,
+                (curst,
+                 onoff,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+
+    (* ---- OnWithTimedOff command transitions ---- *)
+    else if cmd = cmd_OnWithTimedOff then
+        (* We only partially abstract timers and numeric guards. *)
+        if curst = st_BaseOff then
+            (* T_OnWithTimedOff_Discard_AcceptOnlyWhenOn *)
+            if aow = b_true && onoff = onoff_FALSE then
+                event OnWithTimedOffReceived(ep, onoff_ctrl, on_time_field, off_wait_time_field);
+                event OnWithTimedOffDiscardedAcceptOnlyWhenOn(ep);
+                event OnWithTimedOffResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_BaseOff);
+                out(internal,
+                    (st_BaseOff,
+                     onoff_FALSE,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_OnWithTimedOff_DelayedOffUpdate: OnOff == FALSE and OffWaitTime > 0 (abstracted by offwait != 0) *)
+            else if aow = b_false && onoff = onoff_FALSE && offwait != nat16_0 then
+                event OnWithTimedOffReceived(ep, onoff_ctrl, on_time_field, off_wait_time_field);
+                event OnWithTimedOffUpdateDelayedOff(ep);
+                event OnWithTimedOffTimerStarted(ep);
+                event OnWithTimedOffResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_DelayedOff);
+                out(internal,
+                    (st_DelayedOff,
+                     onoff_FALSE,
+                     ontime,
+                     min(off_wait_time_field, offwait),
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+            (* T_OnWithTimedOff_TimedOnUpdate_FromOff_OffWaitZero *)
+            else
+                (* aow != 1, OnOff == FALSE, OffWaitTime == 0 *)
+                event OnWithTimedOffReceived(ep, onoff_ctrl, on_time_field, off_wait_time_field);
+                event OnWithTimedOffUpdateTimedOn(ep);
+                event OnWithTimedOffTimerStarted(ep);
+                event OnWithTimedOffResponseSent(ep, st_SUCCESS);
+                event StateChanged(ep, st_BaseOff, st_TimedOn);
+                out(internal,
+                    (st_TimedOn,
+                     onoff_TRUE,
+                     max(ontime, on_time_field),
+                     off_wait_time_field,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+        else if curst = st_BaseOn then
+            (* T_OnWithTimedOff_TimedOnUpdate_FromOn *)
+            event OnWithTimedOffReceived(ep, onoff_ctrl, on_time_field, off_wait_time_field);
+            event OnWithTimedOffUpdateTimedOn(ep);
+            event OnWithTimedOffTimerStarted(ep);
+            event OnWithTimedOffResponseSent(ep, st_SUCCESS);
+            event StateChanged(ep, st_BaseOn, st_TimedOn);
+            out(internal,
+                (st_TimedOn,
+                 onoff_TRUE,
+                 max(ontime, on_time_field),
+                 off_wait_time_field,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+        else
+            (* OnWithTimedOff from other states ignored *)
+            out(internal,
+                (curst,
+                 onoff,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+
+    (* ---- TimerTick trigger transitions for TimedOn and DelayedOff ---- *)
+    else if cmd = trig_TimerTick then
+        if curst = st_TimedOn then
+            (* We only model decrement and expire abstractly.
+               Conditions: OnTime != 0xFFFF, OffWaitTime != 0xFFFF, OnOff == TRUE. *)
+            if ontime != nat16_FFFF && offwait != nat16_FFFF && onoff = onoff_TRUE then
+                (* Abstract split between OnTime > 1 and == 1 using a boolean choice.
+                   To keep determinism in this simple model, we only model the expire case
+                   when OnTime equals 1 constant, else decrement. *)
+                if ontime = nat16_1 then
+                    (* T_OnWithTimedOff_Tick_TimedOn_ExpireToOff *)
+                    event OnWithTimedOffTickTimedOn(ep);
+                    event OnTimeDecremented(ep);
+                    event OnWithTimedOffTransitionToOff(ep);
+                    event OnWithTimedOffTimerStopped(ep);
+                    event StateChanged(ep, st_TimedOn, st_BaseOff);
+                    out(internal,
+                        (st_BaseOff,
+                         onoff_FALSE,
+                         nat16_0,
+                         nat16_0,
+                         gsc,
+                         startup,
+                         prev_onoff,
+                         supports_OnTime,
+                         supports_OffWaitTime,
+                         offonly_feat));
+                    out(c, st_SUCCESS)
+                else
+                    (* T_OnWithTimedOff_Tick_TimedOn_Decrement *)
+                    event OnWithTimedOffTickTimedOn(ep);
+                    event OnTimeDecremented(ep);
+                    event StateChanged(ep, st_TimedOn, st_TimedOn);
+                    out(internal,
+                        (st_TimedOn,
+                         onoff_TRUE,
+                         dec(ontime),
+                         offwait,
+                         gsc,
+                         startup,
+                         prev_onoff,
+                         supports_OnTime,
+                         supports_OffWaitTime,
+                         offonly_feat));
+                    out(c, st_SUCCESS)
+            else
+                (* Timers disabled => no change *)
+                out(internal,
+                    (curst,
+                     onoff,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+        else if curst = st_DelayedOff then
+            if ontime != nat16_FFFF && offwait != nat16_FFFF && onoff = onoff_FALSE then
+                if offwait = nat16_1 then
+                    (* T_OnWithTimedOff_Tick_DelayedOff_Stop *)
+                    event OnWithTimedOffTickDelayedOff(ep);
+                    event OffWaitTimeDecremented(ep);
+                    event OnWithTimedOffTimerStopped(ep);
+                    event StateChanged(ep, st_DelayedOff, st_BaseOff);
+                    out(internal,
+                        (st_BaseOff,
+                         onoff_FALSE,
+                         ontime,
+                         nat16_0,
+                         gsc,
+                         startup,
+                         prev_onoff,
+                         supports_OnTime,
+                         supports_OffWaitTime,
+                         offonly_feat));
+                    out(c, st_SUCCESS)
+                else
+                    (* T_OnWithTimedOff_Tick_DelayedOff_Decrement *)
+                    event OnWithTimedOffTickDelayedOff(ep);
+                    event OffWaitTimeDecremented(ep);
+                    event StateChanged(ep, st_DelayedOff, st_DelayedOff);
+                    out(internal,
+                        (st_DelayedOff,
+                         onoff_FALSE,
+                         ontime,
+                         dec(offwait),
+                         gsc,
+                         startup,
+                         prev_onoff,
+                         supports_OnTime,
+                         supports_OffWaitTime,
+                         offonly_feat));
+                    out(c, st_SUCCESS)
+            else
+                (* Timers disabled => no change *)
+                out(internal,
+                    (curst,
+                     onoff,
+                     ontime,
+                     offwait,
+                     gsc,
+                     startup,
+                     prev_onoff,
+                     supports_OnTime,
+                     supports_OffWaitTime,
+                     offonly_feat));
+                out(c, st_SUCCESS)
+        else
+            (* TimerTick in other states ignored *)
+            out(internal,
+                (curst,
+                 onoff,
+                 ontime,
+                 offwait,
+                 gsc,
+                 startup,
+                 prev_onoff,
+                 supports_OnTime,
+                 supports_OffWaitTime,
+                 offonly_feat));
+            out(c, st_SUCCESS)
+
+    (* ---- Any other command: no-op, echo state back ---- *)
+    else
+        out(internal,
+            (curst,
+             onoff,
+             ontime,
+             offwait,
+             gsc,
+             startup,
+             prev_onoff,
+             supports_OnTime,
+             supports_OffWaitTime,
+             offonly_feat));
+        out(c, st_SUCCESS).
+
+
+(* === 8. Main Process === *)
+
+process
+    (* One example endpoint; attacker can interact arbitrarily *)
+    new ep: endpoint;
+
+    (* Initialize attributes and state; we keep them symbolic. *)
+    (* Start in StartupState with previous OFF, StartUpOnOff = null, timers zero, flags arbitrary. *)
+    out(internal,
+        (st_StartupState,
+         onoff_FALSE,
+         nat16_0,
+         nat16_0,
+         gsc_false,
+         su_null,
+         onoff_FALSE,
+         cap_supports_OnTime_true,
+         cap_supports_OffWaitTime_true,
+         feat_OFFONLY_false));
+
+    (* Run infinitely many sessions of the device process in parallel *)
+    !Device(ep)

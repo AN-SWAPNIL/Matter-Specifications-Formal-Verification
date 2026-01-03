@@ -5,119 +5,71 @@
     "category": "Application",
     "states": [
       {
-        "name": "IdleOff_LevelUndefined",
-        "description": "No level transition in progress, associated OnOff is false, current level is undefined (null).",
+        "name": "IdleOff",
+        "description": "No level transition is in progress, device output is off, RemainingTime is zero. CurrentLevel is stable but may be any value within allowed range. OnOff cluster OnOff attribute is FALSE.",
         "is_initial": true,
         "invariants": [
           "RemainingTime == 0",
-          "OnOff == false",
-          "CurrentLevel == null",
-          "ActiveCommandType == None"
+          "OnOff == FALSE",
+          "CurrentLevel == null || (CurrentLevel >= MinLevel && CurrentLevel <= MaxLevel)"
         ],
         "attributes_monitored": [
           "CurrentLevel",
           "RemainingTime",
-          "OnOff",
-          "Options",
           "MinLevel",
           "MaxLevel",
-          "ActiveCommandType"
-        ]
-      },
-      {
-        "name": "IdleOff_LevelDefined",
-        "description": "No level transition in progress, associated OnOff is false, current level defined within [MinLevel, MaxLevel].",
-        "is_initial": false,
-        "invariants": [
-          "RemainingTime == 0",
-          "OnOff == false",
-          "CurrentLevel != null",
-          "CurrentLevel >= MinLevel",
-          "CurrentLevel <= MaxLevel",
-          "ActiveCommandType == None"
-        ],
-        "attributes_monitored": [
-          "CurrentLevel",
-          "RemainingTime",
           "OnOff",
           "Options",
-          "MinLevel",
-          "MaxLevel",
-          "ActiveCommandType"
+          "tempOptions"
         ]
       },
       {
         "name": "IdleOn",
-        "description": "No level transition in progress, associated OnOff is true, current level defined within [MinLevel, MaxLevel].",
+        "description": "No level transition is in progress, device output is on, RemainingTime is zero. CurrentLevel is stable and within the allowed range. OnOff cluster OnOff attribute is TRUE.",
         "is_initial": false,
         "invariants": [
           "RemainingTime == 0",
-          "OnOff == true",
+          "OnOff == TRUE",
           "CurrentLevel != null",
           "CurrentLevel >= MinLevel",
-          "CurrentLevel <= MaxLevel",
-          "ActiveCommandType == None"
+          "CurrentLevel <= MaxLevel"
         ],
         "attributes_monitored": [
           "CurrentLevel",
           "RemainingTime",
-          "OnOff",
-          "Options",
           "MinLevel",
           "MaxLevel",
-          "ActiveCommandType"
+          "OnOff",
+          "Options",
+          "tempOptions"
         ]
       },
       {
-        "name": "MovingByMoveToLevel",
-        "description": "A MoveToLevel or MoveToLevelWithOnOff command is in progress with a finite transition time; RemainingTime > 0.",
+        "name": "LevelTransitionOff",
+        "description": "A level transition is in progress while the device output remains off. RemainingTime is greater than zero and is counting down until transition completion. This includes transitions started by base commands when ExecuteIfOff is TRUE, and WithOnOff commands that intentionally leave OnOff FALSE while off.",
         "is_initial": false,
         "invariants": [
           "RemainingTime > 0",
-          "ActiveCommandType in {MoveToLevel, MoveToLevelWithOnOff}",
-          "CurrentLevel != null",
-          "CurrentLevel >= MinLevel",
-          "CurrentLevel <= MaxLevel"
+          "OnOff == FALSE",
+          "CurrentLevel == null || (CurrentLevel >= MinLevel && CurrentLevel <= MaxLevel)"
         ],
         "attributes_monitored": [
           "CurrentLevel",
           "RemainingTime",
-          "OnOff",
-          "Options",
           "MinLevel",
           "MaxLevel",
-          "ActiveCommandType",
-          "TargetLevelForOngoingMoveToLevel"
+          "OnOff",
+          "Options",
+          "tempOptions"
         ]
       },
       {
-        "name": "MovingByMove",
-        "description": "A Move or MoveWithOnOff command is in progress, RemainingTime is not used; movement continues until stopped or limits reached.",
-        "is_initial": false,
-        "invariants": [
-          "ActiveCommandType in {Move, MoveWithOnOff}",
-          "CurrentLevel != null",
-          "CurrentLevel >= MinLevel",
-          "CurrentLevel <= MaxLevel"
-        ],
-        "attributes_monitored": [
-          "CurrentLevel",
-          "RemainingTime",
-          "OnOff",
-          "Options",
-          "MinLevel",
-          "MaxLevel",
-          "ActiveCommandType",
-          "MoveDirection"
-        ]
-      },
-      {
-        "name": "MovingByStep",
-        "description": "A Step or StepWithOnOff command is in progress with a finite transition time; RemainingTime > 0.",
+        "name": "LevelTransitionOnBase",
+        "description": "A level transition initiated by a base Level Control command (MoveToLevel, Move, Step) is in progress while the device output is on. RemainingTime is greater than zero and counting down until completion. Base commands do not couple reaching minimum level to OnOff changes.",
         "is_initial": false,
         "invariants": [
           "RemainingTime > 0",
-          "ActiveCommandType in {Step, StepWithOnOff}",
+          "OnOff == TRUE",
           "CurrentLevel != null",
           "CurrentLevel >= MinLevel",
           "CurrentLevel <= MaxLevel"
@@ -125,1184 +77,592 @@
         "attributes_monitored": [
           "CurrentLevel",
           "RemainingTime",
-          "OnOff",
-          "Options",
           "MinLevel",
           "MaxLevel",
-          "ActiveCommandType",
-          "FinalStepLevel"
+          "OnOff",
+          "Options",
+          "tempOptions"
+        ]
+      },
+      {
+        "name": "LevelTransitionOnWithOnOff",
+        "description": "A level transition initiated by a WithOnOff variant (MoveToLevelWithOnOff, MoveWithOnOff, StepWithOnOff) is in progress while the device output is on. RemainingTime is greater than zero and counting down until completion. For these transitions, reaching the device minimum level may cause OnOff to become FALSE.",
+        "is_initial": false,
+        "invariants": [
+          "RemainingTime > 0",
+          "OnOff == TRUE",
+          "CurrentLevel != null",
+          "CurrentLevel >= MinLevel",
+          "CurrentLevel <= MaxLevel"
+        ],
+        "attributes_monitored": [
+          "CurrentLevel",
+          "RemainingTime",
+          "MinLevel",
+          "MaxLevel",
+          "OnOff",
+          "Options",
+          "tempOptions"
         ]
       }
     ],
     "transitions": [
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelUndefined",
+        "from_state": "IdleOff",
+        "to_state": "IdleOff",
         "trigger": "MoveToLevel",
-        "guard_condition": "ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == false && OnOff == false",
+        "guard_condition": "OnOff == FALSE && ExecuteIfOff(tempOptions) == FALSE",
         "actions": [
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "no_state_change()"
         ],
         "response_command": null,
-        "timing_requirements": "Command ignored for level and on/off when ExecuteIfOff is 0 and OnOff is false."
+        "timing_requirements": "Base MoveToLevel is ignored with respect to level and on/off changes when ExecuteIfOff is 0 and device is off; response is still sent at application level."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "MovingByMoveToLevel",
+        "from_state": "IdleOff",
+        "to_state": "LevelTransitionOff",
         "trigger": "MoveToLevel",
-        "guard_condition": "ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false && TransitionTime != null && TransitionTime > 0",
+        "guard_condition": "OnOff == FALSE && ExecuteIfOff(tempOptions) == TRUE",
         "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "RemainingTime := compute_remaining_time_for_move_to_level(TransitionTime)",
-          "ActiveCommandType := MoveToLevel"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "TargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
+          "RemainingTime := derive_transition_time(TransitionTime, OnOffTransitionTime)",
+          "start_level_transition(CurrentLevel, TargetLevel, RemainingTime)"
         ],
         "response_command": null,
-        "timing_requirements": "Movement time equals derived duration from TransitionTime; device may ignore if variable rate unsupported."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "MoveToLevel",
-        "guard_condition": "ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false && (TransitionTime == null || TransitionTime == 0)",
-        "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Transition considered immediate when TransitionTime is null or zero or when timing is ignored."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "MoveToLevel",
-        "guard_condition": "ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == false && OnOff == false",
-        "actions": [
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "No change to CurrentLevel or OnOff when ExecuteIfOff is 0 and OnOff is false."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "MovingByMoveToLevel",
-        "trigger": "MoveToLevel",
-        "guard_condition": "ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false && TransitionTime != null && TransitionTime > 0",
-        "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "RemainingTime := compute_remaining_time_for_move_to_level(TransitionTime)",
-          "ActiveCommandType := MoveToLevel"
-        ],
-        "response_command": null,
-        "timing_requirements": "Movement time equals derived duration from TransitionTime; device may ignore if variable rate unsupported."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "MoveToLevel",
-        "guard_condition": "ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false && (TransitionTime == null || TransitionTime == 0)",
-        "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Immediate level change when duration is not provided or is zero."
+        "timing_requirements": "RemainingTime represents duration in units of 0.1 seconds; device may shorten if variable rate not supported."
       },
       {
         "from_state": "IdleOn",
-        "to_state": "MovingByMoveToLevel",
+        "to_state": "LevelTransitionOnBase",
         "trigger": "MoveToLevel",
-        "guard_condition": "OnOff == true && TransitionTime != null && TransitionTime > 0",
+        "guard_condition": "OnOff == TRUE",
         "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "RemainingTime := compute_remaining_time_for_move_to_level(TransitionTime)",
-          "ActiveCommandType := MoveToLevel"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "TargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
+          "RemainingTime := derive_transition_time(TransitionTime, OnOffTransitionTime)",
+          "start_level_transition(CurrentLevel, TargetLevel, RemainingTime)"
         ],
         "response_command": null,
-        "timing_requirements": "Movement time equals derived duration; may be ignored if variable rate unsupported."
+        "timing_requirements": "RemainingTime represents duration in units of 0.1 seconds; device may shorten if variable rate not supported."
       },
       {
-        "from_state": "IdleOn",
+        "from_state": "LevelTransitionOnBase",
+        "to_state": "LevelTransitionOnBase",
+        "trigger": "internal_timer_tick",
+        "guard_condition": "RemainingTime > 1",
+        "actions": [
+          "RemainingTime := RemainingTime - 1",
+          "CurrentLevel := update_level_during_transition()"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timer tick represents decrement of RemainingTime by 1 unit (0.1 seconds) for base-command transitions while on."
+      },
+      {
+        "from_state": "LevelTransitionOnWithOnOff",
+        "to_state": "LevelTransitionOnWithOnOff",
+        "trigger": "internal_timer_tick",
+        "guard_condition": "RemainingTime > 1",
+        "actions": [
+          "RemainingTime := RemainingTime - 1",
+          "CurrentLevel := update_level_during_transition()"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timer tick represents decrement of RemainingTime by 1 unit (0.1 seconds) for WithOnOff-command transitions while on."
+      },
+      {
+        "from_state": "LevelTransitionOff",
+        "to_state": "LevelTransitionOff",
+        "trigger": "internal_timer_tick",
+        "guard_condition": "RemainingTime > 1",
+        "actions": [
+          "RemainingTime := RemainingTime - 1",
+          "CurrentLevel := update_level_during_transition()"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timer tick represents decrement of RemainingTime by 1 unit (0.1 seconds) while off."
+      },
+      {
+        "from_state": "LevelTransitionOnBase",
         "to_state": "IdleOn",
-        "trigger": "MoveToLevel",
-        "guard_condition": "OnOff == true && (TransitionTime == null || TransitionTime == 0)",
+        "trigger": "internal_timer_tick",
+        "guard_condition": "RemainingTime == 1",
         "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
           "RemainingTime := 0",
-          "ActiveCommandType := None"
+          "CurrentLevel := finalize_level_at_target()"
         ],
         "response_command": null,
-        "timing_requirements": "Immediate level change when duration is not provided or is zero."
+        "timing_requirements": "Base-command transition completes when RemainingTime reaches zero; device remains on even if level is at the minimum."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelUndefined",
+        "from_state": "LevelTransitionOnWithOnOff",
+        "to_state": "IdleOn",
+        "trigger": "internal_timer_tick",
+        "guard_condition": "RemainingTime == 1 && is_min_level_reached() == FALSE",
+        "actions": [
+          "RemainingTime := 0",
+          "CurrentLevel := finalize_level_at_target()"
+        ],
+        "response_command": null,
+        "timing_requirements": "WithOnOff transition completes above minimum level; device remains on."
+      },
+      {
+        "from_state": "LevelTransitionOnWithOnOff",
+        "to_state": "IdleOff",
+        "trigger": "internal_timer_tick",
+        "guard_condition": "RemainingTime == 1 && is_min_level_reached() == TRUE",
+        "actions": [
+          "RemainingTime := 0",
+          "CurrentLevel := finalize_level_at_target()",
+          "OnOff := FALSE"
+        ],
+        "response_command": null,
+        "timing_requirements": "WithOnOff transition completes at minimum level; device turns off in accordance with the Level Control On/Off coupling rules."
+      },
+      {
+        "from_state": "LevelTransitionOff",
+        "to_state": "IdleOff",
+        "trigger": "internal_timer_tick",
+        "guard_condition": "RemainingTime == 1",
+        "actions": [
+          "RemainingTime := 0",
+          "CurrentLevel := finalize_level_at_target()"
+        ],
+        "response_command": null,
+        "timing_requirements": "Off-state transition completes when RemainingTime reaches zero; device remains off."
+      },
+      {
+        "from_state": "IdleOff",
+        "to_state": "IdleOff",
         "trigger": "Move",
         "guard_condition": "Rate == 0",
         "actions": [
-          "ActiveCommandType := None"
+          "no_state_change()"
         ],
         "response_command": null,
-        "timing_requirements": "Command is rejected at the application level; no state change modeled."
+        "timing_requirements": "Command is rejected at application level with INVALID_COMMAND when Rate is 0; no state change is modeled."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelUndefined",
+        "from_state": "IdleOff",
+        "to_state": "LevelTransitionOff",
         "trigger": "Move",
-        "guard_condition": "Rate != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == false && OnOff == false",
+        "guard_condition": "Rate != 0 && OnOff == FALSE && ExecuteIfOff(tempOptions) == TRUE",
         "actions": [
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "EffectiveRate := derive_effective_rate(Rate, DefaultMoveRate)",
+          "setup_continuous_move(MoveMode, EffectiveRate)",
+          "RemainingTime := estimate_remaining_time_for_move(MoveMode, EffectiveRate)"
         ],
         "response_command": null,
-        "timing_requirements": "With ExecuteIfOff 0 and OnOff false, Move has no effect when level is undefined."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "MovingByMove",
-        "trigger": "Move",
-        "guard_condition": "Rate != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false",
-        "actions": [
-          "CurrentLevel := initialize_level_for_move(MinLevel, MaxLevel)",
-          "EffRate := compute_effective_rate(Rate, DefaultMoveRate)",
-          "MoveDirection := map_move_mode_to_direction(MoveMode)",
-          "ActiveCommandType := Move"
-        ],
-        "response_command": null,
-        "timing_requirements": "Continuous movement at computed effective rate until stopped or limits reached."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "Move",
-        "guard_condition": "Rate != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == false && OnOff == false",
-        "actions": [
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "No change to level or OnOff when ExecuteIfOff is 0 and OnOff is false."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "MovingByMove",
-        "trigger": "Move",
-        "guard_condition": "Rate != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false",
-        "actions": [
-          "EffRate := compute_effective_rate(Rate, DefaultMoveRate)",
-          "MoveDirection := map_move_mode_to_direction(MoveMode)",
-          "ActiveCommandType := Move"
-        ],
-        "response_command": null,
-        "timing_requirements": "Continuous movement at effective rate; CurrentLevel moves toward device limits."
+        "timing_requirements": "Continuous movement proceeds at EffectiveRate until reaching device limit; RemainingTime models time until limit while off."
       },
       {
         "from_state": "IdleOn",
-        "to_state": "MovingByMove",
+        "to_state": "LevelTransitionOnBase",
         "trigger": "Move",
-        "guard_condition": "Rate != 0 && OnOff == true",
+        "guard_condition": "Rate != 0 && OnOff == TRUE",
         "actions": [
-          "EffRate := compute_effective_rate(Rate, DefaultMoveRate)",
-          "MoveDirection := map_move_mode_to_direction(MoveMode)",
-          "ActiveCommandType := Move"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "EffectiveRate := derive_effective_rate(Rate, DefaultMoveRate)",
+          "setup_continuous_move(MoveMode, EffectiveRate)",
+          "RemainingTime := estimate_remaining_time_for_move(MoveMode, EffectiveRate)"
         ],
         "response_command": null,
-        "timing_requirements": "Continuous movement while OnOff is true; stops at device min or max."
+        "timing_requirements": "Continuous movement from a base Move command proceeds at EffectiveRate until reaching device limit; RemainingTime models time until limit while on."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelUndefined",
+        "from_state": "IdleOff",
+        "to_state": "IdleOff",
         "trigger": "Step",
         "guard_condition": "StepSize == 0",
         "actions": [
-          "ActiveCommandType := None"
+          "no_state_change()"
         ],
         "response_command": null,
-        "timing_requirements": "Command is rejected; no state change modeled."
+        "timing_requirements": "Command is rejected at application level with INVALID_COMMAND when StepSize is 0; no state change is modeled."
       },
       {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
+        "from_state": "IdleOff",
+        "to_state": "IdleOff",
         "trigger": "Step",
-        "guard_condition": "StepSize == 0",
+        "guard_condition": "StepSize != 0 && OnOff == FALSE && ExecuteIfOff(tempOptions) == FALSE",
         "actions": [
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "no_state_change()"
         ],
         "response_command": null,
-        "timing_requirements": "Command is rejected; no state change modeled."
+        "timing_requirements": "Base Step is ignored with respect to level and on/off changes when ExecuteIfOff is 0 and device is off."
+      },
+      {
+        "from_state": "IdleOff",
+        "to_state": "LevelTransitionOff",
+        "trigger": "Step",
+        "guard_condition": "StepSize != 0 && OnOff == FALSE && ExecuteIfOff(tempOptions) == TRUE",
+        "actions": [
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "TargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
+          "RemainingTime := derive_step_duration(TransitionTime, CurrentLevel, TargetLevel, StepSize)",
+          "start_level_transition(CurrentLevel, TargetLevel, RemainingTime)"
+        ],
+        "response_command": null,
+        "timing_requirements": "RemainingTime represents scaled transition time based on actual delta relative to requested StepSize when clamped, while off."
+      },
+      {
+        "from_state": "IdleOn",
+        "to_state": "LevelTransitionOnBase",
+        "trigger": "Step",
+        "guard_condition": "StepSize != 0 && OnOff == TRUE",
+        "actions": [
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "TargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
+          "RemainingTime := derive_step_duration(TransitionTime, CurrentLevel, TargetLevel, StepSize)",
+          "start_level_transition(CurrentLevel, TargetLevel, RemainingTime)"
+        ],
+        "response_command": null,
+        "timing_requirements": "RemainingTime represents scaled transition time based on actual delta relative to requested StepSize when clamped, for base Step while on."
+      },
+      {
+        "from_state": "LevelTransitionOnBase",
+        "to_state": "LevelTransitionOnBase",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && OnOff == TRUE",
+        "actions": [
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "EffectiveRate := derive_effective_rate(Rate, DefaultMoveRate)",
+          "setup_continuous_move(MoveMode, EffectiveRate)",
+          "RemainingTime := estimate_remaining_time_for_move(MoveMode, EffectiveRate)"
+        ],
+        "response_command": null,
+        "timing_requirements": "A new base Move command while on overrides existing base movement parameters and RemainingTime."
+      },
+      {
+        "from_state": "LevelTransitionOff",
+        "to_state": "LevelTransitionOff",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && OnOff == FALSE && ExecuteIfOff(tempOptions) == TRUE",
+        "actions": [
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "EffectiveRate := derive_effective_rate(Rate, DefaultMoveRate)",
+          "setup_continuous_move(MoveMode, EffectiveRate)",
+          "RemainingTime := estimate_remaining_time_for_move(MoveMode, EffectiveRate)"
+        ],
+        "response_command": null,
+        "timing_requirements": "A new base Move command while off overrides existing movement parameters and RemainingTime when ExecuteIfOff allows execution."
+      },
+      {
+        "from_state": "IdleOff",
+        "to_state": "IdleOff",
+        "trigger": "Stop",
+        "guard_condition": "RemainingTime == 0",
+        "actions": [
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "no_state_change()"
+        ],
+        "response_command": null,
+        "timing_requirements": "Stop when no transition is in progress has no effect on level or RemainingTime."
       },
       {
         "from_state": "IdleOn",
         "to_state": "IdleOn",
-        "trigger": "Step",
-        "guard_condition": "StepSize == 0",
+        "trigger": "Stop",
+        "guard_condition": "RemainingTime == 0",
         "actions": [
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "no_state_change()"
         ],
         "response_command": null,
-        "timing_requirements": "Command is rejected; no state change modeled."
+        "timing_requirements": "Stop when no transition is in progress has no effect on level or RemainingTime."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelUndefined",
-        "trigger": "Step",
-        "guard_condition": "StepSize != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == false && OnOff == false",
-        "actions": [
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "No effect when ExecuteIfOff is 0 and OnOff is false and level is undefined."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "Step",
-        "guard_condition": "StepSize != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false && (TransitionTime == null || TransitionTime == 0)",
-        "actions": [
-          "EffectiveTargetLevel := compute_step_target_from_undefined(StepMode, StepSize, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "FinalStepLevel := EffectiveTargetLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Immediate step when duration is not provided or zero."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "MovingByStep",
-        "trigger": "Step",
-        "guard_condition": "StepSize != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false && TransitionTime != null && TransitionTime > 0",
-        "actions": [
-          "CurrentLevel := compute_step_target_from_undefined(StepMode, StepSize, MinLevel, MaxLevel)",
-          "EffectiveTargetLevel := CurrentLevel",
-          "FinalStepLevel := EffectiveTargetLevel",
-          "RemainingTime := compute_remaining_time_for_step(TransitionTime, StepSize, EffectiveTargetLevel, CurrentLevel)",
-          "ActiveCommandType := Step"
-        ],
-        "response_command": null,
-        "timing_requirements": "Step movement over TransitionTime scaled to actual delta."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "Step",
-        "guard_condition": "StepSize != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == false && OnOff == false",
-        "actions": [
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "No level change when ExecuteIfOff is 0 and OnOff is false."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "Step",
-        "guard_condition": "StepSize != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false && (TransitionTime == null || TransitionTime == 0)",
-        "actions": [
-          "EffectiveTargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "FinalStepLevel := EffectiveTargetLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Immediate step when duration not present or zero."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "MovingByStep",
-        "trigger": "Step",
-        "guard_condition": "StepSize != 0 && ExecuteIfOff(build_temp_options(Options, OptionsMask, OptionsOverride)) == true && OnOff == false && TransitionTime != null && TransitionTime > 0",
-        "actions": [
-          "EffectiveTargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
-          "FinalStepLevel := EffectiveTargetLevel",
-          "RemainingTime := compute_remaining_time_for_step(TransitionTime, StepSize, EffectiveTargetLevel, CurrentLevel)",
-          "ActiveCommandType := Step"
-        ],
-        "response_command": null,
-        "timing_requirements": "Step movement over TransitionTime scaled to actual delta."
-      },
-      {
-        "from_state": "IdleOn",
+        "from_state": "LevelTransitionOnBase",
         "to_state": "IdleOn",
-        "trigger": "Step",
-        "guard_condition": "StepSize != 0 && (TransitionTime == null || TransitionTime == 0)",
+        "trigger": "Stop",
+        "guard_condition": "RemainingTime > 0",
         "actions": [
-          "EffectiveTargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "FinalStepLevel := EffectiveTargetLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "terminate_level_transition()",
+          "RemainingTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "Immediate step when duration not present or zero."
+        "timing_requirements": "Stop terminates any in-progress base transition immediately while keeping the device on."
       },
       {
-        "from_state": "IdleOn",
-        "to_state": "MovingByStep",
-        "trigger": "Step",
-        "guard_condition": "StepSize != 0 && TransitionTime != null && TransitionTime > 0",
-        "actions": [
-          "EffectiveTargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
-          "FinalStepLevel := EffectiveTargetLevel",
-          "RemainingTime := compute_remaining_time_for_step(TransitionTime, StepSize, EffectiveTargetLevel, CurrentLevel)",
-          "ActiveCommandType := Step"
-        ],
-        "response_command": null,
-        "timing_requirements": "Step movement over TransitionTime scaled to actual delta."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "MovingByMoveToLevel",
-        "trigger": "MoveToLevelWithOnOff",
-        "guard_condition": "OnOff == false && TransitionTime != null && TransitionTime > 0",
-        "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "OnOff := (EffectiveTargetLevel > MinLevel)",
-          "RemainingTime := compute_remaining_time_for_move_to_level(TransitionTime)",
-          "ActiveCommandType := MoveToLevelWithOnOff"
-        ],
-        "response_command": null,
-        "timing_requirements": "When device is off, MoveToLevelWithOnOff turns it on for target above min and moves to target level."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
+        "from_state": "LevelTransitionOnWithOnOff",
         "to_state": "IdleOn",
-        "trigger": "MoveToLevelWithOnOff",
-        "guard_condition": "OnOff == false && (TransitionTime == null || TransitionTime == 0) && clamp_level(Level, MinLevel, MaxLevel) > MinLevel",
+        "trigger": "Stop",
+        "guard_condition": "RemainingTime > 0",
         "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "OnOff := true",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "terminate_level_transition()",
+          "RemainingTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "Immediate change from off to on with level set above minimum."
+        "timing_requirements": "Stop terminates any in-progress WithOnOff transition immediately while keeping the device on at its then-current level."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "MoveToLevelWithOnOff",
-        "guard_condition": "OnOff == false && (TransitionTime == null || TransitionTime == 0) && clamp_level(Level, MinLevel, MaxLevel) == MinLevel",
+        "from_state": "LevelTransitionOff",
+        "to_state": "IdleOff",
+        "trigger": "Stop",
+        "guard_condition": "RemainingTime > 0",
         "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "terminate_level_transition()",
+          "RemainingTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "Immediate level change to minimum while remaining off."
+        "timing_requirements": "Stop terminates any in-progress transition immediately while keeping the device off."
       },
       {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "MovingByMoveToLevel",
+        "from_state": "IdleOff",
+        "to_state": "LevelTransitionOnWithOnOff",
         "trigger": "MoveToLevelWithOnOff",
-        "guard_condition": "OnOff == false && TransitionTime != null && TransitionTime > 0",
+        "guard_condition": "OnOff == FALSE",
         "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "OnOff := (EffectiveTargetLevel > MinLevel)",
-          "RemainingTime := compute_remaining_time_for_move_to_level(TransitionTime)",
-          "ActiveCommandType := MoveToLevelWithOnOff"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "TargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
+          "RemainingTime := derive_transition_time(TransitionTime, OnOffTransitionTime)",
+          "start_level_transition(CurrentLevel, TargetLevel, RemainingTime)",
+          "OnOff := TRUE"
         ],
         "response_command": null,
-        "timing_requirements": "From off with defined level, MoveToLevelWithOnOff turns on if target above min and moves to target."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOn",
-        "trigger": "MoveToLevelWithOnOff",
-        "guard_condition": "OnOff == false && (TransitionTime == null || TransitionTime == 0) && clamp_level(Level, MinLevel, MaxLevel) > MinLevel",
-        "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "OnOff := true",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Immediate transition from off to on with target level above minimum."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "MoveToLevelWithOnOff",
-        "guard_condition": "OnOff == false && (TransitionTime == null || TransitionTime == 0) && clamp_level(Level, MinLevel, MaxLevel) == MinLevel",
-        "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Immediate set to minimum level while staying off."
+        "timing_requirements": "When device is off, MoveToLevelWithOnOff turns device on and begins transition to TargetLevel, independent of ExecuteIfOff, matching the lighting state change table."
       },
       {
         "from_state": "IdleOn",
-        "to_state": "MovingByMoveToLevel",
+        "to_state": "LevelTransitionOnWithOnOff",
         "trigger": "MoveToLevelWithOnOff",
-        "guard_condition": "OnOff == true && TransitionTime != null && TransitionTime > 0",
+        "guard_condition": "OnOff == TRUE",
         "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "RemainingTime := compute_remaining_time_for_move_to_level(TransitionTime)",
-          "ActiveCommandType := MoveToLevelWithOnOff"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "TargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
+          "RemainingTime := derive_transition_time(TransitionTime, OnOffTransitionTime)",
+          "start_level_transition(CurrentLevel, TargetLevel, RemainingTime)"
         ],
         "response_command": null,
-        "timing_requirements": "When device is on, MoveToLevelWithOnOff sets level to target over time and keeps device logically on or off according to target."
+        "timing_requirements": "When already on, MoveToLevelWithOnOff behaves like MoveToLevel but with On/Off coupling at completion when at minimum."
       },
       {
-        "from_state": "IdleOn",
-        "to_state": "IdleOn",
+        "from_state": "LevelTransitionOff",
+        "to_state": "LevelTransitionOnWithOnOff",
         "trigger": "MoveToLevelWithOnOff",
-        "guard_condition": "OnOff == true && (TransitionTime == null || TransitionTime == 0) && clamp_level(Level, MinLevel, MaxLevel) > MinLevel",
+        "guard_condition": "OnOff == FALSE",
         "actions": [
-          "EffectiveTargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "TargetLevelForOngoingMoveToLevel := EffectiveTargetLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "TargetLevel := clamp_level(Level, MinLevel, MaxLevel)",
+          "RemainingTime := derive_transition_time(TransitionTime, OnOffTransitionTime)",
+          "start_level_transition(CurrentLevel, TargetLevel, RemainingTime)",
+          "OnOff := TRUE"
         ],
         "response_command": null,
-        "timing_requirements": "Immediate level change while keeping device on."
+        "timing_requirements": "Existing off transition is overridden; WithOnOff variant turns device on and continues transition while on with On/Off coupling."
       },
       {
-        "from_state": "IdleOn",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "MoveToLevelWithOnOff",
-        "guard_condition": "OnOff == true && (TransitionTime == null || TransitionTime == 0) && clamp_level(Level, MinLevel, MaxLevel) == MinLevel",
-        "actions": [
-          "CurrentLevel := MinLevel",
-          "TargetLevelForOngoingMoveToLevel := MinLevel",
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Immediate transition to minimum level and off when target equals minimum."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelUndefined",
+        "from_state": "IdleOff",
+        "to_state": "IdleOff",
         "trigger": "MoveWithOnOff",
         "guard_condition": "Rate == 0",
         "actions": [
-          "ActiveCommandType := None"
+          "no_state_change()"
         ],
         "response_command": null,
-        "timing_requirements": "Command invalid; no state change modeled."
+        "timing_requirements": "MoveWithOnOff with Rate 0 is invalid and causes INVALID_COMMAND at application level; no state change is modeled."
       },
       {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
+        "from_state": "IdleOff",
+        "to_state": "LevelTransitionOnWithOnOff",
         "trigger": "MoveWithOnOff",
-        "guard_condition": "Rate == 0",
+        "guard_condition": "Rate != 0 && MoveMode == Up && OnOff == FALSE",
         "actions": [
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "EffectiveRate := derive_effective_rate(Rate, DefaultMoveRate)",
+          "setup_continuous_move(MoveMode, EffectiveRate)",
+          "RemainingTime := estimate_remaining_time_for_move(MoveMode, EffectiveRate)",
+          "OnOff := TRUE"
         ],
         "response_command": null,
-        "timing_requirements": "Command invalid; no state change modeled."
+        "timing_requirements": "When device is off, MoveWithOnOff up turns device on and moves level toward maximum, independent of ExecuteIfOff, matching the lighting state change table semantics for turning on."
+      },
+      {
+        "from_state": "IdleOff",
+        "to_state": "LevelTransitionOff",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Rate != 0 && MoveMode == Down && OnOff == FALSE",
+        "actions": [
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "EffectiveRate := derive_effective_rate(Rate, DefaultMoveRate)",
+          "setup_continuous_move(MoveMode, EffectiveRate)",
+          "RemainingTime := estimate_remaining_time_for_move(MoveMode, EffectiveRate)"
+        ],
+        "response_command": null,
+        "timing_requirements": "When device is off and MoveWithOnOff down is issued, CurrentLevel moves toward minimum while keeping OnOff FALSE, as in the lighting state change table where the device remains off at minimum."
       },
       {
         "from_state": "IdleOn",
-        "to_state": "IdleOn",
+        "to_state": "LevelTransitionOnWithOnOff",
         "trigger": "MoveWithOnOff",
-        "guard_condition": "Rate == 0",
+        "guard_condition": "Rate != 0 && MoveMode == Up && OnOff == TRUE",
         "actions": [
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "EffectiveRate := derive_effective_rate(Rate, DefaultMoveRate)",
+          "setup_continuous_move(MoveMode, EffectiveRate)",
+          "RemainingTime := estimate_remaining_time_for_move(MoveMode, EffectiveRate)"
         ],
         "response_command": null,
-        "timing_requirements": "Command invalid; no state change modeled."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "MovingByMove",
-        "trigger": "MoveWithOnOff",
-        "guard_condition": "Rate != 0 && OnOff == false && MoveMode == Up",
-        "actions": [
-          "CurrentLevel := initialize_level_for_move(MinLevel, MaxLevel)",
-          "EffRate := compute_effective_rate(Rate, DefaultMoveRate)",
-          "OnOff := true",
-          "MoveDirection := map_move_mode_to_direction(MoveMode)",
-          "ActiveCommandType := MoveWithOnOff"
-        ],
-        "response_command": null,
-        "timing_requirements": "From off, MoveWithOnOff up turns device on and moves toward max level."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "MovingByMove",
-        "trigger": "MoveWithOnOff",
-        "guard_condition": "Rate != 0 && OnOff == false && MoveMode == Down",
-        "actions": [
-          "CurrentLevel := initialize_level_for_move(MinLevel, MaxLevel)",
-          "EffRate := compute_effective_rate(Rate, DefaultMoveRate)",
-          "OnOff := false",
-          "MoveDirection := map_move_mode_to_direction(MoveMode)",
-          "ActiveCommandType := MoveWithOnOff"
-        ],
-        "response_command": null,
-        "timing_requirements": "From off and undefined level, MoveWithOnOff down begins continuous movement toward minimum while device remains off until min is reached."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "MovingByMove",
-        "trigger": "MoveWithOnOff",
-        "guard_condition": "Rate != 0 && OnOff == false && MoveMode == Up",
-        "actions": [
-          "EffRate := compute_effective_rate(Rate, DefaultMoveRate)",
-          "OnOff := true",
-          "MoveDirection := map_move_mode_to_direction(MoveMode)",
-          "ActiveCommandType := MoveWithOnOff"
-        ],
-        "response_command": null,
-        "timing_requirements": "Per state table: MoveWithOnOff up from off raises level to max and turns device on."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "MovingByMove",
-        "trigger": "MoveWithOnOff",
-        "guard_condition": "Rate != 0 && OnOff == false && MoveMode == Down",
-        "actions": [
-          "EffRate := compute_effective_rate(Rate, DefaultMoveRate)",
-          "MoveDirection := map_move_mode_to_direction(MoveMode)",
-          "ActiveCommandType := MoveWithOnOff"
-        ],
-        "response_command": null,
-        "timing_requirements": "From off with defined level, MoveWithOnOff down moves level toward minimum while keeping device off."
+        "timing_requirements": "When on, MoveWithOnOff up raises level to maximum and keeps the device on; OnOff remains TRUE even at full brightness."
       },
       {
         "from_state": "IdleOn",
-        "to_state": "MovingByMove",
+        "to_state": "LevelTransitionOnWithOnOff",
         "trigger": "MoveWithOnOff",
-        "guard_condition": "Rate != 0 && OnOff == true && MoveMode == Up",
+        "guard_condition": "Rate != 0 && MoveMode == Down && OnOff == TRUE",
         "actions": [
-          "EffRate := compute_effective_rate(Rate, DefaultMoveRate)",
-          "MoveDirection := map_move_mode_to_direction(MoveMode)",
-          "ActiveCommandType := MoveWithOnOff"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "EffectiveRate := derive_effective_rate(Rate, DefaultMoveRate)",
+          "setup_continuous_move(MoveMode, EffectiveRate)",
+          "RemainingTime := estimate_remaining_time_for_move(MoveMode, EffectiveRate)"
         ],
         "response_command": null,
-        "timing_requirements": "When on, MoveWithOnOff up raises level to maximum and keeps device on."
+        "timing_requirements": "When on, MoveWithOnOff down lowers level towards minimum; if the resulting level is minimum at completion, OnOff becomes FALSE per the LevelTransitionOnWithOnOff completion rules."
       },
       {
         "from_state": "IdleOn",
-        "to_state": "MovingByMove",
-        "trigger": "MoveWithOnOff",
-        "guard_condition": "Rate != 0 && OnOff == true && MoveMode == Down",
+        "to_state": "LevelTransitionOnWithOnOff",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "StepSize != 0 && OnOff == TRUE",
         "actions": [
-          "EffRate := compute_effective_rate(Rate, DefaultMoveRate)",
-          "MoveDirection := map_move_mode_to_direction(MoveMode)",
-          "ActiveCommandType := MoveWithOnOff"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "TargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
+          "RemainingTime := derive_step_duration(TransitionTime, CurrentLevel, TargetLevel, StepSize)",
+          "start_level_transition(CurrentLevel, TargetLevel, RemainingTime)"
         ],
         "response_command": null,
-        "timing_requirements": "When on, MoveWithOnOff down drives level toward min and turns off when minimum is reached."
+        "timing_requirements": "When device is on, StepWithOnOff behaves like Step, but OnOff may be updated at transition completion depending on whether the final level equals the device minimum."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelUndefined",
+        "from_state": "IdleOff",
+        "to_state": "IdleOff",
         "trigger": "StepWithOnOff",
         "guard_condition": "StepSize == 0",
         "actions": [
-          "ActiveCommandType := None"
+          "no_state_change()"
         ],
         "response_command": null,
-        "timing_requirements": "Command invalid; no effect."
+        "timing_requirements": "StepWithOnOff with StepSize 0 is invalid and causes INVALID_COMMAND at application level; no state change is modeled."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelDefined",
+        "from_state": "IdleOff",
+        "to_state": "LevelTransitionOff",
         "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && OnOff == false && (TransitionTime == null || TransitionTime == 0) && StepMode == Up && compute_step_target_from_undefined(StepMode, StepSize, MinLevel, MaxLevel) > MinLevel",
+        "guard_condition": "StepSize != 0 && OnOff == FALSE",
         "actions": [
-          "EffectiveTargetLevel := compute_step_target_from_undefined(StepMode, StepSize, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "OnOff := true",
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "TargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
+          "RemainingTime := derive_step_duration(TransitionTime, CurrentLevel, TargetLevel, StepSize)",
+          "start_level_transition(CurrentLevel, TargetLevel, RemainingTime)"
+        ],
+        "response_command": null,
+        "timing_requirements": "When device is off, StepWithOnOff updates CurrentLevel over time but keeps OnOff FALSE, consistent with lighting table entries where device remains off."
+      },
+      {
+        "from_state": "LevelTransitionOff",
+        "to_state": "IdleOff",
+        "trigger": "internal_timer_tick",
+        "guard_condition": "RemainingTime == 1",
+        "actions": [
           "RemainingTime := 0",
-          "ActiveCommandType := None",
-          "FinalStepLevel := EffectiveTargetLevel"
+          "CurrentLevel := finalize_level_at_target()"
         ],
         "response_command": null,
-        "timing_requirements": "From off and undefined level, immediate StepWithOnOff up that ends above min defines level and turns device on."
+        "timing_requirements": "Completion of a StepWithOnOff or MoveWithOnOff transition while Off leaves OnOff FALSE and finalizes CurrentLevel at its target."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && OnOff == false && (TransitionTime == null || TransitionTime == 0) && StepMode == Up && compute_step_target_from_undefined(StepMode, StepSize, MinLevel, MaxLevel) == MinLevel",
+        "from_state": "LevelTransitionOff",
+        "to_state": "IdleOff",
+        "trigger": "StopWithOnOff",
+        "guard_condition": "RemainingTime > 0",
         "actions": [
-          "EffectiveTargetLevel := compute_step_target_from_undefined(StepMode, StepSize, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None",
-          "FinalStepLevel := EffectiveTargetLevel"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "terminate_level_transition()",
+          "RemainingTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "From off and undefined level, immediate StepWithOnOff up that lands at min defines level but keeps device off."
+        "timing_requirements": "StopWithOnOff has identical behavior to Stop for level movement while off."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && OnOff == false && (TransitionTime == null || TransitionTime == 0) && StepMode == Down",
+        "from_state": "LevelTransitionOnBase",
+        "to_state": "IdleOn",
+        "trigger": "StopWithOnOff",
+        "guard_condition": "RemainingTime > 0",
         "actions": [
-          "EffectiveTargetLevel := compute_step_target_from_undefined(StepMode, StepSize, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None",
-          "FinalStepLevel := EffectiveTargetLevel"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "terminate_level_transition()",
+          "RemainingTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "From off and undefined level, immediate StepWithOnOff down defines a minimum or near-minimum level while device remains off."
+        "timing_requirements": "StopWithOnOff has identical behavior to Stop for base-command level movement while on; OnOff remains in its current value when stopping early."
       },
       {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "MovingByStep",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && OnOff == false && TransitionTime != null && TransitionTime > 0",
+        "from_state": "LevelTransitionOnWithOnOff",
+        "to_state": "IdleOn",
+        "trigger": "StopWithOnOff",
+        "guard_condition": "RemainingTime > 0",
         "actions": [
-          "CurrentLevel := compute_step_target_from_undefined(StepMode, StepSize, MinLevel, MaxLevel)",
-          "EffectiveTargetLevel := CurrentLevel",
-          "FinalStepLevel := EffectiveTargetLevel",
-          "RemainingTime := compute_remaining_time_for_step(TransitionTime, StepSize, EffectiveTargetLevel, CurrentLevel)",
-          "ActiveCommandType := StepWithOnOff"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "terminate_level_transition()",
+          "RemainingTime := 0"
         ],
         "response_command": null,
-        "timing_requirements": "From off and undefined level, timed StepWithOnOff moves toward computed final level; OnOff will be updated at completion based on final level."
+        "timing_requirements": "StopWithOnOff has identical behavior to Stop for WithOnOff-command level movement while on; OnOff remains unchanged at the time of stopping."
       },
       {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize == 0",
+        "from_state": "IdleOff",
+        "to_state": "IdleOff",
+        "trigger": "StopWithOnOff",
+        "guard_condition": "RemainingTime == 0",
         "actions": [
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "no_state_change()"
         ],
         "response_command": null,
-        "timing_requirements": "Command invalid; no effect."
+        "timing_requirements": "StopWithOnOff when idle has no effect on level or RemainingTime while off."
       },
       {
         "from_state": "IdleOn",
         "to_state": "IdleOn",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize == 0",
-        "actions": [
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Command invalid; no effect."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOn",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && OnOff == false && (TransitionTime == null || TransitionTime == 0) && StepMode == Up && compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel) > MinLevel",
-        "actions": [
-          "EffectiveTargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "OnOff := true",
-          "RemainingTime := 0",
-          "ActiveCommandType := None",
-          "FinalStepLevel := EffectiveTargetLevel"
-        ],
-        "response_command": null,
-        "timing_requirements": "From off, StepWithOnOff up that ends above min turns device on."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && OnOff == false && (TransitionTime == null || TransitionTime == 0) && StepMode == Down",
-        "actions": [
-          "EffectiveTargetLevel := MinLevel",
-          "CurrentLevel := EffectiveTargetLevel",
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None",
-          "FinalStepLevel := EffectiveTargetLevel"
-        ],
-        "response_command": null,
-        "timing_requirements": "From off, StepWithOnOff down sets level to min and keeps device off."
-      },
-      {
-        "from_state": "IdleOn",
-        "to_state": "IdleOn",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && (TransitionTime == null || TransitionTime == 0) && StepMode == Up",
-        "actions": [
-          "EffectiveTargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "OnOff := true",
-          "RemainingTime := 0",
-          "ActiveCommandType := None",
-          "FinalStepLevel := EffectiveTargetLevel"
-        ],
-        "response_command": null,
-        "timing_requirements": "From on, StepWithOnOff up adjusts level and keeps device on."
-      },
-      {
-        "from_state": "IdleOn",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && (TransitionTime == null || TransitionTime == 0) && StepMode == Down && compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel) == MinLevel",
-        "actions": [
-          "CurrentLevel := MinLevel",
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None",
-          "FinalStepLevel := MinLevel"
-        ],
-        "response_command": null,
-        "timing_requirements": "From on, StepWithOnOff down that lands at min turns device off."
-      },
-      {
-        "from_state": "IdleOn",
-        "to_state": "IdleOn",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && (TransitionTime == null || TransitionTime == 0) && StepMode == Down && compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel) > MinLevel",
-        "actions": [
-          "EffectiveTargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
-          "CurrentLevel := EffectiveTargetLevel",
-          "OnOff := true",
-          "RemainingTime := 0",
-          "ActiveCommandType := None",
-          "FinalStepLevel := EffectiveTargetLevel"
-        ],
-        "response_command": null,
-        "timing_requirements": "From on, StepWithOnOff down that does not reach min keeps device on."
-      },
-      {
-        "from_state": "IdleOn",
-        "to_state": "MovingByStep",
-        "trigger": "StepWithOnOff",
-        "guard_condition": "StepSize != 0 && TransitionTime != null && TransitionTime > 0",
-        "actions": [
-          "EffectiveTargetLevel := compute_step_target(CurrentLevel, StepMode, StepSize, MinLevel, MaxLevel)",
-          "FinalStepLevel := EffectiveTargetLevel",
-          "RemainingTime := compute_remaining_time_for_step(TransitionTime, StepSize, EffectiveTargetLevel, CurrentLevel)",
-          "ActiveCommandType := StepWithOnOff"
-        ],
-        "response_command": null,
-        "timing_requirements": "From on, StepWithOnOff over time adjusts level and may toggle OnOff at completion depending on final level."
-      },
-      {
-        "from_state": "MovingByMoveToLevel",
-        "to_state": "IdleOn",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType == MoveToLevel && RemainingTime == 1 && TargetLevelForOngoingMoveToLevel > MinLevel && OnOff == true",
-        "actions": [
-          "CurrentLevel := TargetLevelForOngoingMoveToLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Completion of a plain MoveToLevel to above-min level while device is on."
-      },
-      {
-        "from_state": "MovingByMoveToLevel",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType == MoveToLevel && RemainingTime == 1 && TargetLevelForOngoingMoveToLevel > MinLevel && OnOff == false",
-        "actions": [
-          "CurrentLevel := TargetLevelForOngoingMoveToLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Completion of plain MoveToLevel while device is logically off (ExecuteIfOff case)."
-      },
-      {
-        "from_state": "MovingByMoveToLevel",
-        "to_state": "IdleOn",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType == MoveToLevelWithOnOff && RemainingTime == 1 && TargetLevelForOngoingMoveToLevel > MinLevel",
-        "actions": [
-          "CurrentLevel := TargetLevelForOngoingMoveToLevel",
-          "OnOff := true",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "On completion of MoveToLevelWithOnOff above minimum, device is turned on."
-      },
-      {
-        "from_state": "MovingByMoveToLevel",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType == MoveToLevelWithOnOff && RemainingTime == 1 && TargetLevelForOngoingMoveToLevel == MinLevel",
-        "actions": [
-          "CurrentLevel := TargetLevelForOngoingMoveToLevel",
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Completion of MoveToLevelWithOnOff to minimum turns device off."
-      },
-      {
-        "from_state": "MovingByMoveToLevel",
-        "to_state": "MovingByMoveToLevel",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType in {MoveToLevel, MoveToLevelWithOnOff} && RemainingTime > 1",
-        "actions": [
-          "CurrentLevel := interpolate_level_for_move_to_level(CurrentLevel, TargetLevelForOngoingMoveToLevel, RemainingTime)",
-          "RemainingTime := RemainingTime - 1"
-        ],
-        "response_command": null,
-        "timing_requirements": "Periodic decrement of RemainingTime and level interpolation at 0.1s units."
-      },
-      {
-        "from_state": "MovingByStep",
-        "to_state": "IdleOn",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType == Step && RemainingTime == 1 && FinalStepLevel > MinLevel && OnOff == true",
-        "actions": [
-          "CurrentLevel := FinalStepLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Completion of base step with final level above min while device is on."
-      },
-      {
-        "from_state": "MovingByStep",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType == Step && RemainingTime == 1 && FinalStepLevel >= MinLevel && OnOff == false",
-        "actions": [
-          "CurrentLevel := FinalStepLevel",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Completion of base step while device is logically off (ExecuteIfOff case)."
-      },
-      {
-        "from_state": "MovingByStep",
-        "to_state": "IdleOn",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType == StepWithOnOff && RemainingTime == 1 && FinalStepLevel > MinLevel",
-        "actions": [
-          "CurrentLevel := FinalStepLevel",
-          "OnOff := true",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Completion of StepWithOnOff above minimum leaves or forces device on."
-      },
-      {
-        "from_state": "MovingByStep",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType == StepWithOnOff && RemainingTime == 1 && FinalStepLevel == MinLevel",
-        "actions": [
-          "CurrentLevel := FinalStepLevel",
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Completion of StepWithOnOff with final level at min turns device off."
-      },
-      {
-        "from_state": "MovingByStep",
-        "to_state": "MovingByStep",
-        "trigger": "timer_tick",
-        "guard_condition": "ActiveCommandType in {Step, StepWithOnOff} && RemainingTime > 1",
-        "actions": [
-          "CurrentLevel := interpolate_level_for_step(CurrentLevel, FinalStepLevel, RemainingTime)",
-          "RemainingTime := RemainingTime - 1"
-        ],
-        "response_command": null,
-        "timing_requirements": "Intermediate interpolation for timed step."
-      },
-      {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOn",
-        "trigger": "level_limit_reached",
-        "guard_condition": "ActiveCommandType == Move && MoveDirection == Up && CurrentLevel == MaxLevel && OnOff == true",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Continuous move up stops automatically at max level while device is on."
-      },
-      {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "level_limit_reached",
-        "guard_condition": "ActiveCommandType == Move && MoveDirection == Up && CurrentLevel == MaxLevel && OnOff == false",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Continuous move up in ExecuteIfOff-off case stops at max with device logically off."
-      },
-      {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOn",
-        "trigger": "level_limit_reached",
-        "guard_condition": "ActiveCommandType == MoveWithOnOff && MoveDirection == Up && CurrentLevel == MaxLevel",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "MoveWithOnOff up reaching max remains on."
-      },
-      {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOn",
-        "trigger": "level_limit_reached",
-        "guard_condition": "ActiveCommandType == Move && MoveDirection == Down && CurrentLevel == MinLevel && OnOff == true",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Base Move down reaching min leaves device on per lighting table."
-      },
-      {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "level_limit_reached",
-        "guard_condition": "ActiveCommandType == Move && MoveDirection == Down && CurrentLevel == MinLevel && OnOff == false",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Base Move down in ExecuteIfOff-off case reaches min while device remains logically off."
-      },
-      {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "level_limit_reached",
-        "guard_condition": "ActiveCommandType == MoveWithOnOff && MoveDirection == Down && CurrentLevel == MinLevel",
-        "actions": [
-          "OnOff := false",
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Continuous MoveWithOnOff down that reaches min turns device off."
-      },
-      {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOn",
-        "trigger": "Stop",
-        "guard_condition": "OnOff == true",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stop immediately terminates ongoing move; CurrentLevel remains at its in-transition value, device stays logically on."
-      },
-      {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "Stop",
-        "guard_condition": "OnOff == false",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stop terminates ongoing move when device is logically off."
-      },
-      {
-        "from_state": "MovingByMoveToLevel",
-        "to_state": "IdleOn",
-        "trigger": "Stop",
-        "guard_condition": "OnOff == true",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stop halts MoveToLevel or MoveToLevelWithOnOff transitions when device is on."
-      },
-      {
-        "from_state": "MovingByMoveToLevel",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "Stop",
-        "guard_condition": "OnOff == false",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stop halts MoveToLevel or MoveToLevelWithOnOff transitions when device is off."
-      },
-      {
-        "from_state": "MovingByStep",
-        "to_state": "IdleOn",
-        "trigger": "Stop",
-        "guard_condition": "OnOff == true",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stop halts Step or StepWithOnOff transitions when device is on; level is frozen."
-      },
-      {
-        "from_state": "MovingByStep",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "Stop",
-        "guard_condition": "OnOff == false",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "Stop halts Step or StepWithOnOff transitions when device is off."
-      },
-      {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOn",
         "trigger": "StopWithOnOff",
-        "guard_condition": "OnOff == true",
+        "guard_condition": "RemainingTime == 0",
         "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
+          "build_temp_options_action(Options, OptionsMask, OptionsOverride)",
+          "no_state_change()"
         ],
         "response_command": null,
-        "timing_requirements": "StopWithOnOff identical to Stop; halts continuous movement while preserving OnOff state."
+        "timing_requirements": "StopWithOnOff when idle has no effect on level or RemainingTime while on."
       },
       {
-        "from_state": "MovingByMove",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "StopWithOnOff",
-        "guard_condition": "OnOff == false",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "StopWithOnOff identical to Stop when device is off."
-      },
-      {
-        "from_state": "MovingByMoveToLevel",
-        "to_state": "IdleOn",
-        "trigger": "StopWithOnOff",
-        "guard_condition": "OnOff == true",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "StopWithOnOff halts MoveToLevel and MoveToLevelWithOnOff when device is on."
-      },
-      {
-        "from_state": "MovingByMoveToLevel",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "StopWithOnOff",
-        "guard_condition": "OnOff == false",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "StopWithOnOff halts MoveToLevel and MoveToLevelWithOnOff when device is off."
-      },
-      {
-        "from_state": "MovingByStep",
-        "to_state": "IdleOn",
-        "trigger": "StopWithOnOff",
-        "guard_condition": "OnOff == true",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "StopWithOnOff halts Step and StepWithOnOff transitions when device is on."
-      },
-      {
-        "from_state": "MovingByStep",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "StopWithOnOff",
-        "guard_condition": "OnOff == false",
-        "actions": [
-          "RemainingTime := 0",
-          "ActiveCommandType := None"
-        ],
-        "response_command": null,
-        "timing_requirements": "StopWithOnOff halts Step and StepWithOnOff transitions when device is off."
-      },
-      {
-        "from_state": "IdleOff_LevelUndefined",
-        "to_state": "IdleOff_LevelUndefined",
+        "from_state": "IdleOff",
+        "to_state": "IdleOff",
         "trigger": "MoveToClosestFrequency",
-        "guard_condition": "FeatureFQ_enabled == false",
-        "actions": [],
-        "response_command": null,
-        "timing_requirements": "Command unsupported when Frequency feature not present."
-      },
-      {
-        "from_state": "IdleOff_LevelDefined",
-        "to_state": "IdleOff_LevelDefined",
-        "trigger": "MoveToClosestFrequency",
-        "guard_condition": "FeatureFQ_enabled == false",
-        "actions": [],
-        "response_command": null,
-        "timing_requirements": "Command unsupported when Frequency feature not present."
-      },
-      {
-        "from_state": "IdleOn",
-        "to_state": "IdleOn",
-        "trigger": "MoveToClosestFrequency",
-        "guard_condition": "FeatureFQ_enabled == false",
-        "actions": [],
-        "response_command": null,
-        "timing_requirements": "Command unsupported when Frequency feature not present."
-      },
-      {
-        "from_state": "IdleOn",
-        "to_state": "IdleOn",
-        "trigger": "MoveToClosestFrequency",
-        "guard_condition": "FeatureFQ_enabled == true && select_closest_supported_frequency(Frequency) != null",
+        "guard_condition": "FeatureFQ == TRUE && select_closest_supported_frequency(Frequency) != null",
         "actions": [
           "CurrentFrequency := select_closest_supported_frequency(Frequency)"
         ],
         "response_command": null,
-        "timing_requirements": "CurrentFrequency updated immediately to closest supported value."
+        "timing_requirements": "Immediate change of frequency without timing behavior while off."
       },
       {
         "from_state": "IdleOn",
         "to_state": "IdleOn",
         "trigger": "MoveToClosestFrequency",
-        "guard_condition": "FeatureFQ_enabled == true && select_closest_supported_frequency(Frequency) == null",
-        "actions": [],
+        "guard_condition": "FeatureFQ == TRUE && select_closest_supported_frequency(Frequency) != null",
+        "actions": [
+          "CurrentFrequency := select_closest_supported_frequency(Frequency)"
+        ],
         "response_command": null,
-        "timing_requirements": "Constraint error at application level; no attribute change modeled."
+        "timing_requirements": "Immediate change of frequency without timing behavior while on."
       }
     ],
-    "initial_state": "IdleOff_LevelUndefined",
+    "initial_state": "IdleOff",
     "attributes_used": [
       "CurrentLevel",
       "RemainingTime",
@@ -1311,7 +671,6 @@
       "CurrentFrequency",
       "MinFrequency",
       "MaxFrequency",
-      "OnOff",
       "OnOffTransitionTime",
       "OnLevel",
       "OnTransitionTime",
@@ -1321,10 +680,8 @@
       "StartUpCurrentLevel",
       "FeatureMap",
       "ClusterRevision",
-      "ActiveCommandType",
-      "TargetLevelForOngoingMoveToLevel",
-      "FinalStepLevel",
-      "MoveDirection"
+      "OnOff",
+      "tempOptions"
     ],
     "commands_handled": [
       "MoveToLevel",
@@ -1346,131 +703,192 @@
       "uint16"
     ],
     "scene_behaviors": [
-      "When a scene is stored, scene-capable Level Control attributes CurrentLevel and CurrentFrequency are captured in the scene table extension field set for this endpoint.",
-      "When a scene is recalled, stored values of CurrentLevel and CurrentFrequency are applied to the Level Control cluster, subject to supported features; attributes not supported per FeatureMap are ignored even if present in the scene table."
+      "When a scene is stored via the Scenes Management server cluster, the Level Control attributes CurrentLevel and CurrentFrequency (if the Frequency feature is supported) are saved in the scene table extension field set for the endpoint.",
+      "On scene recall, the stored CurrentLevel and CurrentFrequency values are restored atomically, which may result in a logical transition from IdleOn to IdleOn or IdleOff to IdleOff with updated attribute values without invoking Move, Step, or MoveToLevel commands.",
+      "Unsupported Level Control attributes for a given feature configuration are still present in the scene extension field set but are ignored on recall, preserving interoperability."
     ],
     "definitions": [
       {
-        "term": "ExecuteIfOff",
-        "definition": "A logical value derived from the effective Options bitmap indicating whether base level commands without OnOff coupling are allowed to modify level-related attributes when the associated OnOff attribute is false.",
-        "usage_context": "Used in guard conditions for MoveToLevel, Move and Step when OnOff is false to decide if commands operate while the device is logically off."
+        "term": "DeviceMinLevel",
+        "definition": "The effective minimum level that the device can represent at its output. In the lighting feature, this typically corresponds to the MinLevel attribute value, which represents the lowest allowed non-zero brightness value. When CurrentLevel equals the device minimum, the device is considered at minimal light output.",
+        "usage_context": "Used conceptually in transitions that clamp levels or decide when OnOff should become FALSE for WithOnOff operations at minimum brightness."
       },
       {
-        "term": "FeatureFQ_enabled",
-        "definition": "A logical condition that holds when the Frequency feature bit (FQ) is set in the FeatureMap attribute for the Level Control cluster.",
-        "usage_context": "Used in MoveToClosestFrequency guards to restrict its use to devices that support frequency control."
+        "term": "DeviceMaxLevel",
+        "definition": "The effective maximum level that the device can represent at its output. This is usually the MaxLevel attribute value if implemented, or the highest supported value within the allowed range when MaxLevel is not present. It represents the maximum brightness or output level.",
+        "usage_context": "Used for Move and MoveWithOnOff commands moving up until the maximum level is reached."
       },
       {
-        "term": "build_temp_options",
-        "definition": "A conceptual operation that combines the persistent Options attribute with the OptionsMask and OptionsOverride fields of a command to obtain the temporary options bitmap used for that command.",
-        "usage_context": "Used to derive effective option bits such as ExecuteIfOff and CoupleColorTempToLevel at command reception; modeled implicitly inside guards via ExecuteIfOff(...)."
+        "term": "ExecuteIfOff(tempOptions)",
+        "definition": "A boolean interpretation of the ExecuteIfOff bit inside the temporary options bitmap. When this bit is TRUE, base Level Control commands such as MoveToLevel, Move, and Step execute their level-changing effects even when the OnOff attribute is FALSE. When FALSE, these base commands are inhibited while the device is off. WithOnOff variants are defined to operate regardless of this bit when interpreting the lighting state change table.",
+        "usage_context": "Appears in guard conditions determining whether a base command is allowed to modify CurrentLevel in the IdleOff and LevelTransitionOff states."
       },
       {
-        "term": "compute_effective_rate",
-        "definition": "An abstract operation that determines the effective rate of level change using the Rate command field if present and non-null, otherwise using DefaultMoveRate if available and non-null, otherwise a device-specific maximum rate.",
-        "usage_context": "Referenced in Move and MoveWithOnOff transitions to choose the speed of continuous movement."
+        "term": "tempOptions",
+        "definition": "A temporary bitmap stored as a conceptual internal attribute derived from the persistent Options attribute and the OptionsMask and OptionsOverride fields included in a command. For each bit position where OptionsMask has value 1, the corresponding bit from OptionsOverride is used; otherwise, the bit from Options is used. This bitmap influences whether base commands execute when off and whether color temperature is coupled to level changes.",
+        "usage_context": "Computed logically at the beginning of command handling and then interpreted by helper functions such as ExecuteIfOff(tempOptions)."
       },
       {
-        "term": "clamp_level",
-        "definition": "An abstract operation that ensures a target level lies within the inclusive range defined by MinLevel and MaxLevel attributes.",
-        "usage_context": "Used in MoveToLevel and MoveToLevelWithOnOff transitions to derive the EffectiveTargetLevel."
+        "term": "build_temp_options_action",
+        "definition": "An atomic action that updates the internal tempOptions bitmap by combining the stored Options attribute with OptionsMask and OptionsOverride command fields. It encapsulates the per-bit selection of either the existing Options value or the overriding value indicated by OptionsOverride, without exposing control flow.",
+        "usage_context": "Referenced in actions for all commands that include OptionsMask and OptionsOverride fields, ensuring consistent application of option overrides before any other per-command logic uses tempOptions."
+      },
+      {
+        "term": "no_state_change",
+        "definition": "An abstract action that denotes the absence of any modification to the modeled attributes or state variables. It is used where the protocol mandates that a command has no effect beyond responses, which are not represented in this FSM.",
+        "usage_context": "Used in transitions for invalid parameters such as Rate == 0 or StepSize == 0, and for ignored commands when ExecuteIfOff is FALSE."
+      },
+      {
+        "term": "derive_transition_time",
+        "definition": "The effective duration for a level transition in units of tenths of a second. It is obtained from the TransitionTime command field when present and non-null, or from the OnOffTransitionTime attribute when that field is null, or from an implementation-defined minimal duration when neither timing source applies. Devices without variable rate support may treat this duration as a minimal practical time rather than a precise value.",
+        "usage_context": "Used to set RemainingTime when handling MoveToLevel and MoveToLevelWithOnOff commands."
+      },
+      {
+        "term": "derive_effective_rate",
+        "definition": "The effective rate of level change in units per second for continuous Move and MoveWithOnOff commands. This rate is determined from the Rate command parameter when non-null and non-zero, from the DefaultMoveRate attribute when the Rate parameter is null and DefaultMoveRate is present and non-null, or from a device-specific maximum practical rate when neither source applies. Devices may ignore detailed rate control when variable rate support is absent.",
+        "usage_context": "Used to parameterize continuous level movement in Move and MoveWithOnOff transitions."
+      },
+      {
+        "term": "derive_step_duration",
+        "definition": "The effective duration of a Step or StepWithOnOff transition based on the requested TransitionTime, the actual difference between the starting level and the computed target level, and the requested StepSize. If the target level is clamped to the device minimum or maximum, the duration is proportionally reduced compared to the base duration derived from the command field.",
+        "usage_context": "Used to set RemainingTime when executing Step and StepWithOnOff commands, ensuring timing reflects any clamping behavior."
       },
       {
         "term": "compute_step_target",
-        "definition": "An abstract operation that calculates the resulting level after applying an upward or downward step of a given magnitude to a known CurrentLevel, constraining the result within the valid level range between MinLevel and MaxLevel.",
-        "usage_context": "Used in Step and StepWithOnOff transitions when CurrentLevel is already defined."
+        "definition": "The target level calculated for a single step operation, based on the current level, step direction, step magnitude, and device limits. For upward steps, the magnitude is added to the current level and then restricted to be no greater than the device maximum. For downward steps, the magnitude is subtracted from the current level and then restricted not to fall below the device minimum.",
+        "usage_context": "Determines TargetLevel for Step and StepWithOnOff transitions before duration is computed."
       },
       {
-        "term": "compute_step_target_from_undefined",
-        "definition": "An abstract operation that determines a concrete destination level when a step is requested while the current level is undefined, using device policy to map the undefined state to a starting point and then applying the requested step within [MinLevel, MaxLevel].",
-        "usage_context": "Used for Step and StepWithOnOff transitions that originate from IdleOff_LevelUndefined."
+        "term": "clamp_level",
+        "definition": "A conceptual mapping from a requested level value to a legal level within the range [MinLevel, MaxLevel]. Values lower than MinLevel become MinLevel and values higher than MaxLevel become MaxLevel. This prevents attributes from assuming out-of-range values.",
+        "usage_context": "Used whenever commands specify a target level, ensuring state invariants on CurrentLevel are preserved."
       },
       {
-        "term": "compute_remaining_time_for_move_to_level",
-        "definition": "A conceptual mapping from the TransitionTime field or related attributes into a RemainingTime value measured in tenths of a second, possibly treating very short transitions as effectively immediate.",
-        "usage_context": "Used in MoveToLevel and MoveToLevelWithOnOff transitions with non-zero transition duration."
+        "term": "start_level_transition",
+        "definition": "The logical initiation of a time-based change from a starting level to a target level over a specified RemainingTime. During the transition, CurrentLevel changes progressively until it reaches the target value at RemainingTime equal to zero.",
+        "usage_context": "Used by MoveToLevel, Step, MoveToLevelWithOnOff, and StepWithOnOff actions to begin transitions and set RemainingTime."
       },
       {
-        "term": "compute_remaining_time_for_step",
-        "definition": "A conceptual mapping that converts the command TransitionTime and requested StepSize into a RemainingTime value, and may scale the duration when the actual permitted level delta is smaller than the requested step.",
-        "usage_context": "Used in Step and StepWithOnOff transitions with non-zero transition duration."
+        "term": "update_level_during_transition",
+        "definition": "The function describing how CurrentLevel evolves between the starting and target values during an ongoing time-based level transition. It ensures that CurrentLevel moves monotonically in the correct direction and will reach the intended final level when RemainingTime becomes zero.",
+        "usage_context": "Used on each internal_timer_tick while RemainingTime remains greater than one for LevelTransitionOff, LevelTransitionOnBase, and LevelTransitionOnWithOnOff states."
       },
       {
-        "term": "interpolate_level_for_move_to_level",
-        "definition": "An abstract function that provides an intermediate level value during a MoveToLevel-style transition, based on the current level, the target level and the current RemainingTime.",
-        "usage_context": "Used in timer_tick transitions while in MovingByMoveToLevel state to model gradual change of CurrentLevel."
+        "term": "finalize_level_at_target",
+        "definition": "The level value at the moment when a transition finishes, representing the command’s intended target as possibly adjusted by device limits or timing behavior. It is used to set CurrentLevel when RemainingTime becomes zero.",
+        "usage_context": "Applied on the last timer tick of a transition to guarantee that the final level equals the planned TargetLevel."
       },
       {
-        "term": "interpolate_level_for_step",
-        "definition": "An abstract function that provides an intermediate level for a timed step based on the final step level and RemainingTime.",
-        "usage_context": "Used in timer_tick transitions while in MovingByStep state."
+        "term": "setup_continuous_move",
+        "definition": "The logical configuration of a continuous movement process for the Move and MoveWithOnOff commands, including direction and rate. It continues to adjust the level until a hard limit such as minimum or maximum is reached or until stopped.",
+        "usage_context": "Used at the beginning of continuous move commands to configure internal movement behavior and RemainingTime estimates."
       },
       {
-        "term": "TargetLevelForOngoingMoveToLevel",
-        "definition": "A conceptual variable holding the final desired level during a multi-tick MoveToLevel or MoveToLevelWithOnOff transition.",
-        "usage_context": "Referenced in MovingByMoveToLevel invariants and timer_tick transitions to interpolate and complete transitions."
+        "term": "estimate_remaining_time_for_move",
+        "definition": "An estimated transition time for a continuous move, based on the requested or derived rate and the distance to the relevant device limit in the chosen direction. This estimate populates RemainingTime so that the state model can represent the duration of movement until the limit is reached.",
+        "usage_context": "Used with Move and MoveWithOnOff commands to represent timing of level movement in the FSM."
       },
       {
-        "term": "FinalStepLevel",
-        "definition": "A conceptual variable that stores the intended final level of a running Step or StepWithOnOff transition.",
-        "usage_context": "Used in timer_tick transitions for MovingByStep to know the endpoint of the step."
-      },
-      {
-        "term": "MoveDirection",
-        "definition": "A conceptual representation of the direction of level change during Move or MoveWithOnOff, corresponding to the MoveModeEnum values Up or Down.",
-        "usage_context": "Used in MovingByMove transitions and level_limit_reached guards to decide which device limit has been reached."
-      },
-      {
-        "term": "initialize_level_for_move",
-        "definition": "An abstract operation that selects an initial CurrentLevel value when continuous movement begins and the previous level was undefined, using device-specific policy while keeping the level inside the valid range.",
-        "usage_context": "Used in Move and MoveWithOnOff transitions originating from IdleOff_LevelUndefined to ensure the invariants of moving states are satisfied."
+        "term": "terminate_level_transition",
+        "definition": "The immediate cessation of any ongoing level transition, leaving CurrentLevel at its value at the time termination occurs and setting RemainingTime to zero.",
+        "usage_context": "Used in Stop and StopWithOnOff transitions to abort movement and enter an idle state."
       },
       {
         "term": "select_closest_supported_frequency",
-        "definition": "An abstract function that, given a requested frequency, returns the nearest generatable frequency value supported by the device or a special null indication when no acceptable approximation exists.",
-        "usage_context": "Used in MoveToClosestFrequency transitions to decide whether to update CurrentFrequency or to conceptually return a constraint error."
+        "definition": "A device-specific mapping from a requested frequency to the nearest frequency value that the device can generate within its MinFrequency and MaxFrequency range. If no sufficiently close approximation exists according to manufacturer rules, the mapping yields no usable result.",
+        "usage_context": "Used by MoveToClosestFrequency transitions to compute the new CurrentFrequency or to indicate that a CONSTRAINT_ERROR should be returned by higher layers."
       },
       {
-        "term": "ActiveCommandType",
-        "definition": "A conceptual variable that records the type of level-changing command currently in progress, or None when no transition is active.",
-        "usage_context": "Used in state invariants and timer-driven transitions to interpret RemainingTime and determine which behavior and on/off linkage applies."
+        "term": "is_min_level_reached",
+        "definition": "A predicate that indicates whether the effective final level of a transition has reached the device’s minimum level. It is used when determining whether a transition with On/Off coupling should cause the device to turn off at the end of movement.",
+        "usage_context": "Used in guard conditions for internal_timer_tick transitions in the LevelTransitionOnWithOnOff state that might change OnOff from TRUE to FALSE on completion."
       },
       {
-        "term": "map_move_mode_to_direction",
-        "definition": "A conceptual mapping from the MoveModeEnum value in a Move or MoveWithOnOff command into the internal MoveDirection representation (Up or Down).",
-        "usage_context": "Used when entering the MovingByMove state to record the movement direction."
+        "term": "FeatureFQ",
+        "definition": "A boolean interpretation of the Frequency feature bit in the FeatureMap attribute. When TRUE, frequency-related attributes such as CurrentFrequency, MinFrequency, and MaxFrequency are supported and commands like MoveToClosestFrequency are valid.",
+        "usage_context": "Appears in guards for MoveToClosestFrequency transitions to ensure that the command only affects state when the frequency feature is implemented."
       }
     ],
     "references": [
       {
         "id": "0x0006",
         "name": "On/Off Cluster",
-        "description": "Provides the OnOff attribute and related semantics that interact with Level Control through the OnOff feature and 'WithOnOff' command variants."
+        "description": "Supplies the OnOff attribute used to distinguish IdleOn and IdleOff states and to apply On/Off coupling for the WithOnOff command variants."
       },
       {
         "id": "0x0300",
         "name": "Color Control Cluster",
-        "description": "Optionally linked via the CoupleColorTempToLevel option bit to coordinate color temperature changes with level changes."
+        "description": "Optionally coupled to level changes through the CoupleColorTempToLevel bit in the Options attribute; not explicitly modeled in state transitions but relevant to tempOptions semantics."
       },
       {
         "id": null,
         "name": "Scenes Management server cluster",
-        "description": "Stores and recalls Level Control scene-capable attributes CurrentLevel and CurrentFrequency in scene tables for endpoints that implement both clusters."
+        "description": "Stores and recalls Level Control attributes such as CurrentLevel and CurrentFrequency in scene table extension field sets, influencing scene_behaviors."
       },
       {
         "id": "0xFFFD",
-        "name": "FeatureMap",
-        "description": "Determines which Level Control features (OnOff, Lighting, Frequency) are enabled, influencing command semantics and availability."
+        "name": "FeatureMap attribute",
+        "description": "Determines which Level Control features (OnOff, Lighting, Frequency) are supported, controlling the availability of attributes and commands like MoveToClosestFrequency."
       },
       {
         "id": "0xFFFC",
-        "name": "ClusterRevision",
-        "description": "Indicates the implemented revision of the Level Control cluster, which determines the precise behavioral clarifications that apply."
+        "name": "ClusterRevision attribute",
+        "description": "Indicates the revision of the Level Control cluster implemented; used to ensure the correct behavioral expectations for this FSM."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "CurrentLevelRangeIntegrity",
+        "property_type": "integrity",
+        "description": "Verifies that CurrentLevel never leaves the allowed range defined by MinLevel and MaxLevel in any reachable state or during any transition, preventing corrupted or invalid brightness values.",
+        "formal_specification": "forall trace, step. state_at(step).CurrentLevel != null -> (state_at(step).CurrentLevel >= state_at(step).MinLevel && state_at(step).CurrentLevel <= state_at(step).MaxLevel)",
+        "attack_vector": "An attacker might attempt to send malformed commands with out-of-range Level or StepSize parameters hoping to force the device into an invalid level configuration.",
+        "mitigation": "The FSM uses clamping and step-target computation and models invariants that always constrain CurrentLevel within [MinLevel, MaxLevel]."
+      },
+      {
+        "property_name": "ExecuteIfOffAffectsBaseCommandsOnly",
+        "property_type": "integrity",
+        "description": "Ensures that when ExecuteIfOff is FALSE and the device is off, base level-changing commands (MoveToLevel, Move, Step) do not change CurrentLevel or turn the device on, while WithOnOff variants retain their specified ability to act when off.",
+        "formal_specification": "forall trace, step, cmd. cmd in {MoveToLevel, Move, Step} && state_at(step).OnOff == FALSE && ExecuteIfOff(tempOptions_at(step, cmd)) == FALSE -> state_at(step+1).CurrentLevel == state_at(step).CurrentLevel && state_at(step+1).OnOff == FALSE",
+        "attack_vector": "A malicious controller might try to bypass user expectations by issuing base commands to alter the level while the device is off, despite ExecuteIfOff being cleared.",
+        "mitigation": "Guard conditions in the FSM prevent level and OnOff changes for base commands when OnOff is FALSE and ExecuteIfOff is FALSE, while modeling WithOnOff commands according to the normative state change table. The introduction of tempOptions as an explicit attribute and the use of build_temp_options_action ensure ExecuteIfOff decisions are based on the per-command temporary bitmap."
+      },
+      {
+        "property_name": "OnOffCouplingAtMinLevelOnlyForWithOnOff",
+        "property_type": "integrity",
+        "description": "Checks that reaching the device minimum level only causes OnOff to become FALSE when the transition was initiated by a WithOnOff variant, and that base commands never change OnOff at minimum level.",
+        "formal_specification": "forall trace, step. transition(step).from_state == LevelTransitionOnBase && transition(step).trigger == internal_timer_tick && state_at(step).RemainingTime == 1 -> state_at(step+1).OnOff == state_at(step).OnOff; forall trace, step. transition(step).from_state == LevelTransitionOnWithOnOff && transition(step).trigger == internal_timer_tick && state_at(step).RemainingTime == 1 && is_min_level_reached_at(step) == TRUE -> state_at(step+1).OnOff == FALSE",
+        "attack_vector": "An attacker might craft sequences of base commands that force the level to minimum in an attempt to spuriously switch the device off by exploiting mis-implemented coupling.",
+        "mitigation": "The FSM separates base-command transitions (LevelTransitionOnBase) from WithOnOff transitions (LevelTransitionOnWithOnOff) and only applies OnOff := FALSE at minimum in the latter, reflecting the specification and lighting state change table."
+      },
+      {
+        "property_name": "FrequencyConstraintRespect",
+        "property_type": "integrity",
+        "description": "Ensures that CurrentFrequency is only modified by MoveToClosestFrequency when the Frequency feature is present and that it always remains within supported bounds, or else the command is rejected at higher layers.",
+        "formal_specification": "forall trace, step. transition(step).trigger == MoveToClosestFrequency && FeatureFQ_at(step) == TRUE && select_closest_supported_frequency_at(step) != null -> (state_at(step+1).CurrentFrequency >= state_at(step+1).MinFrequency && state_at(step+1).CurrentFrequency <= state_at(step+1).MaxFrequency)",
+        "attack_vector": "An attacker could send arbitrary frequency values attempting to drive the device beyond its physical capabilities or crash its control logic.",
+        "mitigation": "The FSM models selection of a closest supported frequency and only updates CurrentFrequency when a valid value exists, otherwise higher logic returns CONSTRAINT_ERROR."
+      },
+      {
+        "property_name": "TransitionTimerProgress",
+        "property_type": "availability",
+        "description": "Verifies that whenever RemainingTime is greater than zero, either internal timer ticks reduce it to zero or a Stop or StopWithOnOff command sets it to zero, preventing indefinitely stuck transitions.",
+        "formal_specification": "forall trace, step. state_at(step).RemainingTime > 0 -> exists step2 >= step. state_at(step2).RemainingTime == 0",
+        "attack_vector": "By interfering with timer events or repeatedly sending commands, an attacker might try to keep the device locked in a transition state, affecting responsiveness and battery consumption.",
+        "mitigation": "The FSM includes timer_tick transitions that strictly decrease RemainingTime and Stop and StopWithOnOff transitions that force it to zero, guaranteeing eventual return to an idle state."
+      },
+      {
+        "property_name": "CommandParameterValidation",
+        "property_type": "integrity",
+        "description": "Ensures that invalid command parameters such as Rate == 0 for Move and MoveWithOnOff or StepSize == 0 for Step and StepWithOnOff do not alter the device state, thereby preventing invalid movements.",
+        "formal_specification": "forall trace, step. transition(step).trigger in {Move, MoveWithOnOff} && Rate(step) == 0 -> state_at(step+1) == state_at(step); forall trace, step. transition(step).trigger in {Step, StepWithOnOff} && StepSize(step) == 0 -> state_at(step+1) == state_at(step)",
+        "attack_vector": "A malicious client could send malformed or boundary commands to try to place the device into unforeseen states by exploiting undefined parameter values.",
+        "mitigation": "The FSM models transitions with guards for invalid parameters that yield no state change, mirroring specification requirements for INVALID_COMMAND responses."
       }
     ],
     "metadata": {
-      "generation_timestamp": "2025-12-08T06:15:58.359619",
-      "generation_attempts": 5,
+      "generation_timestamp": "2026-01-03T02:40:05.611208",
+      "generation_attempts": 7,
       "judge_approved": true,
       "source_pages": "74-89",
       "section_number": "1.6"

@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
 Matter Cluster FSM Generator with LLM-as-Judge
-Refactored to class-based `FSMGenerator` to match project style.
+Two-Pass Generation: FSM first, then Security Properties
+
+Research Basis:
+- Decomposed Prompting (DecomP): Breaking complex tasks into sub-tasks improves LLM accuracy
+- Least-to-Most Prompting: Solving simpler problems first helps with complex reasoning
+- Tamarin best practices: Separate protocol model from security properties
+
+Pass 1: Generate FSM behavioral model (states, transitions, actions)
+Pass 2: Generate security properties using FSM + cluster details for context
 """
 
 import os
@@ -20,7 +28,8 @@ from config import (
     MODEL_PROVIDER,
     LLM_TEMPERATURE,
     LLM_MAX_OUTPUT_TOKENS,
-    FSM_GENERATION_PROMPT_TEMPLATE_LLM
+    FSM_GENERATION_PROMPT_PASS1_FSM_ONLY,
+    FSM_SECURITY_PROPERTIES_PROMPT_PASS2,
 )
 
 # Configure logging
@@ -29,7 +38,19 @@ logger = logging.getLogger(__name__)
 
 
 class FSMGenerator:
-    """Class wrapper for FSM generation and judge loop."""
+    """
+    Two-Pass FSM Generator with LLM-as-Judge.
+    
+    Pass 1: Generate FSM behavioral model (states, transitions, actions)
+           - Focuses entirely on FSM structure
+           - Security properties left empty
+           - More detailed transitions due to reduced cognitive load
+           
+    Pass 2: Generate security properties
+           - Input: FSM + cluster details
+           - Analyzes existing transitions to derive properties
+           - References actual FSM elements in formal specifications
+    """
 
     def __init__(self,
                  api_key: str = API_KEY,
@@ -37,13 +58,17 @@ class FSMGenerator:
                  provider: str = MODEL_PROVIDER,
                  temperature: float = LLM_TEMPERATURE,
                  max_tokens: int = LLM_MAX_OUTPUT_TOKENS,
-                 prompt_template: str = FSM_GENERATION_PROMPT_TEMPLATE_LLM):
+                 fsm_prompt_template: str = FSM_GENERATION_PROMPT_PASS1_FSM_ONLY,
+                 security_prompt_template: str = FSM_SECURITY_PROPERTIES_PROMPT_PASS2,
+                 two_pass_mode: bool = True):
         self.api_key = api_key
         self.model = model
         self.provider = provider
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.prompt_template = prompt_template
+        self.fsm_prompt_template = fsm_prompt_template
+        self.security_prompt_template = security_prompt_template
+        self.two_pass_mode = two_pass_mode
 
         # Ensure API key env variable (backwards-compatible)
         if not os.environ.get("GOOGLE_API_KEY") and self.api_key:
@@ -63,6 +88,7 @@ class FSMGenerator:
                 temperature=self.temperature
             )
             logger.info(f"Initialized models: {self.model} from {self.provider}")
+            logger.info(f"Two-pass mode: {'ENABLED' if self.two_pass_mode else 'DISABLED'}")
         except Exception as e:
             logger.error(f"Error initializing models: {e}")
             raise
@@ -83,19 +109,59 @@ class FSMGenerator:
             return ""
         return clean_response
 
-    def judge_fsm(self, fsm: str, user_input: str) -> str:
+    def judge_fsm(self, fsm: str, user_input: str, is_fsm_only: bool = False) -> str:
         """Evaluate the correctness of a generated FSM using the judge model."""
-        prompt = f"""
-You are a judge that evaluates the correctness of a finite state machine (FSM) based on its behavior. You will be given an FSM described in JSON format and behavioral description of a protocol called Matter.
-Your task is to determine if the FSM correctly implements the protocol based on the provided user input and expected output.
-Your output format should be json parsable and strictly follow this format:
+        
+        if is_fsm_only:
+            # Judge prompt for Pass 1 (FSM only)
+            prompt = f"""
+You are a judge evaluating a finite state machine (FSM) for a Matter IoT protocol cluster.
+
+EVALUATION CRITERIA:
+1. States correctly represent cluster behavioral conditions
+2. Transitions cover all commands from specification
+3. Guard conditions match specification logic
+4. Actions are atomic assignments (no if/else, no loops)
+5. Timer behaviors correctly modeled (expiry and decrement)
+6. Feature constraints enforced in guards
+7. Initial state properly defined
+8. All commands from specification are handled
+
+Output JSON format:
 {{
     "correct": true/false,
-    "explanation": "Your explanation or reasoning here"
+    "explanation": "Brief evaluation summary"
 }}
-Now evaluate the following FSM and user input:
-FSM: {fsm}
-User Input: {user_input}
+
+FSM:
+{fsm}
+
+Cluster Specification:
+{user_input}
+"""
+        else:
+            # Original judge prompt for complete FSM validation
+            prompt = f"""
+You are a judge evaluating a finite state machine (FSM) for a Matter IoT protocol.
+
+Evaluate based on:
+- States represent actual device behaviors
+- Transitions cover specification requirements
+- Guard conditions are correct
+- Actions are atomic
+- FSM structure is complete and correct
+
+Output JSON format:
+{{
+    "correct": true/false,
+    "explanation": "Brief evaluation summary"
+}}
+
+FSM:
+{fsm}
+
+Specification:
+{user_input}
 """
         try:
             response = self.judge.invoke(prompt)
@@ -105,16 +171,106 @@ User Input: {user_input}
             logger.error(f"Error during judge evaluation: {e}")
             return json.dumps({"correct": False, "explanation": f"Judge error: {str(e)}"})
 
+    def generate_security_properties(self, fsm_data: Dict[str, Any], cluster_info: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
+        """
+        PASS 2: Generate security properties using FSM context.
+        
+        This pass analyzes the FSM model and cluster specification to derive
+        formal security properties that reference actual FSM elements.
+        """
+        cluster_name = fsm_data.get('fsm_model', {}).get('cluster_name', 'Unknown')
+        logger.info(f"[PASS 2] Generating security properties for: {cluster_name}")
+        
+        fsm_model_str = json.dumps(fsm_data, indent=2, ensure_ascii=False)
+        cluster_info_str = json.dumps(cluster_info, indent=2, ensure_ascii=False) if isinstance(cluster_info, dict) else str(cluster_info)
+        
+        prompt = self.security_prompt_template.format(
+            fsm_model=fsm_model_str,
+            cluster_info=cluster_info_str
+        )
+        
+        for attempt in range(max_retries):
+            logger.info(f"[PASS 2] Security properties attempt {attempt + 1}/{max_retries}")
+            
+            try:
+                response = self.fsm_generator.invoke(prompt)
+                time.sleep(15)  # Shorter wait for Pass 2
+                
+                clean_response = self.clean_json_response(response.content, cluster_name)
+                if not clean_response.startswith('{'):
+                    logger.warning("[PASS 2] Invalid response format, retrying...")
+                    continue
+                
+                security_data = json.loads(clean_response)
+                
+                # Extract security_properties array
+                if 'security_properties' in security_data:
+                    properties = security_data['security_properties']
+                    logger.info(f"[PASS 2] ✓ Generated {len(properties)} security properties")
+                    return {"security_properties": properties}
+                else:
+                    logger.warning("[PASS 2] No security_properties field found, retrying...")
+                    continue
+                    
+            except json.JSONDecodeError as e:
+                logger.warning(f"[PASS 2] JSON parse error: {e}, retrying...")
+                continue
+            except Exception as e:
+                logger.error(f"[PASS 2] Error: {e}")
+                continue
+        
+        logger.warning(f"[PASS 2] Failed to generate security properties after {max_retries} attempts, using empty array")
+        return {"security_properties": []}
+
+    def merge_fsm_and_security(self, fsm_data: Dict[str, Any], security_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Merge FSM model with security properties.
+        
+        Updates the FSM's security_properties field with properties from Pass 2.
+        """
+        if 'fsm_model' in fsm_data:
+            fsm_data['fsm_model']['security_properties'] = security_data.get('security_properties', [])
+            
+            # Update metadata to indicate two-pass generation
+            if 'metadata' not in fsm_data['fsm_model']:
+                fsm_data['fsm_model']['metadata'] = {}
+            fsm_data['fsm_model']['metadata']['two_pass_generation'] = True
+            fsm_data['fsm_model']['metadata']['security_properties_count'] = len(
+                security_data.get('security_properties', [])
+            )
+        
+        return fsm_data
+
     def generate_fsm(self, cluster_info: Dict[str, Any], max_retries: int = 10) -> Optional[Dict[str, Any]]:
-        """Generate FSM with iterative refinement based on judge feedback."""
+        """
+        Generate FSM with optional two-pass approach.
+        
+        If two_pass_mode is enabled:
+          - Pass 1: Generate FSM behavioral model (states, transitions, actions)
+          - Pass 2: Generate security properties using FSM + cluster details
+          - Merge: Combine FSM and security properties
+        
+        If two_pass_mode is disabled:
+          - Single pass generation (original behavior)
+        """
         cluster_name = "Unknown"
         if isinstance(cluster_info, dict):
             cluster_name = cluster_info.get('cluster_info', {}).get('cluster_name', 'Unknown')
 
-        logger.info(f"Generating FSM for cluster: {cluster_name}")
-
         cluster_info_str = json.dumps(cluster_info, indent=2, ensure_ascii=False) if isinstance(cluster_info, dict) else str(cluster_info)
-        base_prompt = self.prompt_template.format(cluster_info=cluster_info_str)
+        
+        if self.two_pass_mode:
+            logger.info(f"="*60)
+            logger.info(f"TWO-PASS GENERATION for cluster: {cluster_name}")
+            logger.info(f"="*60)
+            
+            # ===================== PASS 1: FSM Generation =====================
+            logger.info(f"\n[PASS 1] Generating FSM behavioral model...")
+            base_prompt = self.fsm_prompt_template.format(cluster_info=cluster_info_str)
+        else:
+            # Single-pass mode (backward compatibility)
+            logger.info(f"Generating FSM for cluster: {cluster_name} (single-pass mode)")
+            base_prompt = self.fsm_prompt_template.format(cluster_info=cluster_info_str)
 
         feedback = None
         last_fsm_data = None
@@ -138,7 +294,7 @@ Address the specific issues mentioned in the feedback while maintaining correct 
             else:
                 prompt = base_prompt
 
-            logger.info(f"Attempt {attempt + 1}/{max_retries}")
+            logger.info(f"[PASS 1] Attempt {attempt + 1}/{max_retries}")
 
             try:
                 response = self.fsm_generator.invoke(prompt)
@@ -146,7 +302,7 @@ Address the specific issues mentioned in the feedback while maintaining correct 
 
                 clean_response = self.clean_json_response(response.content, cluster_name)
                 if not clean_response.startswith('{'):
-                    logger.warning("Invalid response format, retrying...")
+                    logger.warning("[PASS 1] Invalid response format, retrying...")
                     continue
 
                 try:
@@ -154,28 +310,37 @@ Address the specific issues mentioned in the feedback while maintaining correct 
                     last_fsm_data = fsm_data  # Store last valid FSM
                     previous_fsm_str = json.dumps(fsm_data, indent=2, ensure_ascii=False)  # Store for next iteration
                 except json.JSONDecodeError as json_error:
-                    logger.warning(f"JSON parse error: {json_error}, retrying...")
+                    logger.warning(f"[PASS 1] JSON parse error: {json_error}, retrying...")
                     continue
 
-                judge_response = self.judge_fsm(clean_response, cluster_info_str)
-                # print("Judge Response:", judge_response)
-                last_judge_feedback = judge_response  # Store last feedback
+                # Judge FSM (Pass 1 uses FSM-only judging)
+                judge_response = self.judge_fsm(clean_response, cluster_info_str, is_fsm_only=self.two_pass_mode)
+                last_judge_feedback = judge_response
 
                 if '"correct": true' in judge_response.lower():
-                    logger.info(f"✓ FSM approved (attempt {attempt + 1})")
+                    logger.info(f"[PASS 1] ✓ FSM approved (attempt {attempt + 1})")
                     if 'metadata' not in fsm_data.get('fsm_model', {}):
                         fsm_data.setdefault('fsm_model', {})['metadata'] = {}
 
                     fsm_data['fsm_model']['metadata']['generation_timestamp'] = datetime.now().isoformat()
                     fsm_data['fsm_model']['metadata']['generation_attempts'] = attempt + 1
                     fsm_data['fsm_model']['metadata']['judge_approved'] = True
+                    fsm_data['fsm_model']['metadata']['pass1_approved'] = True
+                    
+                    # ===================== PASS 2: Security Properties =====================
+                    if self.two_pass_mode:
+                        logger.info(f"\n[PASS 2] Generating security properties...")
+                        security_data = self.generate_security_properties(fsm_data, cluster_info)
+                        fsm_data = self.merge_fsm_and_security(fsm_data, security_data)
+                        logger.info(f"[PASS 2] ✓ Security properties merged")
+                    
                     return fsm_data
                 else:
-                    logger.warning("✗ Rejected, retrying with feedback...")
+                    logger.warning("[PASS 1] ✗ Rejected, retrying with feedback...")
                     feedback = judge_response
 
             except Exception as e:
-                logger.error(f"Error during generation attempt: {e}")
+                logger.error(f"[PASS 1] Error during generation attempt: {e}")
 
         logger.error(f"Failed to generate approved FSM for {cluster_name} after {max_retries} attempts")
         
@@ -189,6 +354,13 @@ Address the specific issues mentioned in the feedback while maintaining correct 
             last_fsm_data['fsm_model']['metadata']['generation_attempts'] = max_retries
             last_fsm_data['fsm_model']['metadata']['judge_approved'] = False
             last_fsm_data['fsm_model']['metadata']['last_judge_feedback'] = last_judge_feedback
+            
+            # Still run Pass 2 for unapproved FSM if in two-pass mode
+            if self.two_pass_mode:
+                logger.info(f"\n[PASS 2] Generating security properties for unapproved FSM...")
+                security_data = self.generate_security_properties(last_fsm_data, cluster_info)
+                last_fsm_data = self.merge_fsm_and_security(last_fsm_data, security_data)
+            
             return last_fsm_data
         
         return None
@@ -232,6 +404,7 @@ Address the specific issues mentioned in the feedback while maintaining correct 
         """
         logger.info(f"Loading cluster information from: {input_file}")
         logger.info(f"Output directory: {output_dir}")
+        logger.info(f"Generation mode: {'Two-Pass' if self.two_pass_mode else 'Single-Pass'}")
 
         try:
             with open(input_file, 'r', encoding='utf-8') as f:
@@ -262,8 +435,10 @@ Address the specific issues mentioned in the feedback while maintaining correct 
             else:
                 print("FSM GENERATION COMPLETED (NOT APPROVED - NEEDS REVIEW)")
             print("="*80)
+            
             cluster_name = fsm_data.get('fsm_model', {}).get('cluster_name', 'unknown')
             print(f"Cluster: {cluster_name}")
+            
             metadata = fsm_data.get('fsm_model', {}).get('metadata', {})
             if isinstance(cluster_info, dict):
                 section_number = cluster_info.get('metadata', {}).get('section_number')
@@ -271,13 +446,37 @@ Address the specific issues mentioned in the feedback while maintaining correct 
                     print(f"Section: {section_number}")
 
             fsm = fsm_data.get('fsm_model', {})
+            
+            # Core FSM statistics
+            print(f"\n--- FSM Model Statistics ---")
             print(f"States: {len(fsm.get('states', []))}")
             print(f"Transitions: {len(fsm.get('transitions', []))}")
             print(f"Commands: {len(fsm.get('commands_handled', []))}")
             print(f"Definitions: {len(fsm.get('definitions', []))}")
             print(f"References: {len(fsm.get('references', []))}")
-            print(f"Generation attempts: {metadata.get('generation_attempts', 'N/A')}")
-            print(f"Judge approved: {metadata.get('judge_approved', 'N/A')}")
+            
+            # Security properties statistics
+            security_props = fsm.get('security_properties', [])
+            print(f"\n--- Security Properties ---")
+            print(f"Total properties: {len(security_props)}")
+            if security_props:
+                # Count by type
+                prop_types = {}
+                for prop in security_props:
+                    ptype = prop.get('property_type', 'unknown')
+                    prop_types[ptype] = prop_types.get(ptype, 0) + 1
+                for ptype, count in sorted(prop_types.items()):
+                    print(f"  - {ptype}: {count}")
+            
+            # Generation metadata
+            print(f"\n--- Generation Metadata ---")
+            print(f"Mode: {'Two-Pass' if metadata.get('two_pass_generation', False) else 'Single-Pass'}")
+            print(f"FSM generation attempts: {metadata.get('generation_attempts', 'N/A')}")
+            print(f"Pass 1 (FSM) approved: {metadata.get('pass1_approved', metadata.get('judge_approved', 'N/A'))}")
+            if metadata.get('two_pass_generation'):
+                print(f"Pass 2 (Security) properties: {metadata.get('security_properties_count', 0)}")
+            
+            print(f"\n--- Output ---")
             print(f"Output file: {json_output}")
             print(f"Output directory: {os.path.abspath(output_dir)}")
             print("="*80 + "\n")
@@ -295,14 +494,51 @@ Address the specific issues mentioned in the feedback while maintaining correct 
 
 
 def main():
+    """
+    Main entry point for FSM generation.
+    
+    Usage:
+        python cluster_fsm_generator_for_llm.py [input_file.json] [output_dir] [--single-pass]
+        
+    Arguments:
+        input_file: Path to cluster detail JSON file (default: cluster_details/1.5_OnOff_Cluster_detail.json)
+        output_dir: Output directory for FSM files (default: fsm_models)
+        --single-pass: Disable two-pass generation (default: two-pass enabled)
+    
+    Two-Pass Mode (default):
+        - Pass 1: Generate FSM behavioral model (states, transitions)
+        - Pass 2: Generate security properties using FSM context
+        - Results in MORE transitions and BETTER security property coverage
+        
+    Single-Pass Mode (legacy):
+        - Generate FSM and security properties together
+        - May result in fewer transitions due to LLM cognitive load
+    """
     input_file = "cluster_details/1.5_OnOff_Cluster_detail.json"
     output_dir = "fsm_models"
-    if len(sys.argv) > 1:
-        input_file = sys.argv[1]
-    if len(sys.argv) > 2:
-        output_dir = sys.argv[2]
+    two_pass_mode = True  # Default: use two-pass generation
+    
+    # Parse arguments
+    args = sys.argv[1:]
+    non_flag_args = []
+    
+    for arg in args:
+        if arg == "--single-pass":
+            two_pass_mode = False
+        elif arg == "--two-pass":
+            two_pass_mode = True
+        elif arg == "--help" or arg == "-h":
+            print(main.__doc__)
+            sys.exit(0)
+        else:
+            non_flag_args.append(arg)
+    
+    if len(non_flag_args) > 0:
+        input_file = non_flag_args[0]
+    if len(non_flag_args) > 1:
+        output_dir = non_flag_args[1]
 
-    generator = FSMGenerator()
+    generator = FSMGenerator(two_pass_mode=two_pass_mode)
     exit_code = generator.run(input_file, output_dir)
     sys.exit(exit_code)
 

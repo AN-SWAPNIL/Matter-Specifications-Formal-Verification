@@ -509,7 +509,7 @@ If there were parse errors, fix the syntax first to ensure the model is parseabl
 
 def main():
     """Main entry point."""
-    input_file = "fsm_models/1.6_Level_Control_fsm.json"
+    input_file = "fsm_models/1.5_OnOff_Cluster_fsm.json"
     output_dir = "proverif_models"
     
     if len(sys.argv) > 1:

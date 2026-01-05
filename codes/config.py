@@ -951,7 +951,14 @@ Output ONLY the JSON, no explanation, no markdown blocks.
 """
 
 
-FSM_GENERATION_PROMPT_TEMPLATE_LLM = """
+# =============================================================================
+# TWO-PASS FSM GENERATION PROMPTS
+# =============================================================================
+# Pass 1: Generate FSM structure (states, transitions, actions)
+# Pass 2: Generate security properties using FSM + cluster details
+# This separation improves FSM quality by reducing LLM cognitive load
+
+FSM_GENERATION_PROMPT_PASS1_FSM_ONLY = """
 You are a Matter IoT protocol expert generating precise Finite State Machine models from Matter Application Cluster specifications.
 
 CLUSTER SPECIFICATION TO ANALYZE:
@@ -1082,25 +1089,7 @@ Split into **TWO transitions:**
 16. **Ensure complete coverage**: All commands, events, and data type interactions included
 
 ---
-## STEP 10: SECURITY PROPERTY EXTRACTION (CRITICAL FOR FORMAL VERIFICATION)
 
-**Identify security-critical properties that can be formally verified:**
-
-### Property Types:
-1. **Reachability**: Can certain states be reached? Should invalid states be unreachable?
-2. **Secrecy**: Are sensitive values (keys, credentials) protected?
-3. **Authentication**: Are command sources properly verified?
-4. **Integrity**: Can attribute values be corrupted or manipulated?
-5. **Availability**: Can the device be made unresponsive (DoS)?
-
-### Security Property Extraction Guidelines:
-1. **Identify boundary conditions**: min/max attribute values, empty lists, reserved values
-2. **Find input validation requirements**: valid ranges, mandatory fields, format constraints
-3. **Locate state invariant violations**: invalid attribute combinations, undefined states
-4. **Check command authorization**: fabric-scoped, access-controlled operations
-5. **Document expected vs. actual behavior**: spec requirement vs. implementation risk
-
----
 ## OUTPUT STRUCTURE
 
 **CRITICAL JSON REQUIREMENTS:**
@@ -1157,16 +1146,6 @@ Return raw JSON only:
         "description": "reason_for_dependency"
       }}
     ],
-    "security_properties": [
-      {{
-        "property_name": "descriptive_name",
-        "property_type": "reachability|secrecy|authentication|integrity|availability",
-        "description": "what_the_property_verifies",
-        "formal_specification": "formal_logic_or_query_pattern",
-        "attack_vector": "description_of_potential_attack",
-        "mitigation": "how_spec_prevents_this_attack"
-      }}
-    ],
     "metadata": {{
       "generation_timestamp": "ISO_8601",
       "generation_attempts": 1,
@@ -1196,9 +1175,6 @@ Return raw JSON only:
 - [ ] Data type enums/bitmaps applied in guards
 - [ ] Definitions explain terms clearly (no algorithms)
 - [ ] References properly document external dependencies
-- [ ] Security properties extracted for formal verification
-- [ ] Boundary conditions identified and documented
-- [ ] Input validation requirements captured
 - [ ] Metadata complete and accurate
 - [ ] JSON is valid and parseable
 - [ ] NO markdown code blocks in output
@@ -1215,7 +1191,219 @@ Return raw JSON only:
 5. **Data Type Usage**: Apply enums, bitmaps, and constraints from specification.
 6. **Quality Flags**: Model read-only, writable, and reportable attribute behaviors.
 7. **Fabric Sensitivity**: Consider fabric-scoped attributes where applicable.
-8. **Security Properties**: Extract verifiable security properties for formal analysis.
+"""
+
+# Backward compatibility alias
+FSM_GENERATION_PROMPT_TEMPLATE_LLM = FSM_GENERATION_PROMPT_PASS1_FSM_ONLY
+
+# =============================================================================
+# PASS 2: SECURITY PROPERTIES GENERATION PROMPT
+# =============================================================================
+# This prompt generates security properties using the FSM + cluster details
+# The FSM provides context for action facts, state transitions, and variables
+
+FSM_SECURITY_PROPERTIES_PROMPT_PASS2 = """
+You are a security protocol expert generating formal security properties for Matter IoT protocols.
+
+**CRITICAL: This is PASS 2 - Generate SECURITY PROPERTIES ONLY**
+- You are given the FSM model (from Pass 1) and the original cluster specification
+- Your ONLY task is to generate the security_properties array
+- The FSM already has states, transitions, definitions - DO NOT modify them
+- Focus on identifying and formalizing security-critical behaviors
+
+================================================================================
+## INPUT CONTEXT
+================================================================================
+
+### PREVIOUSLY GENERATED FSM MODEL:
+{fsm_model}
+
+### ORIGINAL CLUSTER SPECIFICATION:
+{cluster_info}
+
+================================================================================
+## YOUR TASK
+================================================================================
+
+Analyze the FSM and cluster specification to extract security properties that can be formally verified.
+
+**Output a JSON object with ONLY the security_properties array:**
+```json
+{{
+  "security_properties": [
+    // Your security properties here
+  ]
+}}
+```
+
+================================================================================
+## SECURITY PROPERTY EXTRACTION GUIDELINES
+================================================================================
+
+### STEP 1: IDENTIFY SECURITY-CRITICAL BEHAVIORS FROM CLUSTER SPEC
+
+Scan these sections of the cluster specification:
+
+1. **Commands.timing**: Rate limits, expiry constraints
+   - Example: "≤10 unique requests per 10 minutes" → rate limit property
+   
+2. **Commands.effect_on_receipt**: Validation checks, authentication flows
+   - Example: "if temp_id_not_expired" → credential expiry property
+   - Example: "if account_req = account_active" → authentication property
+   
+3. **Commands.access**: Access control requirements
+   - Example: "Operate privilege required" → authorization property
+   
+4. **Events.summary**: SHALL requirements
+   - Example: "Fabric Admin SHALL remove access" → mandatory behavior property
+
+5. **Attributes with security implications**:
+   - Credentials, PINs, tokens → secrecy properties
+   - Access control lists → authorization properties
+
+### STEP 2: MAP TO FSM ELEMENTS
+
+For each security behavior identified, map it to FSM elements:
+- Which states are involved?
+- Which transitions implement the security check?
+- What attributes are security-critical?
+- What actions enforce the security behavior?
+
+### STEP 3: FORMALIZE AS SECURITY PROPERTIES
+
+Create formal security properties using this structure:
+
+```json
+{{
+  "property_name": "snake_case_descriptive_name",
+  "property_type": "reachability|secrecy|authentication|integrity|availability",
+  "description": "Clear description of what is being verified (max 200 chars)",
+  "formal_specification": "Formal logic statement using FSM elements",
+  "attack_vector": "Description of potential attack this property prevents",
+  "mitigation": "How the FSM/spec prevents this attack"
+}}
+```
+
+### PROPERTY TYPES:
+
+1. **reachability**: Verifies certain states can/cannot be reached
+   - "InvalidState should never be reachable"
+   - "AuthenticatedState must be reachable from Initial via Login"
+
+2. **secrecy**: Verifies sensitive data protection
+   - "SetupPIN never exposed to unauthorized nodes"
+   - "Credentials not leaked in error responses"
+
+3. **authentication**: Verifies identity checks
+   - "Login requires valid credential validation"
+   - "Command execution requires authenticated session"
+
+4. **integrity**: Verifies data cannot be corrupted
+   - "OnOff state only changes via authorized commands"
+   - "Timer values cannot be manipulated externally"
+
+5. **availability**: Verifies system remains responsive
+   - "Rate limiting prevents DoS attacks"
+   - "System recovers from power cycle"
+
+================================================================================
+## EXAMPLES OF SECURITY PROPERTIES
+================================================================================
+
+### Example 1: Rate Limit Property (from timing)
+```json
+{{
+  "property_name": "rate_limit_enforced",
+  "property_type": "availability",
+  "description": "GetSetupPIN requests limited to prevent brute force attacks",
+  "formal_specification": "For all RequestAccepted events within 10-minute window, count <= 10",
+  "attack_vector": "Attacker floods GetSetupPIN requests to brute force PIN",
+  "mitigation": "Rate limiter rejects requests exceeding 10 per 10-minute window"
+}}
+```
+
+### Example 2: Credential Validation Property (from effect_on_receipt)
+```json
+{{
+  "property_name": "login_requires_valid_credentials",
+  "property_type": "authentication", 
+  "description": "Login success only possible with valid temp_id and setup_pin",
+  "formal_specification": "For all transitions to AuthenticatedState, TempIdValidated AND SetupPINValidated must occur",
+  "attack_vector": "Attacker attempts login with invalid or expired credentials",
+  "mitigation": "Effect_on_receipt validates temp_id expiry and PIN match before login success"
+}}
+```
+
+### Example 3: State Integrity Property (from FSM structure)
+```json
+{{
+  "property_name": "onoff_command_integrity",
+  "property_type": "integrity",
+  "description": "OnOff state only changes through authorized On/Off/Toggle commands",
+  "formal_specification": "OnOff attribute changes imply one of {{On, Off, Toggle, OnWithTimedOff, Startup}} commands executed",
+  "attack_vector": "Attacker manipulates OnOff state without proper command",
+  "mitigation": "FSM only allows state changes via defined command transitions"
+}}
+```
+
+### Example 4: OFFONLY Feature Constraint (from feature specification)
+```json
+{{
+  "property_name": "offonly_blocks_on_commands",
+  "property_type": "integrity",
+  "description": "When OFFONLY feature is set, On and Toggle commands have no effect",
+  "formal_specification": "When feature_OFFONLY == TRUE, On command transitions do not change OnOff attribute",
+  "attack_vector": "Client attempts to turn on device that should only be turned off",
+  "mitigation": "Guard conditions check OFFONLY feature and block On/Toggle state changes"
+}}
+```
+
+### Example 5: Startup Behavior Property (from StartUp attributes)
+```json
+{{
+  "property_name": "startup_behavior_deterministic",
+  "property_type": "integrity",
+  "description": "Device startup state is deterministically controlled by StartUpOnOff attribute",
+  "formal_specification": "After Startup trigger, OnOff == StartUpOnOff (or toggle of previous if Toggle)",
+  "attack_vector": "Attacker exploits power cycle to force device into uncontrolled state",
+  "mitigation": "StartUpOnOff attribute strictly defines post-startup state"
+}}
+```
+
+================================================================================
+## CRITICAL RULES
+================================================================================
+
+1. **ONLY EXTRACT FROM SPECIFICATION**: Do not invent security requirements
+2. **CITE SOURCES**: Each property should trace to specific spec sections
+3. **USE FSM ELEMENTS**: Reference actual states, transitions, attributes from FSM
+4. **BE SPECIFIC**: Generic properties like "system is secure" are not useful
+5. **EMPTY IF NONE**: If no security requirements exist, return empty array
+
+================================================================================
+## OUTPUT FORMAT
+================================================================================
+
+Return ONLY a JSON object with the security_properties array:
+
+```json
+{{
+  "security_properties": [
+    {{
+      "property_name": "string",
+      "property_type": "reachability|secrecy|authentication|integrity|availability",
+      "description": "string",
+      "formal_specification": "string",
+      "attack_vector": "string",
+      "mitigation": "string"
+    }}
+  ]
+}}
+```
+
+**NO markdown code blocks** - output raw JSON only.
+**NO other fields** - only security_properties array.
+**EMPTY array if no security requirements** - `{{"security_properties": []}}`
 """
 
 
@@ -4264,673 +4452,593 @@ SOURCE FSM JSON:
 # =============================================================================
 # Converts FSM JSON to ProVerif protocol specification for security verification
 # ProVerif uses applied pi calculus for modeling protocols and checking properties
+# Based on ProVerif Manual v2.05 syntax and examples
 
 FSM_TO_PROVERIF_PROMPT_TEMPLATE = """
-# FSM to ProVerif Model Converter for Matter Protocol Clusters
-
 You are an expert in formal security verification using ProVerif (version 2.05+).
 Convert the provided FSM JSON model into a complete, syntactically correct ProVerif 
-specification (.pv file) that models the Matter protocol cluster behavior for security analysis.
+specification (.pv file) for Matter protocol cluster security analysis.
 
 **FSM INPUT**: {fsm_json}
 
 ================================================================================
-## CRITICAL ProVerif SYNTAX RULES (FROM OFFICIAL MANUAL v2.05)
+## PROVERIF SYNTAX REFERENCE (From Official Manual v2.05)
 ================================================================================
 
-EVERY declaration and statement MUST end with a PERIOD (.)
+### 1. DECLARATIONS - All end with period (.)
 
-### COMMENTS SYNTAX (VERY IMPORTANT)
-(* ProVerif uses (* ... *) for comments - NOT // or /* */ *)
-(* Nested comments ARE supported: (* outer (* inner *) outer *) *)
-(* WRONG: // this is not valid *)
-(* WRONG: /* this is not valid */ *)
-(* RIGHT: (* this is a valid comment *) *)
-
-**CRITICAL: ProVerif does NOT support string literals like "text"**
-- Use constants instead: const val_FALSE: bitstring. then use val_FALSE
-- NEVER use "TRUE", "FALSE", "On", etc. in code - always use declared constants
-
-================================================================================
-## 1. TYPE DECLARATIONS
-================================================================================
-type state.                  (* Custom types end with period *)
-type command.
-type endpoint.
-type duration.               (* Use this instead of time! *)
-type level.
-type attribute.
-type boolval.                (* REQUIRED: Custom boolean for function returns *)
-
-(* RESERVED/BUILT-IN TYPES - DO NOT REDECLARE (Manual p.17): *)
-(* time      - RESERVED! Use "duration" or "timestamp" instead *)
-(* bitstring - built-in base type for binary data *)
-(* channel   - built-in for channel declarations *)
-(* bool      - built-in boolean (has true, false constants) *)
-(* nat       - built-in natural numbers *)
-(* any_type  - internal polymorphic type *)
-(* sid       - session identifier type *)
-
-(* WRONG: type time.      ERROR: "identifier time already defined" *)
-(* WRONG: type bitstring. ERROR: already built-in *)
-(* WRONG: type bool.      ERROR: already built-in *)
-(* RIGHT: type duration.  Use custom name instead of time *)
-
-(* CRITICAL LIMITATION: Functions cannot return built-in 'bool' type *)
-(* - Built-in bool has constants: true, false *)
-(* - User functions CAN use bool in IF statements: if true then ... *)
-(* - User functions CANNOT return bool: fun f(): bool causes type error *)
-(* - Solution: Define custom boolval type with btrue, bfalse constants *)
-(* - Use pattern matching: let btrue = f() in ... else ... *)
-
-================================================================================
-## 2. CHANNEL DECLARATIONS
-================================================================================
-free c: channel.                     (* Public channel - attacker can read/write *)
-free internal: channel [private].    (* Private channel - no attacker access *)
-channel pub.                         (* Shorthand for: free pub: channel. *)
-
-================================================================================
-## 3. FREE NAME DECLARATIONS
-================================================================================
-free secret_value: bitstring [private].  (* Private name, unknown to attacker *)
-free public_value: bitstring.            (* Public name, known to attacker *)
-
-================================================================================
-## 4. CONSTANT DECLARATIONS
-================================================================================
-(* Custom boolean constants - REQUIRED for functions returning boolval *)
-const btrue: boolval.
-const bfalse: boolval.
-
-const st_Off: state.                 (* Each const ends with period *)
-const st_On: state.
-const cmd_On: command.
-const cmd_Off: command.
-const val_TRUE: bitstring.           (* Use constants, NOT "TRUE" string *)
-const val_FALSE: bitstring.          (* Use constants, NOT "FALSE" string *)
-
-(* Multiple constants of same type *)
-const st_Idle, st_Moving, st_Done: state.
-
-(* Data constructors - projection destructors auto-generated *)
-const marker: bitstring [data].
-
-================================================================================
-## 5. FUNCTION (CONSTRUCTOR) DECLARATIONS
-================================================================================
-fun senc(bitstring, bitstring): bitstring.    (* Symmetric encryption *)
-fun pk(bitstring): bitstring.                  (* Public key from private *)
-fun aenc(bitstring, bitstring): bitstring.    (* Asymmetric encryption *)
-fun h(bitstring): bitstring.                   (* Hash function *)
-fun pair(bitstring, bitstring): bitstring.    (* Pairing function *)
-
-(* Data constructor - auto-generates projection destructors *)
-fun tuple3(bitstring, bitstring, bitstring): bitstring [data].
-
-(* Private constructor - not available to attacker *)
-fun internal_op(bitstring): bitstring [private].
-
-(* Type converter - allows silent type conversion *)
-fun bits_to_state(bitstring): state [typeConverter].
-
-(* CRITICAL: Comparison functions MUST return boolval, NOT bool *)
-fun eq_state(state, state): boolval.
-fun eq_command(command, command): boolval.
-fun eq_level(level, level): boolval.
-fun gt_level(level, level): boolval.
-fun lte_level(level, level): boolval.
-
-(* Boolean operations on boolval type *)
-fun band(boolval, boolval): boolval.    (* AND operation *)
-fun bor(boolval, boolval): boolval.     (* OR operation *)
-
-(* Message constructors MUST have [data] attribute for pattern matching *)
-fun cmdMsg(command, level, duration): bitstring [data].
-fun stateMsg(state, level, duration): bitstring [data].
-
-(* WRONG: fun eq_state(state, state): bool.  Cannot return built-in bool! *)
-(* WRONG: fun cmdMsg(...): bitstring.        Missing [data] for pattern match! *)
-(* RIGHT: fun eq_state(state, state): boolval.  Returns custom type *)
-(* RIGHT: fun cmdMsg(...): bitstring [data].   Enables let cmdMsg(...) = m in *)
-
-================================================================================
-## 6. DESTRUCTOR DECLARATIONS (reduc)
-================================================================================
-(* Basic destructor *)
-reduc forall m: bitstring, k: bitstring; sdec(senc(m,k),k) = m.
-reduc forall m: bitstring, sk: bitstring; adec(aenc(m,pk(sk)),sk) = m.
-
-(* Multiple rewrite rules for same destructor *)
-reduc forall x: bitstring; fst((x,y)) = x;
-      forall y: bitstring; snd((x,y)) = y.
-
-(* Extended destructor with otherwise - evaluated in order *)
-fun eq(bitstring, bitstring): bool
-reduc forall x: bitstring; eq(x, x) = true
-otherwise forall x: bitstring, y: bitstring; eq(x, y) = false.
-
-(* Destructor that handles failure *)
-fun test(bool, bitstring, bitstring): bitstring
-reduc forall x: bitstring, y: bitstring; test(true, x, y) = x
-otherwise forall c: bool, x: bitstring, y: bitstring; test(c, x, y) = y
-otherwise forall x: bitstring, y: bitstring; test(fail, x, y) = y.
-
-================================================================================
-## 7. EVENT DECLARATIONS
-================================================================================
-(* CRITICAL: Events use types ONLY, no variable names *)
-event CommandReceived(command).
-event StateTransition(state, state).
-event CommandProcessed(command, state, state).
-event InvalidCommand(command).
-event AttributeChanged(attribute, bitstring).
-event TimerExpired(endpoint).
-
-(* WRONG: event E(x: state).     NO variable names in declaration! *)
-(* WRONG: event E(state)         Missing period! *)
-(* RIGHT: event E(state, state). Types only, ends with period *)
-
-================================================================================
-## 8. QUERY DECLARATIONS  
-================================================================================
-(* CRITICAL: event() and inj-event() MUST wrap the event call in parentheses *)
-
-(* === Reachability Queries === *)
-(* Test if an event can be executed - returns "not F is true" if unreachable *)
-query event(StateTransition(st_Off, st_On)).
-
-(* With variables - declare variable types before semicolon *)
-query ep: endpoint; event(TimerExpired(ep)).
-query s1: state, s2: state; event(StateTransition(s1, s2)).
-
-(* === Secrecy Queries === *)
-(* Can attacker learn this value? Returns true if secret *)
-query attacker(secret_value).
-
-(* Secrecy in specific phase *)
-query attacker(secret_value) phase 1.
-
-(* Message on channel *)
-query mess(internal, secret_value).
-
-(* === Correspondence Queries === *)
-(* Non-injective: if A happened then B happened before *)
-query s1: state, s2: state; 
-    event(StateTransition(s1, s2)) ==> event(CommandReceived(cmd_On)).
-
-(* Disjunction in conclusion *)
-query cmd: command;
-    event(CommandExecuted(cmd)) ==> 
-    event(CommandReceived(cmd_On)) || event(CommandReceived(cmd_Off)).
-
-(* Conjunction in conclusion *)
-query cmd: command, s: state;
-    event(CommandExecuted(cmd)) ==> 
-    event(CommandReceived(cmd)) && event(StateEntered(s)).
-
-(* === Injective Correspondence === *)
-(* One-to-one: each A corresponds to distinct B *)
-query cmd: command;
-    inj-event(CommandProcessed(cmd, st_Off, st_On)) ==> 
-    inj-event(CommandReceived(cmd)).
-
-(* With equality constraint *)
-query x: command, y: state;
-    event(Done(x)) ==> event(Started(y)) && x = cmd_On.
-
-(* === Public Variables in Queries === *)
-(* Declare variables as known to attacker *)
-query x: bitstring; event(E(x)) public_vars x.
-
-================================================================================
-## 9. EQUATION DECLARATIONS (for algebraic properties)
-================================================================================
-(* Boolean algebra equations - REQUIRED for band/bor operations *)
-equation forall x: boolval, y: boolval; band(btrue, btrue) = btrue.
-equation forall x: boolval, y: boolval; band(btrue, bfalse) = bfalse.
-equation forall x: boolval, y: boolval; band(bfalse, x) = bfalse.
-equation forall x: boolval, y: boolval; bor(btrue, x) = btrue.
-equation forall x: boolval, y: boolval; bor(bfalse, bfalse) = bfalse.
-equation forall x: boolval, y: boolval; bor(bfalse, btrue) = btrue.
-
-(* Diffie-Hellman style equation *)
-equation forall x: bitstring, y: bitstring; 
-    exp(exp(g, x), y) = exp(exp(g, y), x).
-
-(* Symmetric encryption property *)
-equation forall m: bitstring, k: bitstring; sdec(senc(m, k), k) = m.
-equation forall m: bitstring, k: bitstring; senc(sdec(m, k), k) = m.
-
-================================================================================
-## 10. FUNCTION MACROS (letfun)
-================================================================================
-(* Define reusable term expressions *)
-letfun aenc_fresh(x: bitstring, y: bitstring) = 
-    new r: bitstring; internal_aenc(x, y, r).
-
-letfun check_and_decrypt(cipher: bitstring, sk: bitstring) =
-    let msg = adec(cipher, sk) in msg.
-
-(* WARNING: letfun defines TERMS not processes - cannot use in/out/events *)
-(* For FSM logic, use process macros (let MacroName() = ...) instead *)
-
-================================================================================
-## 11. PROCESS MACRO DEFINITIONS
-================================================================================
-(* CRITICAL: ProVerif does NOT support direct recursion in process macros *)
-(* WRONG: let P(x) = ... P(y). causes "process P not defined" error *)
-(* Solution: Use channel-based state loop with replication *)
-
-(* Channel-based FSM loop - NO parameters, reads state from channel *)
-let DeviceFSM() =
-    (* Read current state from private channel *)
-    in(c_int_state, stMsg: bitstring);
-    let stateMsg(curState: state, curLevel: level, remTime: duration) = stMsg in
-    
-    (* Process command *)
-    in(c_cmd, m: bitstring);
-    let cmdMsg(rcmd: command, rLevel: level, rTime: duration) = m in
-    event CommandReceived(rcmd, curState);
-    
-    (* Conditionals use let btrue = ... in pattern, NOT if-then *)
-    let btrue = eq_command(rcmd, cmd_Start) in
-        (
-            event StateTransition(curState, st_Active);
-            (* Write new state to channel instead of recursion *)
-            out(c_int_state, stateMsg(st_Active, rLevel, rTime))
-        )
-    else let btrue = eq_command(rcmd, cmd_Stop) in
-        (
-            event StateTransition(curState, st_Idle);
-            out(c_int_state, stateMsg(st_Idle, curLevel, dur_zero))
-        )
-    else
-        (
-            event InvalidCommand(rcmd, curState);
-            out(c_int_state, stateMsg(curState, curLevel, remTime))
-        ).
-
-(* CRITICAL: Conditionals with boolval MUST use let btrue = ... in pattern *)
-(* WRONG: if eq_state(s1, s2) then ... causes type error *)
-(* RIGHT: let btrue = eq_state(s1, s2) in ... *)
-
-================================================================================
-## 12. PROCESS CONSTRUCTS
-================================================================================
-(* Null process *)
-0
-
-(* Parallel composition *)
-P | Q
-
-(* Replication - unbounded copies *)
-!P
-
-(* Name restriction - create fresh value *)
-new n: type; P
-
-(* Input from channel with type *)
-in(c, x: type); P
-
-(* Output to channel *)  
-out(c, M); P
-
-(* Conditional with built-in equality - native bool type *)
-if M = N then P else Q       (* = returns built-in bool *)
-
-(* Conditional with custom boolval - MUST use let pattern matching *)
-let btrue = eq_state(s1, s2) in P else Q
-let btrue = band(eq_state(s1, s2), eq_level(l1, l2)) in P else Q
-
-(* Complex conditions with boolean operations *)
-let btrue = band(eq_state(cur, st_On), gt_level(lv, min)) in 
-    (* Both conditions true *)
-    out(c, success)
-else
-    (* At least one condition false *)
-    out(c, failure)
-
-(* CRITICAL: Pattern matching is the ONLY way to check boolval results *)
-(* - IF statements work with: built-in = operator, true/false constants *)
-(* - IF statements fail with: custom functions returning boolval *)
-(* - LET pattern works with: any function returning boolval *)
-(* Example: let btrue = condition in (true_branch) else (false_branch) *)
-
-(* Let binding with pattern matching *)
-let x = M in P else Q        (* else branch for pattern match failure *)
-let x: type = M in P         (* explicit type *)
-let (x: type, y: type) = M in P else Q    (* Tuple pattern *)
-let (=expected, x: type) = M in P else Q  (* Equality in pattern *)
-
-(* Event execution - then continue with P *)
-event e(M1, ..., Mn); P
-
-(* Insert into table *)
-insert tbl(M1, ..., Mn); P
-
-(* Get from table with pattern *)
-get tbl(=pattern, x: type) in P else Q
-
-(* Phase for multi-phase protocols *)
-phase 1; P
-
-================================================================================
-## 13. MAIN PROCESS (REQUIRED)
-================================================================================
-(* For channel-based FSM loop: initialize state on channel then start replication *)
-process
-    (* Initialize FSM parameters *)
-    new initLevel: level;
-    let initRemTime: duration = dur_zero in
-    (* Send initial state to private channel *)
-    out(c_int_state, stateMsg(st_Idle, initLevel, initRemTime)) |
-    (* Start replicated FSM loop - reads state, processes command, writes new state *)
-    !DeviceFSM()
-
-(* Traditional process with secrets *)
-process
-    new secret: bitstring;
-    (
-        !DeviceProcess(st_Off)
-        |
-        out(c, pk(secret))
-    )
-
-================================================================================
-## COMPLETE WORKING EXAMPLE (OnOff Cluster)
-================================================================================
-
-(* ProVerif model for Matter OnOff Cluster *)
-(* Generated from FSM specification *)
-
-(* === Type Declarations === *)
+**Type declarations:**
+```
 type state.
 type command.
-type boolval.           (* Custom boolean type *)
+type key.
+type skey.              (* private key *)
+type pkey.              (* public key *)
+```
 
-(* === Channel Declarations === *)
-free c: channel.                    (* Public command channel *)
-free c_int_state: channel [private].   (* Internal state channel *)
+**RESERVED TYPES - DO NOT DECLARE:**
+- bitstring (built-in binary data)
+- channel (built-in for channels)  
+- bool (built-in with true/false)
+- nat (built-in natural numbers)
+- time (RESERVED - use "duration" instead)
 
-(* === State Constants === *)
+**Channel declarations:**
+```
+free c: channel.                    (* public - attacker can read/write *)
+free internal: channel [private].   (* private - no attacker access *)
+```
+
+**Constant declarations:**
+```
 const st_Off: state.
 const st_On: state.
-
-(* === Command Constants === *)
-const cmd_Off: command.
 const cmd_On: command.
-const cmd_Toggle: command.
+const cmd_Off: command.
+```
 
-(* === Boolean Constants === *)
-const btrue: boolval.
-const bfalse: boolval.
+**Function declarations:**
+```
+fun senc(bitstring, key): bitstring.                    (* symmetric encryption *)
+fun pk(skey): pkey.                                     (* public key from private *)
+fun aenc(bitstring, pkey): bitstring.                   (* asymmetric encryption *)
+fun sign(bitstring, skey): bitstring.                   (* digital signature *)
+fun stateMsg(state): bitstring [data].                  (* data constructor *)
+```
 
-(* === Functions === *)
-fun eq_state(state, state): boolval.
-fun eq_command(command, command): boolval.
-fun stateMsg(state): bitstring [data].
-fun cmdMsg(command): bitstring [data].
+**IMPORTANT:** Functions for pattern matching MUST have [data] attribute.
 
-(* === Boolean Algebra Equations === *)
-equation forall x: boolval, y: boolval; band(btrue, btrue) = btrue.
-equation forall x: boolval, y: boolval; band(btrue, bfalse) = bfalse.
-equation forall x: boolval, y: boolval; band(bfalse, x) = bfalse.
+**Destructor declarations (reduc):**
+```
+reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
+reduc forall m: bitstring, sk: skey; adec(aenc(m, pk(sk)), sk) = m.
+reduc forall m: bitstring, sk: skey; checksign(sign(m, sk), pk(sk)) = m.
+```
 
-(* === Events === *)
+### 2. EVENT DECLARATIONS - Types only, NO variable names
+
+```
 event CommandReceived(command).
 event StateChanged(state, state).
-event CommandExecuted(command, state).
+event AttributeSet(bitstring, bitstring).
+```
 
-(* === Queries === *)
-(* Can we reach the On state? *)
+**WRONG:** event E(x: state).     (* NO variable names! *)
+**RIGHT:** event E(state).        (* Types only *)
+
+### 3. QUERY DECLARATIONS - Wrap events in event()
+
+**Reachability queries:**
+```
 query event(StateChanged(st_Off, st_On)).
+query s1: state, s2: state; event(StateChanged(s1, s2)).
+```
 
-(* Commands must be received before state changes *)
-query s1: state, s2: state;
-    event(StateChanged(s1, s2)) ==> event(CommandReceived(cmd_On)) || event(CommandReceived(cmd_Off)) || event(CommandReceived(cmd_Toggle)).
+**Secrecy queries:**
+```
+query attacker(secret_value).
+```
 
-(* === Device FSM - Channel-based loop === *)
-let DeviceFSM() =
-    (* Read current state from channel *)
-    in(c_int_state, stMsg: bitstring);
-    let stateMsg(curState: state) = stMsg in
-    
-    (* Read command *)
-    in(c, m: bitstring);
-    let cmdMsg(cmd: command) = m in
-    event CommandReceived(cmd);
-    
-    (* Process based on current state - use let btrue pattern *)
-    let btrue = eq_state(curState, st_Off) in
-        (
-            (* State is Off - check which command *)
-            let btrue = eq_command(cmd, cmd_On) in
-                (
-                    event StateChanged(st_Off, st_On);
-                    out(c_int_state, stateMsg(st_On));
-                    out(c, st_On)
-                )
-            else let btrue = eq_command(cmd, cmd_Toggle) in
-                (
-                    event StateChanged(st_Off, st_On);
-                    out(c_int_state, stateMsg(st_On));
-                    out(c, st_On)
-                )
-            else
-                (
-                    (* Invalid command for Off state *)
-                    out(c_int_state, stateMsg(st_Off));
-                    out(c, st_Off)
-                )
-        )
-    else
-        (
-            (* State is On - check which command *)
-            let btrue = eq_command(cmd, cmd_Off) in
-                (
-                    event StateChanged(st_On, st_Off);
-                    out(c_int_state, stateMsg(st_Off));
-                    out(c, st_Off)
-                )
-            else let btrue = eq_command(cmd, cmd_Toggle) in
-                (
-                    event StateChanged(st_On, st_Off);
-                    out(c_int_state, stateMsg(st_Off));
-                    out(c, st_Off)
-                )
-            else
-                (
-                    (* Invalid command for On state *)
-                    out(c_int_state, stateMsg(st_On));
-                    out(c, st_On)
-                )
-        ).
+**Correspondence queries:**
+```
+query x: key; event(termClient(x)) ==> event(acceptsServer(x)).
+query x: key; inj-event(termServer(x)) ==> inj-event(acceptsClient(x)).
+```
 
-(* === Main Process === *)
+**WRONG:** query event StateChanged(...).   (* Missing parentheses *)
+**RIGHT:** query event(StateChanged(...)).  (* Wrap in event() *)
+
+### 4. PROCESS SYNTAX
+
+**Null process:**
+```
+0
+```
+
+**Parallel composition:**
+```
+P | Q
+```
+
+**Replication (unbounded sessions):**
+```
+!P
+```
+
+**Name restriction (fresh value):**
+```
+new k: key; P
+```
+
+**Input with type:**
+```
+in(c, x: bitstring); P
+```
+
+**Output:**
+```
+out(c, M); P
+```
+
+**Conditional with = operator:**
+```
+if M = N then P else Q
+```
+
+**Let binding with pattern matching:**
+```
+let y = adec(x, sk) in P else Q
+let (=pkB, k: key) = checksign(y, pkB) in P else Q
+```
+
+**Event execution:**
+```
+event CommandReceived(cmd); P
+```
+
+### 5. PROCESS MACROS (let ... = ... .)
+
+```
+let clientA(pkA: pkey, skA: skey, pkB: pkey) =
+    out(c, pkA);
+    in(c, x: bitstring);
+    let y = adec(x, skA) in
+    let (=pkB, k: key) = checksign(y, pkB) in
+    event acceptsClient(k);
+    out(c, senc(s, k));
+    event termClient(k, pkA).
+
+let serverB(pkB: pkey, skB: skey) =
+    in(c, pkX: pkey);
+    new k: key;
+    event acceptsServer(k, pkX);
+    out(c, aenc(sign((pkB, k), skB), pkX));
+    in(c, x: bitstring);
+    let z = sdec(x, k) in
+    0.
+```
+
+### 6. MAIN PROCESS (REQUIRED)
+
+```
 process
-    (* Initialize state on channel *)
-    out(c_int_state, stateMsg(st_Off)) |
-    (* Start replicated FSM loop *)
-    !DeviceFSM()
+    new skA: skey;
+    new skB: skey;
+    let pkA = pk(skA) in out(c, pkA);
+    let pkB = pk(skB) in out(c, pkB);
+    ((!clientA(pkA, skA, pkB)) | (!serverB(pkB, skB)))
+```
+
+### 7. COMMENTS - Use (* ... *) only
+
+```
+(* This is a valid comment *)
+(* Nested (* comments *) are supported *)
+```
+
+**WRONG:** // C++ style    
+**WRONG:** /* C style */   
 
 ================================================================================
-## FSM TO PROVERIF MAPPING
+## COMPLETE PROVERIF EXAMPLE (Handshake Protocol from Manual)
 ================================================================================
 
-### States -> const declarations
+(* Symmetric encryption *)
+type key.
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
+
+(* Asymmetric encryption *)
+type skey.
+type pkey.
+fun pk(skey): pkey.
+fun aenc(bitstring, pkey): bitstring.
+reduc forall m: bitstring, sk: skey; adec(aenc(m, pk(sk)), sk) = m.
+
+(* Digital signatures *)
+type sskey.
+type spkey.
+fun spk(sskey): spkey.
+fun sign(bitstring, sskey): bitstring.
+reduc forall m: bitstring, sk: sskey; checksign(sign(m, sk), spk(sk)) = m.
+
+free c: channel.
+free s: bitstring [private].
+
+query attacker(s).
+
+event acceptsClient(key).
+event acceptsServer(key, pkey).
+event termClient(key, pkey).
+event termServer(key).
+
+query x: key, y: pkey; event(termClient(x, y)) ==> event(acceptsServer(x, y)).
+query x: key; inj-event(termServer(x)) ==> inj-event(acceptsClient(x)).
+
+let clientA(pkA: pkey, skA: skey, pkB: spkey) =
+    out(c, pkA);
+    in(c, x: bitstring);
+    let y = adec(x, skA) in
+    let (=pkB, k: key) = checksign(y, pkB) in
+    event acceptsClient(k);
+    out(c, senc(s, k));
+    event termClient(k, pkA).
+
+let serverB(pkB: spkey, skB: sskey, pkA: pkey) =
+    in(c, pkX: pkey);
+    new k: key;
+    event acceptsServer(k, pkX);
+    out(c, aenc(sign((pkB, k), skB), pkX));
+    in(c, x: bitstring);
+    let z = sdec(x, k) in
+    if pkX = pkA then event termServer(k).
+
+process
+    new skA: skey;
+    new skB: sskey;
+    let pkA = pk(skA) in out(c, pkA);
+    let pkB = spk(skB) in out(c, pkB);
+    ((!clientA(pkA, skA, pkB)) | (!serverB(pkB, skB, pkA)))
+
+================================================================================
+## FSM TO PROVERIF MAPPING RULES
+================================================================================
+
+### FSM States -> Constants
+```
 FSM state "Off" -> const st_Off: state.
 FSM state "On"  -> const st_On: state.
+```
 
-### Commands/Triggers -> const declarations  
-FSM trigger "On()" -> const cmd_On: command.
-FSM trigger "Off()" -> const cmd_Off: command.
+### FSM Commands/Triggers -> Constants  
+```
+FSM trigger "On()"     -> const cmd_On: command.
+FSM trigger "Off()"    -> const cmd_Off: command.
+FSM trigger "Toggle()" -> const cmd_Toggle: command.
+```
 
-### Transitions -> let btrue pattern branches
-FSM transition Off --On()--> On becomes:
-    let btrue = eq_state(curState, st_Off) in
-        let btrue = eq_command(cmd, cmd_On) in
-            event StateChanged(st_Off, st_On);
-            out(c_int_state, stateMsg(st_On))
+### FSM Attributes -> Constants or Free names
+```
+FSM attribute "OnOff"    -> const attr_OnOff: bitstring.
+FSM secret attribute     -> free secret_attr: bitstring [private].
+```
 
-### Guards -> additional boolval conditions with band
-FSM guard "[LT feature AND level > 0]" becomes:
-    let btrue = band(eq_feature(hasLT, btrue), gt_level(lv, lv_zero)) in ...
+### FSM Transitions -> Conditionals in Process
 
-### Actions -> events and state updates
-FSM action "set OnOff=TRUE, transition to On" becomes:
-    event AttributeSet(attr_OnOff, val_TRUE);
-    event StateChanged(oldState, st_On);
-    out(c_int_state, stateMsg(st_On, newAttrs))
+FSM transition: Off --On()--> On
+```
+in(c, cmd: command);
+if cmd = cmd_On then
+    event StateChanged(st_Off, st_On);
+    out(c, st_On)
+else ...
+```
 
-### FSM loop structure
-FSM with recursive state transitions becomes:
-    1. Define stateMsg() function with [data] attribute
-    2. Create DeviceFSM() process macro (no parameters)
-    3. Read state from c_int_state channel
-    4. Process command with let btrue = ... patterns
-    5. Write new state to c_int_state channel
-    6. Main process: initialize state, then !DeviceFSM()
+### FSM Guards -> Additional Conditions
+```
+FSM guard "[level > 0]" becomes:
+if cmd = cmd_Move then
+    in(c, level: nat);
+    if level > 0 then ...
+```
 
-### Timer events -> separate process or phase
-FSM timer expiry becomes:
-    phase 1; event TimerExpired(ep); ... 
-    OR use a separate replicated process monitoring timers
+### FSM State Machine Pattern
+```
+let DeviceFSM(curState: state) =
+    in(c, cmd: command);
+    event CommandReceived(cmd);
+    if curState = st_Off then
+        (
+            if cmd = cmd_On then
+                (event StateChanged(st_Off, st_On); out(c, st_On))
+            else if cmd = cmd_Toggle then
+                (event StateChanged(st_Off, st_On); out(c, st_On))
+            else out(c, st_Off)
+        )
+    else (* curState = st_On *)
+        (
+            if cmd = cmd_Off then
+                (event StateChanged(st_On, st_Off); out(c, st_Off))
+            else if cmd = cmd_Toggle then
+                (event StateChanged(st_On, st_Off); out(c, st_Off))
+            else out(c, st_On)
+        ).
+
+process
+    (!DeviceFSM(st_Off)) | (!DeviceFSM(st_On))
+```
 
 ================================================================================
-## CRITICAL SYNTAX WARNINGS (COMMON ERRORS)
+## CRITICAL SYNTAX RULES - AVOID THESE ERRORS
 ================================================================================
 
-1. **NO STRING LITERALS**: ProVerif does NOT support "quoted strings"
-   - WRONG: event AttributeSet(attr_OnOff, "FALSE");
-   - WRONG: out(c, "hello");
-   - RIGHT: event AttributeSet(attr_OnOff, val_FALSE);
-   - Always declare constants first, then use them!
+### 1. NO STRING LITERALS
+ProVerif does NOT support "quoted strings" anywhere in code.
+```
+WRONG: out(c, "hello")
+WRONG: if x = "ON" then ...
+WRONG: event E("value")
+RIGHT: const hello: bitstring. ... out(c, hello)
+RIGHT: const val_ON: bitstring. ... if x = val_ON then ...
+```
 
-2. **ALL DECLARATIONS NEED PERIODS**: Every type, const, free, event, query, let ends with .
-   - WRONG: type state
-   - WRONG: const cmd_On: command
-   - RIGHT: type state.
-   - RIGHT: const cmd_On: command.
+### 2. ALL DECLARATIONS END WITH PERIOD (.)
+```
+WRONG: type state
+WRONG: const cmd_On: command
+WRONG: event E(state)
+RIGHT: type state.
+RIGHT: const cmd_On: command.
+RIGHT: event E(state).
+```
 
-3. **COMMENTS USE (* ... *) ONLY**:
-   - WRONG: // this is a comment
-   - WRONG: /* this is a comment */
-   - RIGHT: (* this is a comment *)
-   - Nested comments work: (* outer (* inner *) outer *)
+### 3. EVENTS USE TYPES ONLY - NO VARIABLE NAMES
+```
+WRONG: event E(x: state).
+WRONG: event E(cmd: command, st: state).
+RIGHT: event E(state).
+RIGHT: event E(command, state).
+```
 
-4. **EVENT DECLARATIONS - TYPES ONLY, NO VARIABLES**:
-   - WRONG: event E(x: state).
-   - WRONG: event E(cmd: command, st: state).
-   - RIGHT: event E(state).
-   - RIGHT: event E(command, state).
+### 4. QUERIES WRAP EVENTS IN event() OR inj-event()
+```
+WRONG: query event StateChanged(st_Off, st_On).
+WRONG: query StateChanged(st_Off, st_On).
+RIGHT: query event(StateChanged(st_Off, st_On)).
+RIGHT: query x: state; event(E(x)).
+```
 
-5. **QUERY SYNTAX - MUST USE event() WRAPPER**:
-   - WRONG: query event StateChanged(st_Off, st_On).
-   - WRONG: query StateChanged(st_Off, st_On).
-   - RIGHT: query event(StateChanged(st_Off, st_On)).
-   - RIGHT: query x: state; event(E(x)).
+### 5. RESERVED TYPES - DO NOT REDECLARE
+These cause "identifier already defined" error:
+- time (use "duration" or "timestamp" instead)
+- bitstring (built-in)
+- channel (built-in)
+- bool (built-in with true/false constants)
+- nat (built-in natural numbers)
+- any_type, sid (internal types)
+```
+WRONG: type time.
+WRONG: type bitstring.
+WRONG: type bool.
+RIGHT: type duration.
+RIGHT: type mydata.
+```
 
-6. **RESERVED TYPES - DO NOT REDECLARE** (from ProVerif manual p.17):
-   RESERVED IDENTIFIERS (will cause "identifier already defined" error):
-   - time      - Use "duration" or "timestamp" instead
-   - bitstring - Built-in for binary data
-   - channel   - Built-in for channels
-   - bool      - Built-in boolean (true, false are constants)
-   - nat       - Built-in natural numbers
-   - any_type  - Internal polymorphic type
-   - sid       - Session identifier type
-   - true      - Built-in bool constant
-   - false     - Built-in bool constant
-   
-   WRONG: type time.        (* Error: identifier time already defined *)
-   WRONG: type bitstring.   (* Error: already built-in *)
-   WRONG: const true: bool. (* Error: true already defined *)
-   RIGHT: type duration.    (* Use custom names *)
+### 6. TYPE MISMATCH IN COMPARISONS
+The = operator requires SAME types on both sides.
+```
+WRONG: if xor_result = 0 then ...          (* bitstring vs nat *)
+WRONG: if level = "high" then ...          (* no string literals! *)
+RIGHT: if cmd = cmd_On then ...            (* command = command *)
+RIGHT: if x = y then ...                   (* same types *)
+```
 
-7. **FUNCTION RETURN TYPES - CANNOT RETURN BUILT-IN BOOL**:
-   CRITICAL LIMITATION: User-defined functions CANNOT return built-in 'bool' type
-   - Built-in bool can ONLY be used in IF statements: if true then ...
-   - User functions attempting to return bool cause type errors
-   - Solution: Define custom type boolval with constants btrue, bfalse
-   
-   WRONG: fun eq_state(state, state): bool.        (* Type error! *)
-   WRONG: if eq_state(s1, s2) then P else Q         (* Cannot call! *)
-   RIGHT: type boolval.                             (* Custom type *)
-   RIGHT: const btrue: boolval.                     (* Custom constants *)
-   RIGHT: const bfalse: boolval.
-   RIGHT: fun eq_state(state, state): boolval.      (* Returns custom type *)
-   RIGHT: let btrue = eq_state(s1, s2) in P else Q  (* Pattern matching *)
-   
-   REASON: ProVerif's type system restricts bool to built-in operations only
+For comparing custom types, use pattern matching with constants:
+```
+(* To check if state equals st_On *)
+in(c, x: state);
+if x = st_On then ... else ...
+```
 
-8. **PROCESS MACRO CALLS END WITH PERIOD**:
-   - WRONG: MacroA(x); MacroB(y).    (* Cannot have ; after macro call *)
-   - WRONG: if cond then MacroA(x); MacroB(y).
-   - RIGHT: MacroA(x).               (* Period ends the branch *)
-   - RIGHT: if cond then MacroA(x) else MacroB(y).
-   - For recursion, put recursive call INSIDE the macro, not after
+### 7. INPUT REQUIRES TYPE ANNOTATION
+```
+WRONG: in(c, x); P
+WRONG: in(c, x: type)          (* missing semicolon and continuation *)
+RIGHT: in(c, x: bitstring); P
+RIGHT: in(c, (a: state, b: command)); P   (* tuple pattern *)
+```
 
-9. **PROCESS MACRO RECURSION - NOT SUPPORTED DIRECTLY**:
-   CRITICAL: ProVerif does NOT support direct recursive process macro calls
-   - Recursive calls like let P(x) = ... P(y). cause "process P not defined"
-   - Solution: Channel-based state loop with replication
-   
-   WRONG: let FSM(state) = ... FSM(newState).       (* Parse error! *)
-   RIGHT: let FSM() = in(c_state, s); ... out(c_state, s'). (* Channel loop *)
-   RIGHT: process out(c_state, initState) | !FSM()  (* Initialize and replicate *)
-   
-   PATTERN: (1) Define stateMsg(...) with [data], (2) FSM reads/writes channel,
-            (3) Main initializes state then starts !FSM()
+### 8. LET BINDING WITH DESTRUCTORS NEEDS ELSE BRANCH
+Destructors can fail (e.g., decryption with wrong key), so else handles failure.
+```
+WRONG: let x = adec(m, sk) in P
+RIGHT: let x = adec(m, sk) in P else Q
+RIGHT: let x = adec(m, sk) in P else 0    (* silent failure *)
+```
 
-10. **PROCESS GROUPING - USE PARENTHESES**:
-   - else binds to nearest if/let, use parens to override
-   - AMBIGUOUS: if A then if B then P else Q else R
-   - CLEAR: if A then (if B then P else Q) else R
+### 9. DATA CONSTRUCTORS NEED [data] FOR PATTERN MATCHING
+Without [data], pattern matching in let binding will fail.
+```
+WRONG: fun stateMsg(state): bitstring.
+       let stateMsg(s) = m in ...           (* Pattern fails! *)
 
-11. **INPUT/OUTPUT SYNTAX**:
-   - WRONG: receive(c, x)     (* Use 'in' not 'receive' *)
-   - WRONG: send(c, x)        (* Use 'out' not 'send' *)
-   - WRONG: in(c, x)          (* Missing type annotation *)
-   - RIGHT: in(c, x: type); P
-   - RIGHT: out(c, M); P
+RIGHT: fun stateMsg(state): bitstring [data].
+       let stateMsg(s) = m in ...           (* Works! *)
+```
 
-12. **LET BINDING PATTERN MATCHING**:
-    - For destructors that can fail, use else branch
-    - WRONG: let x = adec(cipher, sk) in P  (* No else for failure *)
-    - RIGHT: let x = adec(cipher, sk) in P else Q
-    
-13. **MESSAGE CONSTRUCTORS - REQUIRE [data] ATTRIBUTE**:
-    - Functions used in pattern matching MUST have [data] attribute
-    - Without [data], pattern matching will fail
-    
-    WRONG: fun stateMsg(state, level): bitstring.
-    WRONG: let stateMsg(s, l) = msg in ...           (* Pattern fails! *)
-    RIGHT: fun stateMsg(state, level): bitstring [data].
-    RIGHT: let stateMsg(s, l) = msg in ...           (* Works! *)
+### 10. COMMENTS USE (* ... *) ONLY
+```
+WRONG: // this is not valid
+WRONG: /* this is not valid */
+WRONG: # python comment
+RIGHT: (* this is a valid comment *)
+RIGHT: (* nested (* comments *) work *)
+```
+
+### 11. PARALLEL COMPOSITION USES | NOT ||
+```
+WRONG: P || Q
+WRONG: (!P) || (!Q)
+RIGHT: P | Q
+RIGHT: (!P) | (!Q)
+```
+
+### 12. RECURSIVE PROCESS MACROS NOT SUPPORTED
+ProVerif does NOT support direct recursion in process macros.
+```
+WRONG: let FSM(s: state) = 
+           in(c, cmd: command);
+           FSM(newState).              (* "process FSM not defined" error! *)
+
+RIGHT: Use replication with initial state:
+       let FSM(initState: state) =
+           in(c, cmd: command);
+           if cmd = cmd_On then
+               out(c, st_On)
+           else out(c, initState).
+
+       process (!FSM(st_Off)) | (!FSM(st_On))
+```
+
+### 13. PROCESS MACRO SYNTAX
+```
+WRONG: let P(x) = ... ; Q(y).         (* ; before macro call *)
+WRONG: MacroA(); MacroB()             (* ; between macro calls *)
+RIGHT: let P(x: type) = ... .         (* ends with period *)
+RIGHT: (MacroA() | MacroB())          (* parallel, not sequential *)
+```
+
+### 14. CORRESPONDENCE QUERY SYNTAX
+```
+WRONG: query event(A) => event(B).    (* single = *)
+WRONG: query event(A) --> event(B).   (* wrong arrow *)
+RIGHT: query event(A) ==> event(B).   (* double == *)
+RIGHT: query x: key; event(A(x)) ==> event(B(x)).
+RIGHT: query x: key; inj-event(A(x)) ==> inj-event(B(x)).
+```
+
+### 15. PROCESS KEYWORD REQUIRED
+Main process must start with "process" keyword.
+```
+WRONG: !DeviceFSM(st_Off)
+
+RIGHT: process
+           new k: key;
+           (!DeviceFSM(st_Off))
+```
+
+### 16. SEMICOLONS vs PARALLEL BAR
+- Semicolon (;) = sequential: do A, then B
+- Bar (|) = parallel: do A and B simultaneously
+```
+in(c, x: bitstring); out(c, x)     (* receive then send *)
+(!P) | (!Q)                         (* P and Q run in parallel *)
+```
+
+### 17. TUPLE SYNTAX
+```
+(* Creating tuple *)
+out(c, (m1, m2, m3))
+
+(* Pattern matching tuple *)
+in(c, (x: bitstring, y: bitstring));
+
+(* In function calls - data constructor needed *)
+fun triple(bitstring, bitstring, bitstring): bitstring [data].
+out(c, triple(a, b, c))
+let triple(x, y, z) = m in ...
+```
+
+### 18. COMMON RUNTIME ERRORS TO AVOID
+- "identifier X already defined" = redeclared reserved type
+- "process X not defined" = recursive macro or typo in macro name
+- "type mismatch" = comparing different types
+- "syntax error" = missing period, wrong comment style, string literal
+
+### 19. RESERVED KEYWORDS - DO NOT USE AS VARIABLE NAMES
+These are ProVerif keywords and cannot be used as variable names:
+- new, in, out, let, if, then, else, process, event, query
+- free, fun, reduc, const, type, channel, table, get, insert
+- forall, otherwise, fail, true, false, attacker, not, inj-event
+```
+WRONG: query x: state, new: bitstring; event(E(x, new)).   (* 'new' is keyword! *)
+WRONG: let in = getValue() in ...                          (* 'in' is keyword! *)
+RIGHT: query x: state, newval: bitstring; event(E(x, newval)).
+RIGHT: let input_val = getValue() in ...
+```
+
+### 20. EXTENDED DESTRUCTOR SYNTAX (fun + reduc + otherwise)
+When defining functions that need multiple rewrite rules with 'otherwise',
+use the COMBINED syntax - NO period after the type declaration.
+```
+WRONG: fun eq(bitstring, bitstring): bool.                 (* period ends declaration *)
+       reduc eq(x, x) = true                               (* can't add reduc later! *)
+       otherwise forall x, y; eq(x,y) = false.
+
+RIGHT: fun eq(bitstring, bitstring): bool                  (* NO period here! *)
+       reduc forall x: bitstring; eq(x, x) = true
+       otherwise forall x: bitstring, y: bitstring; eq(x, y) = false.
+```
+
+### 21. BOOL RETURN TYPE REQUIRES REDUCTION
+ProVerif constructors CANNOT return built-in bool without being destructors.
+Abstract boolean predicates need dummy reductions to explore all paths.
+```
+WRONG: fun gt_duration(duration, duration): bool.          (* Error: cannot return bool! *)
+WRONG: fun hasFeature(bitmap, featurebit): bool.           (* Same error *)
+
+RIGHT: fun gt_duration(duration, duration): bool
+       reduc forall x: duration, y: duration; gt_duration(x, y) = true
+       otherwise forall x: duration, y: duration; gt_duration(x, y) = false.
+
+RIGHT: fun hasFeature(bitmap, featurebit): bool
+       reduc forall b: bitmap, f: featurebit; hasFeature(b, f) = true
+       otherwise forall b: bitmap, f: featurebit; hasFeature(b, f) = false.
+```
+
+### 22. EVENT SYNTAX IN PROCESS vs QUERY
+In QUERIES: use event(Name(args)) with parentheses around the whole thing.
+In PROCESS code: use event Name(args); with space (no outer parentheses).
+```
+(* In query declarations - event() wrapper required *)
+query event(StateChanged(st_Off, st_On)).
+query x: state; event(E(x)) ==> event(F(x)).
+
+(* In process code - NO outer parentheses around event *)
+WRONG: event(StateTransition(curState, st_On));            (* Wrong in process! *)
+RIGHT: event StateTransition(curState, st_On);             (* Correct in process *)
+
+(* Full process example *)
+let P() =
+    in(c, x: bitstring);
+    event Received(x);                                     (* space, no outer parens *)
+    out(c, x).
+```
 
 ================================================================================
 ## OUTPUT REQUIREMENTS
 ================================================================================
 
-Return ONLY valid ProVerif code. Do NOT include:
+Generate ONLY valid ProVerif code that can be directly parsed by: proverif filename.pv
+
+**DO NOT include:**
 - Markdown code blocks (no ``` markers)
-- Explanatory text before or after
+- Explanatory text before or after the code
 - Line numbers
-- String literals like "TRUE" or "FALSE" - use constants instead
-- C-style comments (// or /* */)
+- String literals
+- C-style comments
 
-The output must be directly parseable by: proverif filename.pv
-
-Required sections in order:
-1. Comment header with cluster name (* ... *)
-2. Type declarations (NOT reserved types)
-3. Channel declarations
-4. Constant declarations (states, commands, attributes, values)
-5. Event declarations (types only)
-6. Query declarations
-7. Process macro definitions
-8. Main process
+**Required sections in order:**
+1. Header comment with cluster name: (* Matter [ClusterName] Cluster ProVerif Model *)
+2. Type declarations (excluding reserved types)
+3. Function declarations with reduc destructors
+4. Channel declarations  
+5. Constant declarations (states, commands, attributes)
+6. Free name declarations (for secrets)
+7. Event declarations (types only)
+8. Query declarations
+9. Process macro definitions
+10. Main process
 
 Generate the complete ProVerif model now.
 """

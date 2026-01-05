@@ -1,0 +1,977 @@
+(* ProVerif model for Matter On/Off Cluster (0x0006) derived from FSM *)
+
+(* ===================== 1. TYPE DECLARATIONS ===================== *)
+type state.
+type command.
+type attribute.
+type featurebit.
+type startupval.
+type duration.
+type endpoint.
+type bitmap.
+type onoffctl.
+type effectid.
+type effectvar.
+type dyingvar.
+
+(* ===================== 2. CHANNEL DECLARATIONS ================== *)
+free c_cmd: channel.                 (* Public command/timer/power events *)
+free c_int_state: channel [private]. (* Internal state + attributes *)
+
+(* ===================== 3. CONSTANT DECLARATIONS ================= *)
+
+(* Boolean-like values (modeled as bitstrings for attributes) *)
+const val_TRUE: bitstring.
+const val_FALSE: bitstring.
+
+(* States *)
+const st_Off: state.
+const st_On: state.
+
+(* Commands / triggers *)
+const cmd_Off: command.
+const cmd_On: command.
+const cmd_Toggle: command.
+const cmd_OffWithEffect: command.
+const cmd_OnWithRecallGlobalScene: command.
+const cmd_OnWithTimedOff: command.
+const cmd_TimerTick: command.      (* 0.1s_timer_tick *)
+const cmd_PowerUp: command.        (* power_up_event *)
+
+(* Attributes *)
+const attr_OnOff: attribute.
+const attr_OnTime: attribute.
+const attr_OffWaitTime: attribute.
+const attr_GlobalSceneControl: attribute.
+const attr_StartUpOnOff: attribute.
+const attr_FeatureMap: attribute.
+const attr_PreviousOnOff: attribute.
+const attr_OnOffControl: attribute.
+
+(* Startup enum values *)
+const su_Off: startupval.
+const su_On: startupval.
+const su_Toggle: startupval.
+
+(* Feature bits *)
+const feat_OFFONLY: featurebit.
+
+(* OnOffControl bitmap bit (only AcceptOnlyWhenOn modeled) *)
+const ctl_acceptOnlyWhenOn_set: onoffctl.
+const ctl_acceptOnlyWhenOn_clear: onoffctl.
+
+(* Special timer values *)
+const dur_zero: duration.
+const dur_disabled: duration.   (* represents 0xFFFF sentinel *)
+
+(* Effect-related enums (declared but not used in logic here) *)
+const effid_DelayedAllOff: effectid.
+const effid_DyingLight: effectid.
+const effvar_InstantOff: effectvar.
+const effvar_SlowFade: effectvar.
+const dyingvar_DimDown: dyingvar.
+
+(* FeatureMap baseline constant used in queries instead of a function application *)
+const fm0: bitmap.
+
+(* ===================== 4. FUNCTION DEFINITIONS ================== *)
+
+(* Equality functions with reductions using extended destructor syntax *)
+fun eq_duration(duration, duration): bool
+  reduc forall x: duration; eq_duration(x, x) = true
+  otherwise forall x: duration, y: duration; eq_duration(x, y) = false.
+
+fun eq_state(state, state): bool
+  reduc forall x: state; eq_state(x, x) = true
+  otherwise forall x: state, y: state; eq_state(x, y) = false.
+
+fun eq_command(command, command): bool
+  reduc forall x: command; eq_command(x, x) = true
+  otherwise forall x: command, y: command; eq_command(x, y) = false.
+
+fun eq_startup(startupval, startupval): bool
+  reduc forall x: startupval; eq_startup(x, x) = true
+  otherwise forall x: startupval, y: startupval; eq_startup(x, y) = false.
+
+fun eq_onoffctl(onoffctl, onoffctl): bool
+  reduc forall x: onoffctl; eq_onoffctl(x, x) = true
+  otherwise forall x: onoffctl, y: onoffctl; eq_onoffctl(x, y) = false.
+
+(* Ordering on duration - abstract functions *)
+fun gt_duration(duration, duration): bool.
+fun ge_duration(duration, duration): bool.
+fun min_duration(duration, duration): duration.
+fun max_duration(duration, duration): duration.
+fun dec_duration(duration): duration.
+
+(* Feature-map and support predicates (abstracted) *)
+fun hasFeature(bitmap, featurebit): bool.
+fun supports_OnTime(bitmap): bool.
+fun supports_OffWaitTime(bitmap): bool.
+fun supports_GlobalSceneControl(bitmap): bool.
+fun supports_StartUpOnOff(bitmap): bool.
+
+(* We model the set of attributes as a single product constructor *)
+fun stRec(state, bitstring, duration, duration, bitstring, startupval, bitmap, bitstring, onoffctl): bitstring [data].
+(* Fields: state, OnOff(bitstring), OnTime(duration), OffWaitTime(duration),
+           GlobalSceneControl(bitstring), StartUpOnOff(startupval),
+           FeatureMap(bitmap), PreviousOnOff(bitstring), OnOffControl(onoffctl) *)
+
+(* Message wrapper for commands *)
+fun cmdMsg(command, duration, duration): bitstring [data].
+(* Fields: command, OnTimeField(duration), OffWaitTimeField(duration) *)
+
+(* Boolean bitstring helpers with reductions *)
+fun bs_is_true(bitstring): bool
+  reduc bs_is_true(val_TRUE) = true
+  otherwise forall x: bitstring; bs_is_true(x) = false.
+
+fun bs_is_false(bitstring): bool
+  reduc bs_is_false(val_FALSE) = true
+  otherwise forall x: bitstring; bs_is_false(x) = false.
+
+(* Helper to compute logical negation of bitstring boolean *)
+fun bs_not(bitstring): bitstring
+  reduc bs_not(val_TRUE) = val_FALSE
+  otherwise bs_not(val_FALSE) = val_TRUE.
+
+(* Boolean connectives on bool with reductions *)
+fun band_bool(bool, bool): bool
+  reduc band_bool(true, true) = true
+  otherwise forall x: bool, y: bool; band_bool(x, y) = false.
+
+fun bnot_bool(bool): bool
+  reduc bnot_bool(true) = false
+  otherwise bnot_bool(false) = true.
+
+fun bor_bool(bool, bool): bool
+  reduc bor_bool(false, false) = false
+  otherwise forall x: bool, y: bool; bor_bool(x, y) = true.
+
+(* ===================== 6. EVENT DECLARATIONS ==================== *)
+
+event CommandReceived(command).
+event TimerTick(state, bitstring, duration, duration, bitstring, startupval, bitmap, bitstring, onoffctl).
+event PowerUpEvent(state, bitstring, duration, duration, bitstring, startupval, bitmap, bitstring, onoffctl).
+event StateTransition(state, state).
+event AttributeChanged(attribute, bitstring).
+event AttributeDurationChanged(attribute, duration).
+event OnWithTimedOffProcessed(bitstring, duration, duration, bitstring, duration, duration, bitmap).
+(* arguments: OnOff_before, OnTime_before, OffWaitTime_before, OnOff_after,
+              OnTime_after, OffWaitTime_after, FeatureMap *)
+event ToggleProcessed(bitstring, duration, duration, bitstring, duration, duration, bitmap).
+event RecallGlobalSceneProcessed(duration, duration, duration, duration).
+(* OnTime_before, OffWait_before, OnTime_after, OffWait_after *)
+event StartupProcessed(startupval, bitstring, bitstring).
+
+(* Security property markers *)
+event OffOnlyAttempt(command, bitmap).
+event OffOnlyNoChange(bitstring, duration, duration, bitstring, duration, duration).
+event TimedOffGuarded(bitstring, duration, duration, duration).
+event TimedOffTurnOn(bitstring, duration, duration, duration, duration).
+event TimersDecremented(duration, duration).
+event TimersExpiredToOff(duration, duration).
+event ToggleLightingOn(duration, duration).
+event ToggleLightingOff(duration, duration).
+event RecallLightingRule(duration, duration).
+event StartupOutcome(startupval, bitstring, bitstring).
+
+(* ===================== 7. QUERY DECLARATIONS ==================== *)
+
+(* OffOnlyBlocksOnAndToggle: schematic correspondences *)
+query fe: bitmap, onb: bitstring, onta: duration, offwa: duration, ona: bitstring, ontb: duration, offwb: duration;
+    event OffOnlyAttempt(cmd_On, fe)) && event OffOnlyNoChange(onb, onta, offwa, ona, ontb, offwb))
+    ==> event OffOnlyAttempt(cmd_On, fe)).
+
+query fe2: bitmap, onb2: bitstring, ontb2: duration, offwb2: duration, ona2: bitstring, onta2: duration, offwa2: duration;
+    event OffOnlyAttempt(cmd_Toggle, fe2)) && event OffOnlyNoChange(onb2, ontb2, offwb2, ona2, onta2, offwa2))
+    ==> event OffOnlyAttempt(cmd_Toggle, fe2)).
+
+(* OnWithTimedOffFaithfulTimers - key correspondence conditions *)
+query onb: bitstring, ont: duration, offw: duration, offwf: duration;
+    event TimedOffGuarded(onb, ont, offw, offwf)) ==> event CommandReceived(cmd_OnWithTimedOff)).
+
+query onb2: bitstring, ont2: duration, offw2: duration, ontf2: duration, offwf2: duration;
+    event TimedOffTurnOn(onb2, ont2, offw2, ontf2, offwf2)) ==> event CommandReceived(cmd_OnWithTimedOff)).
+
+query ont3: duration, offw3: duration;
+    event TimersDecremented(ont3, offw3)) ==> event CommandReceived(cmd_OnWithTimedOff)).
+
+query ont4: duration, offw4: duration;
+    event TimersExpiredToOff(ont4, offw4)) ==> event CommandReceived(cmd_OnWithTimedOff)).
+
+(* ToggleTimersSemanticsWithLighting *)
+query ont5: duration, offw5: duration;
+    event ToggleLightingOn(ont5, offw5)) ==> event CommandReceived(cmd_Toggle)).
+
+query ont6: duration, offw6: duration;
+    event ToggleLightingOff(ont6, offw6)) ==> event CommandReceived(cmd_Toggle)).
+
+(* RecallGlobalSceneRespectsLightingRule *)
+query ont7: duration, offw7: duration;
+    event RecallLightingRule(ont7, offw7)) ==> event CommandReceived(cmd_OnWithRecallGlobalScene)).
+
+(* StartupBehaviorBoundedByStartUpOnOff *)
+query su: startupval, prev: bitstring, newval: bitstring;
+    event StartupOutcome(su, prev, newval))
+    ==> event PowerUpEvent(st_Off, prev, dur_zero, dur_zero, val_FALSE, su, fm0, prev, ctl_acceptOnlyWhenOn_clear)).
+
+(* ===================== 8. PROCESS MACRO: DEVICE FSM ============= *)
+
+let DeviceFSM() =
+    (* Read current extended state from internal channel *)
+    in(c_int_state, stMsg: bitstring);
+    let stRec(curState,
+              curOnOff,
+              curOnTime,
+              curOffWaitTime,
+              curGSC,
+              curStartUp,
+              curFeatureMap,
+              curPrevOnOff,
+              curOnOffCtl) = stMsg in
+
+    (* Read next external stimulus: command, timer tick, or power-up event *)
+    in(c_cmd, m: bitstring);
+    let cmdMsg(rcmd, onTimeField, offWaitField) = m in
+    event CommandReceived(rcmd));
+
+    (* 1. OFF command: always allowed, sets OnOff FALSE and OnTime 0 *)
+    if eq_command(rcmd, cmd_Off) then
+        (
+            event StateTransition(curState, st_Off));
+            event AttributeChanged(attr_OnOff, val_FALSE));
+            event AttributeDurationChanged(attr_OnTime, dur_zero));
+            out(c_int_state,
+                stRec(st_Off,
+                      val_FALSE,
+                      dur_zero,
+                      curOffWaitTime,
+                      curGSC,
+                      curStartUp,
+                      curFeatureMap,
+                      curPrevOnOff,
+                      curOnOffCtl))
+        )
+    else
+        (
+        (* 2. ON command *)
+        if eq_command(rcmd, cmd_On) then
+            (
+                (* Check OFFONLY feature first *)
+                if hasFeature(curFeatureMap, feat_OFFONLY) then
+                    (
+                        (* OFFONLY present: command unsupported, no attribute change *)
+                        event OffOnlyAttempt(cmd_On, curFeatureMap));
+                        event OffOnlyNoChange(curOnOff, curOnTime, curOffWaitTime,
+                                              curOnOff, curOnTime, curOffWaitTime));
+                        out(c_int_state,
+                            stRec(curState,
+                                  curOnOff,
+                                  curOnTime,
+                                  curOffWaitTime,
+                                  curGSC,
+                                  curStartUp,
+                                  curFeatureMap,
+                                  curPrevOnOff,
+                                  curOnOffCtl))
+                    )
+                else
+                    (
+                        (* OFFONLY not set: follow Lighting rules based on support of timers *)
+                        if bor_bool(bnot_bool(supports_OnTime(curFeatureMap)), bnot_bool(supports_OffWaitTime(curFeatureMap))) then
+                            (
+                                (* Simple ON: OnOff := TRUE, timers unchanged *)
+                                event StateTransition(curState, st_On));
+                                event AttributeChanged(attr_OnOff, val_TRUE));
+                                out(c_int_state,
+                                    stRec(st_On,
+                                          val_TRUE,
+                                          curOnTime,
+                                          curOffWaitTime,
+                                          curGSC,
+                                          curStartUp,
+                                          curFeatureMap,
+                                          curPrevOnOff,
+                                          curOnOffCtl))
+                            )
+                        else
+                            (
+                                (* supports both timers *)
+                                if eq_duration(curOnTime, dur_zero) then
+                                    (
+                                        (* OnTime == 0: OnOff := TRUE, OffWaitTime := 0 *)
+                                        event StateTransition(curState, st_On));
+                                        event AttributeChanged(attr_OnOff, val_TRUE));
+                                        event AttributeDurationChanged(attr_OffWaitTime, dur_zero));
+                                        out(c_int_state,
+                                            stRec(st_On,
+                                                  val_TRUE,
+                                                  curOnTime,
+                                                  dur_zero,
+                                                  curGSC,
+                                                  curStartUp,
+                                                  curFeatureMap,
+                                                  curPrevOnOff,
+                                                  curOnOffCtl))
+                                    )
+                                else
+                                    (
+                                        (* OnTime != 0: OnOff := TRUE, timers unchanged *)
+                                        event StateTransition(curState, st_On));
+                                        event AttributeChanged(attr_OnOff, val_TRUE));
+                                        out(c_int_state,
+                                            stRec(st_On,
+                                                  val_TRUE,
+                                                  curOnTime,
+                                                  curOffWaitTime,
+                                                  curGSC,
+                                                  curStartUp,
+                                                  curFeatureMap,
+                                                  curPrevOnOff,
+                                                  curOnOffCtl))
+                                    )
+                            )
+                    )
+            )
+        else
+            (
+            (* 3. TOGGLE command *)
+            if eq_command(rcmd, cmd_Toggle) then
+                (
+                    (* Check OFFONLY first *)
+                    if hasFeature(curFeatureMap, feat_OFFONLY) then
+                        (
+                            (* OFFONLY: no change *)
+                            event OffOnlyAttempt(cmd_Toggle, curFeatureMap));
+                            event OffOnlyNoChange(curOnOff, curOnTime, curOffWaitTime,
+                                                  curOnOff, curOnTime, curOffWaitTime));
+                            out(c_int_state,
+                                stRec(curState,
+                                      curOnOff,
+                                      curOnTime,
+                                      curOffWaitTime,
+                                      curGSC,
+                                      curStartUp,
+                                      curFeatureMap,
+                                      curPrevOnOff,
+                                      curOnOffCtl))
+                        )
+                    else
+                        (
+                            (* Toggle semantics depend on timers and current OnOff *)
+                            if bor_bool(bnot_bool(supports_OnTime(curFeatureMap)), bnot_bool(supports_OffWaitTime(curFeatureMap))) then
+                                (
+                                    (* Simple toggle of OnOff *)
+                                    if bs_is_true(curOnOff) then
+                                        (
+                                            (* Currently ON -> OFF *)
+                                            event StateTransition(curState, st_Off));
+                                            event AttributeChanged(attr_OnOff, val_FALSE));
+                                            out(c_int_state,
+                                                stRec(st_Off,
+                                                      val_FALSE,
+                                                      curOnTime,
+                                                      curOffWaitTime,
+                                                      curGSC,
+                                                      curStartUp,
+                                                      curFeatureMap,
+                                                      curPrevOnOff,
+                                                      curOnOffCtl))
+                                        )
+                                    else
+                                        (
+                                            (* Currently OFF -> ON *)
+                                            event StateTransition(curState, st_On));
+                                            event AttributeChanged(attr_OnOff, val_TRUE));
+                                            out(c_int_state,
+                                                stRec(st_On,
+                                                      val_TRUE,
+                                                      curOnTime,
+                                                      curOffWaitTime,
+                                                      curGSC,
+                                                      curStartUp,
+                                                      curFeatureMap,
+                                                      curPrevOnOff,
+                                                      curOnOffCtl))
+                                        )
+                                )
+                            else
+                                (
+                                    (* supports(OnTime) && supports(OffWaitTime) *)
+                                    if bs_is_true(curOnOff) then
+                                        (
+                                            (* Currently ON: Toggle to OFF, clear both timers *)
+                                            event StateTransition(curState, st_Off));
+                                            event AttributeChanged(attr_OnOff, val_FALSE));
+                                            event AttributeDurationChanged(attr_OnTime, dur_zero));
+                                            event AttributeDurationChanged(attr_OffWaitTime, dur_zero));
+                                            event ToggleLightingOff(curOnTime, curOffWaitTime));
+                                            out(c_int_state,
+                                                stRec(st_Off,
+                                                      val_FALSE,
+                                                      dur_zero,
+                                                      dur_zero,
+                                                      curGSC,
+                                                      curStartUp,
+                                                      curFeatureMap,
+                                                      curPrevOnOff,
+                                                      curOnOffCtl))
+                                        )
+                                    else
+                                        (
+                                            (* Currently OFF: Toggle to ON, set OnTime := 0 *)
+                                            event StateTransition(curState, st_On));
+                                            event AttributeChanged(attr_OnOff, val_TRUE));
+                                            event AttributeDurationChanged(attr_OnTime, dur_zero));
+                                            event ToggleLightingOn(curOnTime, curOffWaitTime));
+                                            out(c_int_state,
+                                                stRec(st_On,
+                                                      val_TRUE,
+                                                      dur_zero,
+                                                      curOffWaitTime,
+                                                      curGSC,
+                                                      curStartUp,
+                                                      curFeatureMap,
+                                                      curPrevOnOff,
+                                                      curOnOffCtl))
+                                        )
+                                )
+                        )
+                )
+            else
+                (
+                (* 4. OffWithEffect command *)
+                if eq_command(rcmd, cmd_OffWithEffect) then
+                    (
+                        (* Behavior depends on GlobalSceneControl and OnTime support *)
+                        if supports_GlobalSceneControl(curFeatureMap) then
+                            (
+                                (* GlobalSceneControl attribute implemented *)
+                                if bs_is_true(curGSC) then
+                                    (
+                                        (* GlobalSceneControl == TRUE: store global scene, then clear GSC *)
+                                        event AttributeChanged(attr_GlobalSceneControl, val_FALSE));
+                                        if supports_OnTime(curFeatureMap) then
+                                            (
+                                                event AttributeChanged(attr_OnOff, val_FALSE));
+                                                event AttributeDurationChanged(attr_OnTime, dur_zero));
+                                                out(c_int_state,
+                                                    stRec(st_Off,
+                                                          val_FALSE,
+                                                          dur_zero,
+                                                          curOffWaitTime,
+                                                          val_FALSE,
+                                                          curStartUp,
+                                                          curFeatureMap,
+                                                          curPrevOnOff,
+                                                          curOnOffCtl))
+                                            )
+                                        else
+                                            (
+                                                (* OnTime not supported *)
+                                                event AttributeChanged(attr_OnOff, val_FALSE));
+                                                out(c_int_state,
+                                                    stRec(st_Off,
+                                                          val_FALSE,
+                                                          curOnTime,
+                                                          curOffWaitTime,
+                                                          val_FALSE,
+                                                          curStartUp,
+                                                          curFeatureMap,
+                                                          curPrevOnOff,
+                                                          curOnOffCtl))
+                                            )
+                                    )
+                                else
+                                    (
+                                        (* GlobalSceneControl == FALSE *)
+                                        if supports_OnTime(curFeatureMap) then
+                                            (
+                                                (* Just turn off and clear OnTime *)
+                                                event AttributeChanged(attr_OnOff, val_FALSE));
+                                                event AttributeDurationChanged(attr_OnTime, dur_zero));
+                                                out(c_int_state,
+                                                    stRec(st_Off,
+                                                          val_FALSE,
+                                                          dur_zero,
+                                                          curOffWaitTime,
+                                                          curGSC,
+                                                          curStartUp,
+                                                          curFeatureMap,
+                                                          curPrevOnOff,
+                                                          curOnOffCtl))
+                                            )
+                                        else
+                                            (
+                                                (* OnTime not supported: just turn off *)
+                                                event AttributeChanged(attr_OnOff, val_FALSE));
+                                                out(c_int_state,
+                                                    stRec(st_Off,
+                                                          val_FALSE,
+                                                          curOnTime,
+                                                          curOffWaitTime,
+                                                          curGSC,
+                                                          curStartUp,
+                                                          curFeatureMap,
+                                                          curPrevOnOff,
+                                                          curOnOffCtl))
+                                            )
+                                    )
+                            )
+                        else
+                            (
+                                (* GlobalSceneControl not supported *)
+                                if supports_OnTime(curFeatureMap) then
+                                    (
+                                        event AttributeChanged(attr_OnOff, val_FALSE));
+                                        event AttributeDurationChanged(attr_OnTime, dur_zero));
+                                        out(c_int_state,
+                                            stRec(st_Off,
+                                                  val_FALSE,
+                                                  dur_zero,
+                                                  curOffWaitTime,
+                                                  curGSC,
+                                                  curStartUp,
+                                                  curFeatureMap,
+                                                  curPrevOnOff,
+                                                  curOnOffCtl))
+                                    )
+                                else
+                                    (
+                                        event AttributeChanged(attr_OnOff, val_FALSE));
+                                        out(c_int_state,
+                                            stRec(st_Off,
+                                                  val_FALSE,
+                                                  curOnTime,
+                                                  curOffWaitTime,
+                                                  curGSC,
+                                                  curStartUp,
+                                                  curFeatureMap,
+                                                  curPrevOnOff,
+                                                  curOnOffCtl))
+                                    )
+                            )
+                    )
+                else
+                    (
+                    (* 5. OnWithRecallGlobalScene command *)
+                    if eq_command(rcmd, cmd_OnWithRecallGlobalScene) then
+                        (
+                            if supports_GlobalSceneControl(curFeatureMap) then
+                                (
+                                    (* Attribute implemented *)
+                                    if bs_is_false(curGSC) then
+                                        (
+                                            (* GlobalSceneControl == FALSE: recall global scene *)
+                                            (* We abstract recall_global_scene: assume it turns device on and may set OnTime. *)
+                                            let newOnTime: duration = curOnTime in
+                                            let newOnOff: bitstring = val_TRUE in
+                                            if band_bool(supports_OnTime(curFeatureMap), supports_OffWaitTime(curFeatureMap)) then
+                                                (
+                                                    (* If timers supported and OnTime == 0 after recall => OffWaitTime := 0 *)
+                                                    if eq_duration(newOnTime, dur_zero) then
+                                                        (
+                                                            event RecallLightingRule(newOnTime, curOffWaitTime));
+                                                            out(c_int_state,
+                                                                stRec(st_On,
+                                                                      newOnOff,
+                                                                      newOnTime,
+                                                                      dur_zero,
+                                                                      val_TRUE,
+                                                                      curStartUp,
+                                                                      curFeatureMap,
+                                                                      curPrevOnOff,
+                                                                      curOnOffCtl))
+                                                        )
+                                                    else
+                                                        (
+                                                            out(c_int_state,
+                                                                stRec(st_On,
+                                                                      newOnOff,
+                                                                      newOnTime,
+                                                                      curOffWaitTime,
+                                                                      val_TRUE,
+                                                                      curStartUp,
+                                                                      curFeatureMap,
+                                                                      curPrevOnOff,
+                                                                      curOnOffCtl))
+                                                        )
+                                                )
+                                            else
+                                                (
+                                                    (* Timers not both supported: just recall and set GSC TRUE *)
+                                                    out(c_int_state,
+                                                        stRec(st_On,
+                                                              newOnOff,
+                                                              newOnTime,
+                                                              curOffWaitTime,
+                                                              val_TRUE,
+                                                              curStartUp,
+                                                              curFeatureMap,
+                                                              curPrevOnOff,
+                                                              curOnOffCtl))
+                                                )
+                                        )
+                                    else
+                                        (
+                                            (* GlobalSceneControl == TRUE: command discarded *)
+                                            out(c_int_state,
+                                                stRec(curState,
+                                                      curOnOff,
+                                                      curOnTime,
+                                                      curOffWaitTime,
+                                                      curGSC,
+                                                      curStartUp,
+                                                      curFeatureMap,
+                                                      curPrevOnOff,
+                                                      curOnOffCtl))
+                                        )
+                                )
+                            else
+                                (
+                                    (* GlobalSceneControl not supported: no effect *)
+                                    out(c_int_state,
+                                        stRec(curState,
+                                              curOnOff,
+                                              curOnTime,
+                                              curOffWaitTime,
+                                              curGSC,
+                                              curStartUp,
+                                              curFeatureMap,
+                                              curPrevOnOff,
+                                              curOnOffCtl))
+                                )
+                        )
+                    else
+                        (
+                        (* 6. OnWithTimedOff command *)
+                        if eq_command(rcmd, cmd_OnWithTimedOff) then
+                            (
+                                (* AcceptOnlyWhenOn check *)
+                                if eq_onoffctl(curOnOffCtl, ctl_acceptOnlyWhenOn_set) then
+                                    (
+                                        (* Guarded by AcceptOnlyWhenOn == 1 *)
+                                        if bs_is_false(curOnOff) then
+                                            (
+                                                (* OnOff == FALSE: discard command *)
+                                                out(c_int_state,
+                                                    stRec(curState,
+                                                          curOnOff,
+                                                          curOnTime,
+                                                          curOffWaitTime,
+                                                          curGSC,
+                                                          curStartUp,
+                                                          curFeatureMap,
+                                                          curPrevOnOff,
+                                                          curOnOffCtl))
+                                            )
+                                        else
+                                            (
+                                                (* OnOff == TRUE: same as AcceptOnlyWhenOn == 0 on-side branch *)
+                                                let newOnTime1: duration = max_duration(curOnTime, onTimeField) in
+                                                let newOffWaitTime1: duration = offWaitField in
+                                                event OnWithTimedOffProcessed(curOnOff, curOnTime, curOffWaitTime,
+                                                                              val_TRUE, newOnTime1, newOffWaitTime1, curFeatureMap));
+                                                out(c_int_state,
+                                                    stRec(st_On,
+                                                          val_TRUE,
+                                                          newOnTime1,
+                                                          newOffWaitTime1,
+                                                          curGSC,
+                                                          curStartUp,
+                                                          curFeatureMap,
+                                                          curPrevOnOff,
+                                                          curOnOffCtl))
+                                            )
+                                    )
+                                else
+                                    (
+                                        (* AcceptOnlyWhenOn == 0 *)
+                                        if bs_is_false(curOnOff) then
+                                            (
+                                                (* OnOff == FALSE *)
+                                                if gt_duration(curOffWaitTime, dur_zero) then
+                                                    (
+                                                        (* Guarded-off case: OffWaitTime > 0 *)
+                                                        let newOffWaitTime2: duration = min_duration(curOffWaitTime, offWaitField) in
+                                                        event TimedOffGuarded(curOnOff, curOnTime, curOffWaitTime, newOffWaitTime2));
+                                                        out(c_int_state,
+                                                            stRec(st_Off,
+                                                                  val_FALSE,
+                                                                  curOnTime,
+                                                                  newOffWaitTime2,
+                                                                  curGSC,
+                                                                  curStartUp,
+                                                                  curFeatureMap,
+                                                                  curPrevOnOff,
+                                                                  curOnOffCtl))
+                                                    )
+                                                else
+                                                    (
+                                                        (* OffWaitTime <= 0: turn on and set timers *)
+                                                        let newOnTime3: duration = max_duration(curOnTime, onTimeField) in
+                                                        let newOffWaitTime3: duration = offWaitField in
+                                                        event TimedOffTurnOn(curOnOff, curOnTime, curOffWaitTime,
+                                                                             newOnTime3, newOffWaitTime3));
+                                                        out(c_int_state,
+                                                            stRec(st_On,
+                                                                  val_TRUE,
+                                                                  newOnTime3,
+                                                                  newOffWaitTime3,
+                                                                  curGSC,
+                                                                  curStartUp,
+                                                                  curFeatureMap,
+                                                                  curPrevOnOff,
+                                                                  curOnOffCtl))
+                                                    )
+                                            )
+                                        else
+                                            (
+                                                (* OnOff == TRUE, AcceptOnlyWhenOn == 0: on-side branch *)
+                                                let newOnTime4: duration = max_duration(curOnTime, onTimeField) in
+                                                let newOffWaitTime4: duration = offWaitField in
+                                                event OnWithTimedOffProcessed(curOnOff, curOnTime, curOffWaitTime,
+                                                                              val_TRUE, newOnTime4, newOffWaitTime4, curFeatureMap));
+                                                out(c_int_state,
+                                                    stRec(st_On,
+                                                          val_TRUE,
+                                                          newOnTime4,
+                                                          newOffWaitTime4,
+                                                          curGSC,
+                                                          curStartUp,
+                                                          curFeatureMap,
+                                                          curPrevOnOff,
+                                                          curOnOffCtl))
+                                            )
+                                    )
+                            )
+                        else
+                            (
+                            (* 7. 0.1s_timer_tick (modeled by cmd_TimerTick) *)
+                            if eq_command(rcmd, cmd_TimerTick) then
+                                (
+                                    event TimerTick(curState, curOnOff, curOnTime, curOffWaitTime, curGSC,
+                                                    curStartUp, curFeatureMap, curPrevOnOff, curOnOffCtl));
+                                    (* If timers disabled (any == disabled), no decrements *)
+                                    if bor_bool(eq_duration(curOnTime, dur_disabled), eq_duration(curOffWaitTime, dur_disabled)) then
+                                        (
+                                            out(c_int_state,
+                                                stRec(curState,
+                                                      curOnOff,
+                                                      curOnTime,
+                                                      curOffWaitTime,
+                                                      curGSC,
+                                                      curStartUp,
+                                                      curFeatureMap,
+                                                      curPrevOnOff,
+                                                      curOnOffCtl))
+                                        )
+                                    else
+                                        (
+                                            (* Both timers finite *)
+                                            if bs_is_true(curOnOff) then
+                                                (
+                                                    (* OnOff == TRUE *)
+                                                    if gt_duration(curOnTime, dur_zero) then
+                                                        (
+                                                            (* OnTime > 0: decrement OnTime *)
+                                                            let newOnTime5: duration = dec_duration(curOnTime) in
+                                                            event TimersDecremented(newOnTime5, curOffWaitTime));
+                                                            out(c_int_state,
+                                                                stRec(st_On,
+                                                                      curOnOff,
+                                                                      newOnTime5,
+                                                                      curOffWaitTime,
+                                                                      curGSC,
+                                                                      curStartUp,
+                                                                      curFeatureMap,
+                                                                      curPrevOnOff,
+                                                                      curOnOffCtl))
+                                                        )
+                                                    else
+                                                        (
+                                                            (* OnTime == 0: turn off and clear OffWaitTime *)
+                                                            event TimersExpiredToOff(curOnTime, curOffWaitTime));
+                                                            out(c_int_state,
+                                                                stRec(st_Off,
+                                                                      val_FALSE,
+                                                                      curOnTime,
+                                                                      dur_zero,
+                                                                      curGSC,
+                                                                      curStartUp,
+                                                                      curFeatureMap,
+                                                                      curPrevOnOff,
+                                                                      curOnOffCtl))
+                                                        )
+                                                )
+                                            else
+                                                (
+                                                    (* OnOff == FALSE *)
+                                                    if gt_duration(curOffWaitTime, dur_zero) then
+                                                        (
+                                                            (* OffWaitTime > 0: decrement OffWaitTime *)
+                                                            let newOffWaitTime6: duration = dec_duration(curOffWaitTime) in
+                                                            event TimersDecremented(curOnTime, newOffWaitTime6));
+                                                            out(c_int_state,
+                                                                stRec(st_Off,
+                                                                      curOnOff,
+                                                                      curOnTime,
+                                                                      newOffWaitTime6,
+                                                                      curGSC,
+                                                                      curStartUp,
+                                                                      curFeatureMap,
+                                                                      curPrevOnOff,
+                                                                      curOnOffCtl))
+                                                        )
+                                                    else
+                                                        (
+                                                            (* OffWaitTime == 0: no change *)
+                                                            out(c_int_state,
+                                                                stRec(st_Off,
+                                                                      curOnOff,
+                                                                      curOnTime,
+                                                                      curOffWaitTime,
+                                                                      curGSC,
+                                                                      curStartUp,
+                                                                      curFeatureMap,
+                                                                      curPrevOnOff,
+                                                                      curOnOffCtl))
+                                                        )
+                                                )
+                                        )
+                                )
+                            else
+                                (
+                                (* 8. power_up_event (modeled by cmd_PowerUp) *)
+                                if eq_command(rcmd, cmd_PowerUp) then
+                                    (
+                                        event PowerUpEvent(curState, curOnOff, curOnTime, curOffWaitTime, curGSC,
+                                                           curStartUp, curFeatureMap, curPrevOnOff, curOnOffCtl));
+                                        if supports_StartUpOnOff(curFeatureMap) then
+                                            (
+                                                (* StartUpOnOff implemented *)
+                                                if eq_startup(curStartUp, su_Off) then
+                                                    (
+                                                        (* Force off *)
+                                                        event StartupOutcome(curStartUp, curPrevOnOff, val_FALSE));
+                                                        out(c_int_state,
+                                                            stRec(st_Off,
+                                                                  val_FALSE,
+                                                                  curOnTime,
+                                                                  curOffWaitTime,
+                                                                  curGSC,
+                                                                  curStartUp,
+                                                                  curFeatureMap,
+                                                                  val_FALSE,
+                                                                  curOnOffCtl))
+                                                    )
+                                                else
+                                                    (
+                                                        if eq_startup(curStartUp, su_On) then
+                                                            (
+                                                                (* Force on *)
+                                                                event StartupOutcome(curStartUp, curPrevOnOff, val_TRUE));
+                                                                out(c_int_state,
+                                                                    stRec(st_On,
+                                                                          val_TRUE,
+                                                                          curOnTime,
+                                                                          curOffWaitTime,
+                                                                          curGSC,
+                                                                          curStartUp,
+                                                                          curFeatureMap,
+                                                                          val_TRUE,
+                                                                          curOnOffCtl))
+                                                            )
+                                                        else
+                                                            (
+                                                                (* Toggle relative to previous_OnOff *)
+                                                                if bs_is_true(curPrevOnOff) then
+                                                                    (
+                                                                        (* previous_OnOff == TRUE -> now FALSE *)
+                                                                        event StartupOutcome(curStartUp, curPrevOnOff, val_FALSE));
+                                                                        out(c_int_state,
+                                                                            stRec(st_Off,
+                                                                                  val_FALSE,
+                                                                                  curOnTime,
+                                                                                  curOffWaitTime,
+                                                                                  curGSC,
+                                                                                  curStartUp,
+                                                                                  curFeatureMap,
+                                                                                  val_FALSE,
+                                                                                  curOnOffCtl))
+                                                                    )
+                                                                else
+                                                                    (
+                                                                        (* previous_OnOff == FALSE -> now TRUE *)
+                                                                        event StartupOutcome(curStartUp, curPrevOnOff, val_TRUE));
+                                                                        out(c_int_state,
+                                                                            stRec(st_On,
+                                                                                  val_TRUE,
+                                                                                  curOnTime,
+                                                                                  curOffWaitTime,
+                                                                                  curGSC,
+                                                                                  curStartUp,
+                                                                                  curFeatureMap,
+                                                                                  val_TRUE,
+                                                                                  curOnOffCtl))
+                                                                    )
+                                                            )
+                                                    )
+                                            )
+                                        else
+                                            (
+                                                (* StartUpOnOff not supported: no change *)
+                                                out(c_int_state,
+                                                    stRec(curState,
+                                                          curOnOff,
+                                                          curOnTime,
+                                                          curOffWaitTime,
+                                                          curGSC,
+                                                          curStartUp,
+                                                          curFeatureMap,
+                                                          curPrevOnOff,
+                                                          curOnOffCtl))
+                                            )
+                                    )
+                                else
+                                    (
+                                        (* 9. Default: unrecognized command, no change *)
+                                        out(c_int_state,
+                                            stRec(curState,
+                                                  curOnOff,
+                                                  curOnTime,
+                                                  curOffWaitTime,
+                                                  curGSC,
+                                                  curStartUp,
+                                                  curFeatureMap,
+                                                  curPrevOnOff,
+                                                  curOnOffCtl))
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        ).
+
+(* ===================== 9. MAIN PROCESS ========================== *)
+
+process
+    (* Initialize attributes: Off state, OnOff FALSE, timers 0, GSC TRUE,
+       StartUpOnOff = su_Off, FeatureMap = fm0, PreviousOnOff = val_FALSE,
+       AcceptOnlyWhenOn cleared. *)
+    out(c_int_state,
+        stRec(st_Off,
+              val_FALSE,
+              dur_zero,
+              dur_zero,
+              val_TRUE,
+              su_Off,
+              fm0,
+              val_FALSE,
+              ctl_acceptOnlyWhenOn_clear))
+    |
+    (* Start replicated FSM loop *)
+    !DeviceFSM()

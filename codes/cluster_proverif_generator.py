@@ -33,7 +33,7 @@ from config import (
     PROVERIF_JUDGE_PROMPT_TEMPLATE
 )
 
-MAX_TRIES = 10
+MAX_TRIES = 5
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -509,7 +509,7 @@ If there were parse errors, fix the syntax first to ensure the model is parseabl
 
 def main():
     """Main entry point."""
-    input_file = "fsm_models/1.5_OnOff_Cluster_fsm.json"
+    input_file = "fsm_models/1.6_Level_Control_Cluster_fsm.json"
     output_dir = "proverif_models"
     
     if len(sys.argv) > 1:

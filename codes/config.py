@@ -3794,9 +3794,10 @@ facts:              // WRONG: no facts: section exists in Tamarin
   Config/2
 
 functions: ClusterInit/1, Command/2  // WRONG: action facts in functions
-functions: MoveToLevel/0, MoveToLevelWithOnOff/0  // WRONG: prefix conflict
+functions: cmd_move_to_level/0       // WRONG: underscores in function names cause parse errors
+functions: err_invalid_command/0     // WRONG: use string literals instead
 
---[ Command(tid, MoveToLevel) ]->  // WRONG: use strings not functions
+--[ Command(tid, cmd_move) ]->  // WRONG: use string literals like 'Move'
 
 [ St(tid, s1) | St(tid, s2) ]  // WRONG: disjunctions in premises
 [ St(~tid, _, GSC) ]           // WRONG: underscore wildcards
@@ -3986,6 +3987,7 @@ lemma sources [sources]:
 //========================================
 // SECTION 7: Verification Lemmas
 //========================================
+// exists-trace lemmas MUST have actual formulas, not just "True"
 lemma exec_command_name:
   exists-trace
   "Ex tid #i. Command(tid, 'CommandName')@i"
@@ -3994,6 +3996,11 @@ lemma state_reachable:
   exists-trace
   "Ex tid #i. StateTransition(tid, st_Source, st_Target)@i"
 
+// Dummy lemma for --prove=dummy validation
+lemma dummy:
+  exists-trace
+  "Ex tid #i. ClusterInit(tid)@i"
+
 end
 ```
 
@@ -4001,13 +4008,16 @@ end
 ## VALIDATION CHECKLIST
 
 - [ ] Single `functions:` block
-- [ ] No underscore `_` wildcards
+- [ ] No underscore `_` wildcards in premises
+- [ ] **No underscores in function symbols** - use camelCase (e.g., `stIdle/0` not `st_idle/0`)
+- [ ] **Use string literals for commands** - `'MoveToLevel'` not `cmd_move_to_level`
 - [ ] No `|` disjunctions in premises
 - [ ] **No `not()` or negation in PREMISES** (split into separate rules instead!)
 - [ ] All rules: same St fact arity
 - [ ] Fresh vars: `~`, public: `$`
 - [ ] Inequality only in FORMULAS: `not (x = y)` - NEVER in premises!
 - [ ] Lemmas use `[sources]` not `[typing]`
+- [ ] **exists-trace lemmas need actual formulas** - not just `"True"`
 - [ ] Every FSM state → `st_*/0` constant
 - [ ] Every transition → rule(s)
 - [ ] Config facts: `!` persistent
@@ -4017,8 +4027,10 @@ end
 ---
 ## TROUBLESHOOTING
 
+- **Parse error "unexpected _"**: Underscores in function symbols - use camelCase or string literals instead
 - **Parse error "unexpected ("**: You used `not()` in rule PREMISES - split into separate rules instead!
 - **Parse error "facts must start with upper-case"**: Same cause - `not()` in premises is invalid
+- **Parse error at exists-trace "True"**: Use actual formula like `"Ex tid #i. Fact(tid)@i"`
 - **Non-termination**: Add sources lemma, check cycles, use `--precompute-only`
 - **Partial deconstructions**: Add sources lemma, try `--auto-sources`
 - **Rule not firing**: Check pattern matching, verify init creates needed facts
@@ -4223,6 +4235,8 @@ Invalid: `builtin: hashing` (wrong keyword)
 Valid: `functions: name/arity, name2/arity2`
 Invalid: Multiple `functions:` blocks
 Invalid: `function: name/arity` (wrong keyword)
+Invalid: Underscores in function names (e.g., `cmd_move_to_level/0` causes "unexpected _")
+**Use string literals for commands**: `Command(~tid, 'MoveToLevel')` not `Command(~tid, cmd_move_to_level)`
 
 ### 5. RULE SYNTAX
 Valid: `rule RuleName: [ Facts ] --[ Actions ]-> [ Facts ]`
@@ -4251,6 +4265,7 @@ Valid: `lemma name: "All x #i. Fact(x)@i ==> ..."`
 Valid: `lemma name [sources]: "..."`
 Valid: `lemma name: exists-trace "Ex x #i. Fact(x)@i"`
 Invalid: Missing quotes around formula
+Invalid: `exists-trace "True"` (must be actual formula like `"Ex tid #i. Fact(tid)@i"`)
 
 ### 10. COMMENT SYNTAX
 Valid: `// Single line comment`
@@ -4996,6 +5011,35 @@ RIGHT: fun hasFeature(bitmap, featurebit): bool
        otherwise forall b: bitmap, f: featurebit; hasFeature(b, f) = false.
 ```
 
+### 23. FREE DECLARATIONS CANNOT USE BOOL TYPE
+The `free` keyword cannot declare names of type `bool`. Use a custom type instead.
+```
+WRONG: free curOnOff: bool.                                (* Error: free cannot use bool! *)
+WRONG: free isEnabled: bool [private].                     (* Same error *)
+
+RIGHT: type mybool.
+       const myTrue: mybool.
+       const myFalse: mybool.
+       free curOnOff: mybool.                              (* Custom type works *)
+       reduc is_true(myTrue) = true; is_true(myFalse) = false.  (* Convert to bool *)
+```
+
+### 24. PROCESS SEQUENCING AFTER IF-THEN-ELSE
+When using `if-then-else` followed by more process steps, trailing events/outputs
+MUST be included in EACH branch. The pattern `); event X;` after else DOES NOT WORK.
+```
+WRONG: if cond then
+           (out(c, x))
+       else
+           (out(c, y));
+       event Done(x)                                       (* Error: binds incorrectly! *)
+
+RIGHT: if cond then
+           (out(c, x); event Done(x))                      (* Include in each branch *)
+       else
+           (out(c, y); event Done(x))                      (* Include in each branch *)
+```
+
 ### 22. EVENT SYNTAX IN PROCESS vs QUERY
 In QUERIES: use event(Name(args)) with parentheses around the whole thing.
 In PROCESS code: use event Name(args); with space (no outer parentheses).
@@ -5153,7 +5197,18 @@ Invalid: `process: P` (no colon)
 - Use parentheses in nested if: `if A then (if B then P else Q) else R`
 - CRITICAL: else binds to nearest if/let, use parens to override
 
-### 13. RESERVED IDENTIFIERS (DO NOT REDECLARE) - Manual p.17
+### 13. FREE DECLARATIONS CANNOT USE BOOL TYPE
+(* free keyword cannot declare names of type bool - use custom type *)
+Invalid: `free curOnOff: bool.`
+Invalid: `free flag: bool [private].`
+Valid: `type mybool. const myTrue: mybool. const myFalse: mybool. free curOnOff: mybool.`
+
+### 14. PROCESS SEQUENCING AFTER IF-THEN-ELSE
+(* Trailing events/outputs after if-then-else must be in EACH branch *)
+Invalid: `if c then (out(c,x)) else (out(c,y)); event Done(x)` (* binds incorrectly *)
+Valid: `if c then (out(c,x); event Done(x)) else (out(c,y); event Done(x))`
+
+### 15. RESERVED IDENTIFIERS (DO NOT REDECLARE) - Manual p.17
 (* These are built-in and CANNOT be redeclared: *)
 TYPES:
 - `time` - RESERVED! Error: "identifier time already defined"
@@ -5177,7 +5232,7 @@ PREDICATES (for queries):
 - `subterm` - subterm relation predicate
 - `table` - table membership predicate
 
-### 14. PROCESS MACRO CALL TERMINATION
+### 16. PROCESS MACRO CALL TERMINATION
 (* Process macro call MUST end with period, not semicolon *)
 Invalid: `DeviceStep(...); MainProcess(x).` (* Syntax error! *)
 Invalid: `if c then MacroA(x); MacroB(y).` (* Error after ; *)
@@ -5185,13 +5240,13 @@ Valid: `DeviceStep(...).` (* Period ends the branch *)
 Valid: `if c then MacroA(x) else MacroB(y).`
 (* For recursion: put recursive call INSIDE the macro definition *)
 
-### 15. COMMENTS SYNTAX
+### 17. COMMENTS SYNTAX
 Valid: `(* This is a comment *)`
 Valid: `(* Nested (* comments *) are supported *)`
 Invalid: `// This is NOT valid in ProVerif`
 Invalid: `/* This is NOT valid in ProVerif */`
 
-### 16. NO STRING LITERALS
+### 18. NO STRING LITERALS
 Invalid: `out(c, "hello")` (* ProVerif does not support strings! *)
 Invalid: `event E("value")` (* NO quoted strings *)
 Valid: `const hello: bitstring. out(c, hello)`

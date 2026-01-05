@@ -1,0 +1,757 @@
+theory LevelControl_Cluster_Matter_FSM begin
+
+builtins: hashing
+
+functions:
+  b_true/0, b_false/0,
+  st_Idle/0,
+  st_TransitionActive/0,
+  tv_zero/0,
+  tv_pos/0,
+  f_OO/0,
+  f_LT/0,
+  f_FQ/0,
+  lvl_val/0,
+  lvl_min/0,
+  lvl_max/0,
+  freq_val/0,
+  St/12,
+  Config/4
+
+// Actions are declared implicitly when used in rules (in the --[ ]-> part)
+// No separate actions: section is needed in Tamarin
+
+// Unified state fact for Level Control cluster instance:
+// St(tid, State,
+//    Feature_OnOff_supported, Feature_Lighting_supported, Feature_Frequency_supported,
+//    CurrentLevel_set, CurrentLevel, RemainingTime,
+//    OnOff_present, OnOff,
+//    CurrentFrequency_set, CurrentFrequency)
+
+rule Init_Features_All:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_Idle,
+        f_OO, f_LT, f_FQ,
+        b_true, lvl_val, tv_zero,
+        b_true, b_false,
+        b_true, freq_val),
+    !Config(~tid, f_OO, f_LT, f_FQ) ]
+
+rule Init_Features_NoFreq:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_Idle,
+        f_OO, f_LT, b_false,
+        b_true, lvl_val, tv_zero,
+        b_true, b_false,
+        b_false, freq_val),
+    !Config(~tid, f_OO, f_LT, b_false) ]
+
+rule Init_Features_LightingOnly:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_Idle,
+        b_false, f_LT, b_false,
+        b_true, lvl_val, tv_zero,
+        b_false, b_false,
+        b_false, freq_val),
+    !Config(~tid, b_false, f_LT, b_false) ]
+
+rule Init_Features_Minimal:
+  [ Fr(~tid) ]
+--[ ClusterInit(~tid) ]->
+  [ St(~tid, st_Idle,
+        b_false, b_false, b_false,
+        b_true, lvl_val, tv_zero,
+        b_false, b_false,
+        b_false, freq_val),
+    !Config(~tid, b_false, b_false, b_false) ]
+
+//=======================================================
+// Core command skeletons (abstracted, no arithmetic)
+//=======================================================
+
+rule Cmd_MoveToLevel_Immediate_Idle:
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToLevel'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveToLevel_Timed_Idle:
+  [ St(~tid, st_Idle, fo, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToLevel'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveToLevel_Immediate_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToLevel'),
+    StateTransition(~tid, st_TransitionActive, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveToLevel_Timed_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToLevel'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Move_RateZero_Idle:
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Move'),
+    Error(~tid, 'InvalidCommand'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Move_RateZero_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Move'),
+    Error(~tid, 'InvalidCommand'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Move_TimedUp_Idle:
+  [ St(~tid, st_Idle, fo, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Move'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Move_TimedDown_Idle:
+  [ St(~tid, st_Idle, fo, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Move'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Move_TimedUp_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Move'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Move_TimedDown_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Move'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Step_SizeZero_Idle:
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Step'),
+    Error(~tid, 'InvalidCommand'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Step_SizeZero_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Step'),
+    Error(~tid, 'InvalidCommand'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Step_Immediate_Idle:
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Step'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Step_Timed_Idle:
+  [ St(~tid, st_Idle, fo, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Step'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Step_Immediate_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Step'),
+    StateTransition(~tid, st_TransitionActive, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Step_Timed_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Step'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Stop_Idle:
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Stop'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_Stop_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'Stop'),
+    StateTransition(~tid, st_TransitionActive, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveToLevelWithOnOff_Immediate_On:
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToLevelWithOnOff'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_MoveToLevelWithOnOff_Immediate_OffToOn:
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, tv_zero,
+        op, b_false,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToLevelWithOnOff'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_MoveToLevelWithOnOff_Timed_On:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToLevelWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_MoveToLevelWithOnOff_Timed_Off:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_false,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToLevelWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_MoveWithOnOff_RateZero_Idle:
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveWithOnOff'),
+    Error(~tid, 'InvalidCommand'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveWithOnOff_RateZero_TransitionActive:
+  [ St(~tid, st_TransitionActive, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveWithOnOff'),
+    Error(~tid, 'InvalidCommand'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveWithOnOff_TimedUp_On:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_MoveWithOnOff_TimedUp_Off:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_false,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_MoveWithOnOff_TimedDown_On:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_MoveWithOnOff_TimedDown_Off:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_false,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_false,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_SizeZero_Idle:
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    Error(~tid, 'InvalidCommand'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_SizeZero_TransitionActive:
+  [ St(~tid, st_TransitionActive, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    Error(~tid, 'InvalidCommand'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_ImmediateUp_On:
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_ImmediateUp_Off:
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, tv_zero,
+        op, b_false,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_TimedUp_On:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_TimedUp_Off:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_false,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_ImmediateDown_ToMin:
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, lvl_min, tv_zero,
+        op, b_false,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_ImmediateDown_AboveMin:
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, lvl_val, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_TimedDown_ToMin:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_false,
+        cf_set, cf) ]
+
+rule Cmd_StepWithOnOff_TimedDown_AboveMin:
+  [ St(~tid, st_Idle, f_OO, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, b_true,
+        cf_set, cf) ]
+--[ Command(~tid, 'StepWithOnOff'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, f_OO, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, b_true,
+        cf_set, cf) ]
+
+rule Cmd_StopWithOnOff_Idle:
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'StopWithOnOff'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_StopWithOnOff_TransitionActive:
+  [ St(~tid, st_TransitionActive, f_OO, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'StopWithOnOff'),
+    StateTransition(~tid, st_TransitionActive, st_Idle) ]->
+  [ St(~tid, st_Idle, f_OO, fl, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveToClosestFrequency_Supported_HasClosest_Idle:
+  [ St(~tid, st_Idle, fo, fl, f_FQ,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToClosestFrequency'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, f_FQ,
+        cl_set, cl, rt,
+        op, oo,
+        b_true, freq_val) ]
+
+rule Cmd_MoveToClosestFrequency_Supported_NoClosest_Idle:
+  [ St(~tid, st_Idle, fo, fl, f_FQ,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToClosestFrequency'),
+    Error(~tid, 'ConstraintError'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, f_FQ,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveToClosestFrequency_Unsupported_Idle:
+  [ St(~tid, st_Idle, fo, fl, b_false,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToClosestFrequency'),
+    Error(~tid, 'UnsupportedCommand'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, b_false,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveToClosestFrequency_Supported_HasClosest_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, f_FQ,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToClosestFrequency'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, fl, f_FQ,
+        cl_set, cl, rt,
+        op, oo,
+        b_true, freq_val) ]
+
+rule Cmd_MoveToClosestFrequency_Supported_NoClosest_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, f_FQ,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToClosestFrequency'),
+    Error(~tid, 'ConstraintError'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, fl, f_FQ,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_MoveToClosestFrequency_Unsupported_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, b_false,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'MoveToClosestFrequency'),
+    Error(~tid, 'UnsupportedCommand'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, fl, b_false,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_SceneStore_Idle:
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'SceneStore'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_SceneStore_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'SceneStore'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_SceneRecall_Immediate_Idle:
+  [ St(~tid, st_Idle, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'SceneRecall'),
+    StateTransition(~tid, st_Idle, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        b_true, lvl_val, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_SceneRecall_Immediate_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, fl, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'SceneRecall'),
+    StateTransition(~tid, st_TransitionActive, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, fl, fq,
+        b_true, lvl_val, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_SceneRecall_Timed_Idle:
+  [ St(~tid, st_Idle, fo, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'SceneRecall'),
+    StateTransition(~tid, st_Idle, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        b_true, lvl_val, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule Cmd_SceneRecall_Timed_TransitionActive:
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, rt,
+        op, oo,
+        cf_set, cf) ]
+--[ Command(~tid, 'SceneRecall'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        b_true, lvl_val, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+//========================================
+// TimerTick rules (abstracted RemainingTime)
+//========================================
+
+rule TimerTick_Progress_Base:
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+--[ InternalEvt(~tid, 'TimerTick'),
+    StateTransition(~tid, st_TransitionActive, st_TransitionActive) ]->
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+
+rule TimerTick_Complete_Base:
+  [ St(~tid, st_TransitionActive, fo, f_LT, fq,
+        cl_set, cl, tv_pos,
+        op, oo,
+        cf_set, cf) ]
+--[ InternalEvt(~tid, 'TimerTick'),
+    StateTransition(~tid, st_TransitionActive, st_Idle) ]->
+  [ St(~tid, st_Idle, fo, f_LT, fq,
+        cl_set, cl, tv_zero,
+        op, oo,
+        cf_set, cf) ]
+
+//========================================
+// Restrictions
+//========================================
+
+restriction unique_init:
+  "All tid #i #j. ClusterInit(tid)@i & ClusterInit(tid)@j ==> #i = #j"
+
+//========================================
+// Sources lemma
+//========================================
+
+lemma sources [sources]:
+  "All tid s1 s2 #i. StateTransition(tid, s1, s2)@i ==> Ex #j. ClusterInit(tid)@j & #j < #i"
+
+lemma dummy:
+  exists-trace
+  "Ex tid #i. ClusterInit(tid)@i"
+
+end

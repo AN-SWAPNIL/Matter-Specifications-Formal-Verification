@@ -514,7 +514,7 @@ def main():
         - Generate FSM and security properties together
         - May result in fewer transitions due to LLM cognitive load
     """
-    input_file = "cluster_details/1.5_OnOff_Cluster_detail.json"
+    input_file = "cluster_details/1.6_Level_Control_Cluster_detail.json"
     output_dir = "fsm_models"
     two_pass_mode = True  # Default: use two-pass generation
     

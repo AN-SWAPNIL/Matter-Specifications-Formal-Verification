@@ -1,0 +1,1672 @@
+{
+  "fsm_model": {
+    "cluster_name": "Level Control Cluster",
+    "cluster_id": "0x0008",
+    "category": "Application",
+    "states": [
+      {
+        "name": "Idle",
+        "description": "No level transition is in progress. RemainingTime is 0 when the Lighting feature is supported. CurrentLevel and CurrentFrequency remain stable until a new command, a scene recall, or a frequency command acts.",
+        "is_initial": true,
+        "invariants": [
+          "Feature_Lighting_supported == false || RemainingTime == 0",
+          "CurrentLevel == null || (CurrentLevel >= MinLevel && (MaxLevel_not_present == true || CurrentLevel <= MaxLevel))"
+        ],
+        "attributes_monitored": [
+          "CurrentLevel",
+          "RemainingTime",
+          "Options",
+          "MinLevel",
+          "MaxLevel",
+          "CurrentFrequency",
+          "MinFrequency",
+          "MaxFrequency",
+          "FeatureMap",
+          "OnOffCluster.OnOff",
+          "TargetIsWithOnOff"
+        ]
+      },
+      {
+        "name": "TransitionActive",
+        "description": "A MoveToLevel, Move, Step or corresponding WithOnOff transition is in progress. When the Lighting feature is supported, RemainingTime > 0 and CurrentLevel evolves between StartLevel and TargetLevel according to the effective rate or duration.",
+        "is_initial": false,
+        "invariants": [
+          "Feature_Lighting_supported == false || RemainingTime > 0",
+          "CurrentLevel == null || (CurrentLevel >= MinLevel && (MaxLevel_not_present == true || CurrentLevel <= MaxLevel))"
+        ],
+        "attributes_monitored": [
+          "CurrentLevel",
+          "RemainingTime",
+          "Options",
+          "MinLevel",
+          "MaxLevel",
+          "CurrentFrequency",
+          "MinFrequency",
+          "MaxFrequency",
+          "FeatureMap",
+          "OnOffCluster.OnOff",
+          "TargetIsWithOnOff"
+        ]
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevel",
+        "guard_condition": "Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime == 0 && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "CurrentLevel := Level",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate move to Level when the effective duration is zero and execution is allowed."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToLevel",
+        "guard_condition": "Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedTransitionTime"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed move from StartLevel to Level when duration is positive, Lighting feature is supported, and execution is allowed."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevel",
+        "guard_condition": "Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime >= 0 && OnOffCluster_present == true && tempOptions_ExecuteIfOff == 0 && OnOffCluster.OnOff == false",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; MoveToLevel does not change CurrentLevel or RemainingTime."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Move",
+        "guard_condition": "Rate == 0 && (MoveMode == MoveMode_Up || MoveMode == MoveMode_Down)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Rate equal to zero is invalid for a non-reserved MoveMode and the Move command is rejected without any state change."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Move",
+        "guard_condition": "Rate == 0 && MoveMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Rate equal to zero with reserved MoveMode is treated as an invalid command."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && OnOffCluster_present == true && tempOptions_ExecuteIfOff == 0 && OnOffCluster.OnOff == false && (MoveMode == MoveMode_Up || MoveMode == MoveMode_Down || MoveMode_is_reserved == true)",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; Move is accepted but does not change CurrentLevel or RemainingTime."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && MoveMode == MoveMode_Up && effRate > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMaxLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedMoveDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "Continuous upward move towards DeviceMaxLevel at effective rate when Lighting feature is supported."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && MoveMode == MoveMode_Down && effRate > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedMoveDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "Continuous downward move towards DeviceMinLevel at effective rate when Lighting feature is supported; base Move does not change OnOff."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && MoveMode_is_reserved == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Reserved MoveMode is treated as invalid when execution would otherwise be allowed."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize == 0 && (StepMode == StepMode_Up || StepMode == StepMode_Down)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Step with size zero and a non-reserved StepMode is invalid and is rejected."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize == 0 && StepMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Step with size zero and reserved StepMode is treated as invalid."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && OnOffCluster_present == true && tempOptions_ExecuteIfOff == 0 && OnOffCluster.OnOff == false && (StepMode == StepMode_Up || StepMode == StepMode_Down || StepMode_is_reserved == true)",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; Step has no effect."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode == StepMode_Up && DerivedStepDuration == 0 && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "CurrentLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate upward step by StepSize (after clamping) when execution is allowed."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode == StepMode_Up && DerivedStepDuration > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedStepDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed upward step when duration is positive, Lighting feature is supported, and execution is allowed."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration == 0 && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "CurrentLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate downward step by StepSize (after clamping) with no OnOff coupling for base Step."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedStepDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed downward step when duration is positive, Lighting feature is supported, and execution is allowed."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode_is_reserved == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Reserved StepMode is treated as invalid when execution would otherwise be allowed."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0 && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime == 0 && Level > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "CurrentLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; an immediate MoveToLevelWithOnOff to a level above DeviceMinLevel turns the device on and sets CurrentLevel, matching the state-change table."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0 && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime > 0 && Feature_Lighting_supported == true && Level > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedTransitionTime",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; a timed MoveToLevelWithOnOff to a level above DeviceMinLevel starts a transition and turns the device on, consistent with the state-change table."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0 && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime == 0 && Level == DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "CurrentLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; an immediate MoveToLevelWithOnOff to DeviceMinLevel keeps the device off while updating CurrentLevel."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0 && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime > 0 && Feature_Lighting_supported == true && Level == DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedTransitionTime",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; a timed MoveToLevelWithOnOff to DeviceMinLevel starts a transition with OnOff staying false."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime == 0 && resulting_CurrentLevel > DeviceMinLevel && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "CurrentLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate move to a level above DeviceMinLevel; OnOff is set to true when not in the special ExecuteIfOff==0 and off case."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime == 0 && resulting_CurrentLevel == DeviceMinLevel && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "CurrentLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate move to DeviceMinLevel; OnOff is set to false when not in the special ExecuteIfOff==0 and off case."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel > DeviceMinLevel && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedTransitionTime",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed move to a level above DeviceMinLevel; OnOff is true during and after the transition when not in the special ExecuteIfOff==0 and off case."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel == DeviceMinLevel && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedTransitionTime",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed move ending at DeviceMinLevel; OnOff is false during and after the transition when not in the special ExecuteIfOff==0 and off case."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate == 0 && (MoveMode == MoveMode_Up || MoveMode == MoveMode_Down)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Rate equal to zero with non-reserved MoveMode is invalid for MoveWithOnOff and the command is rejected."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate == 0 && MoveMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Rate equal to zero with reserved MoveMode is invalid for MoveWithOnOff."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0 && Rate != 0 && MoveMode == MoveMode_Up && effRate > 0",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMaxLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedMoveDuration",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; MoveWithOnOff up starts a transition to DeviceMaxLevel and turns the device on, as required by the state-change table."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0 && Rate != 0 && MoveMode == MoveMode_Down && effRate > 0",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedMoveDuration",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; MoveWithOnOff down moves CurrentLevel towards DeviceMinLevel but keeps the device off, matching the state-change table case where output remains off."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate != 0 && MoveMode == MoveMode_Up && effRate > 0 && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMaxLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedMoveDuration",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "MoveWithOnOff up moves continuously to DeviceMaxLevel and sets OnOff to true, when not in the special ExecuteIfOff==0 and off case."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate != 0 && MoveMode == MoveMode_Down && effRate > 0 && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedMoveDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "MoveWithOnOff down moves continuously toward DeviceMinLevel; OnOff will be updated when TargetLevel is reached according to resulting level, when not in the special ExecuteIfOff==0 and off case."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate != 0 && MoveMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Reserved MoveMode is invalid for MoveWithOnOff and is rejected."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize == 0 && (StepMode == StepMode_Up || StepMode == StepMode_Down)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "StepWithOnOff with zero StepSize and non-reserved StepMode is invalid and rejected."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize == 0 && StepMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "StepWithOnOff with zero StepSize and reserved StepMode is invalid and rejected."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Reserved StepMode is invalid for StepWithOnOff and is rejected."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Up && DerivedStepDuration == 0 && resulting_CurrentLevel > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "CurrentLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate upward StepWithOnOff ending above DeviceMinLevel; OnOff is set to true."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Up && DerivedStepDuration > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedStepDuration",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed upward StepWithOnOff above DeviceMinLevel; OnOff remains true."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration == 0 && resulting_CurrentLevel == DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "CurrentLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate downward StepWithOnOff to DeviceMinLevel; OnOff is set to false."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel == DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedStepDuration",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed downward StepWithOnOff to DeviceMinLevel; OnOff is false at the resulting level."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration == 0 && resulting_CurrentLevel > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "CurrentLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate downward StepWithOnOff that does not reach minimum; OnOff remains true."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedStepDuration",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed downward StepWithOnOff that does not reach minimum; OnOff stays true."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "Stop",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := processed_tempOptions",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "When no transition is active, Stop has no observable effect beyond conceptual tempOptions processing and ensuring RemainingTime is 0."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "StopWithOnOff",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := processed_tempOptions",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "When idle, StopWithOnOff behaves like Stop; tempOptions are processed but no movement exists to cancel."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "TimerTick",
+        "guard_condition": "Feature_Lighting_supported == true && RemainingTime > tick_amount && TargetIsWithOnOff == false",
+        "actions": [
+          "PreviousLevel := CurrentLevel",
+          "CurrentLevel := interpolated_level",
+          "RemainingTime := RemainingTime - tick_amount"
+        ],
+        "response_command": null,
+        "timing_requirements": "Internal countdown for base transitions; CurrentLevel progresses between StartLevel and TargetLevel while RemainingTime stays positive."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "TimerTick",
+        "guard_condition": "Feature_Lighting_supported == true && RemainingTime > tick_amount && TargetIsWithOnOff == true",
+        "actions": [
+          "PreviousLevel := CurrentLevel",
+          "CurrentLevel := interpolated_level",
+          "RemainingTime := RemainingTime - tick_amount"
+        ],
+        "response_command": null,
+        "timing_requirements": "Internal countdown for WithOnOff transitions; OnOff will be updated only on completion according to TargetLevel."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "TimerTick",
+        "guard_condition": "Feature_Lighting_supported == true && RemainingTime <= tick_amount && TargetIsWithOnOff == false",
+        "actions": [
+          "PreviousLevel := CurrentLevel",
+          "CurrentLevel := TargetLevel",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Base transition completes; level reaches TargetLevel and the FSM returns to Idle."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "TimerTick",
+        "guard_condition": "Feature_Lighting_supported == true && RemainingTime <= tick_amount && TargetIsWithOnOff == true && TargetLevel > DeviceMinLevel && Feature_OnOff_supported == true",
+        "actions": [
+          "PreviousLevel := CurrentLevel",
+          "CurrentLevel := TargetLevel",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "WithOnOff transition completes above minimum; OnOff is ensured to be true at completion."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "TimerTick",
+        "guard_condition": "Feature_Lighting_supported == true && RemainingTime <= tick_amount && TargetIsWithOnOff == true && TargetLevel == DeviceMinLevel && Feature_OnOff_supported == true",
+        "actions": [
+          "PreviousLevel := CurrentLevel",
+          "CurrentLevel := TargetLevel",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "WithOnOff downward movement completes at DeviceMinLevel; OnOff is set to false."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToLevel",
+        "guard_condition": "Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedTransitionTime"
+        ],
+        "response_command": null,
+        "timing_requirements": "A new timed MoveToLevel during a transition pre-empts the previous transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "MoveToLevel",
+        "guard_condition": "Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime == 0 && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "CurrentLevel := Level",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate MoveToLevel cancels the active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Move",
+        "guard_condition": "Rate == 0 && (MoveMode == MoveMode_Up || MoveMode == MoveMode_Down)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Rate zero is invalid even during an active transition; this command is rejected."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Move",
+        "guard_condition": "Rate == 0 && MoveMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Rate zero with reserved MoveMode is invalid during an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && OnOffCluster_present == true && tempOptions_ExecuteIfOff == 0 && OnOffCluster.OnOff == false && (MoveMode == MoveMode_Up || MoveMode == MoveMode_Down || MoveMode_is_reserved == true)",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": "With ExecuteIfOff disabled and device off, a new Move does not alter CurrentLevel or RemainingTime; existing transition semantics are preserved conceptually."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && MoveMode == MoveMode_Up && effRate > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMaxLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedMoveDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "New Move up replaces existing transition with continuous upward movement."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && MoveMode == MoveMode_Down && effRate > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedMoveDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "New Move down replaces existing transition; base Move does not change OnOff at completion."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Move",
+        "guard_condition": "Rate != 0 && MoveMode_is_reserved == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Reserved MoveMode is invalid for Move during an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize == 0 && (StepMode == StepMode_Up || StepMode == StepMode_Down)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Step with size zero and non-reserved StepMode is invalid even while a transition is active."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize == 0 && StepMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Step with size zero and reserved StepMode is invalid during an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && OnOffCluster_present == true && tempOptions_ExecuteIfOff == 0 && OnOffCluster.OnOff == false && (StepMode == StepMode_Up || StepMode == StepMode_Down || StepMode_is_reserved == true)",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": "With ExecuteIfOff disabled and device off, an additional Step command does not change CurrentLevel or RemainingTime."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode_is_reserved == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Reserved StepMode is invalid for Step during an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode == StepMode_Up && DerivedStepDuration > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedStepDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "New timed upward Step interrupts the running transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode == StepMode_Up && DerivedStepDuration == 0 && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "CurrentLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate upward Step cancels the active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration > 0 && Feature_Lighting_supported == true && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := DerivedStepDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed downward Step replaces the running transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "Step",
+        "guard_condition": "StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration == 0 && (OnOffCluster_present == false || tempOptions_ExecuteIfOff == 1 || OnOffCluster.OnOff == true)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "CurrentLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate downward Step cancels the ongoing transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel > DeviceMinLevel && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedTransitionTime",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "New timed MoveToLevelWithOnOff above minimum pre-empts the existing transition and sets OnOff to true."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime == 0 && resulting_CurrentLevel > DeviceMinLevel && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "CurrentLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate MoveToLevelWithOnOff above minimum cancels the active transition and turns the device on."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel == DeviceMinLevel && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedTransitionTime",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed MoveToLevelWithOnOff to minimum replaces the existing transition and keeps OnOff false."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "MoveToLevelWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Level >= MinLevel && (MaxLevel_not_present == true || Level <= MaxLevel) && DerivedTransitionTime == 0 && resulting_CurrentLevel == DeviceMinLevel && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := Level",
+          "CurrentLevel := Level",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate MoveToLevelWithOnOff to minimum cancels the transition and turns the device off."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate == 0 && (MoveMode == MoveMode_Up || MoveMode == MoveMode_Down)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Rate zero is invalid for MoveWithOnOff during an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate == 0 && MoveMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Rate zero with reserved MoveMode is invalid for MoveWithOnOff during an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0 && Rate != 0 && MoveMode == MoveMode_Up && effRate > 0",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMaxLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedMoveDuration",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; a new MoveWithOnOff up during an active transition resets movement upwards and turns the device on."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0 && Rate != 0 && MoveMode == MoveMode_Down && effRate > 0",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedMoveDuration",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Device is off and ExecuteIfOff is 0; a new MoveWithOnOff down moves toward DeviceMinLevel with OnOff remaining false."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate != 0 && MoveMode == MoveMode_Up && effRate > 0 && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMaxLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedMoveDuration",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "A new MoveWithOnOff up during an active transition resets movement upwards and keeps OnOff true when not in the special ExecuteIfOff==0 and off case."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate != 0 && MoveMode == MoveMode_Down && effRate > 0 && !(OnOffCluster_present == true && OnOffCluster.OnOff == false && tempOptions_ExecuteIfOff == 0)",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedMoveDuration"
+        ],
+        "response_command": null,
+        "timing_requirements": "A new MoveWithOnOff down replaces the existing transition; OnOff will become false when TargetLevel equals DeviceMinLevel and RemainingTime expires, outside the special ExecuteIfOff==0 and off case."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && Rate != 0 && MoveMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Reserved MoveMode is invalid for MoveWithOnOff during an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize == 0 && (StepMode == StepMode_Up || StepMode == StepMode_Down)",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Zero StepSize is invalid for StepWithOnOff even with an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize == 0 && StepMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Zero StepSize with reserved StepMode is invalid for StepWithOnOff during an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode_is_reserved == true",
+        "actions": [
+          "LastError := INVALID_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Reserved StepMode is invalid for StepWithOnOff during an active transition."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Up && DerivedStepDuration > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedStepDuration",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed upward StepWithOnOff replaces the active transition and keeps device on."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Up && DerivedStepDuration == 0 && resulting_CurrentLevel > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "CurrentLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate upward StepWithOnOff cancels the running transition and ensures device is on."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel == DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedStepDuration",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed downward StepWithOnOff to minimum overrides any active transition and causes OnOff to be false for the resulting level."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration == 0 && resulting_CurrentLevel == DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := DeviceMinLevel",
+          "CurrentLevel := DeviceMinLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := false"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate downward StepWithOnOff to minimum cancels the active transition and turns device off."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration > 0 && Feature_Lighting_supported == true && resulting_CurrentLevel > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := DerivedStepDuration",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Timed downward StepWithOnOff that does not reach minimum replaces the active transition and OnOff stays true."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "StepWithOnOff",
+        "guard_condition": "Feature_OnOff_supported == true && StepSize > 0 && StepMode == StepMode_Down && DerivedStepDuration == 0 && resulting_CurrentLevel > DeviceMinLevel",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := resulting_CurrentLevel",
+          "CurrentLevel := resulting_CurrentLevel",
+          "TargetIsWithOnOff := true",
+          "RemainingTime := 0",
+          "OnOffCluster.OnOff := true"
+        ],
+        "response_command": null,
+        "timing_requirements": "Immediate downward StepWithOnOff that does not reach minimum cancels the active transition and device stays on."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "Stop",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := processed_tempOptions",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Stop terminates any active MoveToLevel, Move, Step or corresponding WithOnOff transition after processing tempOptions; CurrentLevel stays at its value at receipt time."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "StopWithOnOff",
+        "guard_condition": "true",
+        "actions": [
+          "tempOptions := processed_tempOptions",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "StopWithOnOff behaves like Stop for level transitions and also processes tempOptions; OnOff remains whatever it was when stopped."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToClosestFrequency",
+        "guard_condition": "Feature_Frequency_supported == true && closest_supported_frequency_exists == true",
+        "actions": [
+          "CurrentFrequency := selected_frequency"
+        ],
+        "response_command": null,
+        "timing_requirements": "When Frequency feature is supported and an approximable value exists, CurrentFrequency is updated immediately."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToClosestFrequency",
+        "guard_condition": "Feature_Frequency_supported == true && closest_supported_frequency_exists == false",
+        "actions": [
+          "LastError := CONSTRAINT_ERROR"
+        ],
+        "response_command": null,
+        "timing_requirements": "No approximable frequency exists; conceptual constraint error with no state change."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "MoveToClosestFrequency",
+        "guard_condition": "Feature_Frequency_supported == false",
+        "actions": [
+          "LastError := UNSUPPORTED_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "Frequency feature not supported; command is conceptually unsupported."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToClosestFrequency",
+        "guard_condition": "Feature_Frequency_supported == true && closest_supported_frequency_exists == true",
+        "actions": [
+          "CurrentFrequency := selected_frequency"
+        ],
+        "response_command": null,
+        "timing_requirements": "Frequency change during level transition; RemainingTime and level evolution are unaffected."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToClosestFrequency",
+        "guard_condition": "Feature_Frequency_supported == true && closest_supported_frequency_exists == false",
+        "actions": [
+          "LastError := CONSTRAINT_ERROR"
+        ],
+        "response_command": null,
+        "timing_requirements": "Constraint error on frequency during an active transition; level-related attributes remain unchanged."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "MoveToClosestFrequency",
+        "guard_condition": "Feature_Frequency_supported == false",
+        "actions": [
+          "LastError := UNSUPPORTED_COMMAND"
+        ],
+        "response_command": null,
+        "timing_requirements": "MoveToClosestFrequency unsupported; no change to level or timers."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "SceneStore",
+        "guard_condition": "ScenesCluster_present == true",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": "Scene storage records Level Control attributes without altering them."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "SceneStore",
+        "guard_condition": "ScenesCluster_present == true",
+        "actions": [],
+        "response_command": null,
+        "timing_requirements": "Scene storage during a transition captures current attribute values but does not interrupt the transition."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "SceneRecall",
+        "guard_condition": "ScenesCluster_present == true && SceneRecall_uses_transition == false",
+        "actions": [
+          "CurrentLevel := recalled_scene_CurrentLevel",
+          "CurrentFrequency := recalled_scene_CurrentFrequency",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Scene recall restores stored level and frequency immediately and keeps RemainingTime at 0."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "Idle",
+        "trigger": "SceneRecall",
+        "guard_condition": "ScenesCluster_present == true && SceneRecall_uses_transition == false",
+        "actions": [
+          "CurrentLevel := recalled_scene_CurrentLevel",
+          "CurrentFrequency := recalled_scene_CurrentFrequency",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := 0"
+        ],
+        "response_command": null,
+        "timing_requirements": "Scene recall while a transition is active immediately applies the stored values and ends the ongoing transition."
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "TransitionActive",
+        "trigger": "SceneRecall",
+        "guard_condition": "ScenesCluster_present == true && SceneRecall_uses_transition == true && Feature_Lighting_supported == true",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := recalled_scene_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := SceneRecall_TransitionTime"
+        ],
+        "response_command": null,
+        "timing_requirements": "Scene recall may use a timed transition from current level to the stored level when Lighting feature is supported."
+      },
+      {
+        "from_state": "TransitionActive",
+        "to_state": "TransitionActive",
+        "trigger": "SceneRecall",
+        "guard_condition": "ScenesCluster_present == true && SceneRecall_uses_transition == true && Feature_Lighting_supported == true",
+        "actions": [
+          "StartLevel := CurrentLevel",
+          "TargetLevel := recalled_scene_CurrentLevel",
+          "TargetIsWithOnOff := false",
+          "RemainingTime := SceneRecall_TransitionTime"
+        ],
+        "response_command": null,
+        "timing_requirements": "Scene recall with transition pre-empts the existing transition and moves towards the scene level over the scene-specific time."
+      }
+    ],
+    "initial_state": "Idle",
+    "attributes_used": [
+      "CurrentLevel",
+      "RemainingTime",
+      "MinLevel",
+      "MaxLevel",
+      "CurrentFrequency",
+      "MinFrequency",
+      "MaxFrequency",
+      "OnOffTransitionTime",
+      "DefaultMoveRate",
+      "Options",
+      "FeatureMap",
+      "StartUpCurrentLevel",
+      "ClusterRevision",
+      "OnOffCluster.OnOff",
+      "LastError",
+      "StartLevel",
+      "TargetLevel",
+      "PreviousLevel",
+      "OnLevel",
+      "OnTransitionTime",
+      "OffTransitionTime",
+      "TargetIsWithOnOff",
+      "tempOptions",
+      "recalled_scene_CurrentLevel",
+      "recalled_scene_CurrentFrequency",
+      "SceneRecall_TransitionTime"
+    ],
+    "commands_handled": [
+      "MoveToLevel",
+      "Move",
+      "Step",
+      "Stop",
+      "MoveToLevelWithOnOff",
+      "MoveWithOnOff",
+      "StepWithOnOff",
+      "StopWithOnOff",
+      "MoveToClosestFrequency",
+      "SceneStore",
+      "SceneRecall",
+      "TimerTick"
+    ],
+    "events_generated": [],
+    "data_types_used": [
+      "OptionsBitmap",
+      "MoveModeEnum",
+      "StepModeEnum",
+      "uint8",
+      "uint16",
+      "bitmap8"
+    ],
+    "scene_behaviors": [
+      "When the Scenes Management server cluster is present on the same endpoint, the Level Control attributes CurrentLevel and CurrentFrequency (if the Frequency feature is supported) are stored in the scene table as part of the Level Control extension field set during SceneStore.",
+      "During SceneRecall, this FSM models two behaviors: immediate recall (SceneRecall_uses_transition == false) which sets CurrentLevel and CurrentFrequency and cancels any transition, and timed recall (SceneRecall_uses_transition == true) which starts a new timed transition from CurrentLevel to the stored scene level with RemainingTime set to SceneRecall_TransitionTime when Lighting feature is supported.",
+      "The FeatureMap determines which Level Control attributes are meaningful during scene recall; attributes not supported in FeatureMap may still appear in scenes but are ignored by the device when restoring."
+    ],
+    "definitions": [
+      {
+        "term": "DeviceMinLevel",
+        "definition": "The effective minimum permitted value of CurrentLevel for this device, based on the MinLevel attribute and any implementation-specific lower bound, ensuring CurrentLevel never goes below this value.",
+        "usage_context": "Used as a clamp for downward movement and as the reference level at which WithOnOff commands set OnOffCluster.OnOff to false."
+      },
+      {
+        "term": "DeviceMaxLevel",
+        "definition": "The effective maximum permitted value of CurrentLevel for this device, based on the MaxLevel attribute when implemented or on 254 when MaxLevel is absent, combined with any implementation-specific upper bound, ensuring CurrentLevel never exceeds this value.",
+        "usage_context": "Used as a clamp for upward movements in Move, MoveToLevel and Step commands and their WithOnOff variants."
+      },
+      {
+        "term": "DerivedTransitionTime",
+        "definition": "The effective transition duration in tenths of a second, obtained from the TransitionTime command field when that field is not null, otherwise from the OnOffTransitionTime attribute when implemented, otherwise from a minimal practical time when the device does not support variable rates.",
+        "usage_context": "Appears in guards to distinguish immediate moves from time-based transitions and in actions when assigning RemainingTime for MoveToLevel and MoveToLevelWithOnOff."
+      },
+      {
+        "term": "effRate",
+        "definition": "The effective rate of level change, expressed in level units per second, derived from the Move or MoveWithOnOff Rate field when that field is not null, otherwise from the DefaultMoveRate attribute when supported and non-null, otherwise from a device-defined maximum practical rate.",
+        "usage_context": "Ensures that modeled continuous movements have a strictly positive rate when starting transitions in Move and MoveWithOnOff."
+      },
+      {
+        "term": "DerivedMoveDuration",
+        "definition": "An abstract movement duration, in units compatible with RemainingTime, representing how long it takes to conceptually reach the clamp level (DeviceMinLevel or DeviceMaxLevel) from the starting level at the effective rate or, when the device ignores variable rates, a minimal practical time.",
+        "usage_context": "Used to assign RemainingTime when a Move or MoveWithOnOff command starts continuous level transitions."
+      },
+      {
+        "term": "DerivedStepDuration",
+        "definition": "The effective duration in tenths of a second associated with a Step or StepWithOnOff command, based on the TransitionTime field and proportionally reduced when clamping causes the actual level change to be smaller than the requested StepSize.",
+        "usage_context": "Determines whether a Step or StepWithOnOff is treated as immediate or time-based and sets RemainingTime for step transitions."
+      },
+      {
+        "term": "ExecuteIfOff (EiO)",
+        "definition": "A control bit within the Options bitmap that determines whether base level-changing commands are allowed to update CurrentLevel while the OnOff attribute in the On/Off cluster is false. A value of zero suppresses level changes when off for base commands, while a value of one permits them. WithOnOff commands are still allowed to change the OnOff state when off as specified by the state-change table.",
+        "usage_context": "Modeled via tempOptions_ExecuteIfOff in guards for MoveToLevel, Move and Step, and combined with OnOffCluster.OnOff in special guards for MoveToLevelWithOnOff and MoveWithOnOff when the device is off."
+      },
+      {
+        "term": "tempOptions",
+        "definition": "The temporary Options bitmap derived conceptually by combining the Options attribute with the OptionsMask and OptionsOverride fields of a given command.",
+        "usage_context": "Represents the effective options used to interpret command semantics; its ExecuteIfOff bit is exposed as tempOptions_ExecuteIfOff in guards, and a conceptual processed_tempOptions shorthand is used in Stop and StopWithOnOff actions."
+      },
+      {
+        "term": "tempOptions_ExecuteIfOff",
+        "definition": "The effective ExecuteIfOff bit value in the temporary Options bitmap for a particular command invocation.",
+        "usage_context": "Used in guards for level-changing commands to determine whether they execute while OnOffCluster.OnOff is false."
+      },
+      {
+        "term": "processed_tempOptions",
+        "definition": "An abstract placeholder for the result of merging Options, OptionsMask and OptionsOverride and then applying any logical interpretation required by the options processing rules for the current command.",
+        "usage_context": "Assigned to tempOptions in Stop and StopWithOnOff transitions to reflect that options processing occurs even though no level change is made."
+      },
+      {
+        "term": "resulting_CurrentLevel",
+        "definition": "The conceptual final value of CurrentLevel that a Step, StepWithOnOff, MoveToLevel or MoveToLevelWithOnOff command will produce after considering direction, requested change magnitude and clamping to device limits, without describing intermediate movement.",
+        "usage_context": "Used in guards and actions to classify whether WithOnOff commands will end above or at DeviceMinLevel for OnOff behavior."
+      },
+      {
+        "term": "Feature_Frequency_supported",
+        "definition": "A condition indicating that the Frequency feature bit (FQ) is set in the FeatureMap attribute and that frequency-related attributes and the MoveToClosestFrequency command are supported.",
+        "usage_context": "Used in guards for MoveToClosestFrequency transitions to ensure frequency control is only modeled when supported."
+      },
+      {
+        "term": "Feature_Lighting_supported",
+        "definition": "A condition indicating that the Lighting feature bit (LT) is set in the FeatureMap attribute and that Lighting-specific behavior such as RemainingTime and MinLevel constraints is active.",
+        "usage_context": "Used in state invariants, TimerTick transitions, and guards for timed movements to ensure RemainingTime is only used when Lighting is supported."
+      },
+      {
+        "term": "Feature_OnOff_supported",
+        "definition": "A condition indicating that the OnOff feature bit (OO) is set in the FeatureMap attribute and that this Level Control instance is logically coupled to the On/Off cluster on the same endpoint.",
+        "usage_context": "Used in guards for WithOnOff commands and OnOff updates to ensure OnOff coordination only occurs when the OnOff feature is supported."
+      },
+      {
+        "term": "closest_supported_frequency_exists",
+        "definition": "A conceptual indication that the device has at least one supported output frequency value considered sufficiently close to the requested Frequency parameter.",
+        "usage_context": "Used in guards to distinguish successful frequency changes from constraint errors in MoveToClosestFrequency."
+      },
+      {
+        "term": "selected_frequency",
+        "definition": "The supported output frequency chosen as the closest acceptable approximation to the requested Frequency value, according to manufacturer-defined criteria.",
+        "usage_context": "Assigned to CurrentFrequency in successful MoveToClosestFrequency transitions."
+      },
+      {
+        "term": "ScenesCluster_present",
+        "definition": "A condition indicating that a Scenes Management server cluster is implemented on the same endpoint and is capable of storing and recalling Level Control attributes.",
+        "usage_context": "Used in guards for SceneStore and SceneRecall triggers so that scene behavior only appears when scene support exists."
+      },
+      {
+        "term": "SceneRecall_uses_transition",
+        "definition": "A conceptual indicator of whether a particular scene recall is applied with a timed transition instead of an immediate change.",
+        "usage_context": "Used in guards to distinguish immediate scene recall from recall that uses a transition with non-zero RemainingTime."
+      },
+      {
+        "term": "SceneRecall_TransitionTime",
+        "definition": "The effective duration in tenths of a second used when a scene is recalled with a transition, representing the time taken to move from the current level to the stored scene level.",
+        "usage_context": "Assigned to RemainingTime when SceneRecall_uses_transition is true and Lighting feature is supported."
+      },
+      {
+        "term": "tick_amount",
+        "definition": "An abstract quantum of time, in the same units as RemainingTime, representing the elapsed time associated with each TimerTick trigger.",
+        "usage_context": "Used in TimerTick transitions to decrement RemainingTime and decide whether to remain in TransitionActive or complete the transition."
+      },
+      {
+        "term": "interpolated_level",
+        "definition": "A conceptual value of CurrentLevel that lies between StartLevel and TargetLevel in proportion to the remaining time relative to the initial transition duration.",
+        "usage_context": "Assigned to CurrentLevel on TimerTick transitions while RemainingTime remains above tick_amount, modeling continuous level evolution."
+      },
+      {
+        "term": "OnOffCluster_present",
+        "definition": "A condition indicating that an On/Off server cluster is present on the same endpoint and its OnOff attribute can be coordinated with Level Control.",
+        "usage_context": "Used in guards that couple CurrentLevel with the OnOff state and in ExecuteIfOff handling; when false, ExecuteIfOff suppression is not applied."
+      },
+      {
+        "term": "TargetIsWithOnOff",
+        "definition": "An abstract flag indicating that the currently active transition was started by a WithOnOff command and thus may require OnOff updates when the transition completes.",
+        "usage_context": "Used in TimerTick completion transitions to decide whether to update OnOffCluster.OnOff at the end of a level change."
+      },
+      {
+        "term": "MoveMode_Up",
+        "definition": "The MoveModeEnum value representing upward continuous level movement.",
+        "usage_context": "Used in guards for Move and MoveWithOnOff to select upward behavior."
+      },
+      {
+        "term": "MoveMode_Down",
+        "definition": "The MoveModeEnum value representing downward continuous level movement.",
+        "usage_context": "Used in guards for Move and MoveWithOnOff to select downward behavior."
+      },
+      {
+        "term": "MoveMode_is_reserved",
+        "definition": "A condition indicating that the provided MoveMode command value does not correspond to a defined MoveModeEnum value such as Up or Down.",
+        "usage_context": "Used in guards to route reserved MoveMode values to INVALID_COMMAND behavior."
+      },
+      {
+        "term": "StepMode_Up",
+        "definition": "The StepModeEnum value representing an upward level step.",
+        "usage_context": "Used in guards for Step and StepWithOnOff to select upward behavior."
+      },
+      {
+        "term": "StepMode_Down",
+        "definition": "The StepModeEnum value representing a downward level step.",
+        "usage_context": "Used in guards for Step and StepWithOnOff to select downward behavior."
+      },
+      {
+        "term": "StepMode_is_reserved",
+        "definition": "A condition indicating that the provided StepMode command value does not correspond to a defined StepModeEnum value such as Up or Down.",
+        "usage_context": "Used in guards to route reserved StepMode values to INVALID_COMMAND behavior."
+      },
+      {
+        "term": "MaxLevel_not_present",
+        "definition": "A condition indicating that the optional MaxLevel attribute is not implemented on this endpoint.",
+        "usage_context": "Used in invariants and guards so that level range checks use MaxLevel only when it is present."
+      },
+      {
+        "term": "LastError",
+        "definition": "An abstract variable representing the most recent conceptual error outcome (such as INVALID_COMMAND, CONSTRAINT_ERROR, or UNSUPPORTED_COMMAND) without describing wire-level encoding.",
+        "usage_context": "Set in transitions that model error results, allowing formal models to distinguish successful behavior from error paths."
+      }
+    ],
+    "references": [
+      {
+        "id": "0x0006",
+        "name": "On/Off Cluster",
+        "description": "Provides the OnOff attribute and related semantics that Level Control uses for ExecuteIfOff processing and WithOnOff command behaviors when the OnOff feature (OO) is set in FeatureMap."
+      },
+      {
+        "id": "0x0005",
+        "name": "Scenes Management Cluster",
+        "description": "Stores and recalls scenes including Level Control attributes such as CurrentLevel and optionally CurrentFrequency when present on the same endpoint."
+      },
+      {
+        "id": "0x0300",
+        "name": "Color Control Cluster",
+        "description": "Referenced via Options.CoupleColorTempToLevel for lighting applications, allowing some implementations to couple color temperature changes to level changes."
+      },
+      {
+        "id": "0xFFFD",
+        "name": "FeatureMap",
+        "description": "Global bitmap attribute for the Level Control cluster that indicates support for features such as OnOff (OO), Lighting (LT) and Frequency (FQ), driving attribute and command semantics."
+      },
+      {
+        "id": "0xFFFC",
+        "name": "ClusterRevision",
+        "description": "Global attribute indicating the implemented revision of the Level Control cluster specification; it constrains interpretation of the cluster’s features and behaviors."
+      }
+    ],
+    "metadata": {
+      "generation_timestamp": "2026-01-05T18:53:28.412353",
+      "generation_attempts": 8,
+      "judge_approved": true,
+      "source_pages": "74-89",
+      "section_number": "1.6",
+      "pass1_approved": true,
+      "two_pass_generation": true,
+      "security_properties_count": 10
+    },
+    "security_properties": [
+      {
+        "property_name": "rate_zero_commands_rejected",
+        "property_type": "integrity",
+        "description": "Move/MoveWithOnOff with Rate==0 and Step/StepWithOnOff with StepSize==0 are always rejected without changing level-related state",
+        "formal_specification": "For all transitions with trigger in {Move, MoveWithOnOff} and guard contains 'Rate == 0', or trigger in {Step, StepWithOnOff} and guard contains 'StepSize == 0', it holds that: (a) LastError is set to INVALID_COMMAND, and (b) CurrentLevel, RemainingTime, OnOffCluster.OnOff, CurrentFrequency, StartLevel, TargetLevel are unchanged compared to their values just before the transition. This must hold in both Idle and TransitionActive states.",
+        "attack_vector": "An attacker sends malformed commands with zero Rate or zero StepSize to induce undefined behavior or inconsistent device state.",
+        "mitigation": "The FSM explicitly routes all such commands to transitions that only set LastError := INVALID_COMMAND and otherwise preserve all functional attributes, enforcing strict input validation."
+      },
+      {
+        "property_name": "execute_if_off_respected_for_base_commands",
+        "property_type": "integrity",
+        "description": "When ExecuteIfOff==0 and OnOff is false, base level commands do not change CurrentLevel or RemainingTime",
+        "formal_specification": "In any transition whose trigger is in {MoveToLevel, Move, Step} with guard containing 'OnOffCluster_present == true && tempOptions_ExecuteIfOff == 0 && OnOffCluster.OnOff == false', the post-state values of CurrentLevel and RemainingTime equal their pre-state values, and OnOffCluster.OnOff is unchanged. No transition in the FSM allows these guards while also modifying CurrentLevel or RemainingTime.",
+        "attack_vector": "Client attempts to change the logical level of a device that is off, bypassing the commissioning configuration that disabled ExecuteIfOff.",
+        "mitigation": "The FSM models these cases with self-loop transitions that perform no state change, ensuring the Options.ExecuteIfOff policy is honored even under adversarial command sequences."
+      },
+      {
+        "property_name": "with_onoff_commands_always_consistent_with_min_level",
+        "property_type": "integrity",
+        "description": "WithOnOff commands only set OnOff true when resulting level is above DeviceMinLevel and false when at DeviceMinLevel",
+        "formal_specification": "For all transitions with trigger in {MoveToLevelWithOnOff, MoveWithOnOff, StepWithOnOff} where Feature_OnOff_supported == true: (a) If the actions set OnOffCluster.OnOff := true, then in the same transition TargetLevel or resulting_CurrentLevel (or implied DeviceMaxLevel for MoveWithOnOff up) satisfies > DeviceMinLevel. (b) If the actions set OnOffCluster.OnOff := false, then in the same transition TargetLevel or resulting_CurrentLevel equals DeviceMinLevel. (c) TimerTick completion transitions with TargetIsWithOnOff == true only set OnOffCluster.OnOff := true when TargetLevel > DeviceMinLevel and := false when TargetLevel == DeviceMinLevel.",
+        "attack_vector": "Attacker uses WithOnOff commands to force the device into an inconsistent state where OnOff is true but the level is at the minimum, or OnOff is false while the level is above minimum.",
+        "mitigation": "All FSM paths that write OnOffCluster.OnOff are guarded by predicates on TargetLevel or resulting_CurrentLevel relative to DeviceMinLevel, thereby enforcing the specification’s state change table invariants."
+      },
+      {
+        "property_name": "options_processing_side_effects_limited_in_stop_commands",
+        "property_type": "integrity",
+        "description": "Stop and StopWithOnOff process tempOptions but only affect RemainingTime and not CurrentLevel or OnOff",
+        "formal_specification": "For all transitions with trigger in {Stop, StopWithOnOff}: (a) RemainingTime is set to 0; (b) tempOptions may be assigned processed_tempOptions; (c) CurrentLevel, OnOffCluster.OnOff, StartLevel, TargetLevel, CurrentFrequency remain equal to their pre-transition values. No other transition with these triggers updates OnOffCluster.OnOff or CurrentLevel.",
+        "attack_vector": "Client attempts to exploit OptionsMask/OptionsOverride in Stop/StopWithOnOff to perform hidden state changes beyond cancelling transitions.",
+        "mitigation": "The FSM confines the effects of Stop/StopWithOnOff to RemainingTime and tempOptions, preventing unauthorized modification of level or OnOff via these control commands."
+      },
+      {
+        "property_name": "frequency_feature_enforced_for_move_to_closest_frequency",
+        "property_type": "integrity",
+        "description": "MoveToClosestFrequency affects CurrentFrequency only when Frequency feature is supported; otherwise yields UNSUPPORTED_COMMAND",
+        "formal_specification": "For all transitions with trigger == MoveToClosestFrequency: (a) If Feature_Frequency_supported == true and closest_supported_frequency_exists == true, then the only attribute changed is CurrentFrequency := selected_frequency. (b) If Feature_Frequency_supported == true and closest_supported_frequency_exists == false, then LastError := CONSTRAINT_ERROR and CurrentFrequency, CurrentLevel, RemainingTime are unchanged. (c) If Feature_Frequency_supported == false, then LastError := UNSUPPORTED_COMMAND and CurrentFrequency, CurrentLevel, RemainingTime are unchanged.",
+        "attack_vector": "Attacker tries to manipulate frequency behavior on devices that do not implement the Frequency feature, or to push illegal frequency values.",
+        "mitigation": "Guard conditions check Feature_Frequency_supported and closest_supported_frequency_exists, with error-setting transitions that leave functional attributes unchanged when constraints or feature support are violated."
+      },
+      {
+        "property_name": "scenes_cannot_be_used_to_bypass_featuremap_support",
+        "property_type": "integrity",
+        "description": "Scene recall respects FeatureMap; only supported Level Control attributes are applied from scenes",
+        "formal_specification": "For all transitions with trigger == SceneRecall and ScenesCluster_present == true: the actions update only CurrentLevel and CurrentFrequency; any attributes not supported by FeatureMap (e.g., Frequency when Feature_Frequency_supported == false) are not modified by SceneRecall transitions. In particular, when Feature_Frequency_supported == false, no SceneRecall transition in the FSM writes CurrentFrequency.",
+        "attack_vector": "Attacker stores scenes containing unsupported or legacy attributes to coerce the device into an unsupported configuration when recalled.",
+        "mitigation": "SceneRecall transitions are explicitly constrained to the attributes modeled as supported by FeatureMap, which ensures unsupported attributes are ignored on restore as mandated by the spec."
+      },
+      {
+        "property_name": "lighting_feature_bounds_preserved_for_currentlevel",
+        "property_type": "integrity",
+        "description": "When Lighting feature is supported, CurrentLevel always stays within MinLevel and MaxLevel constraints in all states",
+        "formal_specification": "In both Idle and TransitionActive states, the invariants: (a) CurrentLevel == null OR (CurrentLevel >= MinLevel AND (MaxLevel_not_present == true OR CurrentLevel <= MaxLevel)) hold for all reachable configurations. Every transition that writes CurrentLevel preserves this invariant, including Move/Step/WithOnOff, TimerTick, SceneRecall, MoveToLevel, and MoveToLevelWithOnOff.",
+        "attack_vector": "Attacker sends crafted sequences of level-control commands to drive CurrentLevel outside the allowed range, potentially causing undefined device behavior.",
+        "mitigation": "State invariants and clamping in derived levels ensure the FSM never produces a state with CurrentLevel outside [MinLevel, MaxLevel], even under adversarial command sequences."
+      },
+      {
+        "property_name": "remainingtime_only_used_when_lighting_feature_enabled",
+        "property_type": "integrity",
+        "description": "RemainingTime is positive only in TransitionActive when Lighting feature is supported and is forced to 0 on completion or stop",
+        "formal_specification": "For all reachable states: (a) In Idle, invariants require Feature_Lighting_supported == false OR RemainingTime == 0. (b) In TransitionActive, invariants require Feature_Lighting_supported == false OR RemainingTime > 0. (c) All TimerTick transitions with guard 'RemainingTime <= tick_amount' set RemainingTime := 0 and move to Idle. (d) All Stop/StopWithOnOff transitions set RemainingTime := 0. No transition sets RemainingTime > 0 unless Feature_Lighting_supported == true and the FSM moves to or remains in TransitionActive.",
+        "attack_vector": "Client attempts to keep RemainingTime artificially non-zero in Idle or zero in TransitionActive to desynchronize the device’s notion of in-progress transitions, confusing higher-level logic.",
+        "mitigation": "The FSM ties RemainingTime semantics strictly to Feature_Lighting_supported and TransitionActive, with all completion and stop paths forcing it to zero, preventing inconsistent timer states."
+      },
+      {
+        "property_name": "unsupported_or_reserved_modes_not_executed",
+        "property_type": "integrity",
+        "description": "Reserved MoveMode/StepMode values never cause level or OnOff changes and are treated as INVALID_COMMAND",
+        "formal_specification": "For all transitions whose guard contains MoveMode_is_reserved == true or StepMode_is_reserved == true: (a) the only state change is LastError := INVALID_COMMAND; (b) CurrentLevel, RemainingTime, OnOffCluster.OnOff, StartLevel, TargetLevel, CurrentFrequency remain unchanged. No transition with MoveMode_is_reserved == true or StepMode_is_reserved == true moves to TransitionActive or writes level-related attributes.",
+        "attack_vector": "Attacker sends reserved enumeration values to trigger untested code paths or bypass normal option and OnOff coupling behavior.",
+        "mitigation": "The FSM explicitly routes all reserved modes to INVALID_COMMAND error paths that do not alter functional state, enforcing strict handling of enumeration domains."
+      },
+      {
+        "property_name": "onoff_changes_only_via_with_onoff_or_timed_completion_paths",
+        "property_type": "integrity",
+        "description": "OnOffCluster.OnOff is modified only by WithOnOff transitions and their TimerTick completions when Feature_OnOff_supported is true",
+        "formal_specification": "Across the FSM, any action that assigns to OnOffCluster.OnOff appears only in transitions whose trigger is one of {MoveToLevelWithOnOff, MoveWithOnOff, StepWithOnOff} or TimerTick completions with TargetIsWithOnOff == true and Feature_OnOff_supported == true. No Move, MoveToLevel, Step, Stop, StopWithOnOff, MoveToClosestFrequency, SceneStore, or SceneRecall transitions assign to OnOffCluster.OnOff. Therefore any change in OnOffCluster.OnOff between consecutive states implies one of these authorized transitions occurred with Feature_OnOff_supported == true.",
+        "attack_vector": "Client or compromised stack component attempts to toggle OnOff via base level commands or unrelated operations, bypassing the OnOff-linkage semantics.",
+        "mitigation": "The FSM confines writes to OnOffCluster.OnOff to the WithOnOff family and corresponding TimerTick completions, ensuring that OnOff changes are always coupled to well-defined level transitions and feature support."
+      }
+    ]
+  }
+}

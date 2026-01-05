@@ -1,0 +1,826 @@
+(* Matter Level Control Cluster ProVerif Model *)
+
+(* 1. Types *)
+type state.
+type command.
+type level.
+type freq.
+type duration.
+type optionsBitmap.
+type featureBitmap.
+type errorCode.
+type moveMode.
+type stepMode.
+
+(* Custom boolean type for abstract predicates *)
+type mybool.
+const myTrue: mybool.
+const myFalse: mybool.
+
+(* 2. Abstract predicates and helpers *)
+
+(* Order predicates on level: abstract, only used in guards if needed *)
+fun ge_level(level, level): mybool.
+fun le_level(level, level): mybool.
+fun gt_level(level, level): mybool.
+
+(* Equality and order on duration: abstract *)
+fun eq_duration(duration, duration): mybool.
+fun ge_duration(duration, duration): mybool.
+fun gt_duration(duration, duration): mybool.
+fun le_duration(duration, duration): mybool.
+
+(* Distinguish zero/non-zero durations via an explicit constant *)
+const zero_duration: duration.
+
+(* is_zero and is_positive modeled as abstract predicates over duration *)
+fun is_zero(duration): mybool.
+fun is_positive(duration): mybool.
+
+(* Boolean identity destructor to convert mybool to bool for conditions *)
+reduc is_true(myTrue) = true;
+      is_true(myFalse) = false.
+
+(* Feature predicates from FeatureMap, modeled abstractly *)
+fun feature_lighting_supported(featureBitmap): mybool.
+fun feature_onoff_supported(featureBitmap): mybool.
+fun feature_frequency_supported(featureBitmap): mybool.
+
+(* ExecuteIfOff bit extracted from tempOptions *)
+fun execute_if_off(optionsBitmap): mybool.
+
+(* OnOffCluster presence, ScenesCluster presence, MaxLevel presence *)
+fun onoffcluster_present(featureBitmap): mybool.
+fun scenescluster_present(featureBitmap): mybool.
+fun maxlevel_not_present(featureBitmap): mybool.
+
+(* Abstract predicates for closest_supported_frequency_exists, SceneRecall_uses_transition *)
+fun closest_supported_frequency_exists(freq): mybool.
+fun scenerecall_uses_transition(featureBitmap): mybool.
+
+(* Move/Step mode classification *)
+const movemode_up: moveMode.
+const movemode_down: moveMode.
+fun movemode_is_reserved(moveMode): mybool.
+
+const stepmode_up: stepMode.
+const stepmode_down: stepMode.
+fun stepmode_is_reserved(stepMode): mybool.
+
+(* 3. Channels *)
+free c: channel.
+free internal: channel [private].
+
+(* 4. Constants *)
+
+(* States *)
+const st_Idle: state.
+const st_TransitionActive: state.
+
+(* Commands (triggers) *)
+const cmd_MoveToLevel: command.
+const cmd_Move: command.
+const cmd_Step: command.
+const cmd_Stop: command.
+const cmd_MoveToLevelWithOnOff: command.
+const cmd_MoveWithOnOff: command.
+const cmd_StepWithOnOff: command.
+const cmd_StopWithOnOff: command.
+const cmd_MoveToClosestFrequency: command.
+const cmd_SceneStore: command.
+const cmd_SceneRecall: command.
+const cmd_TimerTick: command.
+
+(* Error codes *)
+const err_INVALID_COMMAND: errorCode.
+const err_CONSTRAINT_ERROR: errorCode.
+const err_UNSUPPORTED_COMMAND: errorCode.
+const err_None: errorCode.
+
+(* Special tick quantum *)
+const tick_amount: duration.
+
+(* 5. Free names (initial attributes / environment parameters) *)
+
+(* Cluster attributes and related variables *)
+free curLevel: level.
+free curRemainingTime: duration.
+free curMinLevel: level.
+free curMaxLevel: level.
+free curFreq: freq.
+free curMinFreq: freq.
+free curMaxFreq: freq.
+free curOnOff: mybool.
+free curFeatureMap: featureBitmap.
+free curOptions: optionsBitmap.
+free curOnOffTransitionTime: duration.
+free curDefaultMoveRate: duration.
+free curStartUpCurrentLevel: level.
+free curClusterRevision: bitstring.
+free curLastError: errorCode.
+free curStartLevel: level.
+free curTargetLevel: level.
+free curPreviousLevel: level.
+free curOnLevel: level.
+free curOnTransitionTime: duration.
+free curOffTransitionTime: duration.
+free curTargetIsWithOnOff: mybool.
+free curTempOptions: optionsBitmap.
+free curRecalledSceneLevel: level.
+free curRecalledSceneFreq: freq.
+free curSceneRecallTransitionTime: duration.
+
+(* Abstract device-specific constants *)
+const deviceMinLevel: level.
+const deviceMaxLevel: level.
+
+(* Derived quantities, modeled as free variables under environment/adversary control *)
+free DerivedTransitionTime_in: duration.
+free DerivedMoveDuration_in: duration.
+free DerivedStepDuration_in: duration.
+free effRate_in: duration.
+free resulting_CurrentLevel_in: level.
+free requestedFrequency_in: freq.
+free selected_frequency_in: freq.
+
+(* 6. Events *)
+
+event CommandReceived(command, state).
+event StateChanged(state, state).
+event AttributeUpdate_level(level, level).
+event AttributeUpdate_remaining(duration, duration).
+event AttributeUpdate_onoff(bool, bool).
+event AttributeUpdate_freq(freq, freq).
+event ErrorSet(errorCode).
+
+(* Security-observation events, one per high-level property *)
+event Security_rate_zero_rejected(command, errorCode).
+event Security_execute_if_off_respected(command).
+event Security_with_onoff_minlevel_consistent(command).
+event Security_stop_side_effects_limited(command).
+event Security_frequency_feature_enforced(command).
+event Security_scenes_featuremap_respected(command).
+event Security_lighting_bounds_preserved(state).
+event Security_remainingtime_lighting_consistent(state).
+event Security_reserved_modes_not_executed(command, errorCode).
+event Security_onoff_changes_authorized(command).
+
+(* 7. Queries for security properties *)
+
+(* Rate/size zero rejected for Move/MoveWithOnOff/Step/StepWithOnOff *)
+query event(Security_rate_zero_rejected(cmd_Move, err_INVALID_COMMAND)).
+query event(Security_rate_zero_rejected(cmd_MoveWithOnOff, err_INVALID_COMMAND)).
+query event(Security_rate_zero_rejected(cmd_Step, err_INVALID_COMMAND)).
+query event(Security_rate_zero_rejected(cmd_StepWithOnOff, err_INVALID_COMMAND)).
+
+(* ExecuteIfOff respected for base commands *)
+query event(Security_execute_if_off_respected(cmd_MoveToLevel)).
+query event(Security_execute_if_off_respected(cmd_Move)).
+query event(Security_execute_if_off_respected(cmd_Step)).
+
+(* WithOnOff consistency wrt DeviceMinLevel *)
+query event(Security_with_onoff_minlevel_consistent(cmd_MoveToLevelWithOnOff)).
+query event(Security_with_onoff_minlevel_consistent(cmd_MoveWithOnOff)).
+query event(Security_with_onoff_minlevel_consistent(cmd_StepWithOnOff)).
+
+(* Stop/StopWithOnOff side effects limited *)
+query event(Security_stop_side_effects_limited(cmd_Stop)).
+query event(Security_stop_side_effects_limited(cmd_StopWithOnOff)).
+
+(* Frequency feature enforced *)
+query event(Security_frequency_feature_enforced(cmd_MoveToClosestFrequency)).
+
+(* Scenes respect FeatureMap *)
+query event(Security_scenes_featuremap_respected(cmd_SceneRecall)).
+
+(* Lighting bounds and RemainingTime invariants *)
+query event(Security_lighting_bounds_preserved(st_Idle)).
+query event(Security_lighting_bounds_preserved(st_TransitionActive)).
+query event(Security_remainingtime_lighting_consistent(st_Idle)).
+query event(Security_remainingtime_lighting_consistent(st_TransitionActive)).
+
+(* Reserved modes not executed *)
+query event(Security_reserved_modes_not_executed(cmd_Move, err_INVALID_COMMAND)).
+query event(Security_reserved_modes_not_executed(cmd_MoveWithOnOff, err_INVALID_COMMAND)).
+query event(Security_reserved_modes_not_executed(cmd_Step, err_INVALID_COMMAND)).
+query event(Security_reserved_modes_not_executed(cmd_StepWithOnOff, err_INVALID_COMMAND)).
+
+(* OnOff changes only via authorized paths *)
+query event(Security_onoff_changes_authorized(cmd_MoveToLevelWithOnOff)).
+query event(Security_onoff_changes_authorized(cmd_MoveWithOnOff)).
+query event(Security_onoff_changes_authorized(cmd_StepWithOnOff)).
+query event(Security_onoff_changes_authorized(cmd_TimerTick)).
+
+(* 8. Device FSM process (property-oriented abstraction of the JSON FSM) *)
+
+let DeviceFSM() =
+    in(c, (cmd: command, st: state));
+    event CommandReceived(cmd, st);
+    let curSt = st in
+    let curCL = curLevel in
+    let curRT = curRemainingTime in
+    let curOO = curOnOff in
+    let curFM = curFeatureMap in
+    let curFreqVal = curFreq in
+
+    if curSt = st_Idle then
+      (
+        (* ===================== Idle state transitions ===================== *)
+
+        if cmd = cmd_MoveToLevel then
+          (
+          (* Abstract MoveToLevel behavior, capturing RemainingTime and lighting bounds invariants. *)
+          if is_true(feature_lighting_supported(curFM)) then
+             (if is_true(is_positive(DerivedTransitionTime_in)) then
+                (* Timed MoveToLevel => TransitionActive *)
+                (event StateChanged(st_Idle, st_TransitionActive);
+                event AttributeUpdate_remaining(curRT, DerivedTransitionTime_in);
+                event Security_remainingtime_lighting_consistent(st_TransitionActive);
+                event Security_lighting_bounds_preserved(st_TransitionActive);
+                event Security_execute_if_off_respected(cmd_MoveToLevel))
+              else
+                (* Immediate MoveToLevel stays in Idle *)
+                (event StateChanged(st_Idle, st_Idle);
+                event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_lighting_bounds_preserved(st_Idle);
+                event Security_remainingtime_lighting_consistent(st_Idle);
+                event Security_execute_if_off_respected(cmd_MoveToLevel))
+             )
+           else
+             (* Lighting not supported: RemainingTime forced to zero, level updated directly *)
+             (event StateChanged(st_Idle, st_Idle);
+             event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+             event AttributeUpdate_remaining(curRT, zero_duration);
+             event Security_lighting_bounds_preserved(st_Idle);
+             event Security_remainingtime_lighting_consistent(st_Idle);
+             event Security_execute_if_off_respected(cmd_MoveToLevel))
+          )
+
+        else if cmd = cmd_Move then
+          (
+          (* Abstract Move, emphasizing Rate==0 rejection and reserved mode handling *)
+          if is_true(is_zero(effRate_in)) then
+             (* Rate == 0 => INVALID_COMMAND *)
+             (event ErrorSet(err_INVALID_COMMAND);
+             event Security_rate_zero_rejected(cmd_Move, err_INVALID_COMMAND);
+             event Security_reserved_modes_not_executed(cmd_Move, err_INVALID_COMMAND);
+             event Security_execute_if_off_respected(cmd_Move))
+           else
+             (* Non-zero rate, distinguish reserved/non-reserved mode abstractly *)
+             (if is_true(movemode_is_reserved(movemode_up)) then
+                (* Reserved mode abstract case *)
+                (event ErrorSet(err_INVALID_COMMAND);
+                event Security_reserved_modes_not_executed(cmd_Move, err_INVALID_COMMAND);
+                event Security_execute_if_off_respected(cmd_Move))
+              else
+                (* Legal mode with Lighting support possibly starting a transition *)
+                (if is_true(feature_lighting_supported(curFM)) then
+                   (event StateChanged(st_Idle, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, DerivedMoveDuration_in);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive);
+                   event Security_lighting_bounds_preserved(st_TransitionActive);
+                   event Security_execute_if_off_respected(cmd_Move))
+                 else
+                   (event StateChanged(st_Idle, st_Idle);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_remainingtime_lighting_consistent(st_Idle);
+                   event Security_lighting_bounds_preserved(st_Idle);
+                   event Security_execute_if_off_respected(cmd_Move))
+                )
+             )
+          )
+        else if cmd = cmd_Step then
+          (
+          (* Abstract Step, focusing on StepSize==0 (modeled via zero duration) rejection *)
+          if is_true(is_zero(DerivedStepDuration_in)) then
+             (* Model StepSize==0 => INVALID_COMMAND *)
+             (event ErrorSet(err_INVALID_COMMAND);
+             event Security_rate_zero_rejected(cmd_Step, err_INVALID_COMMAND);
+             event Security_reserved_modes_not_executed(cmd_Step, err_INVALID_COMMAND);
+             event Security_execute_if_off_respected(cmd_Step))
+           else
+             (if is_true(feature_lighting_supported(curFM)) then
+                (if is_true(is_positive(DerivedStepDuration_in)) then
+                   (event StateChanged(st_Idle, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, DerivedStepDuration_in);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive);
+                   event Security_lighting_bounds_preserved(st_TransitionActive);
+                   event Security_execute_if_off_respected(cmd_Step))
+                 else
+                   (* Immediate step *)
+                   (event StateChanged(st_Idle, st_Idle);
+                   event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_remainingtime_lighting_consistent(st_Idle);
+                   event Security_lighting_bounds_preserved(st_Idle);
+                   event Security_execute_if_off_respected(cmd_Step))
+                )
+              else
+                (* Lighting not supported: immediate effect *)
+                (event StateChanged(st_Idle, st_Idle);
+                event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_remainingtime_lighting_consistent(st_Idle);
+                event Security_lighting_bounds_preserved(st_Idle);
+                event Security_execute_if_off_respected(cmd_Step))
+             )
+          )
+        else if cmd = cmd_Stop then
+          (
+          (* Stop in Idle: only RemainingTime forced to 0 *)
+          event StateChanged(st_Idle, st_Idle);
+          event AttributeUpdate_remaining(curRT, zero_duration);
+          event Security_stop_side_effects_limited(cmd_Stop);
+          event Security_remainingtime_lighting_consistent(st_Idle);
+          event Security_lighting_bounds_preserved(st_Idle)
+          )
+        else if cmd = cmd_MoveToLevelWithOnOff then
+
+          (* Abstract MoveToLevelWithOnOff: model OnOff changes only when feature_onoff_supported *)
+          (if is_true(feature_onoff_supported(curFM)) then
+             event Security_with_onoff_minlevel_consistent(cmd_MoveToLevelWithOnOff);
+             event Security_onoff_changes_authorized(cmd_MoveToLevelWithOnOff);
+             (if is_true(feature_lighting_supported(curFM)) then
+                (if is_true(is_positive(DerivedTransitionTime_in)) then
+                   event StateChanged(st_Idle, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, DerivedTransitionTime_in);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive)
+                 else
+                   (* Immediate WithOnOff change *)
+                   event StateChanged(st_Idle, st_Idle);
+                   event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_lighting_bounds_preserved(st_Idle);
+                   event Security_remainingtime_lighting_consistent(st_Idle)
+                )
+              else
+                (* WithOnOff but Lighting feature not supported: treat as immediate *)
+                event StateChanged(st_Idle, st_Idle);
+                event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                event AttributeUpdate_remaining(curRT, zero_duration)
+             )
+           else
+             (* OnOff feature not supported: cannot change OnOff, only level *)
+             event StateChanged(st_Idle, st_Idle);
+             event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+             event AttributeUpdate_remaining(curRT, zero_duration);
+             event Security_lighting_bounds_preserved(st_Idle);
+             event Security_remainingtime_lighting_consistent(st_Idle)
+          )
+
+        else if cmd = cmd_MoveWithOnOff then
+
+          (* MoveWithOnOff: Share Move's rate-zero behavior and OnOff coupling *)
+          (if is_true(is_zero(effRate_in)) then
+             event ErrorSet(err_INVALID_COMMAND);
+             event Security_rate_zero_rejected(cmd_MoveWithOnOff, err_INVALID_COMMAND);
+             event Security_reserved_modes_not_executed(cmd_MoveWithOnOff, err_INVALID_COMMAND)
+           else
+             (if is_true(feature_onoff_supported(curFM)) then
+                event Security_with_onoff_minlevel_consistent(cmd_MoveWithOnOff);
+                event Security_onoff_changes_authorized(cmd_MoveWithOnOff);
+                (if is_true(feature_lighting_supported(curFM)) then
+                   event StateChanged(st_Idle, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, DerivedMoveDuration_in);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive)
+                 else
+                   event StateChanged(st_Idle, st_Idle);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_remainingtime_lighting_consistent(st_Idle)
+                )
+              else
+                event StateChanged(st_Idle, st_Idle);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_remainingtime_lighting_consistent(st_Idle)
+             )
+          )
+
+        else if cmd = cmd_StepWithOnOff then
+
+          (* StepWithOnOff: Step semantics plus OnOff coupling *)
+          (if is_true(is_zero(DerivedStepDuration_in)) then
+             event ErrorSet(err_INVALID_COMMAND);
+             event Security_rate_zero_rejected(cmd_StepWithOnOff, err_INVALID_COMMAND);
+             event Security_reserved_modes_not_executed(cmd_StepWithOnOff, err_INVALID_COMMAND)
+           else
+             (if is_true(feature_onoff_supported(curFM)) then
+                event Security_with_onoff_minlevel_consistent(cmd_StepWithOnOff);
+                event Security_onoff_changes_authorized(cmd_StepWithOnOff);
+                (if is_true(feature_lighting_supported(curFM)) then
+                   (if is_true(is_positive(DerivedStepDuration_in)) then
+                      event StateChanged(st_Idle, st_TransitionActive);
+                      event AttributeUpdate_remaining(curRT, DerivedStepDuration_in);
+                      event Security_remainingtime_lighting_consistent(st_TransitionActive)
+                    else
+                      event StateChanged(st_Idle, st_Idle);
+                      event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                      event AttributeUpdate_remaining(curRT, zero_duration);
+                      event Security_remainingtime_lighting_consistent(st_Idle);
+                      event Security_lighting_bounds_preserved(st_Idle)
+                   )
+                 else
+                   event StateChanged(st_Idle, st_Idle);
+                   event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_remainingtime_lighting_consistent(st_Idle);
+                   event Security_lighting_bounds_preserved(st_Idle)
+                )
+              else
+                event StateChanged(st_Idle, st_Idle);
+                event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_remainingtime_lighting_consistent(st_Idle)
+             )
+          )
+
+        else if cmd = cmd_StopWithOnOff then
+
+          (* StopWithOnOff: same RemainingTime effect as Stop, no OnOff change *)
+          event StateChanged(st_Idle, st_Idle);
+          event AttributeUpdate_remaining(curRT, zero_duration);
+          event Security_stop_side_effects_limited(cmd_StopWithOnOff);
+          event Security_remainingtime_lighting_consistent(st_Idle);
+          event Security_lighting_bounds_preserved(st_Idle)
+
+        else if cmd = cmd_MoveToClosestFrequency then
+
+          (* Frequency feature enforcement and constraint errors *)
+          (if is_true(feature_frequency_supported(curFM)) then
+             (if is_true(closest_supported_frequency_exists(requestedFrequency_in)) then
+                event AttributeUpdate_freq(curFreqVal, selected_frequency_in);
+                event Security_frequency_feature_enforced(cmd_MoveToClosestFrequency)
+              else
+                event ErrorSet(err_CONSTRAINT_ERROR);
+                event Security_frequency_feature_enforced(cmd_MoveToClosestFrequency)
+             )
+           else
+             event ErrorSet(err_UNSUPPORTED_COMMAND);
+             event Security_frequency_feature_enforced(cmd_MoveToClosestFrequency)
+          )
+
+        else if cmd = cmd_SceneStore then
+
+          (* SceneStore has no Level/OnOff side effects in this abstraction *)
+          (if is_true(scenescluster_present(curFM)) then
+             event StateChanged(st_Idle, st_Idle)
+           else
+             event StateChanged(st_Idle, st_Idle)
+          )
+
+        else if cmd = cmd_SceneRecall then
+
+          (* SceneRecall with/without transition, respecting FeatureMap/Frequency *)
+          (if is_true(scenescluster_present(curFM)) then
+             (if is_true(scenerecall_uses_transition(curFM)) then
+                (if is_true(feature_lighting_supported(curFM)) then
+                   event StateChanged(st_Idle, st_TransitionActive);
+                   event AttributeUpdate_level(curCL, curRecalledSceneLevel);
+                   event AttributeUpdate_freq(curFreqVal, curRecalledSceneFreq);
+                   event AttributeUpdate_remaining(curRT, curSceneRecallTransitionTime);
+                   event Security_scenes_featuremap_respected(cmd_SceneRecall);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive)
+                 else
+                   (* Timed recall but no lighting feature: treat as immediate *)
+                   event StateChanged(st_Idle, st_Idle);
+                   event AttributeUpdate_level(curCL, curRecalledSceneLevel);
+                   event AttributeUpdate_freq(curFreqVal, curRecalledSceneFreq);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_scenes_featuremap_respected(cmd_SceneRecall);
+                   event Security_remainingtime_lighting_consistent(st_Idle)
+                )
+              else
+                (* Immediate SceneRecall *)
+                event StateChanged(st_Idle, st_Idle);
+                event AttributeUpdate_level(curCL, curRecalledSceneLevel);
+                event AttributeUpdate_freq(curFreqVal, curRecalledSceneFreq);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_scenes_featuremap_respected(cmd_SceneRecall);
+                event Security_remainingtime_lighting_consistent(st_Idle)
+             )
+           else
+             event StateChanged(st_Idle, st_Idle)
+          )
+
+        else if cmd = cmd_TimerTick then
+
+          (* No active transition in Idle: Tick only enforces RemainingTime==0 *)
+          event StateChanged(st_Idle, st_Idle);
+          event AttributeUpdate_remaining(curRT, zero_duration);
+          event Security_remainingtime_lighting_consistent(st_Idle);
+          event Security_lighting_bounds_preserved(st_Idle)
+
+        else
+
+          (* Any other command leaves Idle unchanged in this abstraction *)
+          event StateChanged(st_Idle, st_Idle);
+          event Security_lighting_bounds_preserved(st_Idle);
+          event Security_remainingtime_lighting_consistent(st_Idle)
+      )
+    else
+      (
+        (* ===================== TransitionActive state transitions ===================== *)
+
+        if cmd = cmd_TimerTick then
+
+          (* TimerTick driving RemainingTime and possible completion to Idle *)
+          (if is_true(feature_lighting_supported(curFM)) then
+             (if is_true(gt_duration(curRT, tick_amount)) then
+                (* Still time remaining: stay in TransitionActive *)
+                event StateChanged(st_TransitionActive, st_TransitionActive);
+                (* Abstractly, RemainingTime stays > 0; we do not change it here *)
+                event AttributeUpdate_remaining(curRT, curRT);
+                event Security_remainingtime_lighting_consistent(st_TransitionActive)
+              else
+                (* Transition completes: RemainingTime -> 0, go to Idle, OnOff updates only via authorized paths *)
+                event StateChanged(st_TransitionActive, st_Idle);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_onoff_changes_authorized(cmd_TimerTick);
+                event Security_remainingtime_lighting_consistent(st_Idle);
+                event Security_lighting_bounds_preserved(st_Idle)
+             )
+           else
+             (* Lighting not supported: TimerTick has no effect on RemainingTime/state *)
+             event StateChanged(st_TransitionActive, st_TransitionActive);
+             event Security_remainingtime_lighting_consistent(st_TransitionActive)
+          )
+
+        else if cmd = cmd_MoveToLevel then
+
+          (* New MoveToLevel can pre-empt transition or complete immediately *)
+          (if is_true(feature_lighting_supported(curFM)) then
+             (if is_true(is_positive(DerivedTransitionTime_in)) then
+                (event StateChanged(st_TransitionActive, st_TransitionActive);
+                event AttributeUpdate_remaining(curRT, DerivedTransitionTime_in);
+                event Security_remainingtime_lighting_consistent(st_TransitionActive);
+                event Security_execute_if_off_respected(cmd_MoveToLevel))
+              else
+                (event StateChanged(st_TransitionActive, st_Idle);
+                event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_remainingtime_lighting_consistent(st_Idle);
+                event Security_lighting_bounds_preserved(st_Idle);
+                event Security_execute_if_off_respected(cmd_MoveToLevel))
+             )
+           else
+             (event StateChanged(st_TransitionActive, st_Idle);
+             event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+             event AttributeUpdate_remaining(curRT, zero_duration);
+             event Security_remainingtime_lighting_consistent(st_Idle);
+             event Security_lighting_bounds_preserved(st_Idle);
+             event Security_execute_if_off_respected(cmd_MoveToLevel))
+          )
+
+        else if cmd = cmd_Move then
+
+          (* Move during active transition shares the same rate-zero/reserved semantics *)
+          (if is_true(is_zero(effRate_in)) then
+             (event ErrorSet(err_INVALID_COMMAND);
+             event Security_rate_zero_rejected(cmd_Move, err_INVALID_COMMAND);
+             event Security_reserved_modes_not_executed(cmd_Move, err_INVALID_COMMAND);
+             event Security_execute_if_off_respected(cmd_Move))
+           else
+             (if is_true(movemode_is_reserved(movemode_up)) then
+                (event ErrorSet(err_INVALID_COMMAND);
+                event Security_reserved_modes_not_executed(cmd_Move, err_INVALID_COMMAND);
+                event Security_execute_if_off_respected(cmd_Move))
+              else
+                (if is_true(feature_lighting_supported(curFM)) then
+                   (event StateChanged(st_TransitionActive, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, DerivedMoveDuration_in);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive);
+                   event Security_execute_if_off_respected(cmd_Move))
+                 else
+                   (event StateChanged(st_TransitionActive, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive);
+                   event Security_execute_if_off_respected(cmd_Move))
+                )
+             )
+          )
+
+        else if cmd = cmd_Step then
+
+          (* Step during active transition: size-zero and timing semantics preserved *)
+          (if is_true(is_zero(DerivedStepDuration_in)) then
+             (event ErrorSet(err_INVALID_COMMAND);
+             event Security_rate_zero_rejected(cmd_Step, err_INVALID_COMMAND);
+             event Security_reserved_modes_not_executed(cmd_Step, err_INVALID_COMMAND);
+             event Security_execute_if_off_respected(cmd_Step))
+           else
+             (if is_true(feature_lighting_supported(curFM)) then
+                (if is_true(is_positive(DerivedStepDuration_in)) then
+                   (event StateChanged(st_TransitionActive, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, DerivedStepDuration_in);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive);
+                   event Security_execute_if_off_respected(cmd_Step))
+                 else
+                   (event StateChanged(st_TransitionActive, st_Idle);
+                   event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_remainingtime_lighting_consistent(st_Idle);
+                   event Security_lighting_bounds_preserved(st_Idle);
+                   event Security_execute_if_off_respected(cmd_Step))
+                )
+              else
+                (event StateChanged(st_TransitionActive, st_Idle);
+                event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_remainingtime_lighting_consistent(st_Idle);
+                event Security_lighting_bounds_preserved(st_Idle);
+                event Security_execute_if_off_respected(cmd_Step))
+             )
+          )
+
+        else if cmd = cmd_MoveToLevelWithOnOff then
+
+          (* WithOnOff during transition: pre-empts and keeps OnOff coupling rules *)
+          (if is_true(feature_onoff_supported(curFM)) then
+             event Security_with_onoff_minlevel_consistent(cmd_MoveToLevelWithOnOff);
+             event Security_onoff_changes_authorized(cmd_MoveToLevelWithOnOff);
+             (if is_true(feature_lighting_supported(curFM)) then
+                (if is_true(is_positive(DerivedTransitionTime_in)) then
+                   event StateChanged(st_TransitionActive, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, DerivedTransitionTime_in);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive)
+                 else
+                   event StateChanged(st_TransitionActive, st_Idle);
+                   event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_remainingtime_lighting_consistent(st_Idle);
+                   event Security_lighting_bounds_preserved(st_Idle)
+                )
+              else
+                event StateChanged(st_TransitionActive, st_Idle);
+                event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_remainingtime_lighting_consistent(st_Idle);
+                event Security_lighting_bounds_preserved(st_Idle)
+             )
+           else
+             event StateChanged(st_TransitionActive, st_Idle);
+             event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+             event AttributeUpdate_remaining(curRT, zero_duration);
+             event Security_remainingtime_lighting_consistent(st_Idle);
+             event Security_lighting_bounds_preserved(st_Idle)
+          )
+
+        else if cmd = cmd_MoveWithOnOff then
+
+          (* MoveWithOnOff during transition: same as in Idle but staying active *)
+          (if is_true(is_zero(effRate_in)) then
+             event ErrorSet(err_INVALID_COMMAND);
+             event Security_rate_zero_rejected(cmd_MoveWithOnOff, err_INVALID_COMMAND);
+             event Security_reserved_modes_not_executed(cmd_MoveWithOnOff, err_INVALID_COMMAND)
+           else
+             (if is_true(feature_onoff_supported(curFM)) then
+                event Security_with_onoff_minlevel_consistent(cmd_MoveWithOnOff);
+                event Security_onoff_changes_authorized(cmd_MoveWithOnOff);
+                (if is_true(feature_lighting_supported(curFM)) then
+                   event StateChanged(st_TransitionActive, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, DerivedMoveDuration_in);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive)
+                 else
+                   event StateChanged(st_TransitionActive, st_TransitionActive);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive)
+                )
+              else
+                event StateChanged(st_TransitionActive, st_TransitionActive);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_remainingtime_lighting_consistent(st_TransitionActive)
+             )
+          )
+
+        else if cmd = cmd_StepWithOnOff then
+
+          (* StepWithOnOff during transition *)
+          (if is_true(is_zero(DerivedStepDuration_in)) then
+             event ErrorSet(err_INVALID_COMMAND);
+             event Security_rate_zero_rejected(cmd_StepWithOnOff, err_INVALID_COMMAND);
+             event Security_reserved_modes_not_executed(cmd_StepWithOnOff, err_INVALID_COMMAND)
+           else
+             (if is_true(feature_onoff_supported(curFM)) then
+                event Security_with_onoff_minlevel_consistent(cmd_StepWithOnOff);
+                event Security_onoff_changes_authorized(cmd_StepWithOnOff);
+                (if is_true(feature_lighting_supported(curFM)) then
+                   (if is_true(is_positive(DerivedStepDuration_in)) then
+                      event StateChanged(st_TransitionActive, st_TransitionActive);
+                      event AttributeUpdate_remaining(curRT, DerivedStepDuration_in);
+                      event Security_remainingtime_lighting_consistent(st_TransitionActive)
+                    else
+                      event StateChanged(st_TransitionActive, st_Idle);
+                      event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                      event AttributeUpdate_remaining(curRT, zero_duration);
+                      event Security_remainingtime_lighting_consistent(st_Idle);
+                      event Security_lighting_bounds_preserved(st_Idle)
+                   )
+                 else
+                   event StateChanged(st_TransitionActive, st_Idle);
+                   event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_remainingtime_lighting_consistent(st_Idle);
+                   event Security_lighting_bounds_preserved(st_Idle)
+                )
+              else
+                event StateChanged(st_TransitionActive, st_Idle);
+                event AttributeUpdate_level(curCL, resulting_CurrentLevel_in);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_remainingtime_lighting_consistent(st_Idle);
+                event Security_lighting_bounds_preserved(st_Idle)
+             )
+          )
+
+        else if cmd = cmd_Stop then
+
+          (* Stop cancels active transition and forces RemainingTime to 0 *)
+          event StateChanged(st_TransitionActive, st_Idle);
+          event AttributeUpdate_remaining(curRT, zero_duration);
+          event Security_stop_side_effects_limited(cmd_Stop);
+          event Security_remainingtime_lighting_consistent(st_Idle);
+          event Security_lighting_bounds_preserved(st_Idle)
+
+        else if cmd = cmd_StopWithOnOff then
+
+          (* StopWithOnOff: same for RemainingTime, OnOff unchanged *)
+          event StateChanged(st_TransitionActive, st_Idle);
+          event AttributeUpdate_remaining(curRT, zero_duration);
+          event Security_stop_side_effects_limited(cmd_StopWithOnOff);
+          event Security_remainingtime_lighting_consistent(st_Idle);
+          event Security_lighting_bounds_preserved(st_Idle)
+
+        else if cmd = cmd_MoveToClosestFrequency then
+
+          (* Frequency commands during transition do not affect level/timer *)
+          (if is_true(feature_frequency_supported(curFM)) then
+             (if is_true(closest_supported_frequency_exists(requestedFrequency_in)) then
+                event AttributeUpdate_freq(curFreqVal, selected_frequency_in);
+                event Security_frequency_feature_enforced(cmd_MoveToClosestFrequency);
+                event StateChanged(st_TransitionActive, st_TransitionActive)
+              else
+                event ErrorSet(err_CONSTRAINT_ERROR);
+                event Security_frequency_feature_enforced(cmd_MoveToClosestFrequency);
+                event StateChanged(st_TransitionActive, st_TransitionActive)
+             )
+           else
+             event ErrorSet(err_UNSUPPORTED_COMMAND);
+             event Security_frequency_feature_enforced(cmd_MoveToClosestFrequency);
+             event StateChanged(st_TransitionActive, st_TransitionActive)
+          )
+
+        else if cmd = cmd_SceneStore then
+
+          (* SceneStore has no effect on active transition in this abstraction *)
+          (if is_true(scenescluster_present(curFM)) then
+             event StateChanged(st_TransitionActive, st_TransitionActive)
+           else
+             event StateChanged(st_TransitionActive, st_TransitionActive)
+          )
+
+        else if cmd = cmd_SceneRecall then
+
+          (* SceneRecall may pre-empt transition *)
+          (if is_true(scenescluster_present(curFM)) then
+             (if is_true(scenerecall_uses_transition(curFM)) then
+                (if is_true(feature_lighting_supported(curFM)) then
+                   event StateChanged(st_TransitionActive, st_TransitionActive);
+                   event AttributeUpdate_level(curCL, curRecalledSceneLevel);
+                   event AttributeUpdate_freq(curFreqVal, curRecalledSceneFreq);
+                   event AttributeUpdate_remaining(curRT, curSceneRecallTransitionTime);
+                   event Security_scenes_featuremap_respected(cmd_SceneRecall);
+                   event Security_remainingtime_lighting_consistent(st_TransitionActive)
+                 else
+                   event StateChanged(st_TransitionActive, st_Idle);
+                   event AttributeUpdate_level(curCL, curRecalledSceneLevel);
+                   event AttributeUpdate_freq(curFreqVal, curRecalledSceneFreq);
+                   event AttributeUpdate_remaining(curRT, zero_duration);
+                   event Security_scenes_featuremap_respected(cmd_SceneRecall);
+                   event Security_remainingtime_lighting_consistent(st_Idle);
+                   event Security_lighting_bounds_preserved(st_Idle)
+                )
+              else
+                (* Immediate recall ends transition *)
+                event StateChanged(st_TransitionActive, st_Idle);
+                event AttributeUpdate_level(curCL, curRecalledSceneLevel);
+                event AttributeUpdate_freq(curFreqVal, curRecalledSceneFreq);
+                event AttributeUpdate_remaining(curRT, zero_duration);
+                event Security_scenes_featuremap_respected(cmd_SceneRecall);
+                event Security_remainingtime_lighting_consistent(st_Idle);
+                event Security_lighting_bounds_preserved(st_Idle)
+             )
+           else
+             event StateChanged(st_TransitionActive, st_TransitionActive)
+          )
+
+        else
+
+          (* Any other command keeps TransitionActive unchanged *)
+          event StateChanged(st_TransitionActive, st_TransitionActive);
+          event Security_lighting_bounds_preserved(st_TransitionActive);
+          event Security_remainingtime_lighting_consistent(st_TransitionActive)
+      ).
+
+(* 9. Main process *)
+
+process
+    !DeviceFSM()

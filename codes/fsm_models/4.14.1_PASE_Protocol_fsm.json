@@ -1,0 +1,918 @@
+{
+  "fsm_model": {
+    "protocol_name": "Passcode-Authenticated Session Establishment (PASE)",
+    "protocol_id": "4.14.1",
+    "category": "Session Establishment Protocol",
+    "description": "Password-authenticated key exchange protocol for establishing first secure session between Commissioner (Initiator) and Commissionee (Responder) using out-of-band passcode",
+    "roles": [
+      {
+        "role_name": "Initiator",
+        "description": "Commissioner that initiates PASE session using known passcode (derived w0, w1 values)"
+      },
+      {
+        "role_name": "Responder",
+        "description": "Commissionee that responds with PAKE verifier (w0, L) and establishes session"
+      }
+    ],
+    "states": [
+      {
+        "state_name": "Idle",
+        "description": "No active PASE session establishment",
+        "invariants": [
+          "No active PASE exchange",
+          "No session keys derived",
+          "Initiator has passcode (or will derive w0, w1)",
+          "Responder has PAKE verifier (w0, L) for passcode"
+        ],
+        "role": "Both"
+      },
+      {
+        "state_name": "PBKDFParamRequest_Sent",
+        "description": "Initiator has sent PBKDF parameter request and awaits response",
+        "invariants": [
+          "InitiatorRandom generated (32 bytes from DRBG)",
+          "InitiatorSessionId assigned and unique",
+          "PasscodeId chosen (0 for commissioning window)",
+          "HasPBKDFParameters flag set (True if salt/iterations known)",
+          "Message sent via unsecured session (Session Type = 0, Session ID = 0)",
+          "S Flag = 1, DSIZ = 0 in message header",
+          "Awaiting PBKDFParamResponse"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "PBKDFParamResponse_Received",
+        "description": "Initiator received PBKDF parameters and is ready to send Pake1",
+        "invariants": [
+          "ResponderRandom received (32 bytes)",
+          "ResponderSessionId received and stored as Peer Session Identifier",
+          "PBKDF parameters received (salt, iterations) if HasPBKDFParameters was False",
+          "Crypto_PAKEValues_Initiator ready to be computed: (w0, w1) = PBKDF(passcode, salt, iterations)",
+          "Initiator can now compute pA = Crypto_pA(w0, w1)"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "Pake1_Sent",
+        "description": "Initiator sent pA and awaits Pake2 with pB and cB",
+        "invariants": [
+          "pA computed and sent (CRYPTO_PUBLIC_KEY_SIZE_BYTES, uncompressed format)",
+          "Crypto_PAKEValues_Initiator stored: (w0, w1)",
+          "Awaiting Pake2 with pB and cB"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "PBKDFParams_Validated",
+        "description": "Responder validated PBKDFParamRequest and sent response",
+        "invariants": [
+          "PasscodeId verified == 0 (else FAILURE sent)",
+          "ResponderRandom generated (32 bytes from DRBG)",
+          "ResponderSessionId assigned and unique",
+          "ResponderSessionId stored as Local Session Identifier",
+          "InitiatorSessionId stored as Peer Session Identifier",
+          "PBKDF parameters sent if HasPBKDFParameters == False",
+          "S Flag = 0, DSIZ = 1 in response message",
+          "Awaiting Pake1"
+        ],
+        "role": "Responder"
+      },
+      {
+        "state_name": "Pake1_Received",
+        "description": "Responder received pA and is computing pB, transcript TT, and cA/cB/Ke",
+        "invariants": [
+          "pA received from Pake1 (CRYPTO_PUBLIC_KEY_SIZE_BYTES)",
+          "Crypto_PAKEValues_Responder available: (w0, L) where L = w1 * P",
+          "Ready to compute pB = Crypto_pB(w0, L)",
+          "Ready to compute transcript TT = Crypto_Transcript(PBKDFParamRequest, PBKDFParamResponse, pA, pB)",
+          "Ready to compute (cA, cB, Ke) = Crypto_P2(TT, pA, pB)"
+        ],
+        "role": "Responder"
+      },
+      {
+        "state_name": "Pake2_Sent",
+        "description": "Responder sent pB and cB, has derived Ke, awaiting Pake3 with cA",
+        "invariants": [
+          "pB computed and sent",
+          "cB computed and sent (CRYPTO_HASH_LEN_BYTES)",
+          "Ke derived from SPAKE2+ (CRYPTO_HASH_LEN_BYTES/2)",
+          "cA computed but not yet verified (awaiting from initiator)",
+          "Session keys NOT yet activated (waiting for Pake3 verification)"
+        ],
+        "role": "Responder"
+      },
+      {
+        "state_name": "Pake2_Received",
+        "description": "Initiator received pB and cB, computed Ke, verifying cB",
+        "invariants": [
+          "pB received from Pake2",
+          "cB received from Pake2",
+          "TT computed: Crypto_Transcript(PBKDFParamRequest, PBKDFParamResponse, pA, pB)",
+          "(cA, cB_computed, Ke) computed via Crypto_P2(TT, pA, pB)",
+          "Must verify: cB_received == cB_computed",
+          "If verification fails: send FAILURE StatusReport and abort",
+          "If verification succeeds: send Pake3 with cA"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "Pake3_Sent",
+        "description": "Initiator sent cA after successful cB verification, has Ke, awaiting PakeFinished",
+        "invariants": [
+          "cB verification succeeded (Pake2.cB == computed cB)",
+          "cA sent to responder",
+          "Ke derived (shared encryption key)",
+          "Session keys derivable: I2RKey || R2IKey || AttestationChallenge = KDF(Ke, [], 'SessionKeys', 3*CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+          "Awaiting PakeFinished (SUCCESS StatusReport)",
+          "MUST NOT send encrypted data until PakeFinished received"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "Pake3_Received",
+        "description": "Responder received cA and is verifying it",
+        "invariants": [
+          "cA received from Pake3",
+          "Must verify: cA_received == cA_computed (from Pake2_Sent state)",
+          "If verification fails: send FAILURE StatusReport and abort",
+          "If verification succeeds: set SessionTimestamp and send PakeFinished"
+        ],
+        "role": "Responder"
+      },
+      {
+        "state_name": "SessionEstablished",
+        "description": "PASE session successfully established with encryption keys derived",
+        "invariants": [
+          "Ke established (CRYPTO_HASH_LEN_BYTES/2)",
+          "I2RKey derived (Initiator-to-Responder encryption key)",
+          "R2IKey derived (Responder-to-Initiator encryption key)",
+          "AttestationChallenge derived (for Section 6.2.3 Device Attestation)",
+          "SessionTimestamp set (both parties)",
+          "Local Message Counter initialized per Section 4.6.1.1",
+          "Message Reception State initialized with peer max_message_counter = 0",
+          "Secure unicast session active",
+          "Initiator encrypts with I2RKey, decrypts with R2IKey",
+          "Responder encrypts with R2IKey, decrypts with I2RKey",
+          "PakeFinished (SUCCESS StatusReport) sent by responder"
+        ],
+        "role": "Both"
+      },
+      {
+        "state_name": "Failed_InvalidPasscodeId",
+        "description": "PASE failed due to invalid PasscodeId",
+        "invariants": [
+          "PasscodeId != 0 (invalid)",
+          "StatusReport sent: GeneralCode=FAILURE, ProtocolId=SECURE_CHANNEL, ProtocolCode=INVALID_PARAMETER",
+          "No session established",
+          "Exchange terminated"
+        ],
+        "role": "Responder"
+      },
+      {
+        "state_name": "Failed_cB_Verification",
+        "description": "PASE failed because initiator could not verify cB from Pake2",
+        "invariants": [
+          "Pake2.cB != computed cB",
+          "Verification failed at Pake2 processing",
+          "StatusReport sent: GeneralCode=FAILURE, ProtocolId=SECURE_CHANNEL, ProtocolCode=INVALID_PARAMETER",
+          "No session keys derived",
+          "Exchange terminated"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "Failed_cA_Verification",
+        "description": "PASE failed because responder could not verify cA from Pake3",
+        "invariants": [
+          "Pake3.cA != computed cA",
+          "Verification failed at Pake3 processing",
+          "StatusReport sent: GeneralCode=FAILURE, ProtocolId=SECURE_CHANNEL, ProtocolCode=INVALID_PARAMETER",
+          "No session keys installed",
+          "Exchange terminated"
+        ],
+        "role": "Responder"
+      }
+    ],
+    "transitions": [
+      {
+        "transition_id": "T1_InitiatePASE",
+        "from_state": "Idle",
+        "to_state": "PBKDFParamRequest_Sent",
+        "trigger": "InitiatePASE",
+        "role": "Initiator",
+        "guard": [
+          "Passcode known (out-of-band)",
+          "No existing PASE session for this Commissionee",
+          "Commissioning window open (for passcodeId = 0)"
+        ],
+        "actions": [
+          "InitiatorRandom := Crypto_DRBG(256 bits)",
+          "InitiatorSessionId := Choose unique session ID (16-bit, non-overlapping)",
+          "PasscodeId := 0 (for commissioning window verifier)",
+          "HasPBKDFParameters := True if (salt, iterations) known from QR code, else False",
+          "Set Local Session Identifier := InitiatorSessionId",
+          "Construct PBKDFParamRequest TLV: {initiatorRandom, initiatorSessionId, passcodeId, hasPBKDFParameters, [initiatorSessionParams]}",
+          "Set Message Header: Session Type := 0 (unsecured), Session ID := 0, S Flag := 1, DSIZ := 0",
+          "Set Protocol Header: I Flag := 1, PROTOCOL_ID_SECURE_CHANNEL, Opcode := PBKDFParamRequest",
+          "Send PBKDFParamRequest reliably (MRP or TCP)"
+        ],
+        "timing_requirements": "Immediate upon commissioning initiation",
+        "security_notes": "Unsecured message (no encryption yet), relies on passcode secrecy for PAKE security"
+      },
+      {
+        "transition_id": "T2_RespondPBKDFParams",
+        "from_state": "Idle",
+        "to_state": "PBKDFParams_Validated",
+        "trigger": "ReceivePBKDFParamRequest",
+        "role": "Responder",
+        "guard": [
+          "PBKDFParamRequest received and authenticated",
+          "PasscodeId == 0 (valid)",
+          "PAKE verifier (w0, L) available for commissioning window passcode",
+          "No existing PASE session with this initiator"
+        ],
+        "actions": [
+          "Verify PasscodeId == 0 (else transition to Failed_InvalidPasscodeId)",
+          "ResponderRandom := Crypto_DRBG(256 bits)",
+          "ResponderSessionId := Choose unique session ID (16-bit, non-overlapping)",
+          "Set Local Session Identifier := ResponderSessionId",
+          "Set Peer Session Identifier := PBKDFParamRequest.initiatorSessionId",
+          "If PBKDFParamRequest.hasPBKDFParameters == False: Include PBKDF params (salt, iterations) in response",
+          "Construct PBKDFParamResponse TLV: {initiatorRandom_echo, responderRandom, responderSessionId, pbkdf_parameters, [responderSessionParams]}",
+          "Set Message Header: Session Type := 0 (unsecured), Session ID := 0, S Flag := 0, DSIZ := 1",
+          "Set Protocol Header: I Flag := 0, PROTOCOL_ID_SECURE_CHANNEL, Opcode := PBKDFParamResponse",
+          "Send PBKDFParamResponse reliably (MRP or TCP)"
+        ],
+        "timing_requirements": "Immediate response to valid request",
+        "security_notes": "Echo InitiatorRandom for transcript integrity; PBKDF params sent in clear but not security-sensitive"
+      },
+      {
+        "transition_id": "T2a_FailInvalidPasscodeId",
+        "from_state": "Idle",
+        "to_state": "Failed_InvalidPasscodeId",
+        "trigger": "ReceivePBKDFParamRequest_InvalidPasscodeId",
+        "role": "Responder",
+        "guard": [
+          "PBKDFParamRequest received",
+          "PasscodeId != 0 (invalid, reserved for future use)"
+        ],
+        "actions": [
+          "Send StatusReport: GeneralCode := FAILURE, ProtocolId := SECURE_CHANNEL, ProtocolCode := INVALID_PARAMETER",
+          "Do not create session context",
+          "Terminate exchange"
+        ],
+        "timing_requirements": "Immediate failure response",
+        "security_notes": "Prevents PASE with unsupported passcode identifiers"
+      },
+      {
+        "transition_id": "T3_SendPake1",
+        "from_state": "PBKDFParamRequest_Sent",
+        "to_state": "Pake1_Sent",
+        "trigger": "ReceivePBKDFParamResponse",
+        "role": "Initiator",
+        "guard": [
+          "PBKDFParamResponse received and authenticated",
+          "ResponderSessionId received",
+          "PBKDF parameters received (if HasPBKDFParameters was False)"
+        ],
+        "actions": [
+          "Set Peer Session Identifier := PBKDFParamResponse.responderSessionId",
+          "Extract PBKDF parameters: (salt, iterations) from response",
+          "Compute w0s || w1s := Crypto_PBKDF(passcode_32bit_LE, salt, iterations, 2*(CRYPTO_GROUP_SIZE_BYTES + 8)*8)",
+          "Compute w0 := w0s mod p (elliptic curve order)",
+          "Compute w1 := w1s mod p",
+          "Store Crypto_PAKEValues_Initiator := (w0, w1)",
+          "Compute pA := Crypto_pA(w0, w1) [SPAKE2+ point computation: pA = w0*P + M]",
+          "Construct Pake1 TLV: {pA} (CRYPTO_PUBLIC_KEY_SIZE_BYTES, uncompressed)",
+          "Set Protocol Header: I Flag := 1, PROTOCOL_ID_SECURE_CHANNEL, Opcode := Pake1",
+          "Send Pake1 reliably"
+        ],
+        "timing_requirements": "After PBKDF computation (may take seconds if iterations high)",
+        "security_notes": "pA leaks no info about passcode due to SPAKE2+ blinding with point M"
+      },
+      {
+        "transition_id": "T4_SendPake2",
+        "from_state": "PBKDFParams_Validated",
+        "to_state": "Pake2_Sent",
+        "trigger": "ReceivePake1",
+        "role": "Responder",
+        "guard": [
+          "Pake1 received and authenticated",
+          "pA extracted (CRYPTO_PUBLIC_KEY_SIZE_BYTES)",
+          "Crypto_PAKEValues_Responder available: (w0, L) where L = w1 * P"
+        ],
+        "actions": [
+          "Extract pA from Pake1",
+          "Compute pB := Crypto_pB(w0, L) [SPAKE2+ point computation: pB = w0*P + N]",
+          "Compute Context := Crypto_Hash('CHIP PAKE V1 Commissioning' || PBKDFParamRequest || PBKDFParamResponse)",
+          "Compute Z, V from pA, pB per SPAKE2+ (shared secrets from elliptic curve DH)",
+          "Compute TT := Crypto_Transcript(PBKDFParamRequest, PBKDFParamResponse, pA, pB)",
+          "TT includes: Context, M, N, pA, pB, Z, V, w0 (see Section 3.10.3)",
+          "Compute (cA, cB, Ke) := Crypto_P2(TT, pA, pB) using SPAKE2+ confirmation computation",
+          "cA := HMAC(KcA, pB), cB := HMAC(KcB, pA)",
+          "Ke derived from shared secret (CRYPTO_HASH_LEN_BYTES/2)",
+          "Store cA (for later Pake3 verification)",
+          "Construct Pake2 TLV: {pB, cB}",
+          "Set Protocol Header: I Flag := 0, Opcode := Pake2",
+          "Send Pake2 reliably"
+        ],
+        "timing_requirements": "After elliptic curve computations (milliseconds)",
+        "security_notes": "cB proves responder knows passcode; Ke is shared key basis"
+      },
+      {
+        "transition_id": "T5_SendPake3",
+        "from_state": "Pake1_Sent",
+        "to_state": "Pake3_Sent",
+        "trigger": "ReceivePake2_Valid",
+        "role": "Initiator",
+        "guard": ["Pake2 received and authenticated", "pB and cB extracted"],
+        "actions": [
+          "Extract pB, cB from Pake2",
+          "Compute Context := Crypto_Hash('CHIP PAKE V1 Commissioning' || PBKDFParamRequest || PBKDFParamResponse)",
+          "Compute Z, V from pA, pB per SPAKE2+ (shared secrets)",
+          "Compute TT := Crypto_Transcript(PBKDFParamRequest, PBKDFParamResponse, pA, pB)",
+          "Compute (cA, cB_computed, Ke) := Crypto_P2(TT, pA, pB)",
+          "Verify cB_received == cB_computed",
+          "If verification fails: transition to Failed_cB_Verification",
+          "If verification succeeds:",
+          "  Store Ke (shared encryption key foundation)",
+          "  Construct Pake3 TLV: {cA}",
+          "  Set Protocol Header: I Flag := 1, Opcode := Pake3",
+          "  Send Pake3 reliably",
+          "  DO NOT send encrypted data yet (must wait for PakeFinished)"
+        ],
+        "timing_requirements": "Immediate after cB verification (cryptographic operations)",
+        "security_notes": "cB verification proves responder has correct passcode; cA proves initiator has it"
+      },
+      {
+        "transition_id": "T5a_Fail_cB_Verification",
+        "from_state": "Pake1_Sent",
+        "to_state": "Failed_cB_Verification",
+        "trigger": "ReceivePake2_Invalid_cB",
+        "role": "Initiator",
+        "guard": [
+          "Pake2 received",
+          "cB verification failed: Pake2.cB != computed cB"
+        ],
+        "actions": [
+          "Send StatusReport: GeneralCode := FAILURE, ProtocolId := SECURE_CHANNEL, ProtocolCode := INVALID_PARAMETER",
+          "Do not derive session keys",
+          "Terminate PASE exchange",
+          "Clear cryptographic state (w0, w1, pA, Ke candidates)"
+        ],
+        "timing_requirements": "Immediate failure upon cB mismatch",
+        "security_notes": "Prevents session establishment with wrong passcode; no timing side-channels"
+      },
+      {
+        "transition_id": "T6_ReceivePake3",
+        "from_state": "Pake2_Sent",
+        "to_state": "Pake3_Received",
+        "trigger": "ReceivePake3",
+        "role": "Responder",
+        "guard": [
+          "Pake3 received and authenticated",
+          "cA extracted",
+          "Previously computed cA available from Pake2_Sent state"
+        ],
+        "actions": [
+          "Extract cA from Pake3",
+          "Verify cA_received == cA_computed (from T4_SendPake2)",
+          "If verification fails: transition to Failed_cA_Verification",
+          "If verification succeeds: transition to T7_EstablishSession"
+        ],
+        "timing_requirements": "Immediate cA verification",
+        "security_notes": "cA verification proves initiator has correct passcode before session activation"
+      },
+      {
+        "transition_id": "T6a_Fail_cA_Verification",
+        "from_state": "Pake2_Sent",
+        "to_state": "Failed_cA_Verification",
+        "trigger": "ReceivePake3_Invalid_cA",
+        "role": "Responder",
+        "guard": [
+          "Pake3 received",
+          "cA verification failed: Pake3.cA != computed cA"
+        ],
+        "actions": [
+          "Send StatusReport: GeneralCode := FAILURE, ProtocolId := SECURE_CHANNEL, ProtocolCode := INVALID_PARAMETER",
+          "Do not install session keys",
+          "Terminate PASE exchange",
+          "Clear cryptographic state (w0, L, pB, Ke, cA, cB)"
+        ],
+        "timing_requirements": "Immediate failure upon cA mismatch",
+        "security_notes": "Prevents rogue initiator from establishing session with wrong passcode"
+      },
+      {
+        "transition_id": "T7_EstablishSession_Responder",
+        "from_state": "Pake3_Received",
+        "to_state": "SessionEstablished",
+        "trigger": "cA_Verified",
+        "role": "Responder",
+        "guard": [
+          "cA verification succeeded",
+          "Ke available from Pake2_Sent state"
+        ],
+        "actions": [
+          "Set SessionTimestamp := current time (for session aging)",
+          "Derive session keys: I2RKey || R2IKey || AttestationChallenge := Crypto_KDF(Ke, [], 'SessionKeys', 3*CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+          "I2RKey: Initiator-to-Responder encryption key (CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+          "R2IKey: Responder-to-Initiator encryption key (CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+          "AttestationChallenge: For Device Attestation (Section 6.2.3) (CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+          "Initialize Local Message Counter per Section 4.6.1.1",
+          "Initialize Message Reception State: peer max_message_counter := 0",
+          "Store encryption keys for secure session",
+          "Responder will use R2IKey to encrypt, I2RKey to decrypt",
+          "Send PakeFinished: StatusReport(GeneralCode := SUCCESS, ProtocolId := SECURE_CHANNEL, ProtocolCode := SESSION_ESTABLISHMENT_SUCCESS)",
+          "PASE session now active and ready for encrypted traffic"
+        ],
+        "timing_requirements": "Immediate session activation after cA verification",
+        "security_notes": "Session keys derived from Ke via KDF with distinct purposes; AttestationChallenge enables secure device attestation"
+      },
+      {
+        "transition_id": "T8_EstablishSession_Initiator",
+        "from_state": "Pake3_Sent",
+        "to_state": "SessionEstablished",
+        "trigger": "ReceivePakeFinished",
+        "role": "Initiator",
+        "guard": [
+          "PakeFinished received (SUCCESS StatusReport)",
+          "GeneralCode == SUCCESS",
+          "ProtocolId == SECURE_CHANNEL",
+          "ProtocolCode == SESSION_ESTABLISHMENT_SUCCESS"
+        ],
+        "actions": [
+          "Set SessionTimestamp := current time (for session aging)",
+          "Derive session keys: I2RKey || R2IKey || AttestationChallenge := Crypto_KDF(Ke, [], 'SessionKeys', 3*CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+          "I2RKey: Initiator-to-Responder encryption key",
+          "R2IKey: Responder-to-Initiator encryption key",
+          "AttestationChallenge: For Device Attestation (Section 6.2.3)",
+          "Initialize Local Message Counter per Section 4.6.1.1",
+          "Initialize Message Reception State: peer max_message_counter := 0",
+          "Store encryption keys for secure session",
+          "Initiator will use I2RKey to encrypt, R2IKey to decrypt",
+          "NOW can send encrypted application data (commissioning commands)",
+          "PASE session established successfully"
+        ],
+        "timing_requirements": "Immediate session activation upon PakeFinished receipt",
+        "security_notes": "Session now secure; encrypted traffic can begin; both parties have mutually authenticated via passcode"
+      }
+    ],
+    "initial_state": "Idle",
+    "messages": [
+      {
+        "message_name": "PBKDFParamRequest",
+        "description": "PBKDF parameter request from initiator (Commissioner) to responder (Commissionee)",
+        "fields": [
+          {
+            "field_name": "initiatorRandom",
+            "type": "OCTET STRING",
+            "size": "32 bytes",
+            "description": "Random number generated by initiator via Crypto_DRBG for transcript freshness"
+          },
+          {
+            "field_name": "initiatorSessionId",
+            "type": "UNSIGNED INTEGER",
+            "size": "16 bits",
+            "description": "Unique session identifier chosen by initiator for this PASE session"
+          },
+          {
+            "field_name": "passcodeId",
+            "type": "UNSIGNED INTEGER",
+            "size": "16 bits",
+            "description": "Passcode identifier (0 for commissioning window verifier, non-zero reserved)"
+          },
+          {
+            "field_name": "hasPBKDFParameters",
+            "type": "BOOLEAN",
+            "size": "1 byte",
+            "description": "True if initiator knows PBKDF params (from QR code), False if responder must provide"
+          },
+          {
+            "field_name": "initiatorSessionParams",
+            "type": "session-parameter-struct",
+            "size": "variable",
+            "description": "Optional session parameters (MRP config, etc.)"
+          }
+        ],
+        "header_requirements": [
+          "Session Type := 0 (Unsecured)",
+          "Session ID := 0",
+          "S Flag := 1 (Source Node ID present)",
+          "DSIZ := 0 (No Destination Node ID)",
+          "I Flag := 1 (Initiator)",
+          "A Flag := 0 (Not acknowledgement)",
+          "R Flag := 1 (Reliable transmission required)",
+          "PROTOCOL_ID_SECURE_CHANNEL",
+          "Protocol Opcode := PBKDFParamRequest (see Table 18)"
+        ],
+        "security_notes": "Sent unencrypted; initiatorRandom contributes to transcript to prevent replay"
+      },
+      {
+        "message_name": "PBKDFParamResponse",
+        "description": "PBKDF parameter response from responder to initiator with salt, iterations",
+        "fields": [
+          {
+            "field_name": "initiatorRandom",
+            "type": "OCTET STRING",
+            "size": "32 bytes",
+            "description": "Echo of initiator's random for transcript binding"
+          },
+          {
+            "field_name": "responderRandom",
+            "type": "OCTET STRING",
+            "size": "32 bytes",
+            "description": "Random number generated by responder via Crypto_DRBG for transcript freshness"
+          },
+          {
+            "field_name": "responderSessionId",
+            "type": "UNSIGNED INTEGER",
+            "size": "16 bits",
+            "description": "Unique session identifier chosen by responder for this PASE session"
+          },
+          {
+            "field_name": "pbkdf_parameters",
+            "type": "Crypto_PBKDFParameterSet",
+            "size": "variable",
+            "description": "PBKDF salt and iteration count (only if hasPBKDFParameters was False in request)"
+          },
+          {
+            "field_name": "responderSessionParams",
+            "type": "session-parameter-struct",
+            "size": "variable",
+            "description": "Optional session parameters"
+          }
+        ],
+        "header_requirements": [
+          "Session Type := 0 (Unsecured)",
+          "Session ID := 0",
+          "S Flag := 0 (No Source Node ID)",
+          "DSIZ := 1 (64-bit Destination Node ID present)",
+          "I Flag := 0 (Responder)",
+          "A Flag := 0 (Not acknowledgement)",
+          "R Flag := 1 (Reliable transmission required)",
+          "PROTOCOL_ID_SECURE_CHANNEL",
+          "Protocol Opcode := PBKDFParamResponse"
+        ],
+        "security_notes": "PBKDF params not secret; echo of initiatorRandom binds to request"
+      },
+      {
+        "message_name": "Pake1",
+        "description": "First PAKE message from initiator with public point pA",
+        "fields": [
+          {
+            "field_name": "pA",
+            "type": "OCTET STRING",
+            "size": "CRYPTO_PUBLIC_KEY_SIZE_BYTES (65 bytes for P-256)",
+            "description": "Initiator's SPAKE2+ public point computed as pA = w0*P + M (uncompressed format)"
+          }
+        ],
+        "header_requirements": [
+          "Session Type := 0 (Unsecured)",
+          "Session ID := 0",
+          "I Flag := 1 (Initiator)",
+          "A Flag := 0",
+          "R Flag := 1 (Reliable)",
+          "PROTOCOL_ID_SECURE_CHANNEL",
+          "Protocol Opcode := Pake1"
+        ],
+        "security_notes": "pA reveals no passcode info due to SPAKE2+ blinding with random point M"
+      },
+      {
+        "message_name": "Pake2",
+        "description": "Second PAKE message from responder with pB and confirmation cB",
+        "fields": [
+          {
+            "field_name": "pB",
+            "type": "OCTET STRING",
+            "size": "CRYPTO_PUBLIC_KEY_SIZE_BYTES (65 bytes)",
+            "description": "Responder's SPAKE2+ public point computed as pB = w0*P + N (uncompressed format)"
+          },
+          {
+            "field_name": "cB",
+            "type": "OCTET STRING",
+            "size": "CRYPTO_HASH_LEN_BYTES (32 bytes for SHA-256)",
+            "description": "Responder's confirmation value: cB = HMAC(KcB, pA), proves responder knows passcode"
+          }
+        ],
+        "header_requirements": [
+          "Session Type := 0 (Unsecured)",
+          "Session ID := 0",
+          "I Flag := 0 (Responder)",
+          "A Flag := 0",
+          "R Flag := 1 (Reliable)",
+          "PROTOCOL_ID_SECURE_CHANNEL",
+          "Protocol Opcode := Pake2"
+        ],
+        "security_notes": "cB is MAC over pA using key derived from shared secret; only correct passcode yields matching cB"
+      },
+      {
+        "message_name": "Pake3",
+        "description": "Third PAKE message from initiator with confirmation cA",
+        "fields": [
+          {
+            "field_name": "cA",
+            "type": "OCTET STRING",
+            "size": "CRYPTO_HASH_LEN_BYTES (32 bytes)",
+            "description": "Initiator's confirmation value: cA = HMAC(KcA, pB), proves initiator knows passcode"
+          }
+        ],
+        "header_requirements": [
+          "Session Type := 0 (Unsecured)",
+          "Session ID := 0",
+          "I Flag := 1 (Initiator)",
+          "A Flag := 0",
+          "R Flag := 1 (Reliable)",
+          "PROTOCOL_ID_SECURE_CHANNEL",
+          "Protocol Opcode := Pake3"
+        ],
+        "security_notes": "cA is MAC over pB; mutual authentication completed after both cA and cB verified"
+      },
+      {
+        "message_name": "PakeFinished",
+        "description": "Session establishment success confirmation from responder",
+        "fields": [
+          {
+            "field_name": "StatusReport",
+            "type": "Encoded Status Report",
+            "size": "variable",
+            "description": "GeneralCode=SUCCESS, ProtocolId=SECURE_CHANNEL, ProtocolCode=SESSION_ESTABLISHMENT_SUCCESS"
+          }
+        ],
+        "header_requirements": [
+          "Session Type := 0 (Unsecured)",
+          "Session ID := 0",
+          "I Flag := 0 (Responder)",
+          "PROTOCOL_ID_SECURE_CHANNEL",
+          "Protocol Opcode := StatusReport"
+        ],
+        "security_notes": "Signals to initiator that responder has verified cA and installed session keys; after this, encrypted traffic can begin"
+      }
+    ],
+    "cryptographic_functions": [
+      {
+        "function_name": "Crypto_DRBG",
+        "description": "Deterministic Random Bit Generator for generating random values",
+        "usage": "InitiatorRandom, ResponderRandom generation",
+        "reference": "Section 3.1"
+      },
+      {
+        "function_name": "Crypto_PBKDF",
+        "description": "Password-Based Key Derivation Function to derive w0, w1 from passcode",
+        "usage": "Derive PAKE values from passcode, salt, iterations",
+        "reference": "Section 3.9",
+        "formula": "w0s || w1s = PBKDF(passcode_LE_32bit, salt, iterations, 2*(CRYPTO_GROUP_SIZE_BYTES+8)*8); w0 = w0s mod p; w1 = w1s mod p"
+      },
+      {
+        "function_name": "Crypto_pA",
+        "description": "SPAKE2+ initiator public point computation",
+        "usage": "pA = w0*P + M where M is fixed SPAKE2+ point, P is curve generator",
+        "reference": "Section 3.10.1"
+      },
+      {
+        "function_name": "Crypto_pB",
+        "description": "SPAKE2+ responder public point computation",
+        "usage": "pB = w0*P + N where N is fixed SPAKE2+ point",
+        "reference": "Section 3.10.2"
+      },
+      {
+        "function_name": "Crypto_Hash",
+        "description": "SHA-256 hash function",
+        "usage": "Context computation in transcript",
+        "reference": "Section 3.3"
+      },
+      {
+        "function_name": "Crypto_Transcript",
+        "description": "SPAKE2+ transcript computation for confirmation values",
+        "usage": "TT = transcript(Context, M, N, pA, pB, Z, V, w0)",
+        "reference": "Section 3.10.3",
+        "formula": "Context = Hash('CHIP PAKE V1 Commissioning' || PBKDFParamRequest || PBKDFParamResponse); TT = len(Context)||Context || 0x00...||0x00... || len(M)||M || len(N)||N || len(pA)||pA || len(pB)||pB || len(Z)||Z || len(V)||V || len(w0)||w0"
+      },
+      {
+        "function_name": "Crypto_P2",
+        "description": "SPAKE2+ confirmation computation and key derivation",
+        "usage": "(cA, cB, Ke) = Crypto_P2(TT, pA, pB)",
+        "reference": "Section 3.10.4",
+        "formula": "KcA, KcB, Ke derived from SPAKE2+ shared secret; cA = HMAC(KcA, pB), cB = HMAC(KcB, pA)"
+      },
+      {
+        "function_name": "Crypto_HMAC",
+        "description": "HMAC-SHA256 for confirmation values",
+        "usage": "cA and cB computation",
+        "reference": "Section 3.4"
+      },
+      {
+        "function_name": "Crypto_KDF",
+        "description": "HKDF-based Key Derivation Function for session keys",
+        "usage": "I2RKey || R2IKey || AttestationChallenge = KDF(Ke, [], 'SessionKeys', 3*CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+        "reference": "Section 3.8",
+        "formula": "Uses HKDF with inputKey=Ke, salt=[], info='SessionKeys', derives 3 symmetric keys"
+      }
+    ],
+    "security_properties": [
+      {
+        "property_id": "SP1_MutualAuthentication",
+        "type": "Authentication",
+        "description": "Both initiator and responder must prove knowledge of passcode before session establishment",
+        "formalization": "SessionEstablished(I, R) ==> cB_verified(I) AND cA_verified(R)",
+        "verification_method": "Verify cB at initiator (proves R knows passcode) AND verify cA at responder (proves I knows passcode)",
+        "attack_prevented": "Impersonation attacks - no party can establish session without correct passcode"
+      },
+      {
+        "property_id": "SP2_KeySecrecy",
+        "type": "Confidentiality",
+        "description": "Derived session keys (I2RKey, R2IKey) remain secret from adversary without passcode",
+        "formalization": "SessionEstablished(I, R) AND NOT PasscodeCompromised ==> NOT Attacker_Knows(I2RKey) AND NOT Attacker_Knows(R2IKey) AND NOT Attacker_Knows(Ke)",
+        "verification_method": "Prove session keys are computationally infeasible to derive without knowing passcode (SPAKE2+ security)",
+        "attack_prevented": "Eavesdropping - passive attacker cannot decrypt session traffic"
+      },
+      {
+        "property_id": "SP3_ForwardSecrecy",
+        "type": "Confidentiality",
+        "description": "Session keys remain secret even if passcode is later compromised (limited forward secrecy)",
+        "formalization": "SessionEstablished(I, R, t1) AND PasscodeCompromised(t2) WHERE t2 > t1 ==> Session keys at t1 remain computationally hard to recover",
+        "verification_method": "SPAKE2+ provides computational forward secrecy; session keys derived from ephemeral ECDH components",
+        "attack_prevented": "Past session compromise after passcode leakage",
+        "limitation": "Computational not perfect forward secrecy (depends on discrete log hardness)"
+      },
+      {
+        "property_id": "SP4_SessionIntegrity",
+        "type": "Integrity",
+        "description": "Transcript integrity ensures all messages in PASE exchange are authentic and unmodified",
+        "formalization": "cA_verified AND cB_verified ==> Transcript(PBKDFParamRequest, PBKDFParamResponse, pA, pB) matches at both parties",
+        "verification_method": "Confirmation values cA, cB are HMACs over transcript including all prior messages",
+        "attack_prevented": "Man-in-the-middle message modification or injection"
+      },
+      {
+        "property_id": "SP5_ReplayPrevention",
+        "type": "Freshness",
+        "description": "Random nonces (InitiatorRandom, ResponderRandom) prevent replay of PASE exchanges",
+        "formalization": "Two PASE sessions cannot have identical (InitiatorRandom, ResponderRandom) pairs",
+        "verification_method": "256-bit DRBG randoms in transcript make each session cryptographically unique",
+        "attack_prevented": "Replay attacks - old PASE exchanges cannot be replayed"
+      },
+      {
+        "property_id": "SP6_SessionBinding",
+        "type": "Integrity",
+        "description": "Session identifiers (InitiatorSessionId, ResponderSessionId) uniquely bind PASE to subsequent encrypted session",
+        "formalization": "SessionEstablished(SessionID_I, SessionID_R) ==> All encrypted traffic uses exactly these session IDs",
+        "verification_method": "Session IDs chosen uniquely and stored in session context; encrypted messages reference session ID",
+        "attack_prevented": "Session confusion or cross-session attacks"
+      },
+      {
+        "property_id": "SP7_PasscodeVerification",
+        "type": "Authentication",
+        "description": "Invalid passcode causes PASE to fail before any session keys are derived",
+        "formalization": "Passcode_Initiator != Passcode_Responder ==> (cB_verification_fails OR cA_verification_fails) AND NOT SessionEstablished",
+        "verification_method": "Confirmation value mismatch detected at cB (T5a) or cA (T6a) verification",
+        "attack_prevented": "Brute-force passcode guessing - each failed attempt detected immediately"
+      },
+      {
+        "property_id": "SP8_AttestationChallengeFreshness",
+        "type": "Freshness",
+        "description": "AttestationChallenge derived from Ke is fresh for each PASE session",
+        "formalization": "SessionEstablished(session1) AND SessionEstablished(session2) WHERE session1 != session2 ==> AttestationChallenge(session1) != AttestationChallenge(session2)",
+        "verification_method": "Ke is unique per session (derived from unique pA, pB via ECDH); KDF with 'SessionKeys' info derives unique AttestationChallenge",
+        "attack_prevented": "Replay of Device Attestation responses across sessions"
+      },
+      {
+        "property_id": "SP9_NoEncryptionBeforePakeFinished",
+        "type": "Protocol Safety",
+        "description": "Initiator must not send encrypted data before receiving PakeFinished from responder",
+        "formalization": "Initiator_Encrypted_Send(msg, t) ==> EXISTS t_finished WHERE ReceivePakeFinished(t_finished) AND t_finished < t",
+        "verification_method": "Protocol specification constraint in T8 transition; initiator waits for PakeFinished",
+        "attack_prevented": "Premature encryption before mutual authentication complete"
+      },
+      {
+        "property_id": "SP10_OfflinePasswordGuessing",
+        "type": "Confidentiality",
+        "description": "SPAKE2+ prevents offline dictionary attacks on passcode from eavesdropped PASE exchanges",
+        "formalization": "Attacker observes (PBKDFParamRequest, PBKDFParamResponse, pA, pB, cA, cB) ==> Cannot efficiently test passcode candidates offline",
+        "verification_method": "SPAKE2+ blinding (M, N points) prevents extraction of w0, w1 from pA, pB without solving discrete log",
+        "attack_prevented": "Offline brute-force on passcode from captured network traffic",
+        "security_assumption": "Elliptic curve discrete logarithm problem hardness (P-256)"
+      }
+    ],
+    "failure_modes": [
+      {
+        "failure_name": "Invalid PasscodeId",
+        "trigger": "PasscodeId != 0",
+        "handling": "Responder sends FAILURE StatusReport, terminates exchange (T2a)",
+        "recovery": "None - initiator must retry with passcodeId = 0"
+      },
+      {
+        "failure_name": "cB Verification Failure",
+        "trigger": "Pake2.cB != computed cB at initiator",
+        "handling": "Initiator sends FAILURE StatusReport, terminates exchange (T5a)",
+        "recovery": "None - indicates wrong passcode; commissioning must restart with correct passcode",
+        "security_implication": "Prevents session establishment with incorrect passcode"
+      },
+      {
+        "failure_name": "cA Verification Failure",
+        "trigger": "Pake3.cA != computed cA at responder",
+        "handling": "Responder sends FAILURE StatusReport, terminates exchange (T6a)",
+        "recovery": "None - indicates wrong passcode or MITM attack",
+        "security_implication": "Prevents rogue initiator from establishing session"
+      },
+      {
+        "failure_name": "Message Loss",
+        "trigger": "Reliable message not acknowledged (MRP timeout)",
+        "handling": "MRP retransmission up to max retries",
+        "recovery": "If retries exhausted, PASE fails; restart from Idle"
+      },
+      {
+        "failure_name": "Timeout",
+        "trigger": "No response within expected timeframe",
+        "handling": "Implementation-defined timeout, transition back to Idle",
+        "recovery": "Retry PASE from beginning"
+      }
+    ],
+    "implementation_notes": [
+      {
+        "note": "PBKDF Performance",
+        "details": "High iteration counts (e.g., 10000+) can cause multi-second delays at T3 transition; implementations should display progress indicator"
+      },
+      {
+        "note": "Passcode Entropy",
+        "details": "Passcode typically 6-8 decimal digits (20-27 bits entropy); SPAKE2+ prevents offline attacks but online rate-limiting recommended"
+      },
+      {
+        "note": "Session Lifetime",
+        "details": "PASE sessions used only for commissioning; after commissioning complete, CASE (certificate-based) sessions replace PASE"
+      },
+      {
+        "note": "AttestationChallenge Usage",
+        "details": "Derived challenge used in Section 6.2.3 Device Attestation Procedure immediately after PASE; prevents replay of attestation responses"
+      },
+      {
+        "note": "Elliptic Curve",
+        "details": "NIST P-256 (secp256r1) required; M and N points from SPAKE2+ draft v2 specification hardcoded"
+      },
+      {
+        "note": "Message Encoding",
+        "details": "All PASE message payloads are TLV-encoded per Matter TLV specification; unknown context tags silently ignored for forward compatibility"
+      },
+      {
+        "note": "Timing Side-Channels",
+        "details": "cA and cB verification should use constant-time comparison to prevent timing attacks on passcode validation"
+      },
+      {
+        "note": "Commissioning Window Security",
+        "details": "Passcode for commissioning window should be displayed only when window is open; window has time limit (e.g., 10 minutes)"
+      }
+    ],
+    "references": [
+      {
+        "section": "3.1",
+        "title": "DRBG (Deterministic Random Bit Generator)"
+      },
+      {
+        "section": "3.3",
+        "title": "Hash function (SHA-256)"
+      },
+      {
+        "section": "3.4",
+        "title": "HMAC (Keyed-Hash Message Authentication Code)"
+      },
+      {
+        "section": "3.5.1",
+        "title": "Group (Elliptic Curve NIST P-256)"
+      },
+      {
+        "section": "3.8",
+        "title": "KDF (Key Derivation Function)"
+      },
+      {
+        "section": "3.9",
+        "title": "PBKDF (Password-Based Key Derivation Function)"
+      },
+      {
+        "section": "3.10",
+        "title": "PAKE (Password-Authenticated Key Exchange) - SPAKE2+"
+      },
+      {
+        "section": "4.4",
+        "title": "Message Frame Format"
+      },
+      {
+        "section": "4.6.1.1",
+        "title": "Message Counter Initialization"
+      },
+      {
+        "section": "4.13.2",
+        "title": "Session Context and session-parameter-struct"
+      },
+      {
+        "section": "4.13.2.4",
+        "title": "Choosing Secure Unicast Session Identifiers"
+      },
+      {
+        "section": "5.1.1.6",
+        "title": "Passcode Definition"
+      },
+      {
+        "section": "6.2.3",
+        "title": "Device Attestation Procedure (uses AttestationChallenge)"
+      }
+    ]
+  }
+}

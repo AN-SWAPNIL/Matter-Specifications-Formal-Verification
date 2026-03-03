@@ -1,0 +1,2050 @@
+{
+  "fsm_model": {
+    "section_name": "11.25 Joint Fabric Administrator Cluster",
+    "section_ref": "Matter Core Specification 1.5, Section 11.25",
+    "description": "Complete FSM for Joint Fabric Administrator Cluster including Joint Commissioning, ACL Management, Commissioning Window Control, and Anchor Transfer operations",
+    "states": [
+      {
+        "name": "Idle",
+        "description": "Initial state where no commissioning or administrative operations are in progress",
+        "is_initial": true,
+        "invariants": [
+          "fail_safe_armed == false",
+          "commissioning_in_progress == false",
+          "csr_generated == false",
+          "icac_installed == false",
+          "commissioning_window_open == false"
+        ],
+        "state_variables": {
+          "fail_safe_armed": "boolean",
+          "commissioning_in_progress": "boolean",
+          "AdministratorFabricIndex": "fabric-idx (1-254) or null",
+          "commissioning_window_open": "boolean"
+        }
+      },
+      {
+        "name": "AwaitingVIDVerification",
+        "description": "Received ICACCSRRequest but VID verification has not been completed",
+        "is_initial": false,
+        "invariants": [
+          "vid_verified == false",
+          "fail_safe_armed == true"
+        ],
+        "state_variables": {
+          "fail_safe_armed": "boolean",
+          "vid_verified": "boolean",
+          "request_pending": "boolean"
+        }
+      },
+      {
+        "name": "CSRRequested",
+        "description": "ICACCSRRequest received and validated, ready to generate CSR",
+        "is_initial": false,
+        "invariants": [
+          "fail_safe_armed == true",
+          "vid_verified == true",
+          "case_session_active == true",
+          "prior_AddICAC_executed == false"
+        ],
+        "state_variables": {
+          "fail_safe_armed": "boolean",
+          "vid_verified": "boolean",
+          "case_session_active": "boolean",
+          "prior_AddICAC_executed": "boolean",
+          "fail_safe_timer": "duration_seconds"
+        }
+      },
+      {
+        "name": "CSRGenerated",
+        "description": "CSR has been generated and sent in ICACCSRResponse, awaiting AddICAC",
+        "is_initial": false,
+        "invariants": [
+          "csr_generated == true",
+          "csr_public_key_stored == true",
+          "fail_safe_armed == true"
+        ],
+        "state_variables": {
+          "csr_generated": "boolean",
+          "csr_public_key": "public_key_bytes",
+          "csr_sent": "octstr_max_600_bytes",
+          "fail_safe_armed": "boolean",
+          "fail_safe_timer": "duration_seconds"
+        }
+      },
+      {
+        "name": "ValidatingICAC",
+        "description": "AddICAC received, performing three validation checks",
+        "is_initial": false,
+        "invariants": [
+          "icac_received == true",
+          "validation_in_progress == true",
+          "fail_safe_armed == true"
+        ],
+        "state_variables": {
+          "icac_value": "octstr_max_400_bytes",
+          "validation_in_progress": "boolean",
+          "chain_validation_complete": "boolean",
+          "pubkey_validation_complete": "boolean",
+          "dn_validation_complete": "boolean",
+          "fail_safe_armed": "boolean"
+        }
+      },
+      {
+        "name": "ICACAccepted",
+        "description": "ICAC validation succeeded, certificate installed, ready to complete commissioning",
+        "is_initial": false,
+        "invariants": [
+          "icac_valid == true",
+          "icac_installed == true",
+          "fail_safe_armed == true"
+        ],
+        "state_variables": {
+          "icac_value": "octstr_max_400_bytes",
+          "icac_installed": "boolean",
+          "response_status": "ICACResponseStatusEnum_OK",
+          "fail_safe_armed": "boolean"
+        }
+      },
+      {
+        "name": "ICACRejected_InvalidPublicKey",
+        "description": "ICAC validation failed due to public key mismatch",
+        "is_initial": false,
+        "invariants": [
+          "validation_failed == true",
+          "error_type == InvalidPublicKey"
+        ],
+        "state_variables": {
+          "validation_failed": "boolean",
+          "error_type": "ICACResponseStatusEnum",
+          "error_message": "string"
+        }
+      },
+      {
+        "name": "ICACRejected_InvalidICAC",
+        "description": "ICAC validation failed due to chain validation or DN encoding failure",
+        "is_initial": false,
+        "invariants": [
+          "validation_failed == true",
+          "error_type == InvalidICAC"
+        ],
+        "state_variables": {
+          "validation_failed": "boolean",
+          "error_type": "ICACResponseStatusEnum",
+          "error_message": "string",
+          "failure_reason": "chain_validation_failed or dn_encoding_invalid"
+        }
+      },
+      {
+        "name": "ErrorState_NoFailSafe",
+        "description": "Command received without armed fail-safe context",
+        "is_initial": false,
+        "invariants": [
+          "fail_safe_armed == false",
+          "error_status == FAILSAFE_REQUIRED"
+        ],
+        "state_variables": {
+          "error_status": "StatusCodeEnum",
+          "fail_safe_armed": "boolean"
+        }
+      },
+      {
+        "name": "ErrorState_VIDNotVerified",
+        "description": "ICACCSRRequest received without VID verification",
+        "is_initial": false,
+        "invariants": [
+          "vid_verified == false",
+          "error_status == VIDNotVerified"
+        ],
+        "state_variables": {
+          "error_status": "StatusCodeEnum",
+          "vid_verified": "boolean"
+        }
+      },
+      {
+        "name": "ErrorState_InvalidSession",
+        "description": "Command received over non-CASE session",
+        "is_initial": false,
+        "invariants": [
+          "case_session_active == false",
+          "error_status == INVALID_COMMAND"
+        ],
+        "state_variables": {
+          "error_status": "StatusCodeEnum",
+          "case_session_active": "boolean"
+        }
+      },
+      {
+        "name": "ErrorState_ConstraintViolation",
+        "description": "ICACCSRRequest received when prior AddICAC already executed in fail-safe period",
+        "is_initial": false,
+        "invariants": [
+          "prior_AddICAC_executed == true",
+          "error_status == CONSTRAINT_ERROR"
+        ],
+        "state_variables": {
+          "error_status": "StatusCodeEnum",
+          "prior_AddICAC_executed": "boolean"
+        }
+      },
+      {
+        "name": "ErrorState_Busy",
+        "description": "Commissioning operation cannot proceed due to another operation in progress",
+        "is_initial": false,
+        "invariants": [
+          "commissioning_in_progress == true",
+          "error_status == Busy"
+        ],
+        "state_variables": {
+          "error_status": "StatusCodeEnum",
+          "commissioning_in_progress": "boolean"
+        }
+      },
+      {
+        "name": "CommissioningComplete",
+        "description": "Joint commissioning successfully completed, ICAC installed and operational",
+        "is_initial": false,
+        "invariants": [
+          "icac_installed == true",
+          "commissioning_complete == true",
+          "fail_safe_disarmed == true"
+        ],
+        "state_variables": {
+          "icac_installed": "boolean",
+          "commissioning_complete": "boolean"
+        }
+      },
+      {
+        "name": "ACL_Active",
+        "description": "ACL entry is active and enforced on the node",
+        "is_initial": true,
+        "invariants": [
+          "acl_status == Active",
+          "acl_installed_on_node == true"
+        ],
+        "state_variables": {
+          "acl_entry_list_id": "uint16",
+          "acl_node_id": "node-id",
+          "acl_status": "ACLStatusEnum",
+          "acl_installed_on_node": "boolean"
+        }
+      },
+      {
+        "name": "ACL_DeletePending",
+        "description": "ACL removal initiated, status updated to DeletePending, attempting removal from node",
+        "is_initial": false,
+        "invariants": [
+          "acl_status == DeletePending",
+          "removal_in_progress == true"
+        ],
+        "state_variables": {
+          "acl_entry_list_id": "uint16",
+          "acl_node_id": "node-id",
+          "acl_status": "ACLStatusEnum",
+          "removal_in_progress": "boolean"
+        }
+      },
+      {
+        "name": "ACL_Removed",
+        "description": "ACL successfully removed from both node and ACL list",
+        "is_initial": false,
+        "invariants": [
+          "acl_status == Removed",
+          "acl_installed_on_node == false"
+        ],
+        "state_variables": {
+          "acl_entry_list_id": "uint16",
+          "acl_node_id": "node-id",
+          "acl_status": "ACLStatusEnum",
+          "acl_installed_on_node": "boolean"
+        }
+      },
+      {
+        "name": "ACL_CommitFailed",
+        "description": "ACL removal failed, status set to CommitFailed with error code for recovery",
+        "is_initial": false,
+        "invariants": [
+          "acl_status == CommitFailed",
+          "failure_code_set == true"
+        ],
+        "state_variables": {
+          "acl_entry_list_id": "uint16",
+          "acl_node_id": "node-id",
+          "acl_status": "ACLStatusEnum",
+          "failure_code": "error_code",
+          "failure_code_set": "boolean"
+        }
+      },
+      {
+        "name": "ACL_NodeNotFound",
+        "description": "RemoveACLFromNode attempted on non-existent node",
+        "is_initial": false,
+        "invariants": [
+          "node_exists == false",
+          "error_returned == NOT_FOUND"
+        ],
+        "state_variables": {
+          "acl_node_id": "node-id",
+          "node_exists": "boolean",
+          "error_returned": "StatusCodeEnum"
+        }
+      },
+      {
+        "name": "CommissioningWindow_Closed",
+        "description": "No commissioning window is currently open",
+        "is_initial": true,
+        "invariants": [
+          "window_open == false",
+          "window_timer_active == false"
+        ],
+        "state_variables": {
+          "window_open": "boolean",
+          "window_timer_active": "boolean",
+          "AdministratorFabricIndex": "fabric-idx or null"
+        }
+      },
+      {
+        "name": "CommissioningWindow_Open",
+        "description": "Commissioning window is open and accepting commissioning attempts",
+        "is_initial": false,
+        "invariants": [
+          "window_open == true",
+          "window_timer_active == true",
+          "window_timer > 0",
+          "AdministratorFabricIndex != null"
+        ],
+        "state_variables": {
+          "window_open": "boolean",
+          "window_timer": "uint16_seconds",
+          "window_timer_active": "boolean",
+          "pake_verifier": "octstr_97_bytes",
+          "discriminator": "uint16_max_4095",
+          "iterations": "uint32_range_1000_to_100000",
+          "salt": "octstr_16_to_32_bytes",
+          "AdministratorFabricIndex": "fabric-idx"
+        }
+      },
+      {
+        "name": "CommissioningWindow_Expired",
+        "description": "Commissioning window timer has expired, window automatically closed",
+        "is_initial": false,
+        "invariants": [
+          "window_timer == 0",
+          "window_open == false",
+          "window_expired == true"
+        ],
+        "state_variables": {
+          "window_open": "boolean",
+          "window_timer": "uint16_seconds",
+          "window_expired": "boolean"
+        }
+      },
+      {
+        "name": "CommissioningWindow_Error_NullFabricIndex",
+        "description": "OpenJointCommissioningWindow failed due to null AdministratorFabricIndex",
+        "is_initial": false,
+        "invariants": [
+          "AdministratorFabricIndex == null",
+          "error_status == InvalidAdministratorFabricIndex"
+        ],
+        "state_variables": {
+          "AdministratorFabricIndex": "null",
+          "error_status": "StatusCodeEnum"
+        }
+      },
+      {
+        "name": "CommissioningWindow_Error_PAKEParams",
+        "description": "OpenJointCommissioningWindow failed due to invalid PAKE parameters",
+        "is_initial": false,
+        "invariants": [
+          "pake_params_valid == false",
+          "error_status == PAKEParameterError"
+        ],
+        "state_variables": {
+          "pake_params_valid": "boolean",
+          "error_status": "StatusCodeEnum",
+          "validation_failure_reason": "string"
+        }
+      },
+      {
+        "name": "AnchorTransfer_Idle",
+        "description": "No anchor transfer operation in progress, current node is active anchor",
+        "is_initial": true,
+        "invariants": [
+          "is_anchor == true",
+          "transfer_in_progress == false",
+          "user_consent_given == false"
+        ],
+        "state_variables": {
+          "is_anchor": "boolean",
+          "transfer_in_progress": "boolean",
+          "user_consent_given": "boolean",
+          "datastore_busy": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_RequestReceived",
+        "description": "Transfer request received, checking preconditions",
+        "is_initial": false,
+        "invariants": [
+          "transfer_requested == true",
+          "is_anchor == true"
+        ],
+        "state_variables": {
+          "transfer_requested": "boolean",
+          "is_anchor": "boolean",
+          "user_consent_given": "boolean",
+          "datastore_busy": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_InProgress",
+        "description": "Anchor transfer is in progress, user consent obtained and datastore idle",
+        "is_initial": false,
+        "invariants": [
+          "transfer_in_progress == true",
+          "user_consent_given == true",
+          "datastore_busy == false"
+        ],
+        "state_variables": {
+          "transfer_in_progress": "boolean",
+          "user_consent_given": "boolean",
+          "datastore_busy": "boolean",
+          "candidate_administrator": "node-id"
+        }
+      },
+      {
+        "name": "AnchorTransfer_Complete",
+        "description": "Anchor transfer completed, anchor role transferred to new administrator",
+        "is_initial": false,
+        "invariants": [
+          "transfer_complete == true",
+          "is_anchor == false"
+        ],
+        "state_variables": {
+          "transfer_complete": "boolean",
+          "is_anchor": "boolean",
+          "new_anchor": "node-id"
+        }
+      },
+      {
+        "name": "AnchorTransfer_Rejected_NoConsent",
+        "description": "Anchor transfer rejected due to lack of user consent",
+        "is_initial": false,
+        "invariants": [
+          "user_consent_given == false",
+          "transfer_status == NoUserConsent"
+        ],
+        "state_variables": {
+          "user_consent_given": "boolean",
+          "transfer_status": "TransferAnchorResponseStatusEnum"
+        }
+      },
+      {
+        "name": "AnchorTransfer_Rejected_DatastoreBusy",
+        "description": "Anchor transfer rejected due to ongoing datastore operations",
+        "is_initial": false,
+        "invariants": [
+          "datastore_busy == true",
+          "transfer_status == DatastoreBusy"
+        ],
+        "state_variables": {
+          "datastore_busy": "boolean",
+          "transfer_status": "TransferAnchorResponseStatusEnum"
+        }
+      },
+      {
+        "name": "EndpointAnnounced",
+        "description": "Joint Fabric Administrator Cluster endpoint has been announced to client",
+        "is_initial": false,
+        "invariants": [
+          "endpoint_announced == true"
+        ],
+        "state_variables": {
+          "endpoint_id": "endpoint-no",
+          "endpoint_announced": "boolean"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "transition_id": "T001",
+        "from_state": "Idle",
+        "to_state": "CSRRequested",
+        "trigger": "ICACCSRRequest",
+        "guard_condition": "case_session_active == true && fail_safe_armed == true && vid_verified == true && prior_AddICAC_executed == false",
+        "actions": [
+          "commissioning_in_progress := true",
+          "csr_generation_requested := true"
+        ],
+        "timing_requirement": null,
+        "description": "All preconditions met for ICACCSRRequest, proceed to generate CSR"
+      },
+      {
+        "transition_id": "T002",
+        "from_state": "Idle",
+        "to_state": "ErrorState_InvalidSession",
+        "trigger": "ICACCSRRequest",
+        "guard_condition": "case_session_active == false",
+        "actions": [
+          "error_status := INVALID_COMMAND",
+          "send_error_response(INVALID_COMMAND)"
+        ],
+        "timing_requirement": null,
+        "description": "ICACCSRRequest must be over CASE session"
+      },
+      {
+        "transition_id": "T003",
+        "from_state": "Idle",
+        "to_state": "ErrorState_NoFailSafe",
+        "trigger": "ICACCSRRequest",
+        "guard_condition": "case_session_active == true && fail_safe_armed == false",
+        "actions": [
+          "error_status := FAILSAFE_REQUIRED",
+          "send_error_response(FAILSAFE_REQUIRED)"
+        ],
+        "timing_requirement": null,
+        "description": "ICACCSRRequest requires armed fail-safe context"
+      },
+      {
+        "transition_id": "T004",
+        "from_state": "Idle",
+        "to_state": "ErrorState_VIDNotVerified",
+        "trigger": "ICACCSRRequest",
+        "guard_condition": "case_session_active == true && fail_safe_armed == true && vid_verified == false",
+        "actions": [
+          "error_status := VIDNotVerified",
+          "send_error_response(VIDNotVerified)"
+        ],
+        "timing_requirement": null,
+        "description": "VID verification must be completed before ICACCSRRequest"
+      },
+      {
+        "transition_id": "T005",
+        "from_state": "Idle",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "ICACCSRRequest",
+        "guard_condition": "case_session_active == true && fail_safe_armed == true && vid_verified == true && prior_AddICAC_executed == true",
+        "actions": [
+          "error_status := CONSTRAINT_ERROR",
+          "send_error_response(CONSTRAINT_ERROR)"
+        ],
+        "timing_requirement": null,
+        "description": "Cannot request CSR if AddICAC already executed in fail-safe period"
+      },
+      {
+        "transition_id": "T006",
+        "from_state": "CSRRequested",
+        "to_state": "CSRGenerated",
+        "trigger": "generate_csr_success",
+        "guard_condition": "fail_safe_armed == true",
+        "actions": [
+          "csr_generated := true",
+          "csr_public_key := extract_public_key_from_csr(csr)",
+          "csr_sent := generate_PKCS10_CSR_DER_encoded()",
+          "send_ICACCSRResponse(csr_sent)"
+        ],
+        "timing_requirement": null,
+        "description": "CSR successfully generated, send ICACCSRResponse"
+      },
+      {
+        "transition_id": "T007",
+        "from_state": "CSRGenerated",
+        "to_state": "ValidatingICAC",
+        "trigger": "AddICAC",
+        "guard_condition": "case_session_active == true && fail_safe_armed == true && prior_AddICAC_executed == false",
+        "actions": [
+          "icac_received := true",
+          "icac_value := received_icac_value",
+          "validation_in_progress := true",
+          "start_validation_sequence()"
+        ],
+        "timing_requirement": null,
+        "description": "AddICAC received with valid preconditions, begin validation"
+      },
+      {
+        "transition_id": "T008",
+        "from_state": "CSRGenerated",
+        "to_state": "ErrorState_InvalidSession",
+        "trigger": "AddICAC",
+        "guard_condition": "case_session_active == false",
+        "actions": [
+          "error_status := INVALID_COMMAND",
+          "send_error_response(INVALID_COMMAND)"
+        ],
+        "timing_requirement": null,
+        "description": "AddICAC must be over CASE session"
+      },
+      {
+        "transition_id": "T009",
+        "from_state": "CSRGenerated",
+        "to_state": "ErrorState_NoFailSafe",
+        "trigger": "AddICAC",
+        "guard_condition": "case_session_active == true && fail_safe_armed == false",
+        "actions": [
+          "error_status := FAILSAFE_REQUIRED",
+          "send_error_response(FAILSAFE_REQUIRED)"
+        ],
+        "timing_requirement": null,
+        "description": "AddICAC requires armed fail-safe context"
+      },
+      {
+        "transition_id": "T010",
+        "from_state": "CSRGenerated",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "AddICAC",
+        "guard_condition": "case_session_active == true && fail_safe_armed == true && prior_AddICAC_executed == true",
+        "actions": [
+          "error_status := CONSTRAINT_ERROR",
+          "send_error_response(CONSTRAINT_ERROR)"
+        ],
+        "timing_requirement": null,
+        "description": "Cannot execute AddICAC if already executed in fail-safe period"
+      },
+      {
+        "transition_id": "T011",
+        "from_state": "ValidatingICAC",
+        "to_state": "ICACAccepted",
+        "trigger": "validation_complete",
+        "guard_condition": "chain_validation_success == true && pubkey_match == true && dn_encoding_valid == true",
+        "actions": [
+          "icac_valid := true",
+          "icac_installed := true",
+          "response_status := OK",
+          "prior_AddICAC_executed := true",
+          "send_ICACResponse(OK)"
+        ],
+        "timing_requirement": "immediate",
+        "description": "All three validation checks passed, install ICAC and respond with OK"
+      },
+      {
+        "transition_id": "T012",
+        "from_state": "ValidatingICAC",
+        "to_state": "ICACRejected_InvalidICAC",
+        "trigger": "validation_complete",
+        "guard_condition": "chain_validation_success == false",
+        "actions": [
+          "validation_failed := true",
+          "error_type := InvalidICAC",
+          "error_message := chain_validation_failed",
+          "send_ICACResponse(InvalidICAC)"
+        ],
+        "timing_requirement": "immediate",
+        "description": "Chain validation failed using Crypto_VerifyChain"
+      },
+      {
+        "transition_id": "T013",
+        "from_state": "ValidatingICAC",
+        "to_state": "ICACRejected_InvalidPublicKey",
+        "trigger": "validation_complete",
+        "guard_condition": "chain_validation_success == true && pubkey_match == false",
+        "actions": [
+          "validation_failed := true",
+          "error_type := InvalidPublicKey",
+          "error_message := public_key_mismatch",
+          "send_ICACResponse(InvalidPublicKey)"
+        ],
+        "timing_requirement": "immediate",
+        "description": "Public key in ICAC does not match CSR public key"
+      },
+      {
+        "transition_id": "T014",
+        "from_state": "ValidatingICAC",
+        "to_state": "ICACRejected_InvalidICAC",
+        "trigger": "validation_complete",
+        "guard_condition": "chain_validation_success == true && pubkey_match == true && dn_encoding_valid == false",
+        "actions": [
+          "validation_failed := true",
+          "error_type := InvalidICAC",
+          "error_message := dn_encoding_validation_failed",
+          "send_ICACResponse(InvalidICAC)"
+        ],
+        "timing_requirement": "immediate",
+        "description": "DN encoding rules validation failed"
+      },
+      {
+        "transition_id": "T015",
+        "from_state": "ICACAccepted",
+        "to_state": "CommissioningComplete",
+        "trigger": "fail_safe_complete",
+        "guard_condition": "icac_installed == true && fail_safe_armed == true",
+        "actions": [
+          "commissioning_complete := true",
+          "fail_safe_disarmed := true",
+          "commissioning_in_progress := false"
+        ],
+        "timing_requirement": null,
+        "description": "Commissioning successfully completed with fail-safe"
+      },
+      {
+        "transition_id": "T016",
+        "from_state": "ICACAccepted",
+        "to_state": "Idle",
+        "trigger": "fail_safe_expired",
+        "guard_condition": "fail_safe_timer == 0",
+        "actions": [
+          "icac_installed := false",
+          "csr_generated := false",
+          "commissioning_in_progress := false",
+          "rollback_all_operations()"
+        ],
+        "timing_requirement": null,
+        "description": "Fail-safe expired, rollback all operations including installed ICAC"
+      },
+      {
+        "transition_id": "T017",
+        "from_state": "ICACRejected_InvalidPublicKey",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "reset_commissioning_state()",
+          "commissioning_in_progress := false"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle after error acknowledged"
+      },
+      {
+        "transition_id": "T018",
+        "from_state": "ICACRejected_InvalidICAC",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "reset_commissioning_state()",
+          "commissioning_in_progress := false"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle after error acknowledged"
+      },
+      {
+        "transition_id": "T019",
+        "from_state": "ErrorState_NoFailSafe",
+        "to_state": "Idle",
+        "trigger": "error_handled",
+        "guard_condition": "true",
+        "actions": [
+          "reset_error_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle after handling no fail-safe error"
+      },
+      {
+        "transition_id": "T020",
+        "from_state": "ErrorState_VIDNotVerified",
+        "to_state": "Idle",
+        "trigger": "error_handled",
+        "guard_condition": "true",
+        "actions": [
+          "reset_error_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle after handling VID not verified error"
+      },
+      {
+        "transition_id": "T021",
+        "from_state": "ErrorState_InvalidSession",
+        "to_state": "Idle",
+        "trigger": "error_handled",
+        "guard_condition": "true",
+        "actions": [
+          "reset_error_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle after handling invalid session error"
+      },
+      {
+        "transition_id": "T022",
+        "from_state": "ErrorState_ConstraintViolation",
+        "to_state": "Idle",
+        "trigger": "error_handled",
+        "guard_condition": "true",
+        "actions": [
+          "reset_error_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle after handling constraint violation error"
+      },
+      {
+        "transition_id": "T023",
+        "from_state": "ErrorState_Busy",
+        "to_state": "Idle",
+        "trigger": "commissioning_completed",
+        "guard_condition": "commissioning_in_progress == false",
+        "actions": [
+          "reset_error_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle when commissioning operation completes"
+      },
+      {
+        "transition_id": "T024",
+        "from_state": "ACL_Active",
+        "to_state": "ACL_DeletePending",
+        "trigger": "RemoveACLFromNode",
+        "guard_condition": "node_exists(acl_node_id) == true && acl_list_includes(acl_entry_list_id) == true",
+        "actions": [
+          "acl_status := DeletePending",
+          "removal_in_progress := true",
+          "initiate_acl_removal_from_node(acl_node_id, acl_entry_list_id)"
+        ],
+        "timing_requirement": null,
+        "description": "RemoveACLFromNode: Node exists and ACL present, update status and initiate removal"
+      },
+      {
+        "transition_id": "T025",
+        "from_state": "ACL_Active",
+        "to_state": "ACL_NodeNotFound",
+        "trigger": "RemoveACLFromNode",
+        "guard_condition": "node_exists(acl_node_id) == false",
+        "actions": [
+          "node_exists := false",
+          "error_returned := NOT_FOUND",
+          "send_error_response(NOT_FOUND)"
+        ],
+        "timing_requirement": null,
+        "description": "Node does not exist for given NodeID, return NOT_FOUND"
+      },
+      {
+        "transition_id": "T026",
+        "from_state": "ACL_Active",
+        "to_state": "ACL_Active",
+        "trigger": "RemoveACLFromNode",
+        "guard_condition": "node_exists(acl_node_id) == true && acl_list_includes(acl_entry_list_id) == false",
+        "actions": [
+          "no_operation()"
+        ],
+        "timing_requirement": null,
+        "description": "ACL already not in list, no action needed, stay in ACL_Active"
+      },
+      {
+        "transition_id": "T027",
+        "from_state": "ACL_DeletePending",
+        "to_state": "ACL_Removed",
+        "trigger": "acl_removal_success",
+        "guard_condition": "acl_removed_from_node == true",
+        "actions": [
+          "acl_status := Removed",
+          "acl_installed_on_node := false",
+          "removal_in_progress := false",
+          "remove_acl_entry_from_list(acl_entry_list_id)"
+        ],
+        "timing_requirement": null,
+        "description": "ACL successfully removed from node, remove from ACL list and update status"
+      },
+      {
+        "transition_id": "T028",
+        "from_state": "ACL_DeletePending",
+        "to_state": "ACL_CommitFailed",
+        "trigger": "acl_removal_failure",
+        "guard_condition": "acl_removed_from_node == false",
+        "actions": [
+          "acl_status := CommitFailed",
+          "failure_code := get_removal_error_code()",
+          "failure_code_set := true",
+          "removal_in_progress := false"
+        ],
+        "timing_requirement": null,
+        "description": "ACL removal from node failed, set CommitFailed status and store error code"
+      },
+      {
+        "transition_id": "T029",
+        "from_state": "ACL_CommitFailed",
+        "to_state": "ACL_Active",
+        "trigger": "node_refresh",
+        "guard_condition": "true",
+        "actions": [
+          "retry_acl_removal()",
+          "acl_status := Active"
+        ],
+        "timing_requirement": null,
+        "description": "Node refresh handles failed ACL removal, retry and return to active"
+      },
+      {
+        "transition_id": "T030",
+        "from_state": "ACL_NodeNotFound",
+        "to_state": "ACL_Active",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "reset_error_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Error acknowledged, return to normal state"
+      },
+      {
+        "transition_id": "T031",
+        "from_state": "CommissioningWindow_Closed",
+        "to_state": "CommissioningWindow_Open",
+        "trigger": "OpenJointCommissioningWindow",
+        "guard_condition": "AdministratorFabricIndex != null && pake_params_valid == true && commissioning_in_progress == false",
+        "actions": [
+          "window_open := true",
+          "window_timer := commissioning_timeout",
+          "window_timer_active := true",
+          "pake_verifier := received_pake_verifier",
+          "discriminator := received_discriminator",
+          "iterations := received_iterations",
+          "salt := received_salt",
+          "start_window_timer(commissioning_timeout)"
+        ],
+        "timing_requirement": null,
+        "description": "All parameters valid, open commissioning window and start timer"
+      },
+      {
+        "transition_id": "T032",
+        "from_state": "CommissioningWindow_Closed",
+        "to_state": "CommissioningWindow_Error_NullFabricIndex",
+        "trigger": "OpenJointCommissioningWindow",
+        "guard_condition": "AdministratorFabricIndex == null",
+        "actions": [
+          "error_status := InvalidAdministratorFabricIndex",
+          "send_error_response(InvalidAdministratorFabricIndex)"
+        ],
+        "timing_requirement": null,
+        "description": "Cannot open window with null AdministratorFabricIndex"
+      },
+      {
+        "transition_id": "T033",
+        "from_state": "CommissioningWindow_Closed",
+        "to_state": "CommissioningWindow_Error_PAKEParams",
+        "trigger": "OpenJointCommissioningWindow",
+        "guard_condition": "AdministratorFabricIndex != null && pake_params_valid == false",
+        "actions": [
+          "error_status := PAKEParameterError",
+          "validation_failure_reason := get_pake_validation_error()",
+          "send_error_response(PAKEParameterError)"
+        ],
+        "timing_requirement": null,
+        "description": "PAKE parameters validation failed"
+      },
+      {
+        "transition_id": "T034",
+        "from_state": "CommissioningWindow_Closed",
+        "to_state": "ErrorState_Busy",
+        "trigger": "OpenJointCommissioningWindow",
+        "guard_condition": "commissioning_in_progress == true",
+        "actions": [
+          "error_status := Busy",
+          "send_error_response(Busy)"
+        ],
+        "timing_requirement": null,
+        "description": "Cannot open window while commissioning in progress"
+      },
+      {
+        "transition_id": "T035",
+        "from_state": "CommissioningWindow_Open",
+        "to_state": "CommissioningWindow_Open",
+        "trigger": "timer_tick",
+        "guard_condition": "window_timer > 0",
+        "actions": [
+          "window_timer := window_timer - 1"
+        ],
+        "timing_requirement": "periodic_1_second",
+        "description": "Timer decrement while window open"
+      },
+      {
+        "transition_id": "T036",
+        "from_state": "CommissioningWindow_Open",
+        "to_state": "CommissioningWindow_Expired",
+        "trigger": "timer_expired",
+        "guard_condition": "window_timer == 0",
+        "actions": [
+          "window_open := false",
+          "window_timer_active := false",
+          "window_expired := true",
+          "cleanup_window_parameters()"
+        ],
+        "timing_requirement": null,
+        "description": "Commissioning window timer expired, automatically close window"
+      },
+      {
+        "transition_id": "T037",
+        "from_state": "CommissioningWindow_Expired",
+        "to_state": "CommissioningWindow_Closed",
+        "trigger": "window_reset",
+        "guard_condition": "true",
+        "actions": [
+          "window_expired := false",
+          "reset_window_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Reset expired window to closed state"
+      },
+      {
+        "transition_id": "T038",
+        "from_state": "CommissioningWindow_Error_NullFabricIndex",
+        "to_state": "CommissioningWindow_Closed",
+        "trigger": "error_handled",
+        "guard_condition": "true",
+        "actions": [
+          "reset_error_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to closed state after handling error"
+      },
+      {
+        "transition_id": "T039",
+        "from_state": "CommissioningWindow_Error_PAKEParams",
+        "to_state": "CommissioningWindow_Closed",
+        "trigger": "error_handled",
+        "guard_condition": "true",
+        "actions": [
+          "reset_error_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to closed state after handling PAKE error"
+      },
+      {
+        "transition_id": "T040",
+        "from_state": "AnchorTransfer_Idle",
+        "to_state": "AnchorTransfer_RequestReceived",
+        "trigger": "TransferAnchorRequest",
+        "guard_condition": "is_anchor == true",
+        "actions": [
+          "transfer_requested := true",
+          "check_transfer_preconditions()"
+        ],
+        "timing_requirement": null,
+        "description": "Anchor transfer request received, begin checking preconditions"
+      },
+      {
+        "transition_id": "T041",
+        "from_state": "AnchorTransfer_RequestReceived",
+        "to_state": "AnchorTransfer_InProgress",
+        "trigger": "preconditions_checked",
+        "guard_condition": "user_consent_given == true && datastore_busy == false",
+        "actions": [
+          "transfer_in_progress := true",
+          "candidate_administrator := get_requester_node_id()",
+          "send_TransferAnchorResponse(OK)",
+          "initiate_anchor_transfer()"
+        ],
+        "timing_requirement": null,
+        "description": "User consent obtained and datastore idle, proceed with transfer"
+      },
+      {
+        "transition_id": "T042",
+        "from_state": "AnchorTransfer_RequestReceived",
+        "to_state": "AnchorTransfer_Rejected_NoConsent",
+        "trigger": "preconditions_checked",
+        "guard_condition": "user_consent_given == false",
+        "actions": [
+          "transfer_status := NoUserConsent",
+          "send_TransferAnchorResponse(NoUserConsent)"
+        ],
+        "timing_requirement": null,
+        "description": "User has not consented to anchor transfer"
+      },
+      {
+        "transition_id": "T043",
+        "from_state": "AnchorTransfer_RequestReceived",
+        "to_state": "AnchorTransfer_Rejected_DatastoreBusy",
+        "trigger": "preconditions_checked",
+        "guard_condition": "user_consent_given == true && datastore_busy == true",
+        "actions": [
+          "transfer_status := DatastoreBusy",
+          "send_TransferAnchorResponse(DatastoreBusy)"
+        ],
+        "timing_requirement": null,
+        "description": "Datastore operations in progress, cannot transfer now"
+      },
+      {
+        "transition_id": "T044",
+        "from_state": "AnchorTransfer_InProgress",
+        "to_state": "AnchorTransfer_Complete",
+        "trigger": "TransferAnchorComplete",
+        "guard_condition": "transfer_in_progress == true",
+        "actions": [
+          "transfer_complete := true",
+          "is_anchor := false",
+          "new_anchor := candidate_administrator",
+          "finalize_anchor_transfer()"
+        ],
+        "timing_requirement": null,
+        "description": "Transfer complete command received, finalize anchor transfer"
+      },
+      {
+        "transition_id": "T045",
+        "from_state": "AnchorTransfer_Complete",
+        "to_state": "AnchorTransfer_Idle",
+        "trigger": "transfer_finalized",
+        "guard_condition": "true",
+        "actions": [
+          "reset_transfer_state()",
+          "user_consent_given := false"
+        ],
+        "timing_requirement": null,
+        "description": "Transfer finalized, return to idle (no longer anchor)"
+      },
+      {
+        "transition_id": "T046",
+        "from_state": "AnchorTransfer_Rejected_NoConsent",
+        "to_state": "AnchorTransfer_Idle",
+        "trigger": "error_handled",
+        "guard_condition": "true",
+        "actions": [
+          "reset_transfer_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle after rejection due to no consent"
+      },
+      {
+        "transition_id": "T047",
+        "from_state": "AnchorTransfer_Rejected_DatastoreBusy",
+        "to_state": "AnchorTransfer_Idle",
+        "trigger": "error_handled",
+        "guard_condition": "true",
+        "actions": [
+          "reset_transfer_state()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle after rejection due to datastore busy"
+      },
+      {
+        "transition_id": "T048",
+        "from_state": "Idle",
+        "to_state": "EndpointAnnounced",
+        "trigger": "AnnounceJointFabricAdministrator",
+        "guard_condition": "true",
+        "actions": [
+          "endpoint_id := received_endpoint_id",
+          "endpoint_announced := true",
+          "send_announcement_confirmation()"
+        ],
+        "timing_requirement": null,
+        "description": "Announce endpoint holding Joint Fabric Administrator Cluster"
+      },
+      {
+        "transition_id": "T049",
+        "from_state": "EndpointAnnounced",
+        "to_state": "Idle",
+        "trigger": "announcement_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "endpoint_announced := false"
+        ],
+        "timing_requirement": null,
+        "description": "Return to idle after announcement"
+      }
+    ],
+    "functions": [
+      {
+        "name": "generate_PKCS10_CSR_DER_encoded",
+        "parameters": [],
+        "return_type": "octstr (max 600 bytes)",
+        "description": "Generate a DER-encoded PKCS #10 Certificate Signing Request containing the node's public key for ICAC cross-signing",
+        "algorithm_detail": "Generate PKCS#10 CSR per RFC 2986: create CertificationRequestInfo with subject DN, public key (from node's ECDSA keypair), and attributes; sign with node's private key using ECDSA-SHA256; encode entire structure in DER format per X.690. Output maximum 600 bytes.",
+        "usage_in_fsm": "Called in transition T006 (CSRRequested -> CSRGenerated) to create CSR for ICACCSRResponse"
+      },
+      {
+        "name": "extract_public_key_from_csr",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "octstr (DER-encoded PKCS#10)",
+            "description": "The generated certificate signing request"
+          }
+        ],
+        "return_type": "public_key_bytes",
+        "description": "Extract and store the public key from the generated CSR for later validation against received ICAC",
+        "algorithm_detail": "Parse DER-encoded CSR per PKCS#10 structure, navigate to subjectPKInfo field in CertificationRequestInfo, extract SubjectPublicKeyInfo containing algorithm identifier and public key bits. Return raw public key bytes for storage.",
+        "usage_in_fsm": "Called in transition T006 to extract and store public key for comparison during ICAC validation"
+      },
+      {
+        "name": "Crypto_VerifyChain",
+        "parameters": [
+          {
+            "name": "certificates",
+            "type": "list of certificates [ICACValue, RootCACertificate]",
+            "description": "Certificate chain to verify, starting with target ICAC and ending with Root CA"
+          }
+        ],
+        "return_type": "boolean (true if valid, false if invalid)",
+        "description": "Verify the certificate chain from ICAC to Root CA using X.509 path validation",
+        "algorithm_detail": "Perform X.509 certificate path validation per RFC 5280: (1) Verify ICAC signature using Root CA public key and ECDSA-SHA256, (2) Check ICAC validity period (notBefore, notAfter), (3) Verify certificate extensions and constraints, (4) Confirm signature algorithm matches, (5) Validate issuer/subject DN chain. Return true if all checks pass, false otherwise.",
+        "usage_in_fsm": "Called in ValidatingICAC state (transition T011, T012) to verify ICAC was signed by trusted Root CA of accessing fabric"
+      },
+      {
+        "name": "validate_public_key_match",
+        "parameters": [
+          {
+            "name": "icac",
+            "type": "octstr (Matter Certificate Encoding)",
+            "description": "The received ICAC certificate"
+          },
+          {
+            "name": "stored_csr_public_key",
+            "type": "public_key_bytes",
+            "description": "The public key extracted from the CSR previously generated"
+          }
+        ],
+        "return_type": "boolean (true if match, false if mismatch)",
+        "description": "Verify that the public key in the received ICAC matches the public key from the last ICACCSRResponse",
+        "algorithm_detail": "Extract SubjectPublicKeyInfo from ICAC certificate using Matter Certificate Encoding parser. Compare extracted public key bytes with stored_csr_public_key byte-by-byte. Return true if identical, false if any byte differs.",
+        "usage_in_fsm": "Called in ValidatingICAC state (transition T011, T013) to ensure ICAC public key matches CSR public key"
+      },
+      {
+        "name": "validate_DN_encoding",
+        "parameters": [
+          {
+            "name": "icac",
+            "type": "octstr (Matter Certificate Encoding)",
+            "description": "The ICAC certificate to validate"
+          }
+        ],
+        "return_type": "boolean (true if valid, false if invalid)",
+        "description": "Validate that Distinguished Name fields in ICAC follow Matter DN Encoding Rules",
+        "algorithm_detail": "Parse ICAC certificate subject and issuer DN fields. Verify compliance with Matter specification DN encoding rules: (1) Required RDN types present in correct order, (2) Each RDN properly encoded as UTF8String or PrintableString per Matter rules, (3) No prohibited characters or encoding violations, (4) DN length constraints satisfied. Return true if all rules satisfied, false if any violation.",
+        "usage_in_fsm": "Called in ValidatingICAC state (transition T011, T014) to validate ICAC DN encoding correctness"
+      },
+      {
+        "name": "send_ICACCSRResponse",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "octstr (max 600 bytes, DER-encoded PKCS#10)",
+            "description": "The generated CSR to send"
+          }
+        ],
+        "return_type": "void",
+        "description": "Send ICACCSRResponse command containing the generated CSR to the administrator",
+        "algorithm_detail": "Construct ICACCSRResponse message with field ID=0 containing csr value (max 600 bytes). Encode message per Matter protocol format. Transmit over active CASE session to requesting administrator. No encryption of CSR itself as CASE session provides channel security.",
+        "usage_in_fsm": "Called in transition T006 to respond to ICACCSRRequest with generated CSR"
+      },
+      {
+        "name": "send_ICACResponse",
+        "parameters": [
+          {
+            "name": "status_code",
+            "type": "ICACResponseStatusEnum (OK | InvalidPublicKey | InvalidICAC)",
+            "description": "The validation result status"
+          }
+        ],
+        "return_type": "void",
+        "description": "Send ICACResponse command with validation result to administrator",
+        "algorithm_detail": "Construct ICACResponse message with field ID=0 containing status_code enum value. Encode message per Matter protocol format. Transmit over active CASE session immediately upon validation completion. Status codes: 0=OK, 1=InvalidPublicKey, 2=InvalidICAC.",
+        "usage_in_fsm": "Called in transitions T011, T012, T013, T014 to respond to AddICAC with validation outcome"
+      },
+      {
+        "name": "send_error_response",
+        "parameters": [
+          {
+            "name": "error_code",
+            "type": "StatusCodeEnum",
+            "description": "The error status code to return"
+          }
+        ],
+        "return_type": "void",
+        "description": "Send error response with appropriate status code to command initiator",
+        "algorithm_detail": "Construct error response message containing error_code. Map to status codes: 0x02=Busy, 0x03=PAKEParameterError, 0x04=WindowNotOpen, 0x05=VIDNotVerified, 0x06=InvalidAdministratorFabricIndex, or standard codes INVALID_COMMAND, FAILSAFE_REQUIRED, CONSTRAINT_ERROR. Send over current session (CASE if available, else appropriate transport).",
+        "usage_in_fsm": "Called in multiple error state transitions to notify initiator of failure reason"
+      },
+      {
+        "name": "rollback_all_operations",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Rollback all operations performed within the fail-safe period, including installed ICAC",
+        "algorithm_detail": "Iterate through all state changes logged during fail-safe period. Reverse each operation: remove installed ICAC from certificate store, clear stored CSR and public key, reset VID verification flags, restore pre-commissioning state. Ensure atomic rollback - if any operation fails, system enters recovery mode. Called when fail-safe timer expires or explicit rollback requested.",
+        "usage_in_fsm": "Called in transition T016 when fail-safe expires to revert all commissioning changes"
+      },
+      {
+        "name": "reset_commissioning_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Reset all commissioning-related state variables to initial values",
+        "algorithm_detail": "Set all commissioning flags to false: commissioning_in_progress=false, csr_generated=false, icac_installed=false, validation_in_progress=false. Clear stored CSR, public key, and ICAC values. Reset fail-safe state but preserve AdministratorFabricIndex. Do not modify fabric table or persistent configuration.",
+        "usage_in_fsm": "Called in error recovery transitions T017, T018 to clean up after commissioning failure"
+      },
+      {
+        "name": "reset_error_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clear error state variables and return to operational state",
+        "algorithm_detail": "Clear error_status, error_message, and validation_failed flags. Reset any temporary state related to failed operation. Do not modify persistent state or ongoing operations. Prepare system to accept new commands.",
+        "usage_in_fsm": "Called in multiple error-to-idle transitions to clean up error state"
+      },
+      {
+        "name": "node_exists",
+        "parameters": [
+          {
+            "name": "node_id",
+            "type": "node-id",
+            "description": "The node identifier to check"
+          }
+        ],
+        "return_type": "boolean (true if exists, false if not found)",
+        "description": "Check if Node Information Entry exists in datastore for given NodeID",
+        "algorithm_detail": "Query Joint Fabric Datastore Node Information registry for entry matching node_id. Check if node record present with valid status. Return true if node record found and active, false if no matching record or node marked as deleted.",
+        "usage_in_fsm": "Called in transition T024, T025 guard conditions to verify node existence before ACL removal"
+      },
+      {
+        "name": "acl_list_includes",
+        "parameters": [
+          {
+            "name": "acl_entry_list_id",
+            "type": "uint16",
+            "description": "The ACL entry identifier"
+          }
+        ],
+        "return_type": "boolean (true if present, false if absent)",
+        "description": "Check if ACL List for the node includes the specified ACL entry",
+        "algorithm_detail": "Query node's ACL List in datastore for entry matching acl_entry_list_id. Search through list of DatastoreACLEntryStruct records. Return true if matching list_id found with non-deleted status, false if not found or marked as deleted.",
+        "usage_in_fsm": "Called in transition T024, T026 guard conditions to check ACL presence before removal"
+      },
+      {
+        "name": "initiate_acl_removal_from_node",
+        "parameters": [
+          {
+            "name": "node_id",
+            "type": "node-id",
+            "description": "Target node for ACL removal"
+          },
+          {
+            "name": "acl_entry_list_id",
+            "type": "uint16",
+            "description": "ACL entry to remove"
+          }
+        ],
+        "return_type": "void",
+        "description": "Begin process of removing ACL entry from the specified node",
+        "algorithm_detail": "Send ACL removal command to target node via secure channel. Command instructs node to remove ACL entry matching acl_entry_list_id from local access control list. Asynchronous operation - actual removal occurs on node, success/failure reported via callback events acl_removal_success or acl_removal_failure.",
+        "usage_in_fsm": "Called in transition T024 action to start ACL removal after status set to DeletePending"
+      },
+      {
+        "name": "remove_acl_entry_from_list",
+        "parameters": [
+          {
+            "name": "acl_entry_list_id",
+            "type": "uint16",
+            "description": "ACL entry identifier to remove"
+          }
+        ],
+        "return_type": "void",
+        "description": "Remove ACL entry from the datastore ACL List after successful node removal",
+        "algorithm_detail": "Delete DatastoreACLEntryStruct record matching acl_entry_list_id from datastore ACL List. Update list indices if necessary. Mark entry as permanently removed. This is phase 2 of two-phase commit - only called after successful removal from node confirmed.",
+        "usage_in_fsm": "Called in transition T027 after successful ACL removal from node to complete two-phase commit"
+      },
+      {
+        "name": "get_removal_error_code",
+        "parameters": [],
+        "return_type": "error_code",
+        "description": "Retrieve the error code from failed ACL removal operation",
+        "algorithm_detail": "Query the last ACL removal operation result. Extract error code returned by node when removal failed. Error codes may include access denied, node unreachable, invalid ACL ID, or internal node error. Return error code for storage in FailureCode field.",
+        "usage_in_fsm": "Called in transition T028 when ACL removal fails to capture error for later recovery"
+      },
+      {
+        "name": "retry_acl_removal",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Retry ACL removal during Node Refresh after previous failure",
+        "algorithm_detail": "During Node Refresh procedure, examine ACL entries with CommitFailed status. For each failed entry, re-attempt removal using stored acl_entry_list_id and node_id. If retry succeeds, transition to ACL_Removed. If retry fails again, update FailureCode with new error and remain in CommitFailed for next refresh cycle.",
+        "usage_in_fsm": "Called in transition T029 during Node Refresh to handle previously failed ACL removals"
+      },
+      {
+        "name": "validate_pake_parameters",
+        "parameters": [
+          {
+            "name": "verifier",
+            "type": "octstr",
+            "description": "PAKE verifier, must be exactly 97 bytes"
+          },
+          {
+            "name": "discriminator",
+            "type": "uint16",
+            "description": "Discriminator value, max 4095"
+          },
+          {
+            "name": "iterations",
+            "type": "uint32",
+            "description": "PBKDF iterations, range 1000 to 100000"
+          },
+          {
+            "name": "salt",
+            "type": "octstr",
+            "description": "PBKDF salt, length 16 to 32 bytes"
+          }
+        ],
+        "return_type": "boolean (true if all valid, false if any invalid)",
+        "description": "Validate all PAKE parameters for OpenJointCommissioningWindow command",
+        "algorithm_detail": "Check constraints: (1) verifier byte_length == 97, (2) discriminator <= 4095, (3) 1000 <= iterations <= 100000, (4) 16 <= salt byte_length <= 32. Additionally verify verifier format matches SPAKE2+ verifier structure. Return true only if all constraints satisfied, false if any violation.",
+        "usage_in_fsm": "Called as guard condition in transitions T031, T033 to validate commissioning window parameters"
+      },
+      {
+        "name": "get_pake_validation_error",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Get detailed reason for PAKE parameter validation failure",
+        "algorithm_detail": "Examine which PAKE constraint failed: verifier length != 97, discriminator > 4095, iterations out of range, salt length out of range, or verifier format invalid. Return descriptive string identifying specific failure for debugging.",
+        "usage_in_fsm": "Called in transition T033 to populate validation_failure_reason for PAKE error reporting"
+      },
+      {
+        "name": "start_window_timer",
+        "parameters": [
+          {
+            "name": "duration",
+            "type": "uint16 (seconds)",
+            "description": "Commissioning window timeout duration"
+          }
+        ],
+        "return_type": "void",
+        "description": "Start commissioning window timer with specified duration",
+        "algorithm_detail": "Initialize window_timer to duration value in seconds. Set window_timer_active=true. Start periodic timer that decrements window_timer by 1 every second. When window_timer reaches 0, generate timer_expired event to trigger window closure. Timer resolution is 1 second.",
+        "usage_in_fsm": "Called in transition T031 when opening commissioning window to enforce timeout"
+      },
+      {
+        "name": "cleanup_window_parameters",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clear all commissioning window parameters when window closes",
+        "algorithm_detail": "Securely erase sensitive window parameters: pake_verifier (97 bytes), salt (16-32 bytes). Clear discriminator and iterations. Set window_open=false, window_timer_active=false. Ensure PAKE verifier is zeroed to prevent key recovery. Prepare system to accept new OpenJointCommissioningWindow command.",
+        "usage_in_fsm": "Called in transition T036 when window expires to clean up parameters"
+      },
+      {
+        "name": "reset_window_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Reset commissioning window state variables to initial closed state",
+        "algorithm_detail": "Set window_expired=false, window_open=false, window_timer=0, window_timer_active=false. Clear any residual window parameters. Reset state to allow new OpenJointCommissioningWindow command. Do not modify AdministratorFabricIndex.",
+        "usage_in_fsm": "Called in transition T037 to reset window state after expiration acknowledged"
+      },
+      {
+        "name": "check_transfer_preconditions",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Check both preconditions for anchor transfer: user consent and datastore idle",
+        "algorithm_detail": "Check two conditions: (1) Query user consent mechanism to determine if user has explicitly consented to anchor transfer (implementation-specific UI/physical button), (2) Query datastore for ongoing operations - check if any write operations, ACL modifications, or node updates in progress. Set user_consent_given and datastore_busy flags based on results. Generate preconditions_checked event when complete.",
+        "usage_in_fsm": "Called in transition T040 when transfer request received to check if transfer can proceed"
+      },
+      {
+        "name": "get_requester_node_id",
+        "parameters": [],
+        "return_type": "node-id",
+        "description": "Extract node ID of the anchor transfer requester from current session",
+        "algorithm_detail": "Query active CASE session to extract peer node identifier. This identifies the candidate administrator requesting anchor transfer. Return node-id from session peer information.",
+        "usage_in_fsm": "Called in transition T041 to identify candidate administrator for anchor role"
+      },
+      {
+        "name": "send_TransferAnchorResponse",
+        "parameters": [
+          {
+            "name": "status",
+            "type": "TransferAnchorResponseStatusEnum (OK | DatastoreBusy | NoUserConsent)",
+            "description": "Transfer request outcome status"
+          }
+        ],
+        "return_type": "void",
+        "description": "Send TransferAnchorResponse command with status to requester",
+        "algorithm_detail": "Construct TransferAnchorResponse message with field ID=0 containing status enum value. Status codes: 0=OK (transfer proceeding), 1=DatastoreBusy (rejected due to operations), 2=NoUserConsent (rejected due to missing consent). Encode per Matter protocol format and send over CASE session to requester.",
+        "usage_in_fsm": "Called in transitions T041, T042, T043 to respond to transfer request with outcome"
+      },
+      {
+        "name": "initiate_anchor_transfer",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Begin anchor transfer protocol to transfer anchor role to candidate administrator",
+        "algorithm_detail": "Execute anchor transfer protocol: (1) Prepare anchor credentials and Root CA keys for transfer, (2) Establish secure channel with candidate administrator, (3) Begin transferring anchor fabric data including Root CA private key, fabric configuration, and node registry, (4) Await TransferAnchorComplete confirmation. Transfer is asynchronous and may take significant time depending on fabric size.",
+        "usage_in_fsm": "Called in transition T041 after preconditions satisfied to begin transfer protocol"
+      },
+      {
+        "name": "finalize_anchor_transfer",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Complete anchor transfer by relinquishing anchor role and handing off to new anchor",
+        "algorithm_detail": "Complete transfer: (1) Verify TransferAnchorComplete received from candidate, (2) Securely delete local anchor credentials including Root CA private key, (3) Update local fabric table to recognize new anchor administrator, (4) Update is_anchor flag to false, (5) Transition own role from anchor CA to regular administrator. Ensure cryptographic material deletion is irreversible.",
+        "usage_in_fsm": "Called in transition T044 when TransferAnchorComplete received to finalize transfer"
+      },
+      {
+        "name": "reset_transfer_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Reset anchor transfer state variables after transfer completes or is rejected",
+        "algorithm_detail": "Clear transfer state: transfer_requested=false, transfer_in_progress=false, transfer_complete=false. Clear candidate_administrator and transfer_status. Reset user_consent_given=false to require new consent for future transfers. Do not modify is_anchor flag - that reflects actual anchor status.",
+        "usage_in_fsm": "Called in transitions T045, T046, T047 to clean up after transfer completion or rejection"
+      },
+      {
+        "name": "send_announcement_confirmation",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Send confirmation response to AnnounceJointFabricAdministrator command",
+        "algorithm_detail": "Construct success response message for AnnounceJointFabricAdministrator command. Encode per Matter protocol format. Send over session to confirm endpoint announcement received and processed. Client can now route administrative commands to announced endpoint.",
+        "usage_in_fsm": "Called in transition T048 to acknowledge endpoint announcement"
+      },
+      {
+        "name": "no_operation",
+        "parameters": [],
+        "return_type": "void",
+        "description": "No-operation placeholder for transitions that require no action",
+        "algorithm_detail": "Empty function that performs no operation. Used in stay-transitions where guard condition prevents state change but no action is needed. Maintains FSM consistency by providing explicit action even when none required.",
+        "usage_in_fsm": "Called in transition T026 when ACL already not in list"
+      },
+      {
+        "name": "start_validation_sequence",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Initiate the three-step ICAC validation sequence",
+        "algorithm_detail": "Begin sequential validation: (1) Call Crypto_VerifyChain with [ICACValue, RootCACertificate], set chain_validation_complete flag, (2) Call validate_public_key_match with received ICAC and stored CSR public key, set pubkey_validation_complete flag, (3) Call validate_DN_encoding with received ICAC, set dn_validation_complete flag. When all three complete, generate validation_complete event with results.",
+        "usage_in_fsm": "Called in transition T007 to start validation process in ValidatingICAC state"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "CASE Session",
+        "definition": "Certificate Authenticated Session Establishment - a secure session protocol in Matter providing mutual authentication using X.509 certificates and establishing encrypted communication channel",
+        "security_relevance": "All certificate operations must occur over CASE to prevent man-in-the-middle attacks and ensure only authenticated administrators can request or install certificates"
+      },
+      {
+        "term": "Fail-Safe Context",
+        "definition": "A timed transaction mechanism that allows atomic rollback of all operations if commissioning does not complete successfully within the fail-safe period",
+        "security_relevance": "Prevents partial credential installation that could leave nodes in inconsistent security states; ensures all-or-nothing commissioning"
+      },
+      {
+        "term": "VID Verification",
+        "definition": "Fabric Table Vendor ID Verification Procedure - validates that the requesting peer's vendor is authorized to participate in the joint fabric based on vendor identifier",
+        "security_relevance": "Enforces vendor-based access control to prevent unauthorized cross-vendor certificate issuance and fabric infiltration"
+      },
+      {
+        "term": "ICAC",
+        "definition": "Intermediate Certificate Authority Certificate - certificate issued by one fabric's Root CA to another fabric's node, enabling cross-fabric authentication in joint fabric scenarios",
+        "security_relevance": "Core credential for joint fabric trust; must be properly validated to prevent certificate injection attacks"
+      },
+      {
+        "term": "CSR",
+        "definition": "Certificate Signing Request (PKCS #10) - cryptographically signed request containing a public key and identity information, used to request certificate issuance",
+        "security_relevance": "Proves ownership of private key corresponding to public key; public key binding check ensures certificate issued for correct key"
+      },
+      {
+        "term": "AdministratorFabricIndex",
+        "definition": "A fabric-scoped index (1-254) identifying which fabric in the Fabric Table is associated with the Joint Fabric; null if no association exists",
+        "security_relevance": "Authorization token - commissioning window cannot open if null, preventing commissioning without clear fabric authority"
+      },
+      {
+        "term": "Two-Phase Commit (ACL Removal)",
+        "definition": "Transaction protocol where ACL removal first sets DeletePending status, attempts removal, then either completes with Removed status or fails with CommitFailed status",
+        "security_relevance": "Ensures atomic ACL removal with recovery capability - prevents inconsistent access control states where ACL partially removed"
+      },
+      {
+        "term": "PAKE Parameters",
+        "definition": "Password Authenticated Key Exchange parameters including verifier (SPAKE2+), salt, iterations, and discriminator used for commissioning authentication",
+        "security_relevance": "Weak parameters enable offline dictionary attacks; constraints enforce minimum security levels for commissioning"
+      },
+      {
+        "term": "Anchor CA",
+        "definition": "The node in a joint fabric that holds the Root Certificate Authority role and can issue certificates for the entire joint fabric ecosystem",
+        "security_relevance": "Root of trust for entire joint fabric; anchor transfer is critical security operation requiring user consent"
+      },
+      {
+        "term": "Matter Certificate Encoding",
+        "definition": "Matter-specific certificate format based on X.509 but with optimized encoding and specific DN structure requirements",
+        "security_relevance": "Ensures certificate format compatibility and prevents format confusion attacks between Matter and standard X.509 parsers"
+      },
+      {
+        "term": "DN Encoding Rules",
+        "definition": "Distinguished Name encoding requirements specific to Matter certificates, including required RDN types, encoding formats, and structure",
+        "security_relevance": "Prevents DN parsing vulnerabilities and certificate matching bypasses through malformed DN fields"
+      },
+      {
+        "term": "Joint Commissioning Method",
+        "definition": "Multi-step protocol for cross-signing certificates between fabrics: VID verification, CSR request/response, attestation, ICAC addition",
+        "security_relevance": "Complete protocol ensures proper authentication and authorization before cross-fabric credentials issued"
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "CASE_Session_Enforcement",
+        "type": "access_control",
+        "description": "All certificate operations (ICACCSRRequest, AddICAC) must occur over authenticated CASE session",
+        "fsm_states_involved": [
+          "Idle",
+          "CSRRequested",
+          "CSRGenerated",
+          "ErrorState_InvalidSession"
+        ],
+        "critical_transitions": [
+          "T001",
+          "T002",
+          "T007",
+          "T008"
+        ]
+      },
+      {
+        "property_name": "Fail_Safe_Atomicity",
+        "type": "consistency",
+        "description": "All commissioning operations within fail-safe period are atomic - either all succeed or all rollback on expiration",
+        "fsm_states_involved": [
+          "CSRRequested",
+          "CSRGenerated",
+          "ValidatingICAC",
+          "ICACAccepted",
+          "Idle"
+        ],
+        "critical_transitions": [
+          "T001",
+          "T003",
+          "T009",
+          "T016"
+        ]
+      },
+      {
+        "property_name": "VID_Verification_Gate",
+        "type": "access_control",
+        "description": "VID verification must complete before any certificate operations permitted",
+        "fsm_states_involved": [
+          "Idle",
+          "AwaitingVIDVerification",
+          "CSRRequested",
+          "ErrorState_VIDNotVerified"
+        ],
+        "critical_transitions": [
+          "T001",
+          "T004"
+        ]
+      },
+      {
+        "property_name": "Certificate_Chain_Validation",
+        "type": "cryptography",
+        "description": "ICAC must be verified using Crypto_VerifyChain against Root CA before acceptance",
+        "fsm_states_involved": [
+          "ValidatingICAC",
+          "ICACAccepted",
+          "ICACRejected_InvalidICAC"
+        ],
+        "critical_transitions": [
+          "T011",
+          "T012"
+        ]
+      },
+      {
+        "property_name": "Public_Key_Binding",
+        "type": "cryptography",
+        "description": "ICAC public key must match public key from CSR to prevent key substitution attacks",
+        "fsm_states_involved": [
+          "CSRGenerated",
+          "ValidatingICAC",
+          "ICACAccepted",
+          "ICACRejected_InvalidPublicKey"
+        ],
+        "critical_transitions": [
+          "T006",
+          "T011",
+          "T013"
+        ]
+      },
+      {
+        "property_name": "DN_Encoding_Validation",
+        "type": "correctness",
+        "description": "ICAC DN fields must comply with Matter DN encoding rules to prevent parsing attacks",
+        "fsm_states_involved": [
+          "ValidatingICAC",
+          "ICACAccepted",
+          "ICACRejected_InvalidICAC"
+        ],
+        "critical_transitions": [
+          "T011",
+          "T014"
+        ]
+      },
+      {
+        "property_name": "Single_AddICAC_Per_Fail_Safe",
+        "type": "consistency",
+        "description": "Only one AddICAC command may successfully execute within a fail-safe period",
+        "fsm_states_involved": [
+          "CSRRequested",
+          "CSRGenerated",
+          "ErrorState_ConstraintViolation"
+        ],
+        "critical_transitions": [
+          "T005",
+          "T010",
+          "T011"
+        ]
+      },
+      {
+        "property_name": "ACL_Two_Phase_Commit",
+        "type": "atomicity",
+        "description": "ACL removal uses two-phase commit: DeletePending then either Removed or CommitFailed",
+        "fsm_states_involved": [
+          "ACL_Active",
+          "ACL_DeletePending",
+          "ACL_Removed",
+          "ACL_CommitFailed"
+        ],
+        "critical_transitions": [
+          "T024",
+          "T027",
+          "T028"
+        ]
+      },
+      {
+        "property_name": "ACL_Error_Recovery",
+        "type": "consistency",
+        "description": "Failed ACL removals store error code and are retried during subsequent Node Refresh",
+        "fsm_states_involved": [
+          "ACL_CommitFailed",
+          "ACL_Active"
+        ],
+        "critical_transitions": [
+          "T028",
+          "T029"
+        ]
+      },
+      {
+        "property_name": "Commissioning_Window_Timer_Enforcement",
+        "type": "timing",
+        "description": "Commissioning window automatically closes when timer expires",
+        "fsm_states_involved": [
+          "CommissioningWindow_Open",
+          "CommissioningWindow_Expired"
+        ],
+        "critical_transitions": [
+          "T035",
+          "T036"
+        ]
+      },
+      {
+        "property_name": "Administrator_Fabric_Index_Required",
+        "type": "access_control",
+        "description": "Commissioning window cannot open if AdministratorFabricIndex is null",
+        "fsm_states_involved": [
+          "CommissioningWindow_Closed",
+          "CommissioningWindow_Error_NullFabricIndex"
+        ],
+        "critical_transitions": [
+          "T031",
+          "T032"
+        ]
+      },
+      {
+        "property_name": "PAKE_Parameter_Constraints",
+        "type": "cryptography",
+        "description": "PAKE parameters must satisfy security constraints: verifier 97 bytes, discriminator max 4095, iterations 1000-100000, salt 16-32 bytes",
+        "fsm_states_involved": [
+          "CommissioningWindow_Closed",
+          "CommissioningWindow_Open",
+          "CommissioningWindow_Error_PAKEParams"
+        ],
+        "critical_transitions": [
+          "T031",
+          "T033"
+        ]
+      },
+      {
+        "property_name": "Anchor_Transfer_Dual_Preconditions",
+        "type": "access_control",
+        "description": "Anchor transfer requires both user consent AND datastore idle before proceeding",
+        "fsm_states_involved": [
+          "AnchorTransfer_RequestReceived",
+          "AnchorTransfer_InProgress",
+          "AnchorTransfer_Rejected_NoConsent",
+          "AnchorTransfer_Rejected_DatastoreBusy"
+        ],
+        "critical_transitions": [
+          "T041",
+          "T042",
+          "T043"
+        ]
+      },
+      {
+        "property_name": "Anchor_Transfer_Irreversibility",
+        "type": "consistency",
+        "description": "Once anchor transfer completes, original anchor loses anchor role permanently and cannot reclaim without reverse transfer",
+        "fsm_states_involved": [
+          "AnchorTransfer_InProgress",
+          "AnchorTransfer_Complete",
+          "AnchorTransfer_Idle"
+        ],
+        "critical_transitions": [
+          "T044",
+          "T045"
+        ]
+      },
+      {
+        "property_name": "Command_Sequence_Ordering",
+        "type": "correctness",
+        "description": "Joint commissioning must follow strict command sequence: ICACCSRRequest → ICACCSRResponse → AddICAC → ICACResponse",
+        "fsm_states_involved": [
+          "Idle",
+          "CSRRequested",
+          "CSRGenerated",
+          "ValidatingICAC",
+          "ICACAccepted"
+        ],
+        "critical_transitions": [
+          "T001",
+          "T006",
+          "T007",
+          "T011"
+        ]
+      },
+      {
+        "property_name": "Concurrent_Commissioning_Prevention",
+        "type": "consistency",
+        "description": "Only one commissioning operation may be in progress at a time",
+        "fsm_states_involved": [
+          "CommissioningWindow_Closed",
+          "ErrorState_Busy"
+        ],
+        "critical_transitions": [
+          "T034"
+        ]
+      }
+    ],
+    "initial_state": "Idle",
+    "all_states": [
+      "Idle",
+      "AwaitingVIDVerification",
+      "CSRRequested",
+      "CSRGenerated",
+      "ValidatingICAC",
+      "ICACAccepted",
+      "ICACRejected_InvalidPublicKey",
+      "ICACRejected_InvalidICAC",
+      "ErrorState_NoFailSafe",
+      "ErrorState_VIDNotVerified",
+      "ErrorState_InvalidSession",
+      "ErrorState_ConstraintViolation",
+      "ErrorState_Busy",
+      "CommissioningComplete",
+      "ACL_Active",
+      "ACL_DeletePending",
+      "ACL_Removed",
+      "ACL_CommitFailed",
+      "ACL_NodeNotFound",
+      "CommissioningWindow_Closed",
+      "CommissioningWindow_Open",
+      "CommissioningWindow_Expired",
+      "CommissioningWindow_Error_NullFabricIndex",
+      "CommissioningWindow_Error_PAKEParams",
+      "AnchorTransfer_Idle",
+      "AnchorTransfer_RequestReceived",
+      "AnchorTransfer_InProgress",
+      "AnchorTransfer_Complete",
+      "AnchorTransfer_Rejected_NoConsent",
+      "AnchorTransfer_Rejected_DatastoreBusy",
+      "EndpointAnnounced"
+    ],
+    "all_triggers": [
+      "ICACCSRRequest",
+      "generate_csr_success",
+      "AddICAC",
+      "validation_complete",
+      "fail_safe_complete",
+      "fail_safe_expired",
+      "error_acknowledged",
+      "error_handled",
+      "commissioning_completed",
+      "RemoveACLFromNode",
+      "acl_removal_success",
+      "acl_removal_failure",
+      "node_refresh",
+      "OpenJointCommissioningWindow",
+      "timer_tick",
+      "timer_expired",
+      "window_reset",
+      "TransferAnchorRequest",
+      "preconditions_checked",
+      "TransferAnchorComplete",
+      "transfer_finalized",
+      "AnnounceJointFabricAdministrator",
+      "announcement_acknowledged"
+    ],
+    "all_functions_used": [
+      "generate_PKCS10_CSR_DER_encoded",
+      "extract_public_key_from_csr",
+      "Crypto_VerifyChain",
+      "validate_public_key_match",
+      "validate_DN_encoding",
+      "send_ICACCSRResponse",
+      "send_ICACResponse",
+      "send_error_response",
+      "rollback_all_operations",
+      "reset_commissioning_state",
+      "reset_error_state",
+      "node_exists",
+      "acl_list_includes",
+      "initiate_acl_removal_from_node",
+      "remove_acl_entry_from_list",
+      "get_removal_error_code",
+      "retry_acl_removal",
+      "validate_pake_parameters",
+      "get_pake_validation_error",
+      "start_window_timer",
+      "cleanup_window_parameters",
+      "reset_window_state",
+      "check_transfer_preconditions",
+      "get_requester_node_id",
+      "send_TransferAnchorResponse",
+      "initiate_anchor_transfer",
+      "finalize_anchor_transfer",
+      "reset_transfer_state",
+      "send_announcement_confirmation",
+      "no_operation",
+      "start_validation_sequence"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "CSR_Generation",
+        "algorithm": "PKCS#10 with ECDSA-SHA256",
+        "inputs": [
+          "node_private_key (ECDSA)",
+          "node_public_key (ECDSA)",
+          "subject_DN",
+          "attributes"
+        ],
+        "output": "DER-encoded CSR (max 600 bytes)",
+        "assumptions": [
+          "Node private key is securely stored and not extractable",
+          "ECDSA signature provides proof of private key ownership",
+          "CSR cannot be forged without private key"
+        ]
+      },
+      {
+        "operation": "Certificate_Chain_Verification",
+        "algorithm": "X.509 Path Validation with ECDSA-SHA256",
+        "inputs": [
+          "ICAC_certificate",
+          "RootCA_certificate",
+          "current_time"
+        ],
+        "output": "boolean (valid/invalid)",
+        "assumptions": [
+          "Root CA certificate is trusted and authentic",
+          "ECDSA signature algorithm is secure",
+          "Certificate validity periods are correctly enforced"
+        ]
+      },
+      {
+        "operation": "Public_Key_Extraction_And_Comparison",
+        "algorithm": "Binary comparison of SubjectPublicKeyInfo",
+        "inputs": [
+          "CSR_public_key (stored)",
+          "ICAC_public_key (extracted)"
+        ],
+        "output": "boolean (match/mismatch)",
+        "assumptions": [
+          "Public key storage is tamper-proof between CSR and ICAC validation",
+          "Public key extraction from both CSR and ICAC is deterministic"
+        ]
+      },
+      {
+        "operation": "DN_Encoding_Validation",
+        "algorithm": "Matter DN Encoding Rules verification",
+        "inputs": [
+          "ICAC_subject_DN",
+          "ICAC_issuer_DN"
+        ],
+        "output": "boolean (valid/invalid)",
+        "assumptions": [
+          "DN parser is free from buffer overflow vulnerabilities",
+          "DN encoding rules are strictly enforced per Matter specification"
+        ]
+      },
+      {
+        "operation": "PAKE_Commissioning_Authentication",
+        "algorithm": "SPAKE2+ with PBKDF2",
+        "inputs": [
+          "pake_verifier (97 bytes)",
+          "salt (16-32 bytes)",
+          "iterations (1000-100000)",
+          "discriminator (0-4095)"
+        ],
+        "output": "Shared commissioning key",
+        "assumptions": [
+          "SPAKE2+ is secure against offline dictionary attacks with proper parameters",
+          "Verifier is generated from sufficiently random passcode",
+          "Iterations count provides adequate work factor"
+        ]
+      },
+      {
+        "operation": "CASE_Session_Establishment",
+        "algorithm": "Certificate-based authentication with ECDHE key exchange",
+        "inputs": [
+          "node_certificate",
+          "peer_certificate",
+          "ephemeral_keys"
+        ],
+        "output": "Encrypted session with mutual authentication",
+        "assumptions": [
+          "CASE protocol provides secure mutual authentication",
+          "Session keys are not extractable or predicable",
+          "Man-in-the-middle attacks are prevented by certificate validation"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "CASE protocol provides secure mutual authentication and prevents man-in-the-middle attacks",
+        "type": "explicit",
+        "if_violated": "All certificate operations vulnerable to MITM; attacker can inject unauthorized certificates"
+      },
+      {
+        "assumption": "Crypto_VerifyChain correctly implements X.509 path validation and detects invalid signatures",
+        "type": "implicit",
+        "if_violated": "Invalid ICAC certificates accepted; unauthorized CAs can issue certificates for fabric"
+      },
+      {
+        "assumption": "Fail-safe mechanism reliably rolls back all operations on timer expiration or system crash",
+        "type": "explicit",
+        "if_violated": "Partial credentials persist; nodes left in inconsistent security states"
+      },
+      {
+        "assumption": "VID Verification Procedure correctly validates vendor identity and cannot be spoofed",
+        "type": "implicit",
+        "if_violated": "Unauthorized vendors gain cross-fabric access; vendor-based isolation broken"
+      },
+      {
+        "assumption": "Private keys corresponding to certificates are securely stored and not extractable",
+        "type": "implicit",
+        "if_violated": "Compromised private keys enable impersonation; all certificate-based security fails"
+      },
+      {
+        "assumption": "Public key storage is tamper-proof between CSR generation and ICAC validation",
+        "type": "implicit",
+        "if_violated": "Public key binding check bypassed; attacker can substitute different public key"
+      },
+      {
+        "assumption": "User consent mechanism is tamper-proof and accurately reflects user intention",
+        "type": "implicit",
+        "if_violated": "Anchor transfer without user knowledge; complete fabric takeover possible"
+      },
+      {
+        "assumption": "System time and event ordering can be reliably established",
+        "type": "implicit",
+        "if_violated": "Race conditions in command sequencing; timing-based attacks possible"
+      },
+      {
+        "assumption": "Matter Certificate Encoding and DER parsers are free from buffer overflow vulnerabilities",
+        "type": "implicit",
+        "if_violated": "Malformed certificates achieve code execution or bypass validation"
+      },
+      {
+        "assumption": "PAKE protocol with specified parameter constraints is secure against offline dictionary attacks",
+        "type": "explicit",
+        "if_violated": "Commissioning credentials vulnerable to brute-force; unauthorized network access"
+      },
+      {
+        "assumption": "Datastore operations are correctly tracked and busy status accurately reflects ongoing operations",
+        "type": "implicit",
+        "if_violated": "Anchor transfer during datastore operations creates split-brain with conflicting anchors"
+      },
+      {
+        "assumption": "Node Refresh mechanism reliably retries failed ACL removals",
+        "type": "explicit",
+        "if_violated": "Failed ACL removals never recover; permanent access control inconsistencies"
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true,
+      "all_transitions_from_error_states": true,
+      "fail_safe_rollback_modeled": true,
+      "two_phase_commit_complete": true,
+      "all_commands_covered": true,
+      "security_properties_mapped": true
+    }
+  }
+}

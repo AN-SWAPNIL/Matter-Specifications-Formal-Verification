@@ -1,0 +1,605 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Boolean State Configuration Cluster",
+    "cluster_id": "0x0080",
+    "pics_code": "BOOLCFG",
+    "spec_reference": "Matter 1.5, Section 1.8, Pages 90-96",
+    "related_clusters": [
+      {
+        "name": "Boolean State Cluster",
+        "cluster_id": "0x0045",
+        "relationship": "Configuration cluster for Boolean State sensor"
+      }
+    ],
+    "safety_classification": "MEDIUM - Alert/Notification Device (Contact Sensors, Water Leak, Freeze Detect)",
+
+    "features": {
+      "VIS": {
+        "code": "Visual",
+        "bit": 0,
+        "description": "Supports visual alarms",
+        "conformance": "O"
+      },
+      "AUD": {
+        "code": "Audible",
+        "bit": 1,
+        "description": "Supports audible alarms",
+        "conformance": "O"
+      },
+      "SPRS": {
+        "code": "AlarmSuppress",
+        "bit": 2,
+        "description": "Supports ability to suppress or acknowledge alarms",
+        "conformance": "[VIS | AUD]",
+        "security_note": "Enables remote alarm suppression - security-sensitive"
+      },
+      "SENSLVL": {
+        "code": "SensitivityLevel",
+        "bit": 3,
+        "description": "Supports ability to set sensor sensitivity",
+        "conformance": "O",
+        "security_note": "Can affect detection threshold - potential for false negatives"
+      }
+    },
+
+    "properties": [
+      {
+        "id": "PROP_AC_001",
+        "name": "SuppressAlarm_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "SuppressAlarm command SHALL require Operate (O) privilege to execute.",
+        "formal": "∀invoker, cmd. invoke(SuppressAlarm, cmd) ⟹ has_privilege(invoker, Operate)",
+        "spec_source": "Section 1.8.7, Page 94: Command table shows Access: O for SuppressAlarm",
+        "violation": {
+          "description": "If SuppressAlarm could be invoked without Operate privilege, a View-only user could suppress active alarms. This would allow unauthorized silencing of safety alerts.",
+          "attack_vector": "Attacker with View privilege attempts to invoke SuppressAlarm command",
+          "physical_impact": "Users may miss critical alerts (water leak, contact sensor breach)"
+        },
+        "proverifQuery": "query invoker:principal, alarm:alarmMode ⊢ event suppress_alarm(invoker, alarm) ==> has_privilege(invoker, Operate)"
+      },
+      {
+        "id": "PROP_AC_002",
+        "name": "EnableDisableAlarm_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "EnableDisableAlarm command SHALL require Operate (O) privilege to execute.",
+        "formal": "∀invoker, cmd. invoke(EnableDisableAlarm, cmd) ⟹ has_privilege(invoker, Operate)",
+        "spec_source": "Section 1.8.7, Page 94: Command table shows Access: O for EnableDisableAlarm",
+        "violation": {
+          "description": "If EnableDisableAlarm could be invoked without Operate privilege, a View-only user could disable all alarm functionality. This is more severe than suppression as it completely disables alarms.",
+          "attack_vector": "Attacker with View privilege attempts to disable all alarm modes",
+          "physical_impact": "Complete loss of alarm notification capability for water leaks, contact sensor breaches"
+        },
+        "proverifQuery": "query invoker:principal, alarms:alarmBitmap ⊢ event enable_disable_alarm(invoker, alarms) ==> has_privilege(invoker, Operate)"
+      },
+      {
+        "id": "PROP_AC_003",
+        "name": "CurrentSensitivityLevel_Write_Requires_Operate",
+        "category": "AccessControl",
+        "importance": "MEDIUM",
+        "claim": "Writing to CurrentSensitivityLevel attribute SHALL require View and Operate (VO) privilege.",
+        "formal": "∀writer, value. write(CurrentSensitivityLevel, value) ⟹ has_privilege(writer, Operate)",
+        "spec_source": "Section 1.8.6, Page 91: Attribute table shows Access: RW VO for CurrentSensitivityLevel",
+        "violation": {
+          "description": "If sensitivity could be changed without Operate privilege, an attacker could reduce sensor sensitivity causing missed detections (false negatives).",
+          "attack_vector": "Attacker with View privilege attempts to write low sensitivity value",
+          "physical_impact": "Sensor may fail to detect triggering conditions (water, movement, contact)"
+        },
+        "proverifQuery": "query writer:principal, level:uint8 ⊢ event write_sensitivity(writer, level) ==> has_privilege(writer, Operate)"
+      },
+      {
+        "id": "PROP_AC_004",
+        "name": "AlarmsActive_Read_Only",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "AlarmsActive attribute SHALL be read-only (View access only, no write capability).",
+        "formal": "∀writer, value. ¬write(AlarmsActive, value)",
+        "spec_source": "Section 1.8.6, Page 92: Access: RV (Read View only)",
+        "violation": {
+          "description": "If AlarmsActive could be written remotely, an attacker could clear active alarms without addressing the underlying trigger, or set false alarms.",
+          "attack_vector": "Attacker attempts to write 0x00 to AlarmsActive to clear active alarms",
+          "physical_impact": "Active alarms silently cleared without user awareness"
+        },
+        "proverifQuery": "query writer:principal, value:bitmap ⊢ ¬event write_alarms_active(writer, value)"
+      },
+      {
+        "id": "PROP_AC_005",
+        "name": "AlarmsSuppressed_Read_Only",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "AlarmsSuppressed attribute SHALL be read-only (View access only, modified only via SuppressAlarm command).",
+        "formal": "∀writer, value. ¬write(AlarmsSuppressed, value)",
+        "spec_source": "Section 1.8.6, Page 92: Access: RV (Read View only)",
+        "violation": {
+          "description": "Direct write to AlarmsSuppressed would bypass command validation logic (active alarm check).",
+          "attack_vector": "Attacker attempts to directly write suppression state without command invocation",
+          "physical_impact": "Suppression state manipulation without proper state validation"
+        },
+        "proverifQuery": "query writer:principal, value:bitmap ⊢ ¬event direct_write_suppressed(writer, value)"
+      },
+      {
+        "id": "PROP_AC_006",
+        "name": "AlarmsEnabled_Read_Only",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "AlarmsEnabled attribute SHALL be read-only (View access only, modified only via EnableDisableAlarm command).",
+        "formal": "∀writer, value. ¬write(AlarmsEnabled, value)",
+        "spec_source": "Section 1.8.6, Page 92: Access: RV (Read View only)",
+        "violation": {
+          "description": "Direct write to AlarmsEnabled would bypass command validation logic.",
+          "attack_vector": "Attacker attempts to directly disable alarms without going through EnableDisableAlarm command",
+          "physical_impact": "Alarms disabled without proper state transition handling"
+        },
+        "proverifQuery": "query writer:principal, value:bitmap ⊢ ¬event direct_write_enabled(writer, value)"
+      },
+      {
+        "id": "PROP_SI_001",
+        "name": "AlarmsActive_Unsupported_Bits_Zero",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "Bits in AlarmsActive for unsupported alarm modes SHALL always be 0.",
+        "formal": "∀t. ∀bit. ¬AlarmsSupported[bit] ⟹ AlarmsActive[bit] == 0",
+        "spec_source": "Section 1.8.6.4, Page 93: 'If an alarm mode is not supported, the bit indicating this alarm mode SHALL always be 0.'",
+        "violation": {
+          "description": "If unsupported alarm bits could be set in AlarmsActive, it would create inconsistent state that clients cannot interpret correctly.",
+          "attack_vector": "Implementation bug or fault condition allowing unsupported bits to be set",
+          "physical_impact": "None directly - state consistency issue"
+        },
+        "proverifQuery": "query device:deviceId, bit:alarmBit ⊢ ¬supported(device, bit) ==> active_bit(device, bit) == false"
+      },
+      {
+        "id": "PROP_SI_002",
+        "name": "AlarmsSuppressed_Unsupported_Bits_Zero",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "Bits in AlarmsSuppressed for unsupported alarm modes SHALL always be 0.",
+        "formal": "∀t. ∀bit. ¬AlarmsSupported[bit] ⟹ AlarmsSuppressed[bit] == 0",
+        "spec_source": "Section 1.8.6.5, Page 93: 'If an alarm mode is not supported, the bit indicating this alarm mode SHALL always be 0.'",
+        "violation": {
+          "description": "If unsupported alarm bits could be set in AlarmsSuppressed, it would indicate suppression of non-existent alarm mode.",
+          "attack_vector": "Implementation bug allowing unsupported bits in suppressed state",
+          "physical_impact": "None directly - state consistency issue"
+        },
+        "proverifQuery": "query device:deviceId, bit:alarmBit ⊢ ¬supported(device, bit) ==> suppressed_bit(device, bit) == false"
+      },
+      {
+        "id": "PROP_SI_003",
+        "name": "Suppression_Requires_Active_Alarm",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "SuppressAlarm command SHALL only succeed if the specified alarm modes are currently active.",
+        "formal": "∀cmd, bit. suppress_success(cmd, bit) ⟹ AlarmsActive[bit] == 1 ∧ AlarmsEnabled[bit] == 1",
+        "spec_source": "Section 1.8.7.1.2, Page 94: 'If any of the requested alarm modes are not active, in case the sensor is not triggered or the alarm mode is disabled/not supported, this command SHALL be ignored and the server SHALL return an INVALID_IN_STATE status code.'",
+        "violation": {
+          "description": "Allowing suppression of inactive alarms would create inconsistent state where suppressed bit is set but active bit is not.",
+          "attack_vector": "Attacker sends SuppressAlarm for inactive alarm mode attempting to corrupt state",
+          "physical_impact": "None - server should return INVALID_IN_STATE"
+        },
+        "proverifQuery": "query device:deviceId, bit:alarmBit ⊢ event suppress_success(device, bit) ==> active_bit(device, bit) == true"
+      },
+      {
+        "id": "PROP_SI_004",
+        "name": "Suppress_Unsupported_Returns_Error",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "SuppressAlarm command with unsupported alarm modes SHALL be ignored and return CONSTRAINT_ERROR.",
+        "formal": "∀cmd, bit. ¬AlarmsSupported[bit] ∧ cmd.AlarmsToSuppress[bit] ⟹ returns(CONSTRAINT_ERROR)",
+        "spec_source": "Section 1.8.7.1.2, Page 94: 'If any of the requested alarm modes are not supported this command SHALL be ignored and the server SHALL return an CONSTRAINT_ERROR status code.'",
+        "violation": {
+          "description": "Accepting suppression of unsupported alarms would indicate implementation incorrectly processes invalid requests.",
+          "attack_vector": "Attacker sends SuppressAlarm with invalid/unsupported alarm bits",
+          "physical_impact": "None - error handling issue"
+        },
+        "proverifQuery": "query device:deviceId, cmd:command ⊢ unsupported_bit_in(cmd) ==> event return_error(device, cmd, CONSTRAINT_ERROR)"
+      },
+      {
+        "id": "PROP_SI_005",
+        "name": "EnableDisable_Unsupported_Returns_Error",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "EnableDisableAlarm command with unsupported alarm modes SHALL be ignored and return CONSTRAINT_ERROR.",
+        "formal": "∀cmd, bit. ¬AlarmsSupported[bit] ∧ cmd.AlarmsToEnableDisable[bit] ⟹ returns(CONSTRAINT_ERROR)",
+        "spec_source": "Section 1.8.7.2.2, Page 95: 'If any of the requested alarm modes are not supported this command SHALL be ignored and the server SHALL return an CONSTRAINT_ERROR status code.'",
+        "violation": {
+          "description": "Accepting enable/disable of unsupported alarms indicates implementation bug.",
+          "attack_vector": "Attacker sends EnableDisableAlarm with invalid alarm bits",
+          "physical_impact": "None - error handling issue"
+        },
+        "proverifQuery": "query device:deviceId, cmd:command ⊢ unsupported_bit_in(cmd) ==> event return_error(device, cmd, CONSTRAINT_ERROR)"
+      },
+      {
+        "id": "PROP_SI_006",
+        "name": "SensitivityLevel_Validated",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "CurrentSensitivityLevel write with invalid value SHALL return CONSTRAINT_ERROR.",
+        "formal": "∀value. value ≥ SupportedSensitivityLevels ⟹ write_fails(CurrentSensitivityLevel, value)",
+        "spec_source": "Section 1.8.6.1, Page 92: 'If a write interaction to this attribute contains an unsupported sensitivity value, a CONSTRAINT_ERROR status SHALL be returned.'",
+        "violation": {
+          "description": "Accepting out-of-range sensitivity values would corrupt device configuration.",
+          "attack_vector": "Attacker writes value >= SupportedSensitivityLevels",
+          "physical_impact": "Undefined sensor behavior"
+        },
+        "proverifQuery": "query device:deviceId, value:uint8 ⊢ value >= SupportedSensitivityLevels(device) ==> event write_rejected(device, CurrentSensitivityLevel, CONSTRAINT_ERROR)"
+      },
+      {
+        "id": "PROP_SI_007",
+        "name": "Suppressed_Alarm_Still_Active",
+        "category": "StateIntegrity",
+        "importance": "CRITICAL",
+        "claim": "A suppressed alarm SHALL remain marked as active in AlarmsActive attribute; suppression only affects physical output.",
+        "formal": "∀t, bit. AlarmsSuppressed[bit] == 1 ⟹ AlarmsActive[bit] == 1",
+        "spec_source": "Section 1.8.4.1, Page 91: 'A suppressed alarm is still considered active and will remain so unless it is actively disabled or the triggering condition is not longer present.'",
+        "violation": {
+          "description": "If suppression cleared the active bit, controllers would lose visibility of the alarm condition. The alarm is still logically active even when physically suppressed.",
+          "attack_vector": "Implementation bug that clears AlarmsActive when suppressing",
+          "physical_impact": "Controllers and automations lose awareness of active alarm conditions"
+        },
+        "proverifQuery": "query device:deviceId, bit:alarmBit ⊢ suppressed_bit(device, bit) == true ==> active_bit(device, bit) == true"
+      },
+      {
+        "id": "PROP_SI_008",
+        "name": "Disable_Clears_Active_And_Suppressed",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "Disabling an alarm mode SHALL clear both active and suppressed states for that mode.",
+        "formal": "∀t, bit. disable(bit, t) ⟹ (AlarmsActive[bit] == 0 ∧ AlarmsSuppressed[bit] == 0) at t+1",
+        "spec_source": "Section 1.8.7.2.2, Page 95: 'If an alarm mode is being disabled, any alarm mode which is either in the active or suppressed state SHALL be cleared and the alarm mode SHALL be considered not active.'",
+        "violation": {
+          "description": "If disabled alarms retained active/suppressed state, it would create inconsistent state where alarm is disabled but still marked active.",
+          "attack_vector": "N/A - this is expected behavior specification",
+          "physical_impact": "None - defines expected state clearing behavior"
+        },
+        "proverifQuery": "query device:deviceId, bit:alarmBit ⊢ event disable_alarm(device, bit) ==> event clear_active_suppressed(device, bit)"
+      },
+      {
+        "id": "PROP_PS_001",
+        "name": "Remote_Suppression_Possible",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "Alarms CAN be suppressed remotely via SuppressAlarm command if SPRS feature is supported.",
+        "formal": "SPRS_supported ∧ has_privilege(invoker, Operate) ⟹ can_suppress_remotely(invoker)",
+        "spec_source": "Section 1.8.7.1, Page 94: SuppressAlarm command with Access: O",
+        "violation": {
+          "description": "This is not a violation but a DESIGN CONCERN. Remote suppression of safety alarms (water leak, contact sensors) without physical presence is inherently risky. A compromised node with Operate privilege can suppress all active alarms.",
+          "attack_vector": "Compromised controller or malicious app with Operate privilege sends SuppressAlarm",
+          "physical_impact": "Users may not be physically alerted to water leaks, intrusions, or other sensor triggers"
+        },
+        "proverifQuery": "query attacker:principal ⊢ has_privilege(attacker, Operate) ∧ SPRS_supported ==> can_suppress(attacker)",
+        "design_note": "SPECIFICATION DESIGN ISSUE: No physical confirmation or out-of-band verification for remote suppression"
+      },
+      {
+        "id": "PROP_PS_002",
+        "name": "Remote_Disable_Possible",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "Alarms CAN be completely disabled remotely via EnableDisableAlarm command.",
+        "formal": "(VIS_supported ∨ AUD_supported) ∧ has_privilege(invoker, Operate) ⟹ can_disable_alarms(invoker)",
+        "spec_source": "Section 1.8.7.2, Page 94: EnableDisableAlarm command with Access: O",
+        "violation": {
+          "description": "This is a CRITICAL DESIGN CONCERN. Unlike suppression, disabling alarms completely removes the alarm capability. A compromised node can disable all alarms AND clear active/suppressed states silently.",
+          "attack_vector": "Compromised controller sends EnableDisableAlarm with all alarm bits cleared (0x00)",
+          "physical_impact": "Complete loss of alarm notification capability. Water leak sensor, contact sensor become silent even when triggered."
+        },
+        "proverifQuery": "query attacker:principal ⊢ has_privilege(attacker, Operate) ==> can_disable_all_alarms(attacker)",
+        "design_note": "SPECIFICATION DESIGN ISSUE: Disabling alarms with Operate privilege (not Manage/Admin) is low barrier. EnableDisableAlarm silently clears active/suppressed states."
+      },
+      {
+        "id": "PROP_PS_003",
+        "name": "Sensitivity_Manipulation_Detection_Impact",
+        "category": "PhysicalSafety",
+        "importance": "MEDIUM",
+        "claim": "Changing CurrentSensitivityLevel to lowest value (0) reduces detection capability.",
+        "formal": "CurrentSensitivityLevel == 0 ⟹ minimum_sensitivity(device)",
+        "spec_source": "Section 1.8.6.2, Page 92: 'value of 0 SHALL be considered the lowest sensitivity level (least sensitive)'",
+        "violation": {
+          "description": "An attacker with Operate privilege can reduce sensor sensitivity to minimum, causing false negatives (missed detections) while appearing to leave the device functional.",
+          "attack_vector": "Write CurrentSensitivityLevel = 0 to reduce detection threshold",
+          "physical_impact": "Water leaks, contact sensor breaches may not trigger alarms"
+        },
+        "proverifQuery": "query attacker:principal ⊢ has_privilege(attacker, Operate) ==> can_reduce_sensitivity(attacker)"
+      },
+      {
+        "id": "PROP_AV_001",
+        "name": "No_Rate_Limiting_On_SuppressAlarm",
+        "category": "Availability",
+        "importance": "MEDIUM",
+        "claim": "There is NO specification requirement for rate limiting on SuppressAlarm commands.",
+        "formal": "∀rate. rate_limit(SuppressAlarm, rate) NOT_SPECIFIED",
+        "spec_source": "Section 1.8.7.1, Pages 94: No rate limiting requirement specified",
+        "violation": {
+          "description": "Absence of rate limiting allows repeated suppression attempts without restriction. While suppression requires active alarm state, there is no protection against repeated command flooding.",
+          "attack_vector": "Attacker floods device with SuppressAlarm commands",
+          "physical_impact": "Potential DoS; each command requires processing even if alarm state unchanged"
+        },
+        "proverifQuery": "N/A - Specification gap",
+        "spec_gap": true
+      },
+      {
+        "id": "PROP_AV_002",
+        "name": "No_Rate_Limiting_On_EnableDisableAlarm",
+        "category": "Availability",
+        "importance": "MEDIUM",
+        "claim": "There is NO specification requirement for rate limiting on EnableDisableAlarm commands.",
+        "formal": "∀rate. rate_limit(EnableDisableAlarm, rate) NOT_SPECIFIED",
+        "spec_source": "Section 1.8.7.2, Pages 94-95: No rate limiting requirement specified",
+        "violation": {
+          "description": "Absence of rate limiting allows rapid enable/disable cycling. This could cause alarm state thrashing.",
+          "attack_vector": "Attacker rapidly toggles alarm enable/disable states",
+          "physical_impact": "Alarm state instability; potential user confusion"
+        },
+        "proverifQuery": "N/A - Specification gap",
+        "spec_gap": true
+      },
+      {
+        "id": "PROP_EI_001",
+        "name": "AlarmsStateChanged_Event_On_State_Change",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "AlarmsStateChanged event SHALL be generated after any bits in AlarmsActive and/or AlarmsSuppressed attributes change.",
+        "formal": "∀t. (Δ(AlarmsActive) ∨ Δ(AlarmsSuppressed)) at t ⟹ gen_event(AlarmsStateChanged) at t",
+        "spec_source": "Section 1.8.8.1, Page 95: 'This event SHALL be generated after any bits in the AlarmsActive and/or AlarmsSuppressed attributes change.'",
+        "violation": {
+          "description": "If state change events were not generated, controllers would have no notification of alarm state changes and would need to poll constantly.",
+          "attack_vector": "Implementation bug suppressing event generation",
+          "physical_impact": "Controllers miss alarm notifications; delayed response to safety conditions"
+        },
+        "proverifQuery": "query device:deviceId ⊢ event state_change(device, AlarmsActive) ∨ event state_change(device, AlarmsSuppressed) ==> event alarm_state_changed(device)"
+      },
+      {
+        "id": "PROP_EI_002",
+        "name": "SensorFault_Event_On_Fault",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "SensorFault event SHALL be generated when the device registers or clears a fault.",
+        "formal": "∀t. Δ(SensorFault) at t ⟹ gen_event(SensorFault) at t",
+        "spec_source": "Section 1.8.8.2, Page 96: 'This event SHALL be generated when the device registers or clears a fault.'",
+        "violation": {
+          "description": "If fault events were not generated, controllers would not be aware of sensor hardware failures.",
+          "attack_vector": "Implementation bug suppressing fault event generation",
+          "physical_impact": "Users unaware of sensor malfunction; false sense of security"
+        },
+        "proverifQuery": "query device:deviceId ⊢ event fault_change(device) ==> event sensor_fault_event(device)"
+      },
+      {
+        "id": "PROP_EI_003",
+        "name": "Event_Contains_Current_State",
+        "category": "EventIntegrity",
+        "importance": "MEDIUM",
+        "claim": "AlarmsStateChanged event SHALL contain current AlarmsActive and AlarmsSuppressed values.",
+        "formal": "∀event. gen_event(AlarmsStateChanged, event) ⟹ event.AlarmsActive == current(AlarmsActive) ∧ event.AlarmsSuppressed == current(AlarmsSuppressed)",
+        "spec_source": "Section 1.8.8.1.1, Page 95: 'This field SHALL indicate the state of active alarm modes, as indicated by the AlarmsActive attribute, at the time the event was generated.'",
+        "violation": {
+          "description": "If events contained stale or incorrect state data, controllers would have wrong view of alarm state.",
+          "attack_vector": "Implementation bug sending incorrect state in events",
+          "physical_impact": "Controller makes decisions based on incorrect alarm state"
+        },
+        "proverifQuery": "query device:deviceId, event:alarmEvent ⊢ event.AlarmsActive == read(device, AlarmsActive)"
+      },
+      {
+        "id": "PROP_TM_001",
+        "name": "No_Suppression_Duration_Limit",
+        "category": "Timing",
+        "importance": "HIGH",
+        "claim": "There is NO specification requirement for maximum suppression duration or auto-unsuppression.",
+        "formal": "∀duration. max_suppression_duration(duration) NOT_SPECIFIED",
+        "spec_source": "Section 1.8.7.1, Pages 94: No duration limit specified for suppression",
+        "violation": {
+          "description": "Once an alarm is suppressed, it remains suppressed indefinitely until the trigger condition clears. There is no automatic unsuppression timer. A suppressed alarm could remain suppressed for days while maintaining the hazardous trigger condition.",
+          "attack_vector": "Suppress alarm once, hazardous condition persists indefinitely without physical alert",
+          "physical_impact": "Water leak continues silently for days; broken window alarm suppressed indefinitely"
+        },
+        "proverifQuery": "N/A - Specification gap",
+        "spec_gap": true
+      },
+      {
+        "id": "PROP_TM_002",
+        "name": "Suppression_Clears_On_Trigger_Clear",
+        "category": "Timing",
+        "importance": "HIGH",
+        "claim": "AlarmsSuppressed SHALL be cleared when sensor trigger condition clears.",
+        "formal": "∀bit, t. trigger_clears(t) ⟹ AlarmsSuppressed[bit] == 0 at t",
+        "spec_source": "Section 1.8.6.5, Page 93: 'When the sensor is no longer triggered, this attribute SHALL be set to the unsuppressed state, by setting the bit to 0, for all supported alarm modes.'",
+        "violation": {
+          "description": "If suppressed state persisted after trigger cleared, the next trigger would immediately be suppressed without user action.",
+          "attack_vector": "N/A - this is proper behavior specification",
+          "physical_impact": "None - defines proper state reset behavior"
+        },
+        "proverifQuery": "query device:deviceId ⊢ event trigger_cleared(device) ==> suppressed_bits(device) == 0"
+      },
+      {
+        "id": "PROP_CC_001",
+        "name": "BooleanState_Cluster_Coordination",
+        "category": "CrossCluster",
+        "importance": "HIGH",
+        "claim": "Boolean State Configuration cluster operates in coordination with Boolean State cluster on same endpoint.",
+        "formal": "∀endpoint. has_cluster(endpoint, BooleanStateConfiguration) ⟹ has_cluster(endpoint, BooleanState)",
+        "spec_source": "Section 1.8, Page 90: 'This cluster is used to configure a boolean sensor'",
+        "violation": {
+          "description": "Boolean State Configuration without associated Boolean State cluster would be meaningless configuration with no actual sensor state.",
+          "attack_vector": "Device configuration error",
+          "physical_impact": "None - device type conformance issue"
+        },
+        "proverifQuery": "query endpoint:endpointId ⊢ has_cluster(endpoint, BooleanStateConfiguration) ==> has_cluster(endpoint, BooleanState)"
+      },
+      {
+        "id": "PROP_CC_002",
+        "name": "AlarmsActive_Reflects_BooleanState_Trigger",
+        "category": "CrossCluster",
+        "importance": "HIGH",
+        "claim": "AlarmsActive bits SHALL only be set when Boolean State cluster's StateValue indicates triggered condition.",
+        "formal": "∀bit, t. AlarmsActive[bit] == 1 at t ⟹ sensor_triggered(BooleanState.StateValue)",
+        "spec_source": "Section 1.8.6.4, Page 93: 'When the sensor is no longer triggered, this attribute SHALL be set to the inactive state'",
+        "violation": {
+          "description": "If AlarmsActive could be set without actual sensor trigger, false alarms would be generated. Conversely, if alarms didn't clear when trigger clears, stale alarms would persist.",
+          "attack_vector": "Timing race between sensor state and alarm state",
+          "physical_impact": "False alarms causing alarm fatigue, or missed alarm clearing"
+        },
+        "proverifQuery": "query device:deviceId, bit:alarmBit ⊢ active_bit(device, bit) == true ==> triggered(device)"
+      },
+      {
+        "id": "PROP_AU_001",
+        "name": "No_Physical_Presence_Verification",
+        "category": "Authorization",
+        "importance": "MEDIUM",
+        "claim": "Neither SuppressAlarm nor EnableDisableAlarm commands require physical presence verification.",
+        "formal": "∀cmd ∈ {SuppressAlarm, EnableDisableAlarm}. ¬requires_physical_presence(cmd)",
+        "spec_source": "Section 1.8.7, Page 94: No physical presence or timed interaction requirement",
+        "violation": {
+          "description": "Remote alarm suppression/disable without physical presence creates risk of unauthorized silence of safety alerts. Unlike some safety clusters, there is no timed interaction or hardware button requirement.",
+          "attack_vector": "Malicious remote suppression without user awareness",
+          "physical_impact": "Safety alerts suppressed without occupant knowledge"
+        },
+        "proverifQuery": "N/A - Specification design concern",
+        "spec_gap": true
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "Matter fabric provides authenticated communication channels.",
+        "type": "Implicit",
+        "source": "Core Spec - inherited",
+        "dependencies": ["All PROP_AC_*"],
+        "impact_if_violated": "Access control properties fail; any node could invoke commands"
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "Operate privilege indicates a trusted user or automation in the home.",
+        "type": "Implicit",
+        "source": "ACL model assumption",
+        "dependencies": ["PROP_PS_001", "PROP_PS_002"],
+        "impact_if_violated": "Operate privilege compromise enables alarm suppression/disable"
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "Sensor hardware correctly detects trigger conditions.",
+        "type": "Implicit",
+        "source": "Device capability assumption",
+        "dependencies": ["PROP_CC_002", "PROP_PS_003"],
+        "impact_if_violated": "False negatives or false positives regardless of software configuration"
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "All events are delivered reliably to subscribed clients.",
+        "type": "Implicit",
+        "source": "Core Spec subscription model",
+        "dependencies": ["PROP_EI_001", "PROP_EI_002"],
+        "impact_if_violated": "Controllers miss alarm state change notifications"
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 1.8.7.1, Page 94",
+        "normative_weakness": "Unspecified",
+        "description": "No maximum suppression duration specified. Suppression persists indefinitely until trigger clears.",
+        "properties_affected": ["PROP_TM_001", "PROP_PS_001"],
+        "security_impact": "Water leak or contact sensor alarm could be suppressed for days/weeks if trigger condition persists (e.g., slow leak, window left ajar)"
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 1.8.7, Page 94",
+        "normative_weakness": "Unspecified",
+        "description": "No rate limiting on SuppressAlarm or EnableDisableAlarm commands.",
+        "properties_affected": ["PROP_AV_001", "PROP_AV_002"],
+        "security_impact": "Command flooding attacks possible; rapid state toggling"
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 1.8.7, Page 94",
+        "normative_weakness": "Unspecified",
+        "description": "No physical presence verification or timed interaction requirement for alarm suppression/disable.",
+        "properties_affected": ["PROP_AU_001", "PROP_PS_001", "PROP_PS_002"],
+        "security_impact": "Compromised remote controller can silence all alarms without any physical verification"
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 1.8.7.2, Page 95",
+        "normative_weakness": "Unspecified",
+        "description": "EnableDisableAlarm uses only Operate privilege (not Manage/Admin) for completely disabling safety alarms.",
+        "properties_affected": ["PROP_PS_002"],
+        "security_impact": "Low privilege barrier for disabling all alarm functionality. Any Operate-level node can permanently disable alarms."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 1.8.7.2, Page 95",
+        "normative_weakness": "Implicit",
+        "description": "Disabling an alarm silently clears active and suppressed states with no notification of the clear reason.",
+        "properties_affected": ["PROP_SI_008"],
+        "security_impact": "Active alarm conditions can be silently cleared by disable operation. AlarmsStateChanged event generated but does not distinguish between trigger-clear and disable-clear."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 1.8.6.1, Page 92",
+        "normative_weakness": "Unspecified",
+        "description": "No audit trail or notification when CurrentSensitivityLevel is changed.",
+        "properties_affected": ["PROP_PS_003"],
+        "security_impact": "Sensitivity can be reduced silently; no event generated for sensitivity changes"
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": [
+          "Boolean State (0x0045)",
+          "Boolean State Configuration (0x0080)"
+        ],
+        "property": {
+          "claim": "AlarmsActive state SHALL be consistent with Boolean State StateValue trigger condition.",
+          "formal": "BooleanState.StateValue == triggered ⟺ ∃bit. BooleanStateConfig.AlarmsActive[bit] == 1 ∧ AlarmsEnabled[bit] == 1"
+        },
+        "violation_scenario": "Timing race between StateValue change and AlarmsActive update could create brief inconsistency"
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_PS_001",
+        "safety_category": "AlertSuppression",
+        "failure_mode": "Remote suppression of water leak, contact sensor, or other safety alerts without physical presence",
+        "spec_mitigation": "UNSPECIFIED - No confirmation workflow"
+      },
+      {
+        "property_id": "PROP_PS_002",
+        "safety_category": "AlertDisable",
+        "failure_mode": "Complete disabling of all alarm functionality by any Operate-privilege node",
+        "spec_mitigation": "UNSPECIFIED - Only basic Operate privilege required"
+      },
+      {
+        "property_id": "PROP_TM_001",
+        "safety_category": "AlertTiming",
+        "failure_mode": "Indefinite suppression of active hazard alerts",
+        "spec_mitigation": "UNSPECIFIED - No auto-unsuppression timer"
+      }
+    ],
+
+    "summary": {
+      "total_properties": 23,
+      "by_importance": {
+        "CRITICAL": 2,
+        "HIGH": 12,
+        "MEDIUM": 9
+      },
+      "by_category": {
+        "AccessControl": 6,
+        "StateIntegrity": 8,
+        "PhysicalSafety": 3,
+        "Availability": 2,
+        "EventIntegrity": 3,
+        "Timing": 2,
+        "CrossCluster": 2,
+        "Authorization": 1
+      },
+      "spec_gaps_found": 6,
+      "safety_critical_count": 3,
+      "features_analyzed": ["VIS", "AUD", "SPRS", "SENSLVL"],
+      "commands_analyzed": ["SuppressAlarm", "EnableDisableAlarm"],
+      "events_analyzed": ["AlarmsStateChanged", "SensorFault"]
+    }
+  }
+}

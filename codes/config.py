@@ -1194,7 +1194,6 @@ Return raw JSON only:
 """
 
 # Backward compatibility alias
-FSM_GENERATION_PROMPT_TEMPLATE_LLM = FSM_GENERATION_PROMPT_PASS1_FSM_ONLY
 
 # =============================================================================
 # PASS 2: SECURITY PROPERTIES GENERATION PROMPT

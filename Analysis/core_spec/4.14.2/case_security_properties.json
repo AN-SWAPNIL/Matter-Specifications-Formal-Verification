@@ -1,0 +1,840 @@
+{
+  "protocol": "Certificate Authenticated Session Establishment (CASE)",
+  "version": "Matter Specification R1.4",
+  "section": "4.14.2",
+  "extractionDate": "2026-02-03",
+  "properties": [
+    {
+      "id": "CASE_PROP_001",
+      "name": "Mutual_Authentication",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Both initiator and responder SHALL mutually authenticate using their Node Operational Certificates (NOC) before session establishment completes.",
+      "formal": "∀session. established(session) → (authenticated(initiator, NOC_i) ∧ authenticated(responder, NOC_r))",
+      "violation": "If mutual authentication fails, an attacker could impersonate a legitimate node, establish a session under false identity, and gain unauthorized access to the fabric. This breaks authentication guarantees and allows man-in-the-middle attacks.",
+      "proverifQuery": "query i:principal, r:principal, s:session; event(session_established(i, r, s)) ==> (event(authenticated(i)) && event(authenticated(r)))"
+    },
+    {
+      "id": "CASE_PROP_002",
+      "name": "Certificate_Chain_Validation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The certificate chain SHALL chain back to the Trusted Root CA Certificate (TrustedRCAC) whose public key was used in the computation of the Destination Identifier.",
+      "formal": "∀NOC, ICAC, RCAC. verify_chain(NOC, ICAC, RCAC) → chains_to(NOC, TrustedRCAC) ∧ match(RCAC.pubkey, DestinationId.rootPubKey)",
+      "violation": "If certificate chain validation is bypassed, an attacker with a rogue certificate could establish a session. The initiator would trust a certificate not issued by the legitimate fabric root CA, enabling fabric infiltration.",
+      "proverifQuery": "query node:principal, noc:cert, rcac:cert; event(accept_certificate(node, noc)) ==> event(valid_chain(noc, rcac)) && event(trusted_root(rcac))"
+    },
+    {
+      "id": "CASE_PROP_003",
+      "name": "Fabric_ID_Match",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The Fabric ID in the NOC and ICAC (if present) SHALL match the Fabric ID matched during processing of the Destination Identifier.",
+      "formal": "∀sigma2. verify_sigma2(sigma2) → match(sigma2.NOC.FabricID, DestinationId.FabricID) ∧ (present(sigma2.ICAC) → match(sigma2.ICAC.FabricID, sigma2.NOC.FabricID))",
+      "violation": "Fabric ID mismatch allows cross-fabric attacks where a node from Fabric A could attempt to authenticate to Fabric B using credentials from a different fabric, breaking fabric isolation.",
+      "proverifQuery": "query f1:fabricid, f2:fabricid, noc:cert; event(accept_noc(noc, f1)) ==> (get_fabric_id(noc) = f1)"
+    },
+    {
+      "id": "CASE_PROP_004",
+      "name": "NOC_Private_Key_Possession",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Each party SHALL prove possession of the NOC private key by signing the ephemeral keys and NOC using Crypto_Sign with their private key.",
+      "formal": "∀node, signature, tbs_data. valid(signature, node.NOC.pubkey, tbs_data) ↔ possesses(node, node.NOC.privkey)",
+      "violation": "Without proof of private key possession, an attacker who obtained a copy of a NOC (but not the private key) could attempt to impersonate the legitimate node. This breaks the fundamental authentication assumption.",
+      "proverifQuery": "query node:principal, sig:signature, pubkey:key; event(verify_signature_success(sig, pubkey)) ==> event(signed_with_private_key(node, sig))"
+    },
+    {
+      "id": "CASE_PROP_005",
+      "name": "Ephemeral_Key_Exchange",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "Both parties SHALL generate ephemeral key pairs and compute SharedSecret using ECDH with their private key and the peer's ephemeral public key.",
+      "formal": "SharedSecret = Crypto_ECDH(initiator.ephPrivKey, responder.ephPubKey) = Crypto_ECDH(responder.ephPrivKey, initiator.ephPubKey)",
+      "violation": "If ephemeral keys are reused or predictable, forward secrecy is broken. An attacker who compromises long-term keys could decrypt past sessions. Session-specific key material must be fresh.",
+      "proverifQuery": "query i:principal, r:principal, ss:key; event(derive_shared_secret(i, r, ss)) ==> event(fresh_ephemeral_key(i)) && event(fresh_ephemeral_key(r))"
+    },
+    {
+      "id": "CASE_PROP_006",
+      "name": "Session_ID_Uniqueness",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "The InitiatorSessionId and ResponderSessionId SHALL NOT overlap with any other existing PASE or CASE session identifier in use.",
+      "formal": "∀session1, session2. active(session1) ∧ active(session2) ∧ session1 ≠ session2 → sessionId(session1) ≠ sessionId(session2)",
+      "violation": "Session ID collision would cause message routing errors, potentially delivering encrypted messages to the wrong session context. This could leak data or cause denial of service.",
+      "proverifQuery": "query s1:session, s2:session, id:sessionid; event(session_active(s1, id)) && event(session_active(s2, id)) ==> s1 = s2"
+    },
+    {
+      "id": "CASE_PROP_007",
+      "name": "Sigma1_Destination_ID_Privacy",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "The Destination Identifier SHALL hide which Fabric was chosen by the initiator while enabling the responder to identify the target fabric.",
+      "formal": "∀observer, destId. observes(observer, destId) ∧ ¬knows(observer, IPK) → ¬can_derive(observer, FabricID)",
+      "violation": "If Destination ID leaks fabric identity, an attacker could perform traffic analysis to determine which fabrics a node belongs to, enabling targeted attacks and breaking identity protection.",
+      "proverifQuery": "query attacker:principal, destid:bitstring, fabric:fabricid; attacker(destid) ==> not(attacker(fabric))"
+    },
+    {
+      "id": "CASE_PROP_008",
+      "name": "IPK_Exclusive_Use",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "The Identity Protection Key (IPK) SHALL be exclusively used for CASE and SHALL NOT be used for operational group communication.",
+      "formal": "∀usage. uses(IPK, usage) → usage = CASE_DestinationId ∨ usage = CASE_KeyDerivation",
+      "violation": "Using IPK for group communication would expose it to group members who don't need it for CASE, violating the principle of least privilege and expanding the attack surface.",
+      "proverifQuery": "query k:key; event(use_ipk_for_group_comm(k)) ==> false"
+    },
+    {
+      "id": "CASE_PROP_009",
+      "name": "Reliable_Message_Delivery",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "All CASE messages SHALL be sent reliably, either implicitly via TCP or explicitly via MRP reliable messaging.",
+      "formal": "∀msg ∈ {Sigma1, Sigma2, Sigma3, SigmaFinished}. sent(msg) → eventually(delivered(msg)) ∨ timeout_error()",
+      "violation": "Unreliable delivery of CASE messages could leave sessions in inconsistent states where one party believes the session is established while the other does not, enabling replay attacks.",
+      "proverifQuery": "query sender:principal, msg:bitstring; event(sent_case_message(sender, msg)) ==> event(delivered_case_message(msg)) || event(timeout(msg))"
+    },
+    {
+      "id": "CASE_PROP_010",
+      "name": "Signature_TBS_Data_Not_Transmitted",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "The sigma-2-tbsdata and sigma-3-tbsdata structures are NOT transmitted but are instead signed; only the signature is encrypted and transmitted.",
+      "formal": "∀tbs_data. transmitted(encrypt(sign(tbs_data))) ∧ ¬transmitted(tbs_data)",
+      "violation": "If TBS data were transmitted unencrypted, an attacker could observe the certificate contents and ephemeral keys in cleartext, enabling identity correlation attacks.",
+      "proverifQuery": "query tbsdata:bitstring; attacker(tbsdata) ==> false"
+    },
+    {
+      "id": "CASE_PROP_011",
+      "name": "Encrypted_Certificate_Exchange",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "The NOC and ICAC certificates SHALL be encrypted using AEAD (Crypto_AEAD_GenerateEncrypt) with session-derived keys before transmission.",
+      "formal": "∀noc, icac. transmitted(noc) → transmitted(Crypto_AEAD_Encrypt(S2K|S3K, noc))",
+      "violation": "Unencrypted certificate exchange would expose node identity to passive observers, breaking identity protection. Attacker could build node-to-fabric mapping.",
+      "proverifQuery": "query noc:cert, k:key; event(transmit_encrypted_cert(noc, k)) ==> event(derived_session_key(k))"
+    },
+    {
+      "id": "CASE_PROP_012",
+      "name": "Random_Value_Generation",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "InitiatorRandom, ResponderRandom, and ResumptionID SHALL be generated using Crypto_DRBG with appropriate lengths (32 bytes for random, 16 bytes for ResumptionID).",
+      "formal": "∀r ∈ {InitiatorRandom, ResponderRandom}. r = Crypto_DRBG(256) ∧ ResumptionID = Crypto_DRBG(128)",
+      "violation": "Weak or predictable random values would allow an attacker to predict session keys, derive shared secrets, or replay previous sessions, completely breaking session security.",
+      "proverifQuery": "query r:bitstring; event(use_random(r)) ==> event(generated_by_drbg(r))"
+    },
+    {
+      "id": "CASE_PROP_013",
+      "name": "Session_Key_Derivation",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "Session encryption keys (I2RKey, R2IKey, AttestationChallenge) SHALL be derived using Crypto_KDF with SharedSecret, IPK, and TranscriptHash.",
+      "formal": "I2RKey || R2IKey || AttestationChallenge = Crypto_KDF(inputKey=SharedSecret, salt=IPK||TranscriptHash, info='SessionKeys', len=3*CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+      "violation": "Incorrect key derivation could produce weak or predictable keys. If transcript hash is not included, messages could be replayed from other sessions.",
+      "proverifQuery": "query ss:key, ipk:key, th:bitstring, skeys:key; event(derive_session_keys(ss, ipk, th, skeys)) ==> event(valid_kdf_params(ss, ipk, th))"
+    },
+    {
+      "id": "CASE_PROP_014",
+      "name": "Key_Direction_Separation",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "The initiator SHALL use I2RKey to encrypt outgoing messages and R2IKey to decrypt incoming messages; the responder SHALL use the opposite.",
+      "formal": "(role=initiator → encrypt_key=I2RKey ∧ decrypt_key=R2IKey) ∧ (role=responder → encrypt_key=R2IKey ∧ decrypt_key=I2RKey)",
+      "violation": "If both parties used the same key for the same direction, reflection attacks would be possible where an attacker reflects a party's message back to them.",
+      "proverifQuery": "query i:principal, r:principal, k:key; event(initiator_encrypts_with(i, k)) ==> k = i2r_key && event(responder_decrypts_with(r, k))"
+    },
+    {
+      "id": "CASE_PROP_015",
+      "name": "Attestation_Challenge_Restricted_Use",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "The AttestationChallenge SHALL only be used as a challenge during device attestation procedure.",
+      "formal": "∀usage. uses(AttestationChallenge, usage) → usage = DeviceAttestation",
+      "violation": "Using AttestationChallenge for other purposes could leak information about the session or enable cross-protocol attacks where attestation responses are replayed.",
+      "proverifQuery": "query ac:bitstring; event(use_attestation_challenge(ac)) ==> event(device_attestation_context(ac))"
+    },
+    {
+      "id": "CASE_PROP_016",
+      "name": "Message_Counter_Initialization",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Upon session establishment, the Node SHALL initialize its Local Message Counter and set the synchronized max_message_counter of the peer to 0.",
+      "formal": "∀session. established(session) → localCounter(session) = init_value ∧ peerMaxCounter(session) = 0",
+      "violation": "Improper counter initialization could enable replay attacks where old messages are accepted, or cause message rejection due to counter mismatch.",
+      "proverifQuery": "query s:session; event(session_established(s)) ==> event(counter_initialized(s, 0))"
+    },
+    {
+      "id": "CASE_PROP_017",
+      "name": "Resumption_ID_Both_Fields_Required",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If Sigma1 contains either resumptionID OR initiatorResumeMIC but not both, the responder SHALL send INVALID_PARAMETER status report.",
+      "formal": "(present(Sigma1.resumptionID) ⊕ present(Sigma1.initiatorResumeMIC)) → respond(StatusReport(INVALID_PARAMETER))",
+      "violation": "Accepting partial resumption data could lead to undefined behavior or allow an attacker to probe for valid session state without proper authentication.",
+      "proverifQuery": "query sigma1:bitstring; (has_field(sigma1, resumption_id) && not(has_field(sigma1, resume_mic))) ==> event(send_invalid_param())"
+    },
+    {
+      "id": "CASE_PROP_018",
+      "name": "Resumption_Requires_Shared_State",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "To perform session resumption, both initiator and responder SHALL have remembered SharedSecret, Local Fabric Index, Peer Node ID, Peer CASE Authenticated Tags, and ResumptionID from the previous session.",
+      "formal": "∀session. resume(session) → stored(SharedSecret) ∧ stored(LocalFabricIndex) ∧ stored(PeerNodeID) ∧ stored(PeerCAT) ∧ stored(ResumptionID)",
+      "violation": "Resumption without complete state verification could allow an attacker to resume a session they never established, bypassing full certificate authentication.",
+      "proverifQuery": "query s:session, ss:key, rid:bitstring; event(session_resumed(s)) ==> event(stored_shared_secret(ss)) && event(stored_resumption_id(rid))"
+    },
+    {
+      "id": "CASE_PROP_019",
+      "name": "ResumeMIC_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The Resume1MIC and Resume2MIC SHALL be verified using AEAD decryption with the resumption key derived from SharedSecret.",
+      "formal": "∀resumeMIC. accept(resumeMIC) ↔ Crypto_AEAD_DecryptVerify(S1RK|S2RK, resumeMIC) = SUCCESS",
+      "violation": "Bypassing MIC verification would allow an attacker to forge resumption requests without knowing the original SharedSecret, enabling session hijacking.",
+      "proverifQuery": "query mic:bitstring, k:key; event(accept_resume_mic(mic)) ==> event(valid_aead_verify(mic, k)) && event(derived_from_shared_secret(k))"
+    },
+    {
+      "id": "CASE_PROP_020",
+      "name": "Session_Timestamp_Recording",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "Upon successful session establishment, both parties SHALL set SessionTimestamp to enable determination of last session use relative to other sessions.",
+      "formal": "∀session. established(session) → SessionTimestamp(session) = now() ∧ clock_synchronized()",
+      "violation": "Without proper timestamps, session aging policies cannot be enforced, potentially keeping stale sessions active indefinitely and consuming resources.",
+      "proverifQuery": "query s:session, t:timestamp; event(session_established(s)) ==> event(timestamp_set(s, t))"
+    },
+    {
+      "id": "CASE_PROP_021",
+      "name": "Failed_Validation_Status_Report",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "On any validation failure (signature, certificate chain, Fabric ID mismatch), the Node SHALL send StatusReport(FAILURE, SECURE_CHANNEL, INVALID_PARAMETER) and perform no further processing.",
+      "formal": "∀validation. failed(validation) → send(StatusReport(FAILURE)) ∧ abort_session()",
+      "violation": "Continuing processing after validation failure could leave the session in an inconsistent state or leak information about which validation step failed.",
+      "proverifQuery": "query node:principal; event(validation_failed(node)) ==> event(sent_status_failure(node)) && event(session_aborted(node))"
+    },
+    {
+      "id": "CASE_PROP_022",
+      "name": "Node_ID_Match_Validation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The Node ID in the NOC SHALL match the intended identity of the receiver Node as included in the Destination Identifier computation.",
+      "formal": "∀noc. accept(noc) → match(noc.NodeID, DestinationId.NodeID)",
+      "violation": "Node ID mismatch would allow credential substitution where an attacker uses one node's certificate to authenticate as another node in the same fabric.",
+      "proverifQuery": "query noc:cert, dest_node:nodeid; event(accept_certificate_for_node(noc, dest_node)) ==> get_node_id(noc) = dest_node"
+    },
+    {
+      "id": "CASE_PROP_023",
+      "name": "Transcript_Hash_Binding",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "The TranscriptHash for key derivation SHALL include all exchanged messages (Msg1 || Msg2 || Msg3) to bind keys to the specific session transcript.",
+      "formal": "TranscriptHash = Crypto_Hash(Msg1 || Msg2 || Msg3)",
+      "violation": "Omitting messages from transcript would enable cross-session attacks where keys from one session could be valid for another, breaking session isolation.",
+      "proverifQuery": "query th:bitstring, m1:bitstring, m2:bitstring, m3:bitstring; event(compute_transcript(th, m1, m2, m3)) ==> th = hash(concat(m1, m2, m3))"
+    },
+    {
+      "id": "CASE_PROP_024",
+      "name": "CASE_Messages_Unsecured_Session",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "All CASE messages SHALL be sent using an Unsecured Session with Session ID field set to 0 and Session Type bits of Security Flags set to 0.",
+      "formal": "∀msg ∈ CASE_messages. msg.SessionID = 0 ∧ msg.SessionType = 0",
+      "violation": "Using incorrect session parameters would cause message rejection or routing errors, potentially enabling downgrade attacks if fallback to insecure handling occurs.",
+      "proverifQuery": "query msg:bitstring; event(case_message(msg)) ==> get_session_id(msg) = 0 && get_session_type(msg) = 0"
+    },
+    {
+      "id": "CASE_PROP_025",
+      "name": "S_Flag_Direction_Indication",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "In CASE messages from initiator, S Flag SHALL be 1 and DSIZ SHALL be 0; from responder, S Flag SHALL be 0 and DSIZ SHALL be 1.",
+      "formal": "(role=initiator → S_Flag=1 ∧ DSIZ=0) ∧ (role=responder → S_Flag=0 ∧ DSIZ=1)",
+      "violation": "Incorrect flags would confuse message routing and could enable spoofing where responder messages appear to come from initiator or vice versa.",
+      "proverifQuery": "query msg:bitstring, role:principal; event(initiator_sends(msg)) ==> s_flag(msg) = 1 && dsiz(msg) = 0"
+    },
+    {
+      "id": "CASE_PROP_026",
+      "name": "I_Flag_Exchange_Indication",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "The I Flag in Exchange Flags SHALL be 1 for Sigma1 and Sigma3 (initiator messages) and 0 for Sigma2 and Sigma2_Resume (responder messages).",
+      "formal": "(msg ∈ {Sigma1, Sigma3} → I_Flag=1) ∧ (msg ∈ {Sigma2, Sigma2_Resume} → I_Flag=0)",
+      "violation": "Incorrect I Flag values would violate the exchange protocol and could enable message injection attacks.",
+      "proverifQuery": "query msg:bitstring; (event(sigma1(msg)) || event(sigma3(msg))) ==> i_flag(msg) = 1"
+    },
+    {
+      "id": "CASE_PROP_027",
+      "name": "Minimum_CASE_Sessions_Per_Fabric",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "A node SHALL support at least 3 CASE session contexts per fabric.",
+      "formal": "∀fabric. count(CASE_sessions, fabric) >= 3",
+      "violation": "Supporting fewer sessions than required would cause denial of service when multiple nodes attempt to communicate with the device simultaneously.",
+      "proverifQuery": "query f:fabricid, count:int; event(sessions_for_fabric(f, count)) ==> count >= 3"
+    },
+    {
+      "id": "CASE_PROP_028",
+      "name": "SigmaFinished_Success_Indication",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "To indicate successful completion, the receiving Node SHALL send StatusReport(GeneralCode: SUCCESS, ProtocolId: SECURE_CHANNEL, ProtocolCode: SESSION_ESTABLISHMENT_SUCCESS).",
+      "formal": "session_success() → send(StatusReport(SUCCESS, SECURE_CHANNEL, SESSION_ESTABLISHMENT_SUCCESS))",
+      "violation": "Incorrect success indication could leave the peer in uncertainty about session state, causing timeout or retry behavior that degrades performance.",
+      "proverifQuery": "query node:principal; event(session_complete(node)) ==> event(sent_success_report(node))"
+    },
+    {
+      "id": "CASE_PROP_029",
+      "name": "Encryption_Before_Session_Complete",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Parties SHALL NOT send encrypted application data until SigmaFinished is received, confirming session establishment.",
+      "formal": "∀app_data. send_encrypted(app_data) → received(SigmaFinished)",
+      "violation": "Sending encrypted data before session confirmation could result in data loss if the session fails, or expose data if the peer rejects the session.",
+      "proverifQuery": "query data:bitstring, s:session; event(send_encrypted_app_data(data, s)) ==> event(received_sigma_finished(s))"
+    },
+    {
+      "id": "CASE_PROP_030",
+      "name": "Resumption_Falls_Back_To_Full_CASE",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If responder cannot resume as requested by Sigma1 with Resumption, it SHALL process Sigma1 as a standard message without resumption fields and continue full CASE.",
+      "formal": "∀sigma1_resume. ¬can_resume(sigma1_resume) → process_as_standard_sigma1(sigma1_resume)",
+      "violation": "Rejecting resumption without fallback would cause unnecessary connection failures when resumption state is lost on one side.",
+      "proverifQuery": "query s1:bitstring; event(cannot_resume(s1)) ==> event(process_full_case(s1))"
+    },
+    {
+      "id": "CASE_PROP_031",
+      "name": "Ephemeral_Key_Pair_Generation",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "Both initiator and responder SHALL generate fresh ephemeral key pairs for each CASE session using proper elliptic curve key generation.",
+      "formal": "∀session. new_session(session) → fresh(session.ephKeyPair) ∧ on_curve(session.ephKeyPair)",
+      "violation": "Reusing ephemeral keys across sessions breaks forward secrecy. An attacker compromising one session's keys could derive keys for all sessions using the same ephemeral.",
+      "proverifQuery": "query s1:session, s2:session, k:key; event(use_eph_key(s1, k)) && event(use_eph_key(s2, k)) ==> s1 = s2"
+    },
+    {
+      "id": "CASE_PROP_032",
+      "name": "Certificate_DN_Encoding_Rules",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "All elements in the certificate chain SHALL respect Matter Certificate DN Encoding Rules, including range checks for identifiers such as Fabric ID and Node ID.",
+      "formal": "∀cert ∈ chain. valid_dn_encoding(cert) ∧ in_range(cert.FabricID) ∧ in_range(cert.NodeID)",
+      "violation": "Certificates with malformed DN could cause parsing errors or enable attacks using specially crafted identifiers that bypass validation.",
+      "proverifQuery": "query cert:cert; event(accept_certificate(cert)) ==> event(valid_dn_encoding(cert))"
+    },
+    {
+      "id": "CASE_PROP_033",
+      "name": "ICAC_Fabric_ID_Consistency",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "If an ICAC is present and contains a Fabric ID in its subject, it SHALL match the FabricID in the NOC leaf certificate.",
+      "formal": "∀icac, noc. present(icac) ∧ present(icac.FabricID) → icac.FabricID = noc.FabricID",
+      "violation": "Fabric ID mismatch between ICAC and NOC indicates a certificate chain constructed from different fabrics, which could enable credential mixing attacks.",
+      "proverifQuery": "query icac:cert, noc:cert, f1:fabricid, f2:fabricid; event(chain_validation(icac, noc)) && has_fabric_id(icac, f1) ==> f1 = get_fabric_id(noc)"
+    },
+    {
+      "id": "CASE_PROP_034",
+      "name": "Sigma2_Key_Derivation",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "The S2K key SHALL be derived using SharedSecret, IPK, and TranscriptHash(Msg1) before encrypting Sigma2 content.",
+      "formal": "S2K = Crypto_KDF(inputKey=SharedSecret, salt=IPK||Crypto_Hash(Msg1), info='Sigma2', len=CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+      "violation": "Incorrect S2K derivation could produce keys that don't match between parties, causing decryption failure and session establishment failure.",
+      "proverifQuery": "query s2k:key, ss:key, ipk:key, m1:bitstring; event(derive_s2k(s2k, ss, ipk, m1)) ==> event(valid_s2k_derivation(s2k))"
+    },
+    {
+      "id": "CASE_PROP_035",
+      "name": "Sigma2_Content_Byte_Identical_Encoding",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "The encoding of responderNOC and responderICAC in sigma-2-tbedata SHALL be byte-for-byte identical to the encoding in sigma-2-tbsdata.",
+      "formal": "encode(tbedata.responderNOC) = encode(tbsdata.responderNOC) ∧ encode(tbedata.responderICAC) = encode(tbsdata.responderICAC)",
+      "violation": "Different encodings would cause signature verification to fail even with valid certificates, as the signature covers a different representation.",
+      "proverifQuery": "query tbe:bitstring, tbs:bitstring; event(sigma2_encoding(tbe, tbs)) ==> byte_identical(tbe, tbs)"
+    },
+    {
+      "id": "CASE_PROP_036",
+      "name": "Context_Tags_Reserved_Ignored",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Context-specific TLV tags not listed in the schemas SHALL be reserved for future use and SHALL be silently ignored by recipients.",
+      "formal": "∀tag. ¬defined(tag) → ignore(tag) ∧ reserved(tag)",
+      "violation": "Processing unknown tags could lead to undefined behavior or be exploited to inject malicious data that bypasses validation.",
+      "proverifQuery": "query msg:bitstring, tag:int; event(received_unknown_tag(msg, tag)) ==> event(ignored_tag(tag))"
+    },
+    {
+      "id": "CASE_PROP_037",
+      "name": "IPK_Epoch_Key_Selection",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "For Destination Identifier generation, the originator SHALL use the operational group key with the second newest EpochStartTime if one exists, otherwise the single available key.",
+      "formal": "(count(epoch_keys) >= 2 → use(second_newest(epoch_keys))) ∧ (count(epoch_keys) = 1 → use(only_key))",
+      "violation": "Using the wrong epoch key would cause Destination ID mismatch and session establishment failure, or could expose timing information.",
+      "proverifQuery": "query k1:key, k2:key; event(select_ipk_for_destid(k1)) && event(newer_key_exists(k2)) ==> k1 = second_newest_key()"
+    },
+    {
+      "id": "CASE_PROP_038",
+      "name": "New_Resumption_ID_Per_Session",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "The responder SHALL generate a new random ResumptionID = Crypto_DRBG(128) for each successful session to use in future resumption.",
+      "formal": "∀session. established(session) → ResumptionID(session) = Crypto_DRBG(128) ∧ fresh(ResumptionID(session))",
+      "violation": "Reusing ResumptionIDs across sessions would enable an attacker to correlate sessions and potentially replay resumption requests.",
+      "proverifQuery": "query s1:session, s2:session, rid:bitstring; event(resumption_id(s1, rid)) && event(resumption_id(s2, rid)) ==> s1 = s2"
+    },
+    {
+      "id": "CASE_PROP_039",
+      "name": "Signature_Covers_Ephemeral_Keys",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The TBS data for signatures SHALL include both initiatorEphPubKey and responderEphPubKey to bind the signature to the specific key exchange.",
+      "formal": "∀signature. valid_tbs(signature) → contains(tbs, initiatorEphPubKey) ∧ contains(tbs, responderEphPubKey)",
+      "violation": "Signatures not covering ephemeral keys could be replayed across sessions with different ephemeral keys, enabling unknown key share attacks.",
+      "proverifQuery": "query sig:signature, tbs:bitstring, ephi:key, ephr:key; event(sign_tbs(sig, tbs)) ==> contains(tbs, ephi) && contains(tbs, ephr)"
+    },
+    {
+      "id": "CASE_PROP_040",
+      "name": "AEAD_Nonce_Uniqueness",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "Each AEAD encryption operation SHALL use a unique nonce (NCASE_Sigma2N, NCASE_Sigma3N, etc.) specific to the message type.",
+      "formal": "∀enc1, enc2. enc1 ≠ enc2 → nonce(enc1) ≠ nonce(enc2)",
+      "violation": "Nonce reuse with the same key completely breaks AEAD security, allowing an attacker to recover plaintext through XOR of ciphertexts.",
+      "proverifQuery": "query n:bitstring, k:key, c1:bitstring, c2:bitstring; event(aead_encrypt(k, n, c1)) && event(aead_encrypt(k, n, c2)) ==> c1 = c2"
+    },
+    {
+      "id": "CASE_PROP_041",
+      "name": "Nonce_Format_Consistency",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "The nonce for AEAD SHALL be formatted as concatenation of Security Flags (1 byte) || Message Counter (4 bytes) || Source Node ID (8 bytes), with little-endian encoding for scalar fields.",
+      "formal": "∀msg. nonce(msg) = concat(SecurityFlags(msg), MessageCounter(msg), SourceNodeID(msg)) ∧ little_endian(MessageCounter) ∧ little_endian(SourceNodeID)",
+      "violation": "Incorrect nonce format would cause decryption failures or enable replay attacks if message counter or source node ID are not properly included.",
+      "proverifQuery": "query msg:bitstring, nonce:bitstring; event(generate_nonce(msg, nonce)) ==> valid_nonce_format(nonce)"
+    },
+    {
+      "id": "CASE_PROP_042",
+      "name": "AEAD_AAD_Empty_For_CASE",
+      "category": "Cryptography",
+      "importance": "MEDIUM",
+      "claim": "For CASE Sigma2 and Sigma3 AEAD encryption, the Additional Authenticated Data (AAD) field SHALL be empty.",
+      "formal": "∀sigma_msg ∈ {Sigma2, Sigma3}. aead_encrypt(sigma_msg) → AAD(sigma_msg) = empty",
+      "violation": "Non-empty AAD when not expected would cause decryption failure and session establishment failure.",
+      "proverifQuery": "query msg:bitstring; (event(encrypt_sigma2(msg)) || event(encrypt_sigma3(msg))) ==> get_aad(msg) = empty"
+    },
+    {
+      "id": "CASE_PROP_043",
+      "name": "Operational_Node_ID_Range_Validation",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "The Node ID in the NOC SHALL be within the valid Operational Node ID range as defined by Matter Certificate DN Encoding Rules.",
+      "formal": "∀noc. accept(noc) → in_range(noc.NodeID, OPERATIONAL_NODE_ID_MIN, OPERATIONAL_NODE_ID_MAX)",
+      "violation": "Accepting Node IDs outside the operational range could enable special node IDs to be used inappropriately or bypass access control checks.",
+      "proverifQuery": "query noc:cert, node_id:nodeid; event(accept_certificate(noc)) ==> valid_operational_range(get_node_id(noc))"
+    },
+    {
+      "id": "CASE_PROP_044",
+      "name": "TLV_Tag_Order_Enforcement",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "All sigma-1-struct, sigma-2-struct, sigma-3-struct TLV structures SHALL follow tag-order constraint with fields encoded in ascending tag number order.",
+      "formal": "∀tlv_struct. is_sigma_struct(tlv_struct) → ascending_tag_order(tlv_struct.fields)",
+      "violation": "Incorrect tag ordering would cause TLV parsing failures and session establishment failures.",
+      "proverifQuery": "query struct:bitstring; event(encode_sigma_struct(struct)) ==> valid_tag_order(struct)"
+    },
+    {
+      "id": "CASE_PROP_045",
+      "name": "BUSY_Status_Response_With_Retry_Time",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When unable to fulfill a Sigma1 request, the responder MAY send BUSY StatusReport with ProtocolData containing a 16-bit little-endian minimum retry time in milliseconds.",
+      "formal": "∀sigma1. cannot_process(sigma1) → may_send(StatusReport(BUSY, retry_time)) ∧ len(retry_time) = 16 ∧ little_endian(retry_time)",
+      "violation": "Improper BUSY handling could cause initiator to retry immediately, creating denial of service or resource exhaustion.",
+      "proverifQuery": "query resp:principal, retry:int; event(send_busy_status(resp, retry)) ==> retry >= 0 && retry <= 65535"
+    },
+    {
+      "id": "CASE_PROP_046",
+      "name": "Session_Eviction_LRU_Policy",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When out of resources after successful session establishment, the responder SHALL evict the least-recently used session based on SessionTimestamp.",
+      "formal": "∀sessions. out_of_resources() ∧ new_session_needed() → evict(argmin(sessions, SessionTimestamp))",
+      "violation": "Incorrect eviction policy could terminate active sessions while keeping stale sessions, degrading service quality.",
+      "proverifQuery": "query s1:session, s2:session; event(evict_session(s1)) && event(active_session(s2)) ==> timestamp(s1) <= timestamp(s2)"
+    },
+    {
+      "id": "CASE_PROP_047",
+      "name": "ICAC_Basic_Constraints_Validation",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "If an Intermediate CA Certificate (ICAC) is present, it SHALL have the Basic Constraints extension marked critical with cA field indicating whether it can issue certificates.",
+      "formal": "∀icac. present(icac) → (icac.BasicConstraints.critical = true ∧ defined(icac.BasicConstraints.cA))",
+      "violation": "Missing or incorrect Basic Constraints could allow leaf certificates to be used as CAs or prevent legitimate intermediate CAs from issuing certificates.",
+      "proverifQuery": "query icac:cert; event(validate_icac(icac)) ==> has_basic_constraints(icac) && is_critical(icac.basic_constraints)"
+    },
+    {
+      "id": "CASE_PROP_048",
+      "name": "Epoch_Key_Selection_Consistency",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "For Destination Identifier generation, the originator SHALL use the operational group key with the second newest EpochStartTime if two or more exist, otherwise the single available key.",
+      "formal": "(count(epoch_keys) >= 2 → use_for_destid(second_newest_by_epoch(epoch_keys))) ∧ (count(epoch_keys) = 1 → use_for_destid(only_key(epoch_keys)))",
+      "violation": "Using the wrong epoch key would cause Destination ID mismatch during the transition window, preventing session establishment.",
+      "proverifQuery": "query k:key, keys:list; event(select_epoch_key_for_destid(k, keys)) ==> (length(keys) >= 2 ==> k = second_newest(keys)) && (length(keys) = 1 ==> k = only(keys))"
+    },
+    {
+      "id": "CASE_PROP_049",
+      "name": "Resource_Exhaustion_Graceful_Handling",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "After successful session establishment, if the responder lacks resources to save session context, it SHALL send StatusReport(CLOSE_SESSION) to the evicted session before evicting.",
+      "formal": "∀session. evict(session) → send_before_evict(StatusReport(CLOSE_SESSION), session)",
+      "violation": "Evicting sessions without notification would cause the peer to believe the session is still active, leading to failed message delivery.",
+      "proverifQuery": "query s:session; event(session_evicted(s)) ==> event(sent_close_notification(s))"
+    },
+    {
+      "id": "CASE_PROP_050",
+      "name": "Source_Node_ID_In_Nonce_For_Unicast",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "For unicast sessions, the Source Node ID field in the nonce SHALL be set to the Operational Node ID of the message sender.",
+      "formal": "∀msg. is_unicast(msg) → nonce(msg).SourceNodeID = sender(msg).OperationalNodeID",
+      "violation": "Incorrect Source Node ID in nonce would cause decryption failures and prevent message authentication.",
+      "proverifQuery": "query msg:bitstring, sender:principal, nonce:bitstring; event(send_unicast(sender, msg, nonce)) ==> get_source_node_id(nonce) = get_node_id(sender)"
+    },
+    {
+      "id": "CASE_PROP_051",
+      "name": "Sigma3_Fabric_ID_Cross_Check",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When validating Sigma3, the responder SHALL verify that the Fabric ID in the initiator's NOC matches the Fabric ID matched during processing of the Destination Identifier after receiving Sigma1.",
+      "formal": "∀sigma3, sigma1_fabric. validate_sigma3(sigma3) → match(sigma3.initiator_noc.FabricID, sigma1_processing.matched_fabric_id)",
+      "violation": "If Fabric ID cross-check fails, an attacker could perform a credential substitution attack where they use credentials from one fabric while targeting a session established with a different fabric, breaking fabric isolation.",
+      "proverifQuery": "query sigma3:bitstring, fabric1:fabricid, fabric2:fabricid; event(validate_sigma3(sigma3, fabric1)) && event(destination_id_matched(fabric2)) ==> fabric1 = fabric2",
+      "specReference": "Page 183: 'The Fabric ID SHALL match the Fabric ID matched during processing of the Destination Identifier after receiving Sigma1'"
+    },
+    {
+      "id": "CASE_PROP_052",
+      "name": "Ephemeral_Public_Key_Curve_Validation",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "Before using a received ephemeral public key in ECDH computation, the recipient SHALL validate that the key is a valid point on the P-256 elliptic curve.",
+      "formal": "∀eph_pubkey. use_in_ecdh(eph_pubkey) → is_valid_point_on_p256(eph_pubkey)",
+      "violation": "Using an invalid ephemeral public key could lead to small subgroup attacks, invalid curve attacks, or other cryptographic vulnerabilities that compromise the shared secret.",
+      "proverifQuery": "query epk:key; event(compute_ecdh_with(epk)) ==> event(validated_on_curve(epk))",
+      "specReference": "Implicit requirement from ECDH usage on P-256 curve, Section 4.14.2.3"
+    },
+    {
+      "id": "CASE_PROP_053",
+      "name": "Certificate_Validity_Period_Check",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "During certificate chain validation, each certificate's validity period SHALL be checked to ensure the certificate is not expired and is within its valid-from and valid-to dates.",
+      "formal": "∀cert. accept_cert(cert) → current_time() >= cert.notBefore ∧ current_time() <= cert.notAfter",
+      "violation": "Accepting expired certificates could allow attackers to use compromised credentials after they should have been invalidated, or use certificates before their intended activation.",
+      "proverifQuery": "query cert:cert, time:timestamp; event(accept_certificate(cert, time)) ==> within_validity_period(cert, time)",
+      "specReference": "Implicit requirement from X.509 certificate processing in certificate chain validation"
+    },
+    {
+      "id": "CASE_PROP_054",
+      "name": "S2K_S3K_Transcript_Hash_Differentiation",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "S2K SHALL use TranscriptHash(Msg1) while S3K SHALL use TranscriptHash(Msg1||Msg2), ensuring cryptographic separation between Sigma2 and Sigma3 encryption keys.",
+      "formal": "S2K_salt.TranscriptHash = Crypto_Hash(Msg1) ∧ S3K_salt.TranscriptHash = Crypto_Hash(Msg1 || Msg2)",
+      "violation": "Using the same transcript hash for both keys would break cryptographic separation, potentially allowing cross-message attacks or signature replay.",
+      "proverifQuery": "query s2k:key, s3k:key, th1:bitstring, th2:bitstring; event(derive_s2k(s2k, th1)) && event(derive_s3k(s3k, th2)) ==> th1 != th2",
+      "specReference": "Page 191: S2K uses 'TranscriptHash = Crypto_Hash(message = Msg1)', S3K uses 'TranscriptHash = Crypto_Hash(message = Msg1 || Msg2)'"
+    },
+    {
+      "id": "CASE_PROP_055",
+      "name": "Session_Establishment_Timeout",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "Session establishment SHALL complete within a reasonable timeout period, and nodes SHALL abort the handshake if timeout expires.",
+      "formal": "∀session. started(session) → (completed(session) ∨ aborted(session)) within T_session_establishment",
+      "violation": "Without timeout enforcement, attackers could hold sessions in intermediate states indefinitely, consuming resources and preventing legitimate connections.",
+      "proverifQuery": "query s:session, t1:timestamp, t2:timestamp; event(session_started(s, t1)) && event(session_completed(s, t2)) ==> (t2 - t1) <= T_MAX_ESTABLISHMENT",
+      "specReference": "Implicit requirement from reliable messaging and session management sections"
+    },
+    {
+      "id": "CASE_PROP_056",
+      "name": "Resume2MIC_Validation_Failure_Handling",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "If the initiator cannot verify Resume2MIC in Sigma2_Resume, the initiator SHALL send StatusReport(FAILURE, SECURE_CHANNEL, INVALID_PARAMETER) and abort the resumption.",
+      "formal": "∀sigma2_resume. verify_resume2_mic_failed(sigma2_resume) → send_status_report(FAILURE) ∧ abort_resumption()",
+      "violation": "Continuing with an invalid Resume2MIC could allow an attacker to inject a forged resumption response, hijacking the session.",
+      "proverifQuery": "query resume_msg:bitstring; event(resume2_mic_verify_failed(resume_msg)) ==> event(sent_failure_status()) && event(resumption_aborted())",
+      "specReference": "Page 186-187: Implicit from Resume2MIC verification requirements"
+    },
+    {
+      "id": "CASE_PROP_057",
+      "name": "Mutual_Authentication_Asymmetry_Awareness",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "The protocol exhibits authentication asymmetry: initiator learns responder identity in Sigma2, but responder only learns initiator identity in Sigma3. This SHALL be considered in security analysis.",
+      "formal": "learned_identity(initiator, responder) ∈ Sigma2_Received ∧ learned_identity(responder, initiator) ∈ Sigma3_Received",
+      "violation": "The asymmetry is a specification feature, not a violation. However, implementations must be aware that initiators can probe responder identities without revealing their own.",
+      "proverifQuery": "query i:principal, r:principal; event(initiator_learned_responder_identity(i, r)) ==> event(sigma2_processed()) && not(event(sigma3_processed()))",
+      "specReference": "Page 172: Protocol flow shows Sigma2 contains responderNOC, Sigma3 contains initiatorNOC"
+    },
+    {
+      "id": "CASE_PROP_058",
+      "name": "No_Certificate_Revocation_During_CASE",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "The CASE protocol does NOT require real-time certificate revocation checking during session establishment. Revocation is handled through fabric-level certificate updates.",
+      "formal": "∀session. establish_case(session) → ¬requires(realtime_revocation_check)",
+      "violation": "This is a specification gap awareness property, not a violation. Revoked certificates may be used until the next certificate chain update, creating a window of vulnerability.",
+      "proverifQuery": "query cert:cert; event(accept_certificate(cert)) ==> not(event(checked_revocation(cert)))",
+      "specReference": "Implicit: No revocation check specified in Section 4.14.2"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "CASE_ASSUM_001",
+      "statement": "The underlying cryptographic primitives (ECDH, ECDSA, AES-CCM, HKDF, SHA-256) are secure and correctly implemented.",
+      "type": "Implicit",
+      "impact_if_violated": "All security properties fail. Weak crypto would allow key recovery, signature forgery, or encryption bypass."
+    },
+    {
+      "id": "CASE_ASSUM_002",
+      "statement": "The Crypto_DRBG provides cryptographically secure random numbers with sufficient entropy.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_005, PROP_012, PROP_031, PROP_038 fail. Predictable random values enable session key prediction and replay attacks."
+    },
+    {
+      "id": "CASE_ASSUM_003",
+      "statement": "Private keys (NOC private keys, ephemeral private keys) are securely stored and never exposed.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_004, PROP_005 fail. Compromised private keys enable impersonation and passive decryption of past sessions."
+    },
+    {
+      "id": "CASE_ASSUM_004",
+      "statement": "The Trusted Root CA Certificate and associated private key are securely managed by the fabric administrator.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_002, PROP_003 fail. Compromised root CA allows issuance of rogue certificates for any node in the fabric."
+    },
+    {
+      "id": "CASE_ASSUM_005",
+      "statement": "The IPK (Identity Protection Key) is distributed only to legitimate fabric members.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_007, PROP_008 fail. Leaked IPK allows outsiders to generate valid Destination IDs and probe for node presence."
+    },
+    {
+      "id": "CASE_ASSUM_006",
+      "statement": "Clock synchronization is sufficient for SessionTimestamp comparisons and epoch key selection.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_020, PROP_037 fail. Clock drift could cause incorrect epoch key selection or session age miscalculation."
+    },
+    {
+      "id": "CASE_ASSUM_007",
+      "statement": "The underlying transport (TCP or MRP) provides reliable, ordered message delivery.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_009 fails. Unreliable transport could cause message loss, reordering, or session establishment failure."
+    },
+    {
+      "id": "CASE_ASSUM_008",
+      "statement": "SharedSecret from previous sessions is securely stored for resumption and not accessible to attackers.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_018, PROP_019 fail. Leaked SharedSecret allows unauthorized session resumption."
+    },
+    {
+      "id": "CASE_ASSUM_009",
+      "statement": "The elliptic curve P-256 used for ECDH and ECDSA provides adequate security strength.",
+      "type": "Implicit",
+      "impact_if_violated": "All cryptographic properties fail. Curve weakness would enable key recovery attacks."
+    },
+    {
+      "id": "CASE_ASSUM_010",
+      "statement": "TLV parsing is performed safely without buffer overflows or other memory corruption vulnerabilities.",
+      "type": "Implicit",
+      "impact_if_violated": "Implementation vulnerabilities could lead to denial of service or code execution, bypassing all protocol security."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "CASE_PROP_001",
+      "vulnerability": "Man-in-the-middle attack where attacker establishes separate sessions with both parties, impersonating each to the other",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker intercepts Sigma1, generates own ephemeral keys, sends forged Sigma2 to initiator while establishing separate session with responder"
+    },
+    {
+      "property_id": "CASE_PROP_002",
+      "vulnerability": "Rogue node joins fabric using certificate from untrusted CA that is incorrectly accepted",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker creates self-signed certificate or uses certificate from different PKI, exploits missing chain validation to authenticate"
+    },
+    {
+      "property_id": "CASE_PROP_003",
+      "vulnerability": "Cross-fabric credential reuse where node from Fabric A authenticates to Fabric B",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker with valid credentials on Fabric A attempts CASE with Fabric B, exploiting missing Fabric ID check"
+    },
+    {
+      "property_id": "CASE_PROP_004",
+      "vulnerability": "Certificate theft attack where attacker uses copied NOC without possessing private key",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker obtains NOC from network traffic or storage, attempts authentication without signature verification"
+    },
+    {
+      "property_id": "CASE_PROP_005",
+      "vulnerability": "Loss of forward secrecy allowing decryption of past sessions after key compromise",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker records encrypted sessions, later compromises long-term keys, derives session keys from reused ephemeral keys"
+    },
+    {
+      "property_id": "CASE_PROP_012",
+      "vulnerability": "Session key prediction through weak random number generation",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker exploits predictable DRBG output to predict InitiatorRandom, compute SharedSecret without participating in key exchange"
+    },
+    {
+      "property_id": "CASE_PROP_019",
+      "vulnerability": "Session hijacking via forged resumption request",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends Sigma1 with guessed ResumptionID and forged initiatorResumeMIC, exploiting missing verification to resume session"
+    },
+    {
+      "property_id": "CASE_PROP_022",
+      "vulnerability": "Node impersonation within fabric through credential substitution",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker uses Node A's certificate to authenticate as Node B, exploiting missing Node ID verification against Destination ID"
+    },
+    {
+      "property_id": "CASE_PROP_023",
+      "vulnerability": "Cross-session key reuse enabling message replay across sessions",
+      "severity": "HIGH",
+      "attack_vector": "Attacker replays Sigma messages from one session to another, exploiting incomplete transcript binding in key derivation"
+    },
+    {
+      "property_id": "CASE_PROP_039",
+      "vulnerability": "Unknown Key Share attack where parties disagree on who they're communicating with",
+      "severity": "HIGH",
+      "attack_vector": "Attacker substitutes ephemeral keys after signature, causing parties to derive different views of the session"
+    },
+    {
+      "property_id": "CASE_PROP_040",
+      "vulnerability": "AEAD nonce reuse enabling plaintext recovery",
+      "severity": "CRITICAL",
+      "attack_vector": "Implementation bug causes nonce reuse, attacker XORs ciphertexts to recover plaintext XOR, derives certificate contents"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "IDLE",
+      "properties_enforcing_transitions": ["CASE_PROP_024", "CASE_PROP_025"],
+      "critical_property": "CASE_PROP_024 - Incorrect session flags prevent state transition from IDLE"
+    },
+    {
+      "state_name": "SIGMA1_SENT",
+      "properties_enforcing_transitions": [
+        "CASE_PROP_012",
+        "CASE_PROP_031",
+        "CASE_PROP_007"
+      ],
+      "critical_property": "CASE_PROP_031 - Ephemeral key generation must succeed for state transition"
+    },
+    {
+      "state_name": "SIGMA1_RECEIVED",
+      "properties_enforcing_transitions": [
+        "CASE_PROP_017",
+        "CASE_PROP_007",
+        "CASE_PROP_021"
+      ],
+      "critical_property": "CASE_PROP_017 - Invalid resumption parameters force fallback or error"
+    },
+    {
+      "state_name": "SIGMA2_SENT",
+      "properties_enforcing_transitions": [
+        "CASE_PROP_002",
+        "CASE_PROP_003",
+        "CASE_PROP_004",
+        "CASE_PROP_010"
+      ],
+      "critical_property": "CASE_PROP_004 - Signature verification is gate for transition"
+    },
+    {
+      "state_name": "SIGMA2_RECEIVED",
+      "properties_enforcing_transitions": [
+        "CASE_PROP_002",
+        "CASE_PROP_003",
+        "CASE_PROP_022",
+        "CASE_PROP_033"
+      ],
+      "critical_property": "CASE_PROP_002 - Certificate chain validation must pass"
+    },
+    {
+      "state_name": "SIGMA3_SENT",
+      "properties_enforcing_transitions": [
+        "CASE_PROP_023",
+        "CASE_PROP_035",
+        "CASE_PROP_039"
+      ],
+      "critical_property": "CASE_PROP_039 - Signature must cover ephemeral keys"
+    },
+    {
+      "state_name": "SIGMA3_RECEIVED",
+      "properties_enforcing_transitions": [
+        "CASE_PROP_001",
+        "CASE_PROP_004",
+        "CASE_PROP_021"
+      ],
+      "critical_property": "CASE_PROP_001 - Both parties must be mutually authenticated"
+    },
+    {
+      "state_name": "SESSION_ESTABLISHED",
+      "properties_enforcing_transitions": [
+        "CASE_PROP_013",
+        "CASE_PROP_014",
+        "CASE_PROP_016",
+        "CASE_PROP_028"
+      ],
+      "critical_property": "CASE_PROP_013 - Session keys must be correctly derived"
+    },
+    {
+      "state_name": "RESUMPTION_ATTEMPTED",
+      "properties_enforcing_transitions": [
+        "CASE_PROP_018",
+        "CASE_PROP_019",
+        "CASE_PROP_030"
+      ],
+      "critical_property": "CASE_PROP_019 - ResumeMIC verification gates resumption"
+    }
+  ],
+  "additionalInsights": "1. **Identity Protection Strength**: The CASE protocol provides strong identity protection through encrypted certificate exchange and IPK-based Destination ID generation. However, the IPK is shared among all fabric members, creating a single point of failure for identity privacy if any member is compromised.\n\n2. **Resumption Security Trade-off**: Session resumption significantly reduces computational cost by avoiding expensive signature operations, but it relies on secure storage of SharedSecret. Implementations must ensure SharedSecret is protected with the same rigor as private keys.\n\n3. **Epoch Key Transition Window**: The 'second newest' epoch key selection for Destination ID creates a transition window during key rotation where nodes with different clocks might select different keys, potentially causing session establishment failures.\n\n4. **Certificate Revocation Gap**: The specification does not define real-time certificate revocation checking during CASE. A revoked certificate could still be used until the next certificate chain update, creating a window of vulnerability.\n\n5. **Sigma Message Size**: The encrypted certificates in Sigma2 and Sigma3 can be large, potentially causing fragmentation issues on constrained networks. This is a reliability concern rather than security, but could be exploited for DoS.\n\n6. **Mutual Authentication Timing**: The initiator learns the responder's identity in Sigma2, but the responder only learns the initiator's identity in Sigma3. This asymmetry could be exploited for probing attacks where the initiator learns responder identity without revealing its own.\n\n7. **AttestationChallenge Scope**: While the specification restricts AttestationChallenge to device attestation, the key is derived alongside session keys. Implementations must carefully separate these use cases to prevent cross-protocol attacks.",
+  "summary": {
+    "total_properties": 58,
+    "by_importance": {
+      "CRITICAL": 18,
+      "HIGH": 25,
+      "MEDIUM": 15
+    },
+    "by_category": {
+      "Security": 21,
+      "Cryptography": 18,
+      "Correctness": 14,
+      "Timing": 4,
+      "Consistency": 1,
+      "Atomicity": 0,
+      "AccessControl": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 10,
+    "vulnerabilities_identified": 11,
+    "new_properties_added": 8,
+    "new_property_ids": [
+      "CASE_PROP_051",
+      "CASE_PROP_052",
+      "CASE_PROP_053",
+      "CASE_PROP_054",
+      "CASE_PROP_055",
+      "CASE_PROP_056",
+      "CASE_PROP_057",
+      "CASE_PROP_058"
+    ]
+  }
+}

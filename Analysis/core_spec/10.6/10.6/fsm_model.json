@@ -1,0 +1,2646 @@
+{
+  "fsm_model": {
+    "section_name": "10.6 Information Blocks - Message Processing State Machine",
+    "section_ref": "Matter Core Specification Section 10.6",
+    "states": [
+      {
+        "name": "ActionIdle",
+        "description": "No active interaction model Action in progress, awaiting new message or Action start",
+        "is_initial": true,
+        "invariants": [
+          "compression_state == null",
+          "action_id == null",
+          "tracked_path == null",
+          "tracked_dataversion == null",
+          "dataversion_filters == empty_list",
+          "event_filters == empty_list"
+        ],
+        "state_variables": {
+          "compression_state": "null",
+          "action_id": "null",
+          "tracked_path": "null",
+          "tracked_dataversion": "null",
+          "message_queue": "empty_list",
+          "dataversion_filters": "empty_list",
+          "event_filters": "empty_list"
+        }
+      },
+      {
+        "name": "ActionStarted_NoCompression",
+        "description": "Interaction model Action started, currently processing paths without tag compression active",
+        "is_initial": false,
+        "invariants": [
+          "action_id != null",
+          "compression_enabled == false",
+          "current_path != null"
+        ],
+        "state_variables": {
+          "action_id": "uint64",
+          "compression_enabled": "false",
+          "current_path": "AttributePathIB_or_EventPathIB_or_CommandPathIB",
+          "compression_state": "null"
+        }
+      },
+      {
+        "name": "CompressionTracking",
+        "description": "Tag compression base established, tracking path components for subsequent compressed paths",
+        "is_initial": false,
+        "invariants": [
+          "action_id != null",
+          "compression_enabled == false",
+          "tracked_node != null || tracked_endpoint != null || tracked_cluster != null || tracked_attribute != null",
+          "last_uncompressed_path != null"
+        ],
+        "state_variables": {
+          "action_id": "uint64",
+          "compression_enabled": "false",
+          "last_uncompressed_path": "PathIB_structure",
+          "tracked_node": "uint64_or_wildcard_or_null",
+          "tracked_endpoint": "uint16_or_wildcard_or_null",
+          "tracked_cluster": "uint32_or_wildcard_or_null",
+          "tracked_attribute": "uint32_or_wildcard_or_null",
+          "tracked_dataversion": "uint32_or_null"
+        }
+      },
+      {
+        "name": "CompressionActive",
+        "description": "Processing compressed path, inheriting components from tracked base path",
+        "is_initial": false,
+        "invariants": [
+          "action_id != null",
+          "compression_enabled == true",
+          "tracked_path != null",
+          "current_compressed_path != null"
+        ],
+        "state_variables": {
+          "action_id": "uint64",
+          "compression_enabled": "true",
+          "current_compressed_path": "PathIB_with_EnableTagCompression_true",
+          "tracked_node": "uint64_or_wildcard_or_null",
+          "tracked_endpoint": "uint16_or_wildcard_or_null",
+          "tracked_cluster": "uint32_or_wildcard_or_null",
+          "tracked_attribute": "uint32_or_wildcard_or_null",
+          "resolved_path": "null_until_resolution"
+        }
+      },
+      {
+        "name": "PathExpansionRequired",
+        "description": "Path contains wildcards and must be expanded to concrete paths before processing",
+        "is_initial": false,
+        "invariants": [
+          "current_path.has_wildcards == true",
+          "expansion_pending == true"
+        ],
+        "state_variables": {
+          "current_path": "PathIB_with_wildcards",
+          "wildcard_endpoint": "boolean",
+          "wildcard_cluster": "boolean",
+          "wildcard_attribute": "boolean",
+          "wildcard_event": "boolean",
+          "expansion_pending": "true",
+          "concrete_paths": "empty_list"
+        }
+      },
+      {
+        "name": "PathExpanded",
+        "description": "Wildcard path expanded into list of concrete paths ready for processing",
+        "is_initial": false,
+        "invariants": [
+          "concrete_paths.length > 0",
+          "expansion_pending == false"
+        ],
+        "state_variables": {
+          "original_wildcard_path": "PathIB",
+          "concrete_paths": "non_empty_list",
+          "current_concrete_index": "uint32",
+          "expansion_pending": "false"
+        }
+      },
+      {
+        "name": "ListOperationIdle",
+        "description": "No list operation in progress, ready to process new list mutation",
+        "is_initial": false,
+        "invariants": [
+          "list_operation_type == null",
+          "list_target == null"
+        ],
+        "state_variables": {
+          "list_operation_type": "null",
+          "list_target": "null",
+          "accumulated_items": "empty_list"
+        }
+      },
+      {
+        "name": "ListSingleIB_Processing",
+        "description": "Processing single AttributeDataIB containing full list replacement in one message",
+        "is_initial": false,
+        "invariants": [
+          "current_ib.path.listindex == omitted",
+          "current_ib.data == array",
+          "message_context == ReportDataMessage || (message_context == WriteRequestMessage && target_attribute in [ACL, Extension])"
+        ],
+        "state_variables": {
+          "current_ib": "AttributeDataIB",
+          "list_target": "AttributePath",
+          "list_data": "array",
+          "operation_type": "REPLACE"
+        }
+      },
+      {
+        "name": "ListMultiIB_ClearSignaled",
+        "description": "First AttributeDataIB with empty array received, list clear signaled, awaiting append IBs",
+        "is_initial": false,
+        "invariants": [
+          "first_ib.path.listindex == omitted",
+          "first_ib.data == empty_array",
+          "list_cleared == true",
+          "awaiting_appends == true"
+        ],
+        "state_variables": {
+          "list_target": "AttributePath",
+          "list_cleared": "true",
+          "accumulated_items": "empty_list",
+          "awaiting_appends": "true",
+          "operation_type": "REPLACE_MULTI"
+        }
+      },
+      {
+        "name": "ListMultiIB_PartialReplaceSignaled",
+        "description": "First AttributeDataIB with non-empty array received, partial list provided, awaiting more append IBs",
+        "is_initial": false,
+        "invariants": [
+          "first_ib.path.listindex == omitted",
+          "first_ib.data == non_empty_array",
+          "list_partially_populated == true",
+          "awaiting_appends == true"
+        ],
+        "state_variables": {
+          "list_target": "AttributePath",
+          "initial_items": "non_empty_array",
+          "accumulated_items": "copy_of_initial_items",
+          "awaiting_appends": "true",
+          "operation_type": "REPLACE_MULTI_PARTIAL"
+        }
+      },
+      {
+        "name": "ListAppending",
+        "description": "Processing AttributeDataIB with ListIndex=null to append item to list",
+        "is_initial": false,
+        "invariants": [
+          "current_ib.path.listindex == null",
+          "current_ib.data != array",
+          "operation_type == ADD"
+        ],
+        "state_variables": {
+          "list_target": "AttributePath",
+          "accumulated_items": "list",
+          "current_append_ib": "AttributeDataIB",
+          "operation_type": "ADD"
+        }
+      },
+      {
+        "name": "ListOperationComplete",
+        "description": "List mutation operation completed successfully, final list assembled",
+        "is_initial": false,
+        "invariants": [
+          "final_list != null",
+          "operation_complete == true"
+        ],
+        "state_variables": {
+          "list_target": "AttributePath",
+          "final_list": "array",
+          "operation_type": "REPLACE_or_ADD",
+          "operation_complete": "true"
+        }
+      },
+      {
+        "name": "ListOperationError",
+        "description": "List mutation encountered error, final list state uncertain per spec",
+        "is_initial": false,
+        "invariants": [
+          "error_occurred == true",
+          "list_state_uncertain == true"
+        ],
+        "state_variables": {
+          "list_target": "AttributePath",
+          "error_status": "StatusIB",
+          "partial_items_applied": "boolean",
+          "list_state_uncertain": "true",
+          "error_type": "validation_error_or_resource_error_or_permission_error"
+        }
+      },
+      {
+        "name": "CommandIdle",
+        "description": "No command invocation in progress, ready to receive invoke request",
+        "is_initial": false,
+        "invariants": [
+          "pending_commands.length == 0",
+          "command_refs == empty_set"
+        ],
+        "state_variables": {
+          "pending_commands": "empty_list",
+          "command_refs": "empty_set",
+          "responses": "empty_list"
+        }
+      },
+      {
+        "name": "CommandPending_SingleCommand",
+        "description": "Single command invoked without CommandRef (optional), awaiting response",
+        "is_initial": false,
+        "invariants": [
+          "pending_commands.length == 1",
+          "pending_commands[0].commandref == null"
+        ],
+        "state_variables": {
+          "pending_commands": "list_of_1_CommandDataIB",
+          "command_refs": "empty_set",
+          "correlation_method": "implicit_single"
+        }
+      },
+      {
+        "name": "CommandPending_MultiCommand",
+        "description": "Multiple commands invoked with CommandRefs (required), awaiting correlated responses",
+        "is_initial": false,
+        "invariants": [
+          "pending_commands.length > 1",
+          "all_commands_have_commandref == true",
+          "command_refs.size == pending_commands.length",
+          "command_refs_unique == true"
+        ],
+        "state_variables": {
+          "pending_commands": "list_of_CommandDataIB",
+          "command_refs": "set_of_uint16",
+          "correlation_method": "explicit_refs",
+          "ref_to_command_map": "map_uint16_to_CommandDataIB"
+        }
+      },
+      {
+        "name": "CommandResponseReceived",
+        "description": "Response received for pending command, correlating via CommandRef if present",
+        "is_initial": false,
+        "invariants": [
+          "response != null",
+          "response.type in [InvokeResponseIB_with_Command, InvokeResponseIB_with_Status]"
+        ],
+        "state_variables": {
+          "response": "InvokeResponseIB",
+          "response_commandref": "uint16_or_null",
+          "matched_request": "CommandDataIB_or_null",
+          "correlation_status": "matched_or_unmatched"
+        }
+      },
+      {
+        "name": "EventProcessingIdle",
+        "description": "No event processing in progress, awaiting event data or subscription",
+        "is_initial": false,
+        "invariants": [
+          "current_event == null",
+          "last_event_number == null"
+        ],
+        "state_variables": {
+          "current_event": "null",
+          "last_event_number": "null",
+          "event_stream_id": "null",
+          "timestamp_mode": "absolute"
+        }
+      },
+      {
+        "name": "EventProcessing_AbsoluteTimestamp",
+        "description": "Processing event with absolute timestamp (EpochTimestamp or SystemTimestamp)",
+        "is_initial": false,
+        "invariants": [
+          "current_event != null",
+          "current_event.timestamp_type in [EpochTimestamp, SystemTimestamp]",
+          "current_event.delta_timestamp == null"
+        ],
+        "state_variables": {
+          "current_event": "EventDataIB",
+          "event_number": "uint64",
+          "timestamp_type": "EpochTimestamp_or_SystemTimestamp",
+          "timestamp_value": "uint64",
+          "last_absolute_timestamp": "uint64",
+          "timestamp_mode": "absolute"
+        }
+      },
+      {
+        "name": "EventProcessing_DeltaTimestamp",
+        "description": "Processing event with delta timestamp relative to prior event in stream",
+        "is_initial": false,
+        "invariants": [
+          "current_event != null",
+          "current_event.delta_timestamp != null",
+          "current_event.absolute_timestamps == null",
+          "last_absolute_timestamp != null"
+        ],
+        "state_variables": {
+          "current_event": "EventDataIB",
+          "event_number": "uint64",
+          "delta_timestamp_type": "DeltaEpochTimestamp_or_DeltaSystemTimestamp",
+          "delta_value": "uint64",
+          "last_absolute_timestamp": "uint64",
+          "reconstructed_timestamp": "uint64",
+          "timestamp_mode": "delta"
+        }
+      },
+      {
+        "name": "EventMonotonicityCheckFailed",
+        "description": "Event received with EventNumber not greater than last, monotonicity violation detected",
+        "is_initial": false,
+        "invariants": [
+          "current_event.event_number <= last_event_number",
+          "monotonicity_violation == true"
+        ],
+        "state_variables": {
+          "current_event": "EventDataIB",
+          "current_event_number": "uint64",
+          "last_event_number": "uint64",
+          "monotonicity_violation": "true",
+          "error_type": "replay_or_reordering"
+        }
+      },
+      {
+        "name": "TLVValidationInProgress",
+        "description": "Validating TLV structure encoding against schema requirements",
+        "is_initial": false,
+        "invariants": [
+          "current_structure != null",
+          "validation_in_progress == true"
+        ],
+        "state_variables": {
+          "current_structure": "TLV_Structure",
+          "expected_schema": "Schema_definition",
+          "validation_in_progress": "true",
+          "checked_fields": "set_of_field_names",
+          "validation_errors": "list"
+        }
+      },
+      {
+        "name": "TLVValidationPassed",
+        "description": "TLV structure validated successfully, all required fields present, types correct",
+        "is_initial": false,
+        "invariants": [
+          "validation_complete == true",
+          "validation_errors.length == 0"
+        ],
+        "state_variables": {
+          "validated_structure": "TLV_Structure",
+          "validation_complete": "true",
+          "schema_conformant": "true"
+        }
+      },
+      {
+        "name": "TLVValidationFailed",
+        "description": "TLV validation failed due to missing required fields, wrong types, or ordering violations",
+        "is_initial": false,
+        "invariants": [
+          "validation_complete == true",
+          "validation_errors.length > 0"
+        ],
+        "state_variables": {
+          "invalid_structure": "TLV_Structure",
+          "validation_errors": "non_empty_list",
+          "error_types": "list_of_missing_field_or_wrong_type_or_wrong_order_or_invalid_value"
+        }
+      },
+      {
+        "name": "ErrorState_InvalidPath",
+        "description": "Path validation failed due to invalid structure or unsupported nesting",
+        "is_initial": false,
+        "invariants": [
+          "path_error == true",
+          "error_type in [invalid_listindex, unsupported_nesting, missing_required_field]"
+        ],
+        "state_variables": {
+          "invalid_path": "PathIB",
+          "error_type": "validation_error",
+          "error_message": "string"
+        }
+      },
+      {
+        "name": "ErrorState_CompressionStateCorruption",
+        "description": "Tag compression state corrupted or leaked across Action boundaries",
+        "is_initial": false,
+        "invariants": [
+          "compression_state_error == true",
+          "action_boundary_violated == true"
+        ],
+        "state_variables": {
+          "corrupted_state": "compression_state",
+          "expected_action_id": "uint64",
+          "actual_action_id": "uint64",
+          "error_type": "state_leak_across_actions"
+        }
+      },
+      {
+        "name": "ErrorState_CommandCorrelationFailure",
+        "description": "Command response correlation failed due to missing or duplicate CommandRef",
+        "is_initial": false,
+        "invariants": [
+          "correlation_error == true",
+          "error_type in [missing_ref_in_multi_command, duplicate_ref, unmatched_response]"
+        ],
+        "state_variables": {
+          "response": "InvokeResponseIB",
+          "expected_refs": "set_of_uint16",
+          "received_ref": "uint16_or_null",
+          "error_type": "correlation_error"
+        }
+      },
+      {
+        "name": "DataVersionTracking",
+        "description": "Tracking DataVersion from uncompressed AttributeDataIB for inheritance by subsequent compressed IBs",
+        "is_initial": false,
+        "invariants": [
+          "action_id != null",
+          "tracked_dataversion != null",
+          "compression_tracking_active == true"
+        ],
+        "state_variables": {
+          "action_id": "uint64",
+          "tracked_dataversion": "uint32",
+          "last_uncompressed_ib": "AttributeDataIB",
+          "compression_tracking_active": "true"
+        }
+      },
+      {
+        "name": "DataVersionFilterMatching",
+        "description": "Matching DataVersionFilterIB against current attribute DataVersion to determine if data should be included",
+        "is_initial": false,
+        "invariants": [
+          "filter != null",
+          "current_dataversion != null",
+          "filter_check_pending == true"
+        ],
+        "state_variables": {
+          "filter": "DataVersionFilterIB",
+          "current_dataversion": "uint32",
+          "filter_match_result": "pending_or_matched_or_not_matched",
+          "target_path": "ClusterPathIB"
+        }
+      },
+      {
+        "name": "DataVersionFilterPassed",
+        "description": "DataVersion filter matched, data version has changed and should be sent",
+        "is_initial": false,
+        "invariants": [
+          "filter_passed == true",
+          "current_dataversion != filter.dataversion"
+        ],
+        "state_variables": {
+          "filter": "DataVersionFilterIB",
+          "current_dataversion": "uint32",
+          "include_data": "true"
+        }
+      },
+      {
+        "name": "DataVersionFilterFailed",
+        "description": "DataVersion filter not matched, data version unchanged and should be suppressed",
+        "is_initial": false,
+        "invariants": [
+          "filter_failed == true",
+          "current_dataversion == filter.dataversion"
+        ],
+        "state_variables": {
+          "filter": "DataVersionFilterIB",
+          "current_dataversion": "uint32",
+          "suppress_data": "true"
+        }
+      },
+      {
+        "name": "EventFilterMatching",
+        "description": "Matching EventFilterIB against event to determine if event meets EventMin threshold",
+        "is_initial": false,
+        "invariants": [
+          "filter != null",
+          "current_event != null",
+          "filter_check_pending == true"
+        ],
+        "state_variables": {
+          "filter": "EventFilterIB",
+          "current_event": "EventDataIB",
+          "event_number": "uint64",
+          "event_min_threshold": "uint64"
+        }
+      },
+      {
+        "name": "EventFilterPassed",
+        "description": "Event filter passed, EventNumber >= EventMin threshold, event should be included",
+        "is_initial": false,
+        "invariants": [
+          "filter_passed == true",
+          "event_number >= event_min_threshold"
+        ],
+        "state_variables": {
+          "filter": "EventFilterIB",
+          "current_event": "EventDataIB",
+          "include_event": "true"
+        }
+      },
+      {
+        "name": "EventFilterFailed",
+        "description": "Event filter failed, EventNumber < EventMin threshold, event should be suppressed",
+        "is_initial": false,
+        "invariants": [
+          "filter_failed == true",
+          "event_number < event_min_threshold"
+        ],
+        "state_variables": {
+          "filter": "EventFilterIB",
+          "current_event": "EventDataIB",
+          "suppress_event": "true"
+        }
+      },
+      {
+        "name": "TimestampTypeValidating",
+        "description": "Validating that exactly one timestamp type is present in EventDataIB (one-of constraint)",
+        "is_initial": false,
+        "invariants": [
+          "event != null",
+          "timestamp_validation_pending == true"
+        ],
+        "state_variables": {
+          "event": "EventDataIB",
+          "timestamp_fields_present": "list_of_timestamp_types",
+          "validation_result": "pending"
+        }
+      },
+      {
+        "name": "EpochTimestampProcessing",
+        "description": "Processing event with Epoch-based timestamp (EpochTimestamp or DeltaEpochTimestamp)",
+        "is_initial": false,
+        "invariants": [
+          "timestamp_type in [EpochTimestamp, DeltaEpochTimestamp]",
+          "is_epoch_timestamp == true"
+        ],
+        "state_variables": {
+          "event": "EventDataIB",
+          "timestamp_type": "EpochTimestamp_or_DeltaEpochTimestamp",
+          "timestamp_value": "uint64",
+          "last_epoch_timestamp": "uint64_or_null"
+        }
+      },
+      {
+        "name": "SystemTimestampProcessing",
+        "description": "Processing event with System-based timestamp (SystemTimestamp or DeltaSystemTimestamp)",
+        "is_initial": false,
+        "invariants": [
+          "timestamp_type in [SystemTimestamp, DeltaSystemTimestamp]",
+          "is_system_timestamp == true"
+        ],
+        "state_variables": {
+          "event": "EventDataIB",
+          "timestamp_type": "SystemTimestamp_or_DeltaSystemTimestamp",
+          "timestamp_value": "uint64",
+          "last_system_timestamp": "uint64_or_null"
+        }
+      },
+      {
+        "name": "InvokeResponseValidating",
+        "description": "Validating InvokeResponseIB has exactly one of Command or Status (mutual exclusion)",
+        "is_initial": false,
+        "invariants": [
+          "response != null",
+          "mutual_exclusion_check_pending == true"
+        ],
+        "state_variables": {
+          "response": "InvokeResponseIB",
+          "has_command": "boolean",
+          "has_status": "boolean",
+          "validation_result": "pending"
+        }
+      },
+      {
+        "name": "InvokeResponseValid",
+        "description": "InvokeResponseIB validated, exactly one of Command or Status present",
+        "is_initial": false,
+        "invariants": [
+          "validation_passed == true",
+          "(has_command == true && has_status == false) || (has_command == false && has_status == true)"
+        ],
+        "state_variables": {
+          "response": "InvokeResponseIB",
+          "response_type": "command_or_status"
+        }
+      },
+      {
+        "name": "ErrorState_InvokeResponseInvalid",
+        "description": "InvokeResponseIB validation failed, both or neither of Command and Status present",
+        "is_initial": false,
+        "invariants": [
+          "validation_failed == true",
+          "(has_command == true && has_status == true) || (has_command == false && has_status == false)"
+        ],
+        "state_variables": {
+          "response": "InvokeResponseIB",
+          "has_command": "boolean",
+          "has_status": "boolean",
+          "error_type": "both_present_or_both_missing"
+        }
+      },
+      {
+        "name": "ErrorState_TimestampValidationFailed",
+        "description": "Timestamp validation failed, multiple or no timestamp types present in EventDataIB",
+        "is_initial": false,
+        "invariants": [
+          "validation_failed == true",
+          "timestamp_count != 1"
+        ],
+        "state_variables": {
+          "event": "EventDataIB",
+          "timestamp_fields_present": "list_of_timestamp_types",
+          "error_type": "multiple_timestamps_or_no_timestamp"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "ActionIdle",
+        "to_state": "ActionStarted_NoCompression",
+        "trigger": "receive_path_ib",
+        "guard_condition": "path.enable_tag_compression == false || path.enable_tag_compression == null",
+        "actions": [
+          "action_id := generate_action_id()",
+          "current_path := path",
+          "compression_enabled := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ActionIdle",
+        "to_state": "CompressionTracking",
+        "trigger": "receive_path_ib",
+        "guard_condition": "path.enable_tag_compression == false || path.enable_tag_compression == null",
+        "actions": [
+          "action_id := generate_action_id()",
+          "last_uncompressed_path := path",
+          "tracked_node := extract_node(path)",
+          "tracked_endpoint := extract_endpoint(path)",
+          "tracked_cluster := extract_cluster(path)",
+          "tracked_attribute := extract_attribute(path)",
+          "compression_enabled := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ActionStarted_NoCompression",
+        "to_state": "CompressionTracking",
+        "trigger": "process_uncompressed_path",
+        "guard_condition": "current_path.enable_tag_compression == false || current_path.enable_tag_compression == null",
+        "actions": [
+          "last_uncompressed_path := current_path",
+          "tracked_node := extract_node(current_path)",
+          "tracked_endpoint := extract_endpoint(current_path)",
+          "tracked_cluster := extract_cluster(current_path)",
+          "tracked_attribute := extract_attribute(current_path)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CompressionTracking",
+        "to_state": "CompressionActive",
+        "trigger": "receive_compressed_path",
+        "guard_condition": "path.enable_tag_compression == true && action_id == current_action_id",
+        "actions": [
+          "current_compressed_path := path",
+          "resolved_path := resolve_compressed_path(path, tracked_node, tracked_endpoint, tracked_cluster, tracked_attribute)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CompressionActive",
+        "to_state": "CompressionTracking",
+        "trigger": "compressed_path_processed",
+        "guard_condition": "resolved_path != null",
+        "actions": [
+          "process_resolved_path(resolved_path)",
+          "resolved_path := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CompressionTracking",
+        "to_state": "ActionStarted_NoCompression",
+        "trigger": "receive_uncompressed_path",
+        "guard_condition": "path.enable_tag_compression == false || path.enable_tag_compression == null",
+        "actions": [
+          "last_uncompressed_path := path",
+          "tracked_node := extract_node(path)",
+          "tracked_endpoint := extract_endpoint(path)",
+          "tracked_cluster := extract_cluster(path)",
+          "tracked_attribute := extract_attribute(path)",
+          "current_path := path"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CompressionTracking",
+        "to_state": "ErrorState_CompressionStateCorruption",
+        "trigger": "receive_compressed_path",
+        "guard_condition": "path.enable_tag_compression == true && action_id != current_action_id",
+        "actions": [
+          "compression_state_error := true",
+          "expected_action_id := action_id",
+          "actual_action_id := current_action_id",
+          "error_type := state_leak_across_actions",
+          "generate_error_status(INVALID_ACTION)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CompressionActive",
+        "to_state": "ActionIdle",
+        "trigger": "action_complete",
+        "guard_condition": "all_paths_processed == true",
+        "actions": [
+          "compression_state := null",
+          "tracked_path := null",
+          "action_id := null",
+          "tracked_dataversion := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ActionStarted_NoCompression",
+        "to_state": "PathExpansionRequired",
+        "trigger": "detect_wildcard_path",
+        "guard_condition": "has_wildcard_components(current_path) == true",
+        "actions": [
+          "wildcard_endpoint := is_wildcard(current_path.endpoint)",
+          "wildcard_cluster := is_wildcard(current_path.cluster)",
+          "wildcard_attribute := is_wildcard(current_path.attribute)",
+          "wildcard_event := is_wildcard(current_path.event)",
+          "expansion_pending := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PathExpansionRequired",
+        "to_state": "PathExpanded",
+        "trigger": "expand_wildcard_path",
+        "guard_condition": "expansion_pending == true",
+        "actions": [
+          "concrete_paths := expand_wildcards(current_path)",
+          "expansion_pending := false",
+          "current_concrete_index := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PathExpanded",
+        "to_state": "ActionStarted_NoCompression",
+        "trigger": "process_concrete_path",
+        "guard_condition": "current_concrete_index < concrete_paths.length",
+        "actions": [
+          "current_path := concrete_paths[current_concrete_index]",
+          "current_concrete_index := current_concrete_index + 1"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PathExpanded",
+        "to_state": "ActionIdle",
+        "trigger": "all_concrete_paths_processed",
+        "guard_condition": "current_concrete_index >= concrete_paths.length",
+        "actions": [
+          "concrete_paths := clear_list()",
+          "original_wildcard_path := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListOperationIdle",
+        "to_state": "ListSingleIB_Processing",
+        "trigger": "receive_attribute_data_ib",
+        "guard_condition": "ib.path.listindex == omitted && is_array(ib.data) && (message_type == ReportDataMessage || (message_type == WriteRequestMessage && ib.path.attribute in [ACL, Extension]))",
+        "actions": [
+          "current_ib := ib",
+          "list_target := ib.path",
+          "list_data := ib.data",
+          "operation_type := REPLACE"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListSingleIB_Processing",
+        "to_state": "ListOperationComplete",
+        "trigger": "validate_and_apply_list",
+        "guard_condition": "validate_list_schema(list_data, list_target.cluster, list_target.attribute) == true",
+        "actions": [
+          "final_list := list_data",
+          "apply_list_replacement(list_target, final_list)",
+          "operation_complete := true",
+          "generate_event(list_write_success)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListSingleIB_Processing",
+        "to_state": "ListOperationError",
+        "trigger": "validate_and_apply_list",
+        "guard_condition": "validate_list_schema(list_data, list_target.cluster, list_target.attribute) == false",
+        "actions": [
+          "error_occurred := true",
+          "error_status := create_status_ib(CONSTRAINT_ERROR)",
+          "list_state_uncertain := true",
+          "generate_event(list_write_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListOperationIdle",
+        "to_state": "ListMultiIB_ClearSignaled",
+        "trigger": "receive_attribute_data_ib",
+        "guard_condition": "ib.path.listindex == omitted && is_empty_array(ib.data)",
+        "actions": [
+          "list_target := ib.path",
+          "list_cleared := true",
+          "accumulated_items := clear_list()",
+          "awaiting_appends := true",
+          "operation_type := REPLACE_MULTI"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListOperationIdle",
+        "to_state": "ListMultiIB_PartialReplaceSignaled",
+        "trigger": "receive_attribute_data_ib",
+        "guard_condition": "ib.path.listindex == omitted && is_non_empty_array(ib.data) && array_size(ib.data) < full_list_size",
+        "actions": [
+          "list_target := ib.path",
+          "initial_items := ib.data",
+          "accumulated_items := copy_array(initial_items)",
+          "awaiting_appends := true",
+          "operation_type := REPLACE_MULTI_PARTIAL"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListMultiIB_ClearSignaled",
+        "to_state": "ListAppending",
+        "trigger": "receive_attribute_data_ib",
+        "guard_condition": "ib.path.listindex == null && ib.path.matches(list_target)",
+        "actions": [
+          "current_append_ib := ib",
+          "append_item(accumulated_items, ib.data)",
+          "operation_type := ADD"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListMultiIB_PartialReplaceSignaled",
+        "to_state": "ListAppending",
+        "trigger": "receive_attribute_data_ib",
+        "guard_condition": "ib.path.listindex == null && ib.path.matches(list_target)",
+        "actions": [
+          "current_append_ib := ib",
+          "append_item(accumulated_items, ib.data)",
+          "operation_type := ADD"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListAppending",
+        "to_state": "ListAppending",
+        "trigger": "receive_attribute_data_ib",
+        "guard_condition": "ib.path.listindex == null && ib.path.matches(list_target)",
+        "actions": [
+          "current_append_ib := ib",
+          "append_item(accumulated_items, ib.data)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListAppending",
+        "to_state": "ListOperationComplete",
+        "trigger": "end_of_list_ibs",
+        "guard_condition": "no_more_append_ibs == true",
+        "actions": [
+          "final_list := accumulated_items",
+          "apply_list_replacement(list_target, final_list)",
+          "operation_complete := true",
+          "generate_event(list_write_success)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListAppending",
+        "to_state": "ListOperationError",
+        "trigger": "validation_error",
+        "guard_condition": "validate_list_item(current_append_ib.data) == false",
+        "actions": [
+          "error_occurred := true",
+          "error_status := create_status_ib(CONSTRAINT_ERROR)",
+          "partial_items_applied := check_partial_application()",
+          "list_state_uncertain := true",
+          "generate_event(list_write_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListOperationIdle",
+        "to_state": "ListAppending",
+        "trigger": "receive_attribute_data_ib",
+        "guard_condition": "ib.path.listindex == null",
+        "actions": [
+          "list_target := ib.path",
+          "current_append_ib := ib",
+          "append_item(accumulated_items, ib.data)",
+          "operation_type := ADD"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListOperationIdle",
+        "to_state": "ErrorState_InvalidPath",
+        "trigger": "receive_attribute_data_ib",
+        "guard_condition": "ib.path.listindex != null && ib.path.listindex != omitted",
+        "actions": [
+          "path_error := true",
+          "error_type := invalid_listindex",
+          "error_message := create_error_message(ListIndex_must_be_omitted_or_null)",
+          "generate_error_status(INVALID_ACTION)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListOperationComplete",
+        "to_state": "ListOperationIdle",
+        "trigger": "operation_acknowledged",
+        "guard_condition": "operation_complete == true",
+        "actions": [
+          "list_operation_type := null",
+          "list_target := null",
+          "accumulated_items := clear_list()",
+          "final_list := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ListOperationError",
+        "to_state": "ListOperationIdle",
+        "trigger": "error_handled",
+        "guard_condition": "error_occurred == true",
+        "actions": [
+          "list_operation_type := null",
+          "list_target := null",
+          "accumulated_items := clear_list()",
+          "error_status := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandIdle",
+        "to_state": "CommandPending_SingleCommand",
+        "trigger": "receive_invoke_request",
+        "guard_condition": "invoke_request.commands.length == 1 && invoke_request.commands[0].commandref == null",
+        "actions": [
+          "pending_commands := invoke_request.commands",
+          "correlation_method := implicit_single"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandIdle",
+        "to_state": "CommandPending_MultiCommand",
+        "trigger": "receive_invoke_request",
+        "guard_condition": "invoke_request.commands.length > 1 && all_have_commandref(invoke_request.commands) && commandrefs_unique(invoke_request.commands)",
+        "actions": [
+          "pending_commands := invoke_request.commands",
+          "command_refs := extract_commandrefs(invoke_request.commands)",
+          "ref_to_command_map := build_ref_map(invoke_request.commands)",
+          "correlation_method := explicit_refs"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandIdle",
+        "to_state": "ErrorState_CommandCorrelationFailure",
+        "trigger": "receive_invoke_request",
+        "guard_condition": "invoke_request.commands.length > 1 && !all_have_commandref(invoke_request.commands)",
+        "actions": [
+          "correlation_error := true",
+          "error_type := missing_ref_in_multi_command",
+          "generate_error_status(INVALID_ACTION)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandIdle",
+        "to_state": "ErrorState_CommandCorrelationFailure",
+        "trigger": "receive_invoke_request",
+        "guard_condition": "invoke_request.commands.length > 1 && !commandrefs_unique(invoke_request.commands)",
+        "actions": [
+          "correlation_error := true",
+          "error_type := duplicate_ref",
+          "generate_error_status(INVALID_ACTION)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandPending_SingleCommand",
+        "to_state": "CommandResponseReceived",
+        "trigger": "receive_invoke_response",
+        "guard_condition": "response != null",
+        "actions": [
+          "response := invoke_response",
+          "response_commandref := null",
+          "matched_request := pending_commands[0]",
+          "correlation_status := matched"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandPending_MultiCommand",
+        "to_state": "CommandResponseReceived",
+        "trigger": "receive_invoke_response",
+        "guard_condition": "response.commandref != null && response.commandref in command_refs",
+        "actions": [
+          "response := invoke_response",
+          "response_commandref := extract_commandref(response)",
+          "matched_request := ref_to_command_map[response_commandref]",
+          "correlation_status := matched",
+          "remove_from_pending(response_commandref)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandPending_MultiCommand",
+        "to_state": "ErrorState_CommandCorrelationFailure",
+        "trigger": "receive_invoke_response",
+        "guard_condition": "response.commandref == null || response.commandref not in command_refs",
+        "actions": [
+          "correlation_error := true",
+          "error_type := unmatched_response",
+          "received_ref := extract_commandref_or_null(response)",
+          "expected_refs := command_refs",
+          "generate_error_status(FAILURE)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandResponseReceived",
+        "to_state": "CommandPending_MultiCommand",
+        "trigger": "response_processed",
+        "guard_condition": "pending_commands.length > 0",
+        "actions": [
+          "process_command_response(response, matched_request)",
+          "response := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandResponseReceived",
+        "to_state": "CommandIdle",
+        "trigger": "response_processed",
+        "guard_condition": "pending_commands.length == 0",
+        "actions": [
+          "process_command_response(response, matched_request)",
+          "command_refs := clear_set()",
+          "ref_to_command_map := clear_map()",
+          "response := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessingIdle",
+        "to_state": "EventProcessing_AbsoluteTimestamp",
+        "trigger": "receive_event_data_ib",
+        "guard_condition": "event.timestamp_type in [EpochTimestamp, SystemTimestamp] && event.delta_timestamp == null",
+        "actions": [
+          "current_event := event",
+          "event_number := event.eventnumber",
+          "timestamp_type := event.timestamp_type",
+          "timestamp_value := extract_timestamp(event)",
+          "last_absolute_timestamp := timestamp_value",
+          "timestamp_mode := absolute"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessing_AbsoluteTimestamp",
+        "to_state": "EventProcessing_AbsoluteTimestamp",
+        "trigger": "receive_event_data_ib",
+        "guard_condition": "event.eventnumber > last_event_number && event.timestamp_type in [EpochTimestamp, SystemTimestamp]",
+        "actions": [
+          "last_event_number := event_number",
+          "current_event := event",
+          "event_number := event.eventnumber",
+          "timestamp_value := extract_timestamp(event)",
+          "last_absolute_timestamp := timestamp_value",
+          "process_event(current_event)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessing_AbsoluteTimestamp",
+        "to_state": "EventProcessing_DeltaTimestamp",
+        "trigger": "receive_event_data_ib",
+        "guard_condition": "event.eventnumber > last_event_number && event.delta_timestamp != null && event.absolute_timestamps == null",
+        "actions": [
+          "last_event_number := event_number",
+          "current_event := event",
+          "event_number := event.eventnumber",
+          "delta_timestamp_type := extract_delta_type(event)",
+          "delta_value := extract_delta_value(event)",
+          "reconstructed_timestamp := last_absolute_timestamp + delta_value",
+          "timestamp_mode := delta"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessing_DeltaTimestamp",
+        "to_state": "EventProcessing_DeltaTimestamp",
+        "trigger": "receive_event_data_ib",
+        "guard_condition": "event.eventnumber > last_event_number && event.delta_timestamp != null",
+        "actions": [
+          "last_event_number := event_number",
+          "current_event := event",
+          "event_number := event.eventnumber",
+          "delta_value := extract_delta_value(event)",
+          "reconstructed_timestamp := reconstructed_timestamp + delta_value",
+          "process_event_with_reconstructed_timestamp(current_event, reconstructed_timestamp)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessing_DeltaTimestamp",
+        "to_state": "EventProcessing_AbsoluteTimestamp",
+        "trigger": "receive_event_data_ib",
+        "guard_condition": "event.eventnumber > last_event_number && event.timestamp_type in [EpochTimestamp, SystemTimestamp]",
+        "actions": [
+          "last_event_number := event_number",
+          "current_event := event",
+          "event_number := event.eventnumber",
+          "timestamp_type := event.timestamp_type",
+          "timestamp_value := extract_timestamp(event)",
+          "last_absolute_timestamp := timestamp_value",
+          "timestamp_mode := absolute",
+          "process_event(current_event)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessing_AbsoluteTimestamp",
+        "to_state": "EventMonotonicityCheckFailed",
+        "trigger": "receive_event_data_ib",
+        "guard_condition": "event.eventnumber <= last_event_number",
+        "actions": [
+          "current_event := event",
+          "current_event_number := event.eventnumber",
+          "monotonicity_violation := true",
+          "error_type := replay_or_reordering",
+          "generate_error_status(INVALID_ACTION)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessing_DeltaTimestamp",
+        "to_state": "EventMonotonicityCheckFailed",
+        "trigger": "receive_event_data_ib",
+        "guard_condition": "event.eventnumber <= last_event_number",
+        "actions": [
+          "current_event := event",
+          "current_event_number := event.eventnumber",
+          "monotonicity_violation := true",
+          "error_type := replay_or_reordering",
+          "generate_error_status(INVALID_ACTION)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessingIdle",
+        "to_state": "TLVValidationInProgress",
+        "trigger": "validate_structure",
+        "guard_condition": "structure != null",
+        "actions": [
+          "current_structure := structure",
+          "expected_schema := get_schema(structure.type)",
+          "validation_in_progress := true",
+          "checked_fields := empty_set()",
+          "validation_errors := empty_list()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TLVValidationInProgress",
+        "to_state": "TLVValidationPassed",
+        "guard_condition": "validate_all_fields(current_structure, expected_schema) == success && validate_tag_ordering(current_structure) == true",
+        "actions": [
+          "validated_structure := current_structure",
+          "validation_complete := true",
+          "schema_conformant := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TLVValidationInProgress",
+        "to_state": "TLVValidationFailed",
+        "guard_condition": "validate_all_fields(current_structure, expected_schema) == failure || validate_tag_ordering(current_structure) == false",
+        "actions": [
+          "invalid_structure := current_structure",
+          "validation_errors := collect_validation_errors()",
+          "error_types := categorize_errors(validation_errors)",
+          "validation_complete := true",
+          "generate_error_status(CONSTRAINT_ERROR)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TLVValidationFailed",
+        "to_state": "ActionIdle",
+        "trigger": "error_handled",
+        "guard_condition": "validation_complete == true",
+        "actions": [
+          "invalid_structure := null",
+          "validation_errors := clear_list()",
+          "error_types := clear_list()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ActionStarted_NoCompression",
+        "to_state": "TLVValidationInProgress",
+        "trigger": "validate_path",
+        "guard_condition": "current_path != null",
+        "actions": [
+          "current_structure := current_path",
+          "expected_schema := get_path_schema(current_path.type)",
+          "validation_in_progress := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ActionStarted_NoCompression",
+        "to_state": "DataVersionTracking",
+        "trigger": "receive_attribute_data_ib",
+        "guard_condition": "attribute_data_ib.path.enable_tag_compression == false && attribute_data_ib.dataversion != null",
+        "actions": [
+          "tracked_dataversion := extract_dataversion(attribute_data_ib)",
+          "last_uncompressed_ib := attribute_data_ib",
+          "compression_tracking_active := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CompressionActive",
+        "to_state": "CompressionActive",
+        "trigger": "receive_compressed_attribute_data_ib",
+        "guard_condition": "attribute_data_ib.path.enable_tag_compression == true && attribute_data_ib.dataversion == null",
+        "actions": [
+          "inherited_dataversion := tracked_dataversion",
+          "attribute_data_ib.dataversion := inherited_dataversion",
+          "current_compressed_path := attribute_data_ib.path"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ActionIdle",
+        "to_state": "DataVersionFilterMatching",
+        "trigger": "receive_read_request_with_filters",
+        "guard_condition": "dataversion_filters.length > 0 && current_attribute != null",
+        "actions": [
+          "filter := get_matching_filter(dataversion_filters, current_attribute.path)",
+          "current_dataversion := get_current_dataversion(current_attribute.path)",
+          "target_path := current_attribute.path",
+          "filter_check_pending := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataVersionFilterMatching",
+        "to_state": "DataVersionFilterPassed",
+        "trigger": "check_filter",
+        "guard_condition": "current_dataversion != filter.dataversion",
+        "actions": [
+          "filter_passed := true",
+          "include_data := true",
+          "filter_check_pending := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataVersionFilterMatching",
+        "to_state": "DataVersionFilterFailed",
+        "trigger": "check_filter",
+        "guard_condition": "current_dataversion == filter.dataversion",
+        "actions": [
+          "filter_failed := true",
+          "suppress_data := true",
+          "filter_check_pending := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataVersionFilterPassed",
+        "to_state": "ActionStarted_NoCompression",
+        "trigger": "filter_check_complete",
+        "guard_condition": "include_data == true",
+        "actions": [
+          "prepare_attribute_report(current_attribute)",
+          "filter := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataVersionFilterFailed",
+        "to_state": "ActionIdle",
+        "trigger": "filter_check_complete",
+        "guard_condition": "suppress_data == true",
+        "actions": [
+          "skip_attribute_report()",
+          "filter := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessingIdle",
+        "to_state": "EventFilterMatching",
+        "trigger": "receive_event_with_filters",
+        "guard_condition": "event_filters.length > 0 && current_event != null",
+        "actions": [
+          "filter := get_matching_event_filter(event_filters, current_event.path)",
+          "event_number := current_event.event_number",
+          "event_min_threshold := filter.event_min",
+          "filter_check_pending := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventFilterMatching",
+        "to_state": "EventFilterPassed",
+        "trigger": "check_event_filter",
+        "guard_condition": "event_number >= event_min_threshold",
+        "actions": [
+          "filter_passed := true",
+          "include_event := true",
+          "filter_check_pending := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventFilterMatching",
+        "to_state": "EventFilterFailed",
+        "trigger": "check_event_filter",
+        "guard_condition": "event_number < event_min_threshold",
+        "actions": [
+          "filter_failed := true",
+          "suppress_event := true",
+          "filter_check_pending := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventFilterPassed",
+        "to_state": "EventProcessing_AbsoluteTimestamp",
+        "trigger": "filter_check_complete",
+        "guard_condition": "include_event == true && has_absolute_timestamp(current_event)",
+        "actions": [
+          "prepare_event_report(current_event)",
+          "filter := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventFilterFailed",
+        "to_state": "EventProcessingIdle",
+        "trigger": "filter_check_complete",
+        "guard_condition": "suppress_event == true",
+        "actions": [
+          "skip_event_report()",
+          "filter := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EventProcessing_AbsoluteTimestamp",
+        "to_state": "TimestampTypeValidating",
+        "trigger": "validate_timestamp_type",
+        "guard_condition": "current_event != null",
+        "actions": [
+          "event := current_event",
+          "timestamp_fields_present := extract_timestamp_fields(event)",
+          "timestamp_validation_pending := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TimestampTypeValidating",
+        "to_state": "EpochTimestampProcessing",
+        "trigger": "timestamp_validated",
+        "guard_condition": "timestamp_fields_present.length == 1 && is_epoch_timestamp(timestamp_fields_present[0])",
+        "actions": [
+          "timestamp_type := timestamp_fields_present[0]",
+          "timestamp_value := extract_epoch_timestamp_value(event)",
+          "is_epoch_timestamp := true",
+          "timestamp_validation_pending := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TimestampTypeValidating",
+        "to_state": "SystemTimestampProcessing",
+        "trigger": "timestamp_validated",
+        "guard_condition": "timestamp_fields_present.length == 1 && is_system_timestamp(timestamp_fields_present[0])",
+        "actions": [
+          "timestamp_type := timestamp_fields_present[0]",
+          "timestamp_value := extract_system_timestamp_value(event)",
+          "is_system_timestamp := true",
+          "timestamp_validation_pending := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TimestampTypeValidating",
+        "to_state": "ErrorState_TimestampValidationFailed",
+        "trigger": "timestamp_validated",
+        "guard_condition": "timestamp_fields_present.length != 1",
+        "actions": [
+          "validation_failed := true",
+          "timestamp_count := timestamp_fields_present.length",
+          "error_type := multiple_timestamps_or_no_timestamp",
+          "generate_error_status(CONSTRAINT_ERROR)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EpochTimestampProcessing",
+        "to_state": "EventProcessingIdle",
+        "trigger": "timestamp_processed",
+        "guard_condition": "timestamp_value != null",
+        "actions": [
+          "last_epoch_timestamp := timestamp_value",
+          "process_event_with_epoch_timestamp(event, timestamp_value)",
+          "event := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SystemTimestampProcessing",
+        "to_state": "EventProcessingIdle",
+        "trigger": "timestamp_processed",
+        "guard_condition": "timestamp_value != null",
+        "actions": [
+          "last_system_timestamp := timestamp_value",
+          "process_event_with_system_timestamp(event, timestamp_value)",
+          "event := null"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommandResponseReceived",
+        "to_state": "InvokeResponseValidating",
+        "trigger": "validate_response_structure",
+        "guard_condition": "response != null",
+        "actions": [
+          "has_command := response.command != null",
+          "has_status := response.status != null",
+          "mutual_exclusion_check_pending := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "InvokeResponseValidating",
+        "to_state": "InvokeResponseValid",
+        "trigger": "validation_complete",
+        "guard_condition": "(has_command == true && has_status == false) || (has_command == false && has_status == true)",
+        "actions": [
+          "validation_passed := true",
+          "response_type := has_command ? command : status",
+          "mutual_exclusion_check_pending := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "InvokeResponseValidating",
+        "to_state": "ErrorState_InvokeResponseInvalid",
+        "trigger": "validation_complete",
+        "guard_condition": "(has_command == true && has_status == true) || (has_command == false && has_status == false)",
+        "actions": [
+          "validation_failed := true",
+          "error_type := has_command && has_status ? both_present : both_missing",
+          "generate_error_status(CONSTRAINT_ERROR)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "InvokeResponseValid",
+        "to_state": "CommandIdle",
+        "trigger": "response_processed",
+        "guard_condition": "validation_passed == true",
+        "actions": [
+          "process_validated_response(response, response_type)",
+          "response := null"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "generate_action_id",
+        "parameters": [],
+        "return_type": "uint64",
+        "description": "Generates unique identifier for new interaction model Action to track tag compression scope boundaries",
+        "algorithm_detail": "Monotonically increasing counter or timestamp-based ID generation ensuring uniqueness within session",
+        "usage_in_fsm": "Called when transitioning from ActionIdle to ActionStarted states to establish compression tracking scope"
+      },
+      {
+        "name": "extract_node",
+        "parameters": [
+          {"name": "path", "type": "PathIB", "description": "Path structure containing optional Node field"}
+        ],
+        "return_type": "uint64_or_wildcard_or_null",
+        "description": "Extracts Node field from path, returns null if omitted and matches server NodeID, returns wildcard marker if omitted and not matching",
+        "algorithm_detail": "Check if path.node exists: if yes return path.node, if no check if target matches server NodeID (return null), else return wildcard marker",
+        "usage_in_fsm": "Called when establishing compression tracking state to record Node component for inheritance"
+      },
+      {
+        "name": "extract_endpoint",
+        "parameters": [
+          {"name": "path", "type": "PathIB", "description": "Path structure containing optional Endpoint field"}
+        ],
+        "return_type": "uint16_or_wildcard_or_null",
+        "description": "Extracts Endpoint field from path, returns wildcard marker if omitted per EnableTagCompression rules",
+        "algorithm_detail": "If path.endpoint exists return path.endpoint, else if EnableTagCompression==false return wildcard, else return null for compression inheritance",
+        "usage_in_fsm": "Called when establishing compression tracking state to record Endpoint component"
+      },
+      {
+        "name": "extract_cluster",
+        "parameters": [
+          {"name": "path", "type": "PathIB", "description": "Path structure containing optional Cluster field"}
+        ],
+        "return_type": "uint32_or_wildcard_or_null",
+        "description": "Extracts Cluster field from path, returns wildcard marker if omitted per EnableTagCompression rules",
+        "algorithm_detail": "If path.cluster exists return path.cluster, else if EnableTagCompression==false return wildcard, else return null for compression inheritance",
+        "usage_in_fsm": "Called when establishing compression tracking state to record Cluster component"
+      },
+      {
+        "name": "extract_attribute",
+        "parameters": [
+          {"name": "path", "type": "PathIB", "description": "Path structure containing optional Attribute field"}
+        ],
+        "return_type": "uint32_or_wildcard_or_null",
+        "description": "Extracts Attribute field from path, returns wildcard marker if omitted per EnableTagCompression rules",
+        "algorithm_detail": "If path.attribute exists return path.attribute, else if EnableTagCompression==false return wildcard, else return null for compression inheritance",
+        "usage_in_fsm": "Called when establishing compression tracking state to record Attribute component"
+      },
+      {
+        "name": "resolve_compressed_path",
+        "parameters": [
+          {"name": "compressed_path", "type": "PathIB", "description": "Path with EnableTagCompression=true"},
+          {"name": "tracked_node", "type": "uint64_or_wildcard_or_null", "description": "Inherited Node value"},
+          {"name": "tracked_endpoint", "type": "uint16_or_wildcard_or_null", "description": "Inherited Endpoint value"},
+          {"name": "tracked_cluster", "type": "uint32_or_wildcard_or_null", "description": "Inherited Cluster value"},
+          {"name": "tracked_attribute", "type": "uint32_or_wildcard_or_null", "description": "Inherited Attribute value"}
+        ],
+        "return_type": "PathIB",
+        "description": "Resolves compressed path by filling omitted fields with tracked values from last uncompressed path in Action",
+        "algorithm_detail": "For each field in compressed_path: if field is present use its value, else use corresponding tracked value. Preserve wildcard semantics if tracked value is wildcard. Return fully resolved PathIB structure.",
+        "usage_in_fsm": "Called when transitioning to CompressionActive to reconstruct full path from compressed representation"
+      },
+      {
+        "name": "has_wildcard_components",
+        "parameters": [
+          {"name": "path", "type": "PathIB", "description": "Path to check for wildcard components"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if path contains any wildcard components (omitted Endpoint, Cluster, Attribute, Event when EnableTagCompression is false)",
+        "algorithm_detail": "Return true if any of (Endpoint, Cluster, Attribute, Event) is omitted and EnableTagCompression is false or absent, else return false",
+        "usage_in_fsm": "Called to determine if path expansion is required before processing"
+      },
+      {
+        "name": "is_wildcard",
+        "parameters": [
+          {"name": "component", "type": "uint_or_null", "description": "Path component to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Returns true if component is null or explicitly marked as wildcard",
+        "algorithm_detail": "Check if component is null or has wildcard marker value, return boolean result",
+        "usage_in_fsm": "Called when detecting which path components need expansion"
+      },
+      {
+        "name": "expand_wildcards",
+        "parameters": [
+          {"name": "wildcard_path", "type": "PathIB", "description": "Path containing wildcard components"}
+        ],
+        "return_type": "list_of_PathIB",
+        "description": "Expands wildcard path into list of all concrete paths matching the wildcard pattern by querying node structure",
+        "algorithm_detail": "For each wildcard component, enumerate all valid values from node's endpoint/cluster/attribute structure. Generate Cartesian product of all valid combinations. Return list of concrete PathIB structures.",
+        "usage_in_fsm": "Called when transitioning from PathExpansionRequired to PathExpanded to generate concrete paths"
+      },
+      {
+        "name": "is_array",
+        "parameters": [
+          {"name": "data", "type": "TLV_data", "description": "Data field to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if data is encoded as TLV array type",
+        "algorithm_detail": "Inspect TLV type tag, return true if array type, false otherwise",
+        "usage_in_fsm": "Called when determining list operation pattern (single-IB vs multi-IB)"
+      },
+      {
+        "name": "is_empty_array",
+        "parameters": [
+          {"name": "data", "type": "TLV_data", "description": "Data to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if data is an empty TLV array signaling list clear operation",
+        "algorithm_detail": "Check if data is array type AND array length is zero, return boolean",
+        "usage_in_fsm": "Called to detect list clear signal in multi-IB pattern"
+      },
+      {
+        "name": "is_non_empty_array",
+        "parameters": [
+          {"name": "data", "type": "TLV_data", "description": "Data to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if data is non-empty TLV array",
+        "algorithm_detail": "Check if data is array type AND array length > 0, return boolean",
+        "usage_in_fsm": "Called to detect partial list replacement signal in multi-IB pattern"
+      },
+      {
+        "name": "validate_list_schema",
+        "parameters": [
+          {"name": "list_data", "type": "TLV_array", "description": "List data to validate"},
+          {"name": "cluster", "type": "uint32", "description": "Cluster ID"},
+          {"name": "attribute", "type": "uint32", "description": "Attribute ID"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates that list items conform to schema defined for attribute in cluster",
+        "algorithm_detail": "Retrieve schema for cluster.attribute, iterate through list_data items checking each against schema (field types, required fields, value ranges). Return true if all items valid, false if any invalid.",
+        "usage_in_fsm": "Called when validating list replacement or append operations"
+      },
+      {
+        "name": "apply_list_replacement",
+        "parameters": [
+          {"name": "target_path", "type": "AttributePath", "description": "Path to list attribute"},
+          {"name": "new_list", "type": "array", "description": "New list contents"}
+        ],
+        "return_type": "void",
+        "description": "Atomically replaces entire list at target path with new list contents",
+        "algorithm_detail": "Lock attribute, clear existing list, write new_list items, update DataVersion, unlock attribute. Operation is atomic at attribute level per spec.",
+        "usage_in_fsm": "Called when list operation completes successfully to commit changes"
+      },
+      {
+        "name": "append_item",
+        "parameters": [
+          {"name": "list", "type": "array", "description": "Accumulator list"},
+          {"name": "item", "type": "TLV_structure", "description": "Item to append"}
+        ],
+        "return_type": "void",
+        "description": "Appends item to accumulator list during multi-IB list assembly",
+        "algorithm_detail": "Add item to end of list array",
+        "usage_in_fsm": "Called when processing ListIndex=null append operations"
+      },
+      {
+        "name": "validate_list_item",
+        "parameters": [
+          {"name": "item", "type": "TLV_structure", "description": "Item to validate"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates single list item against schema",
+        "algorithm_detail": "Check item structure against list element schema, return true if valid",
+        "usage_in_fsm": "Called when appending items to validate each before accumulation"
+      },
+      {
+        "name": "check_partial_application",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if some list items were applied before error occurred",
+        "algorithm_detail": "Inspect list update state, return true if any items were written before error, false if no changes applied",
+        "usage_in_fsm": "Called in error scenarios to determine list state certainty per spec requirement"
+      },
+      {
+        "name": "create_status_ib",
+        "parameters": [
+          {"name": "status_code", "type": "uint8", "description": "General status code"}
+        ],
+        "return_type": "StatusIB",
+        "description": "Creates StatusIB structure with specified status code",
+        "algorithm_detail": "Construct TLV structure with Status field set to status_code, optionally add ClusterStatus if cluster-specific error",
+        "usage_in_fsm": "Called when generating error responses"
+      },
+      {
+        "name": "all_have_commandref",
+        "parameters": [
+          {"name": "commands", "type": "list_of_CommandDataIB", "description": "Command list to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if all commands in list have CommandRef field present",
+        "algorithm_detail": "Iterate through commands, return false if any command.commandref is null, return true if all have values",
+        "usage_in_fsm": "Called when validating multi-command invoke requests"
+      },
+      {
+        "name": "commandrefs_unique",
+        "parameters": [
+          {"name": "commands", "type": "list_of_CommandDataIB", "description": "Command list to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if all CommandRef values in command list are unique",
+        "algorithm_detail": "Extract all commandref values into set, compare set size to list size. If equal, all unique, return true. If set smaller, duplicates exist, return false.",
+        "usage_in_fsm": "Called when validating multi-command invoke requests for correlation integrity"
+      },
+      {
+        "name": "extract_commandrefs",
+        "parameters": [
+          {"name": "commands", "type": "list_of_CommandDataIB", "description": "Command list"}
+        ],
+        "return_type": "set_of_uint16",
+        "description": "Extracts all CommandRef values from command list into set",
+        "algorithm_detail": "Iterate through commands, collect command.commandref values into set, return set",
+        "usage_in_fsm": "Called when establishing command correlation tracking state"
+      },
+      {
+        "name": "build_ref_map",
+        "parameters": [
+          {"name": "commands", "type": "list_of_CommandDataIB", "description": "Command list"}
+        ],
+        "return_type": "map_uint16_to_CommandDataIB",
+        "description": "Builds map from CommandRef to corresponding CommandDataIB for response correlation",
+        "algorithm_detail": "Iterate through commands, create map entry commandref -> command, return map",
+        "usage_in_fsm": "Called when establishing multi-command correlation tracking"
+      },
+      {
+        "name": "extract_commandref",
+        "parameters": [
+          {"name": "response", "type": "InvokeResponseIB", "description": "Response message"}
+        ],
+        "return_type": "uint16",
+        "description": "Extracts CommandRef from response (Command or Status field)",
+        "algorithm_detail": "If response has Command field return command.commandref, if has Status field return status.commandref",
+        "usage_in_fsm": "Called when correlating responses to pending commands"
+      },
+      {
+        "name": "extract_commandref_or_null",
+        "parameters": [
+          {"name": "response", "type": "InvokeResponseIB", "description": "Response message"}
+        ],
+        "return_type": "uint16_or_null",
+        "description": "Extracts CommandRef from response, returns null if absent",
+        "algorithm_detail": "Try to extract commandref from response.command or response.status, return null if field absent",
+        "usage_in_fsm": "Called in error scenarios when commandref may be missing"
+      },
+      {
+        "name": "remove_from_pending",
+        "parameters": [
+          {"name": "commandref", "type": "uint16", "description": "CommandRef of completed command"}
+        ],
+        "return_type": "void",
+        "description": "Removes matched command from pending list after receiving response",
+        "algorithm_detail": "Remove command with matching commandref from pending_commands list and command_refs set",
+        "usage_in_fsm": "Called when transitioning from CommandResponseReceived back to pending state"
+      },
+      {
+        "name": "process_command_response",
+        "parameters": [
+          {"name": "response", "type": "InvokeResponseIB", "description": "Response to process"},
+          {"name": "request", "type": "CommandDataIB", "description": "Original request"}
+        ],
+        "return_type": "void",
+        "description": "Processes command response by invoking appropriate handler for command result or error status",
+        "algorithm_detail": "If response contains Command field, extract response data and pass to command handler. If contains Status field, process error status. Update command state accordingly.",
+        "usage_in_fsm": "Called when finalizing command invocation after correlation"
+      },
+      {
+        "name": "extract_timestamp",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event with timestamp"}
+        ],
+        "return_type": "uint64",
+        "description": "Extracts absolute timestamp (EpochTimestamp or SystemTimestamp) from event",
+        "algorithm_detail": "Check which timestamp field is present (EpochTimestamp or SystemTimestamp), return its value",
+        "usage_in_fsm": "Called when processing events with absolute timestamps"
+      },
+      {
+        "name": "extract_delta_type",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event with delta timestamp"}
+        ],
+        "return_type": "timestamp_type_enum",
+        "description": "Determines type of delta timestamp (DeltaEpochTimestamp or DeltaSystemTimestamp)",
+        "algorithm_detail": "Check which delta timestamp field is present, return enum indicating type",
+        "usage_in_fsm": "Called when transitioning to delta timestamp processing mode"
+      },
+      {
+        "name": "extract_delta_value",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event with delta timestamp"}
+        ],
+        "return_type": "uint64",
+        "description": "Extracts delta timestamp value from event",
+        "algorithm_detail": "Read DeltaEpochTimestamp or DeltaSystemTimestamp field value and return",
+        "usage_in_fsm": "Called when processing events with delta timestamps to reconstruct absolute time"
+      },
+      {
+        "name": "process_event",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event to process"}
+        ],
+        "return_type": "void",
+        "description": "Processes event data by invoking appropriate event handler for cluster and event ID",
+        "algorithm_detail": "Extract event path, lookup handler for cluster.event, invoke handler with event.data payload",
+        "usage_in_fsm": "Called when event passes all validation and is ready for consumption"
+      },
+      {
+        "name": "process_event_with_reconstructed_timestamp",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event to process"},
+          {"name": "timestamp", "type": "uint64", "description": "Reconstructed timestamp"}
+        ],
+        "return_type": "void",
+        "description": "Processes event with timestamp reconstructed from delta encoding",
+        "algorithm_detail": "Attach reconstructed timestamp to event, then invoke event handler",
+        "usage_in_fsm": "Called when processing delta-encoded events after timestamp reconstruction"
+      },
+      {
+        "name": "validate_all_fields",
+        "parameters": [
+          {"name": "structure", "type": "TLV_Structure", "description": "Structure to validate"},
+          {"name": "schema", "type": "Schema", "description": "Expected schema"}
+        ],
+        "return_type": "validation_result",
+        "description": "Validates all fields in structure against schema: required fields present, types correct, ranges valid",
+        "algorithm_detail": "Iterate through schema.required_fields checking presence in structure. For each field, validate type matches schema.field_type and value in schema.field_range. Return success if all checks pass, failure with error list otherwise.",
+        "usage_in_fsm": "Called during TLV validation to ensure structure conformance"
+      },
+      {
+        "name": "validate_tag_ordering",
+        "parameters": [
+          {"name": "structure", "type": "TLV_Structure", "description": "Structure to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates that context tags in structure are emitted in order per spec requirement",
+        "algorithm_detail": "Extract all context tag numbers from structure in order encountered. Check if list is monotonically increasing. Return true if ordered, false if any tag is out of order.",
+        "usage_in_fsm": "Called during TLV validation to enforce tag ordering requirement"
+      },
+      {
+        "name": "collect_validation_errors",
+        "parameters": [],
+        "return_type": "list_of_errors",
+        "description": "Collects all validation errors encountered during structure validation",
+        "algorithm_detail": "Gather all errors from validation_errors accumulator, format as list of error descriptions",
+        "usage_in_fsm": "Called when transitioning to TLVValidationFailed state"
+      },
+      {
+        "name": "categorize_errors",
+        "parameters": [
+          {"name": "errors", "type": "list_of_errors", "description": "Error list"}
+        ],
+        "return_type": "list_of_error_types",
+        "description": "Categorizes validation errors by type (missing_field, wrong_type, wrong_order, invalid_value)",
+        "algorithm_detail": "Iterate through errors, classify each into category based on error description, return list of categories",
+        "usage_in_fsm": "Called to populate error_types in validation failure state"
+      },
+      {
+        "name": "get_schema",
+        "parameters": [
+          {"name": "structure_type", "type": "string", "description": "Type of structure"}
+        ],
+        "return_type": "Schema",
+        "description": "Retrieves schema definition for given structure type from specification",
+        "algorithm_detail": "Lookup structure_type in schema registry, return corresponding schema definition with required fields, types, and constraints",
+        "usage_in_fsm": "Called when beginning validation to obtain expected schema"
+      },
+      {
+        "name": "get_path_schema",
+        "parameters": [
+          {"name": "path_type", "type": "string", "description": "Type of path (AttributePathIB, EventPathIB, etc)"}
+        ],
+        "return_type": "Schema",
+        "description": "Retrieves schema for specific path type",
+        "algorithm_detail": "Lookup path_type schema with field definitions, return schema",
+        "usage_in_fsm": "Called when validating path structures"
+      },
+      {
+        "name": "generate_error_status",
+        "parameters": [
+          {"name": "status_code", "type": "uint8", "description": "Error status code"}
+        ],
+        "return_type": "void",
+        "description": "Generates error status response and sends to requester",
+        "algorithm_detail": "Create StatusIB with status_code, encapsulate in appropriate response message type, send response",
+        "usage_in_fsm": "Called when errors detected to report back to sender"
+      },
+      {
+        "name": "generate_event",
+        "parameters": [
+          {"name": "event_name", "type": "string", "description": "Name of event to generate"}
+        ],
+        "return_type": "void",
+        "description": "Generates internal event for state machine observation or logging",
+        "algorithm_detail": "Create event record with event_name and current context, add to event log or notify observers",
+        "usage_in_fsm": "Called to signal completion or errors in list operations"
+      },
+      {
+        "name": "process_resolved_path",
+        "parameters": [
+          {"name": "path", "type": "PathIB", "description": "Resolved path to process"}
+        ],
+        "return_type": "void",
+        "description": "Processes fully resolved path for read/write/subscribe operation",
+        "algorithm_detail": "Perform operation specified by path context (read attribute, write attribute, subscribe to events, invoke command) using resolved path components",
+        "usage_in_fsm": "Called after path resolution completes"
+      },
+      {
+        "name": "create_error_message",
+        "parameters": [
+          {"name": "error_text", "type": "string", "description": "Error description"}
+        ],
+        "return_type": "string",
+        "description": "Formats error text into standard error message",
+        "algorithm_detail": "Wrap error_text with context information (state, path, action), return formatted string",
+        "usage_in_fsm": "Called when generating error messages for invalid paths"
+      },
+      {
+        "name": "clear_list",
+        "parameters": [],
+        "return_type": "empty_list",
+        "description": "Returns empty list",
+        "algorithm_detail": "Create and return new empty list structure",
+        "usage_in_fsm": "Called when resetting list accumulators"
+      },
+      {
+        "name": "clear_set",
+        "parameters": [],
+        "return_type": "empty_set",
+        "description": "Returns empty set",
+        "algorithm_detail": "Create and return new empty set structure",
+        "usage_in_fsm": "Called when resetting command reference tracking"
+      },
+      {
+        "name": "clear_map",
+        "parameters": [],
+        "return_type": "empty_map",
+        "description": "Returns empty map",
+        "algorithm_detail": "Create and return new empty map structure",
+        "usage_in_fsm": "Called when resetting command correlation map"
+      },
+      {
+        "name": "copy_array",
+        "parameters": [
+          {"name": "array", "type": "array", "description": "Array to copy"}
+        ],
+        "return_type": "array",
+        "description": "Creates deep copy of array",
+        "algorithm_detail": "Iterate through array elements, copy each to new array, return new array",
+        "usage_in_fsm": "Called when storing initial items in partial list replacement"
+      },
+      {
+        "name": "array_size",
+        "parameters": [
+          {"name": "array", "type": "array", "description": "Array to measure"}
+        ],
+        "return_type": "uint32",
+        "description": "Returns number of elements in array",
+        "algorithm_detail": "Return array.length property",
+        "usage_in_fsm": "Called when determining if array is partial or complete"
+      },
+      {
+        "name": "extract_dataversion",
+        "parameters": [
+          {"name": "attribute_data_ib", "type": "AttributeDataIB", "description": "AttributeDataIB containing DataVersion"}
+        ],
+        "return_type": "uint32",
+        "description": "Extracts DataVersion field from AttributeDataIB",
+        "algorithm_detail": "Return attribute_data_ib.dataversion field value",
+        "usage_in_fsm": "Called when establishing DataVersion compression tracking"
+      },
+      {
+        "name": "get_matching_filter",
+        "parameters": [
+          {"name": "filters", "type": "list_of_DataVersionFilterIB", "description": "List of filters"},
+          {"name": "path", "type": "ClusterPathIB", "description": "Path to match"}
+        ],
+        "return_type": "DataVersionFilterIB_or_null",
+        "description": "Finds DataVersionFilterIB matching the given path",
+        "algorithm_detail": "Iterate through filters, compare filter.path with given path checking Node/Endpoint/Cluster equality, return first match or null",
+        "usage_in_fsm": "Called when checking if current attribute has associated filter"
+      },
+      {
+        "name": "get_current_dataversion",
+        "parameters": [
+          {"name": "path", "type": "ClusterPathIB", "description": "Path to cluster"}
+        ],
+        "return_type": "uint32",
+        "description": "Retrieves current DataVersion for the cluster at given path",
+        "algorithm_detail": "Lookup cluster dataversion from internal state tracking, return current value",
+        "usage_in_fsm": "Called when comparing against filter DataVersion"
+      },
+      {
+        "name": "get_matching_event_filter",
+        "parameters": [
+          {"name": "filters", "type": "list_of_EventFilterIB", "description": "List of event filters"},
+          {"name": "path", "type": "EventPathIB", "description": "Event path to match"}
+        ],
+        "return_type": "EventFilterIB_or_null",
+        "description": "Finds EventFilterIB matching the given event path",
+        "algorithm_detail": "Iterate through filters, compare filter.node with event path node if present, return first match or null",
+        "usage_in_fsm": "Called when checking if current event has associated filter"
+      },
+      {
+        "name": "extract_timestamp_fields",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event to examine"}
+        ],
+        "return_type": "list_of_timestamp_field_names",
+        "description": "Extracts which timestamp fields are present in EventDataIB",
+        "algorithm_detail": "Check for presence of EpochTimestamp, SystemTimestamp, DeltaEpochTimestamp, DeltaSystemTimestamp fields, return list of field names that are present",
+        "usage_in_fsm": "Called when validating one-of timestamp constraint"
+      },
+      {
+        "name": "is_epoch_timestamp",
+        "parameters": [
+          {"name": "timestamp_type", "type": "string", "description": "Timestamp field name"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if timestamp type is Epoch-based (EpochTimestamp or DeltaEpochTimestamp)",
+        "algorithm_detail": "Return true if timestamp_type is EpochTimestamp or DeltaEpochTimestamp, false otherwise",
+        "usage_in_fsm": "Called when determining which timestamp processing state to transition to"
+      },
+      {
+        "name": "is_system_timestamp",
+        "parameters": [
+          {"name": "timestamp_type", "type": "string", "description": "Timestamp field name"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if timestamp type is System-based (SystemTimestamp or DeltaSystemTimestamp)",
+        "algorithm_detail": "Return true if timestamp_type is SystemTimestamp or DeltaSystemTimestamp, false otherwise",
+        "usage_in_fsm": "Called when determining which timestamp processing state to transition to"
+      },
+      {
+        "name": "extract_epoch_timestamp_value",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event containing timestamp"}
+        ],
+        "return_type": "uint64",
+        "description": "Extracts Epoch timestamp value from event (absolute or delta)",
+        "algorithm_detail": "Check if EpochTimestamp field present return its value, else if DeltaEpochTimestamp present return its value",
+        "usage_in_fsm": "Called when processing Epoch-based timestamp events"
+      },
+      {
+        "name": "extract_system_timestamp_value",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event containing timestamp"}
+        ],
+        "return_type": "uint64",
+        "description": "Extracts System timestamp value from event (absolute or delta)",
+        "algorithm_detail": "Check if SystemTimestamp field present return its value, else if DeltaSystemTimestamp present return its value",
+        "usage_in_fsm": "Called when processing System-based timestamp events"
+      },
+      {
+        "name": "has_absolute_timestamp",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if event has absolute timestamp (EpochTimestamp or SystemTimestamp)",
+        "algorithm_detail": "Return true if EpochTimestamp or SystemTimestamp field is present, false otherwise",
+        "usage_in_fsm": "Called when determining event processing path after filter"
+      },
+      {
+        "name": "prepare_attribute_report",
+        "parameters": [
+          {"name": "attribute", "type": "AttributeDataIB", "description": "Attribute to include in report"}
+        ],
+        "return_type": "void",
+        "description": "Prepares attribute for inclusion in report message",
+        "algorithm_detail": "Add attribute to report message being constructed, update message size tracking",
+        "usage_in_fsm": "Called when filter passes and data should be included"
+      },
+      {
+        "name": "skip_attribute_report",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Skips current attribute in report due to filter suppression",
+        "algorithm_detail": "Move to next attribute in iteration, do not add to report message",
+        "usage_in_fsm": "Called when filter fails and data should be suppressed"
+      },
+      {
+        "name": "prepare_event_report",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event to include in report"}
+        ],
+        "return_type": "void",
+        "description": "Prepares event for inclusion in report message",
+        "algorithm_detail": "Add event to report message being constructed, update message size tracking",
+        "usage_in_fsm": "Called when event filter passes"
+      },
+      {
+        "name": "skip_event_report",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Skips current event in report due to filter suppression",
+        "algorithm_detail": "Move to next event in iteration, do not add to report message",
+        "usage_in_fsm": "Called when event filter fails"
+      },
+      {
+        "name": "process_event_with_epoch_timestamp",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event to process"},
+          {"name": "timestamp", "type": "uint64", "description": "Epoch timestamp value"}
+        ],
+        "return_type": "void",
+        "description": "Processes event with Epoch timestamp, delivering to event consumers",
+        "algorithm_detail": "Validate event against cluster schema, check monotonicity if applicable, deliver to subscribed clients with Epoch timestamp",
+        "usage_in_fsm": "Called when completing Epoch timestamp event processing"
+      },
+      {
+        "name": "process_event_with_system_timestamp",
+        "parameters": [
+          {"name": "event", "type": "EventDataIB", "description": "Event to process"},
+          {"name": "timestamp", "type": "uint64", "description": "System timestamp value"}
+        ],
+        "return_type": "void",
+        "description": "Processes event with System timestamp, delivering to event consumers",
+        "algorithm_detail": "Validate event against cluster schema, check monotonicity if applicable, deliver to subscribed clients with System timestamp",
+        "usage_in_fsm": "Called when completing System timestamp event processing"
+      },
+      {
+        "name": "process_validated_response",
+        "parameters": [
+          {"name": "response", "type": "InvokeResponseIB", "description": "Validated response"},
+          {"name": "response_type", "type": "string", "description": "Type of response (command or status)"}
+        ],
+        "return_type": "void",
+        "description": "Processes validated InvokeResponseIB based on response type",
+        "algorithm_detail": "If response_type is command, process command response. If status, process status response. Update correlation state.",
+        "usage_in_fsm": "Called after successful mutual exclusion validation"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "Interaction Model Action",
+        "definition": "A complete interaction model operation (Read, Write, Subscribe, Invoke) encompassing one or more message exchanges. Tag compression state is scoped to a single Action and SHALL NOT leak across Action boundaries.",
+        "security_relevance": "Action boundary isolation prevents compression state from one operation affecting another, preventing path confusion attacks"
+      },
+      {
+        "term": "Tag Compression",
+        "definition": "Mechanism where EnableTagCompression=true causes omitted path components to inherit values from last uncompressed path within same Action, reducing message size. Wildcard semantics still apply to inherited omissions.",
+        "security_relevance": "Compression state management errors can cause operations to target wrong paths leading to unauthorized access"
+      },
+      {
+        "term": "Wildcard Path",
+        "definition": "Path with omitted Endpoint, Cluster, Attribute, or Event components (when EnableTagCompression is false) indicating selection of all matching entities. Requires expansion before authorization checks.",
+        "security_relevance": "Wildcard expansion before ACL checks prevents coarse-grained authorization from granting access to individually unauthorized resources"
+      },
+      {
+        "term": "List Operation Patterns",
+        "definition": "Three patterns for list mutation: (1) Single-IB full replacement, (2) Multi-IB empty+appends, (3) Multi-IB partial+appends. ACL and Extension attributes allow single-IB in WriteRequest, others do not.",
+        "security_relevance": "Different patterns have different atomicity guarantees. Errors leave uncertain state per spec, requiring clients to re-read lists"
+      },
+      {
+        "term": "ListIndex Semantics",
+        "definition": "ListIndex omitted indicates list-level operation (REPLACE). ListIndex=null indicates append operation (ADD). Any other value is error. Null only valid in AttributeDataIB for write operations.",
+        "security_relevance": "Numeric ListIndex values are forbidden and SHALL be rejected to prevent undefined behavior and potential out-of-bounds access"
+      },
+      {
+        "term": "CommandRef Correlation",
+        "definition": "Unsigned 16-bit integer correlating command requests to responses. Required for multi-command InvokeRequests, optional for single-command. Values MUST be unique within request.",
+        "security_relevance": "Proper correlation prevents response confusion where one command's result is applied to different command's context"
+      },
+      {
+        "term": "EventNumber Monotonicity",
+        "definition": "EventNumber SHALL monotonically increase within an event stream, enabling replay detection and ordering. Non-monotonic EventNumbers indicate replay or reordering attack.",
+        "security_relevance": "Monotonicity checking detects replayed events that could trigger stale state transitions"
+      },
+      {
+        "term": "Delta Timestamp Encoding",
+        "definition": "Events can use DeltaEpochTimestamp or DeltaSystemTimestamp relative to prior event instead of absolute timestamp. When delta present, all other timestamp fields SHALL be omitted. Same units as base timestamp.",
+        "security_relevance": "Delta reconstruction requires tracking last absolute timestamp. Errors in reconstruction break temporal ordering for time-based security checks"
+      },
+      {
+        "term": "Context Tag Ordering",
+        "definition": "All context tags SHALL be emitted in order as defined in specification to reduce receiver parsing complexity. Out-of-order tags violate protocol.",
+        "security_relevance": "Strict ordering simplifies parsers and prevents exploitation of ambiguous tag sequences"
+      },
+      {
+        "term": "XOR Semantics in Reports",
+        "definition": "AttributeReportIB contains either AttributeStatus XOR AttributeData. EventReportIB contains either EventStatus XOR EventData. InvokeResponseIB contains either Command XOR Status. Never both, never neither.",
+        "security_relevance": "Unambiguous success/error indication prevents confusion attacks where both or neither present"
+      },
+      {
+        "term": "Node Omission Rules",
+        "definition": "Node tag MAY be omitted if target node matches server NodeID. When omitted, implicitly refers to local node, not wildcard (except for wildcards in other components).",
+        "security_relevance": "Incorrect Node omission interpretation causes routing to wrong node breaking isolation"
+      },
+      {
+        "term": "Group Addressing",
+        "definition": "When Group field present in IM representation, Group ID SHALL be encoded in DST header field and elided from path encoding to avoid redundancy.",
+        "security_relevance": "Split encoding between header and payload requires consistent validation to prevent group confusion attacks"
+      },
+      {
+        "term": "TLV Structure Validation",
+        "definition": "All structures SHALL conform to defined schema: required fields present, correct types, values in range, tags in order. Validation failures result in CONSTRAINT_ERROR status.",
+        "security_relevance": "Schema validation prevents type confusion, buffer overflows, and injection attacks via malformed structures"
+      },
+      {
+        "term": "Path Expansion",
+        "definition": "Process of converting wildcard path into list of all concrete paths matching the pattern by enumerating node structure. Required before ACL checks.",
+        "security_relevance": "Pre-expansion ACL checking ensures fine-grained authorization on each concrete path, preventing wildcard privilege escalation"
+      },
+      {
+        "term": "DataVersion",
+        "definition": "32-bit unsigned integer tracking attribute version for optimistic concurrency. Can be omitted when EnableTagCompression=true, inheriting from last uncompressed AttributeDataIB.",
+        "security_relevance": "Version tracking enables detection of stale updates and lost update prevention"
+      },
+      {
+        "term": "DataVersionFilterIB",
+        "definition": "Filter structure containing ClusterPathIB and DataVersion used in Read/Subscribe requests to suppress data when version unchanged. Server compares filter DataVersion with current DataVersion, only sending data if different.",
+        "security_relevance": "Correct filter matching prevents unnecessary data transmission and ensures clients receive timely updates without message bloat"
+      },
+      {
+        "term": "EventFilterIB",
+        "definition": "Filter structure containing optional Node and EventMin threshold used in event subscriptions. Events with EventNumber < EventMin are suppressed. Used to resume event streams from known point.",
+        "security_relevance": "Correct EventMin filtering prevents replay of old events while ensuring no events are missed in subscription streams"
+      },
+      {
+        "term": "Timestamp One-Of Constraint",
+        "definition": "EventDataIB SHALL contain exactly one of: EpochTimestamp, SystemTimestamp, DeltaEpochTimestamp, or DeltaSystemTimestamp. When delta present, all other timestamp fields SHALL be omitted.",
+        "security_relevance": "Enforcing mutual exclusion prevents timestamp ambiguity that could allow timing attack bypasses"
+      },
+      {
+        "term": "Epoch vs System Timestamps",
+        "definition": "EpochTimestamp is UTC-based (microseconds since 2000-01-01 00:00:00 UTC). SystemTimestamp is monotonic system clock (microseconds since boot). Delta variants encode relative to prior event of same type.",
+        "security_relevance": "Timestamp type distinction prevents confusion between wall-clock and monotonic time affecting replay detection and temporal ordering"
+      },
+      {
+        "term": "InvokeResponseIB Mutual Exclusion",
+        "definition": "InvokeResponseIB SHALL contain exactly one of Command (CommandDataIB) or Status (CommandStatusIB). Never both, never neither. Command indicates success with response data, Status indicates error or success without data.",
+        "security_relevance": "Enforcing mutual exclusion prevents response ambiguity that could cause incorrect command result processing"
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "TAG_COMPRESSION_ACTION_ISOLATION",
+        "type": "consistency",
+        "description": "Tag compression state SHALL NOT leak across interaction model Action boundaries",
+        "fsm_states_involved": ["CompressionTracking", "CompressionActive", "ActionIdle"],
+        "critical_transitions": ["CompressionTracking -> ErrorState_CompressionStateCorruption", "CompressionActive -> ActionIdle"]
+      },
+      {
+        "property_name": "WILDCARD_EXPANSION_BEFORE_ACL",
+        "type": "access_control",
+        "description": "Wildcard paths SHALL be fully expanded to concrete paths before authorization checks to prevent coarse-grained ACL bypass",
+        "fsm_states_involved": ["PathExpansionRequired", "PathExpanded"],
+        "critical_transitions": ["ActionStarted_NoCompression -> PathExpansionRequired", "PathExpansionRequired -> PathExpanded"]
+      },
+      {
+        "property_name": "LISTINDEX_RESTRICTION",
+        "type": "access_control",
+        "description": "ListIndex SHALL only be omitted or null, any numeric value SHALL be rejected as error to prevent out-of-bounds access",
+        "fsm_states_involved": ["ListOperationIdle", "ErrorState_InvalidPath"],
+        "critical_transitions": ["ListOperationIdle -> ErrorState_InvalidPath when ListIndex numeric"]
+      },
+      {
+        "property_name": "LIST_STATE_UNCERTAINTY_ON_ERROR",
+        "type": "consistency",
+        "description": "List write errors leave list in uncertain state due to chunked processing, clients SHALL NOT assume rollback",
+        "fsm_states_involved": ["ListOperationError"],
+        "critical_transitions": ["ListAppending -> ListOperationError", "ListSingleIB_Processing -> ListOperationError"]
+      },
+      {
+        "property_name": "COMMANDREF_UNIQUENESS_MULTI_COMMAND",
+        "type": "consistency",
+        "description": "Multi-command InvokeRequests SHALL have unique CommandRef for each command to enable unambiguous correlation",
+        "fsm_states_involved": ["CommandPending_MultiCommand", "ErrorState_CommandCorrelationFailure"],
+        "critical_transitions": ["CommandIdle -> ErrorState_CommandCorrelationFailure when refs not unique"]
+      },
+      {
+        "property_name": "EVENT_NUMBER_MONOTONICITY",
+        "type": "replay_protection",
+        "description": "EventNumber SHALL monotonically increase within stream to detect replay or reordering attacks",
+        "fsm_states_involved": ["EventProcessing_AbsoluteTimestamp", "EventProcessing_DeltaTimestamp", "EventMonotonicityCheckFailed"],
+        "critical_transitions": ["EventProcessing_* -> EventMonotonicityCheckFailed when EventNumber <= last"]
+      },
+      {
+        "property_name": "DELTA_TIMESTAMP_EXCLUSIVITY",
+        "type": "consistency",
+        "description": "When delta timestamp present, all other timestamp fields SHALL be omitted to prevent ambiguity",
+        "fsm_states_involved": ["EventProcessing_DeltaTimestamp"],
+        "critical_transitions": ["EventProcessing_AbsoluteTimestamp -> EventProcessing_DeltaTimestamp"]
+      },
+      {
+        "property_name": "TAG_ORDERING_ENFORCEMENT",
+        "type": "correctness",
+        "description": "Context tags SHALL be emitted in specification-defined order to reduce parser complexity and prevent ambiguity",
+        "fsm_states_involved": ["TLVValidationInProgress", "TLVValidationFailed"],
+        "critical_transitions": ["TLVValidationInProgress -> TLVValidationFailed when ordering violated"]
+      },
+      {
+        "property_name": "XOR_REPORT_SEMANTICS",
+        "type": "correctness",
+        "description": "Reports SHALL contain either success data XOR error status, never both or neither, for unambiguous result indication",
+        "fsm_states_involved": ["CommandResponseReceived"],
+        "critical_transitions": ["CommandPending_* -> CommandResponseReceived"]
+      },
+      {
+        "property_name": "NODE_OMISSION_SECURITY",
+        "type": "identity_binding",
+        "description": "Node tag omission SHALL only occur when target matches server NodeID, preventing routing confusion",
+        "fsm_states_involved": ["ActionStarted_NoCompression", "CompressionTracking"],
+        "critical_transitions": ["ActionIdle -> ActionStarted_NoCompression"]
+      },
+      {
+        "property_name": "GROUP_HEADER_ENCODING",
+        "type": "scope_isolation",
+        "description": "Group ID SHALL be encoded in message header DST field and elided from path to prevent group confusion",
+        "fsm_states_involved": ["ActionStarted_NoCompression"],
+        "critical_transitions": ["ActionIdle -> ActionStarted_NoCompression when Group present"]
+      },
+      {
+        "property_name": "ACL_LIST_SPECIAL_HANDLING",
+        "type": "access_control",
+        "description": "ACL and Extension attributes allow single-IB pattern in WriteRequest while other lists do not, to enable atomic ACL updates",
+        "fsm_states_involved": ["ListSingleIB_Processing"],
+        "critical_transitions": ["ListOperationIdle -> ListSingleIB_Processing with ACL validation"]
+      },
+      {
+        "property_name": "DATAVERSION_COMPRESSION_ISOLATION",
+        "type": "consistency",
+        "description": "DataVersion compression SHALL follow same Action boundary isolation as path compression to prevent version confusion",
+        "fsm_states_involved": ["DataVersionTracking", "CompressionActive"],
+        "critical_transitions": ["ActionStarted_NoCompression -> DataVersionTracking", "CompressionActive -> ActionIdle"]
+      },
+      {
+        "property_name": "DATAVERSION_FILTER_CORRECTNESS",
+        "type": "correctness",
+        "description": "DataVersionFilterIB SHALL correctly match cluster paths and compare versions to suppress unchanged data",
+        "fsm_states_involved": ["DataVersionFilterMatching", "DataVersionFilterPassed", "DataVersionFilterFailed"],
+        "critical_transitions": ["DataVersionFilterMatching -> DataVersionFilterPassed/Failed based on version comparison"]
+      },
+      {
+        "property_name": "EVENT_FILTER_CORRECTNESS",
+        "type": "correctness",
+        "description": "EventFilterIB SHALL correctly compare EventNumber against EventMin threshold to suppress old events",
+        "fsm_states_involved": ["EventFilterMatching", "EventFilterPassed", "EventFilterFailed"],
+        "critical_transitions": ["EventFilterMatching -> EventFilterPassed/Failed based on EventNumber >= EventMin"]
+      },
+      {
+        "property_name": "TIMESTAMP_ONEOF_ENFORCEMENT",
+        "type": "correctness",
+        "description": "EventDataIB SHALL contain exactly one timestamp type, enforcing mutual exclusion constraint",
+        "fsm_states_involved": ["TimestampTypeValidating", "ErrorState_TimestampValidationFailed"],
+        "critical_transitions": ["TimestampTypeValidating -> ErrorState_TimestampValidationFailed when multiple or no timestamps present"]
+      },
+      {
+        "property_name": "TIMESTAMP_TYPE_DISTINCTION",
+        "type": "correctness",
+        "description": "Epoch and System timestamps SHALL be distinguished and processed separately to prevent clock domain confusion",
+        "fsm_states_involved": ["EpochTimestampProcessing", "SystemTimestampProcessing"],
+        "critical_transitions": ["TimestampTypeValidating -> EpochTimestampProcessing/SystemTimestampProcessing based on type"]
+      },
+      {
+        "property_name": "INVOKE_RESPONSE_MUTUAL_EXCLUSION",
+        "type": "correctness",
+        "description": "InvokeResponseIB SHALL contain exactly one of Command or Status, never both or neither",
+        "fsm_states_involved": ["InvokeResponseValidating", "InvokeResponseValid", "ErrorState_InvokeResponseInvalid"],
+        "critical_transitions": ["InvokeResponseValidating -> ErrorState_InvokeResponseInvalid when both or neither present"]
+      }
+    ],
+    "initial_state": "ActionIdle",
+    "all_states": [
+      "ActionIdle",
+      "ActionStarted_NoCompression",
+      "CompressionTracking",
+      "CompressionActive",
+      "PathExpansionRequired",
+      "PathExpanded",
+      "ListOperationIdle",
+      "ListSingleIB_Processing",
+      "ListMultiIB_ClearSignaled",
+      "ListMultiIB_PartialReplaceSignaled",
+      "ListAppending",
+      "ListOperationComplete",
+      "ListOperationError",
+      "CommandIdle",
+      "CommandPending_SingleCommand",
+      "CommandPending_MultiCommand",
+      "CommandResponseReceived",
+      "EventProcessingIdle",
+      "EventProcessing_AbsoluteTimestamp",
+      "EventProcessing_DeltaTimestamp",
+      "EventMonotonicityCheckFailed",
+      "TLVValidationInProgress",
+      "TLVValidationPassed",
+      "TLVValidationFailed",
+      "ErrorState_InvalidPath",
+      "ErrorState_CompressionStateCorruption",
+      "ErrorState_CommandCorrelationFailure",
+      "DataVersionTracking",
+      "DataVersionFilterMatching",
+      "DataVersionFilterPassed",
+      "DataVersionFilterFailed",
+      "EventFilterMatching",
+      "EventFilterPassed",
+      "EventFilterFailed",
+      "TimestampTypeValidating",
+      "EpochTimestampProcessing",
+      "SystemTimestampProcessing",
+      "InvokeResponseValidating",
+      "InvokeResponseValid",
+      "ErrorState_InvokeResponseInvalid",
+      "ErrorState_TimestampValidationFailed"
+    ],
+    "all_triggers": [
+      "receive_path_ib",
+      "process_uncompressed_path",
+      "receive_compressed_path",
+      "compressed_path_processed",
+      "receive_uncompressed_path",
+      "action_complete",
+      "detect_wildcard_path",
+      "expand_wildcard_path",
+      "process_concrete_path",
+      "all_concrete_paths_processed",
+      "receive_attribute_data_ib",
+      "receive_compressed_attribute_data_ib",
+      "validate_and_apply_list",
+      "end_of_list_ibs",
+      "validation_error",
+      "operation_acknowledged",
+      "error_handled",
+      "receive_invoke_request",
+      "receive_invoke_response",
+      "response_processed",
+      "receive_event_data_ib",
+      "receive_event_with_filters",
+      "receive_read_request_with_filters",
+      "check_filter",
+      "check_event_filter",
+      "filter_check_complete",
+      "validate_structure",
+      "validate_path",
+      "validate_timestamp_type",
+      "timestamp_validated",
+      "timestamp_processed",
+      "validate_response_structure",
+      "validation_complete"
+    ],
+    "all_functions_used": [
+      "generate_action_id",
+      "extract_node",
+      "extract_endpoint",
+      "extract_cluster",
+      "extract_attribute",
+      "resolve_compressed_path",
+      "has_wildcard_components",
+      "is_wildcard",
+      "expand_wildcards",
+      "is_array",
+      "is_empty_array",
+      "is_non_empty_array",
+      "validate_list_schema",
+      "apply_list_replacement",
+      "append_item",
+      "validate_list_item",
+      "check_partial_application",
+      "create_status_ib",
+      "all_have_commandref",
+      "commandrefs_unique",
+      "extract_commandrefs",
+      "build_ref_map",
+      "extract_commandref",
+      "extract_commandref_or_null",
+      "remove_from_pending",
+      "process_command_response",
+      "extract_timestamp",
+      "extract_delta_type",
+      "extract_delta_value",
+      "process_event",
+      "process_event_with_reconstructed_timestamp",
+      "validate_all_fields",
+      "validate_tag_ordering",
+      "collect_validation_errors",
+      "categorize_errors",
+      "get_schema",
+      "get_path_schema",
+      "generate_error_status",
+      "generate_event",
+      "process_resolved_path",
+      "create_error_message",
+      "clear_list",
+      "clear_set",
+      "clear_map",
+      "copy_array",
+      "array_size",
+      "extract_dataversion",
+      "get_matching_filter",
+      "get_current_dataversion",
+      "get_matching_event_filter",
+      "extract_timestamp_fields",
+      "is_epoch_timestamp",
+      "is_system_timestamp",
+      "extract_epoch_timestamp_value",
+      "extract_system_timestamp_value",
+      "has_absolute_timestamp",
+      "prepare_attribute_report",
+      "skip_attribute_report",
+      "prepare_event_report",
+      "skip_event_report",
+      "process_event_with_epoch_timestamp",
+      "process_event_with_system_timestamp",
+      "process_validated_response"
+    ],
+    "cryptographic_operations": [],
+    "security_assumptions": [
+      {
+        "assumption": "TLV parsers correctly validate structure schemas and reject malformed encodings",
+        "type": "explicit",
+        "if_violated": "Type confusion, buffer overflows, injection attacks via malformed structures"
+      },
+      {
+        "assumption": "Action boundaries are correctly tracked and compression state does not leak across actions",
+        "type": "implicit",
+        "if_violated": "Path confusion attacks where compressed paths resolve to unintended targets from prior actions"
+      },
+      {
+        "assumption": "Wildcard path expansion occurs before ACL checks on each concrete path",
+        "type": "implicit",
+        "if_violated": "Privilege escalation where wildcard ACL check grants access to individually unauthorized resources"
+      },
+      {
+        "assumption": "List write errors result in uncertain state and clients re-read lists after errors",
+        "type": "explicit",
+        "if_violated": "Clients assume rollback and proceed with stale state, missing partially-applied changes"
+      },
+      {
+        "assumption": "CommandRef values are unique within InvokeRequest for proper correlation",
+        "type": "explicit",
+        "if_violated": "Response confusion where one command's result is misapplied to another command"
+      },
+      {
+        "assumption": "EventNumber is monotonically assigned per stream and checked by receivers",
+        "type": "implicit",
+        "if_violated": "Replay attacks succeed as receivers cannot detect non-monotonic event numbers"
+      },
+      {
+        "assumption": "Delta timestamp reconstruction maintains last absolute timestamp correctly across events",
+        "type": "implicit",
+        "if_violated": "Timestamp reconstruction errors break temporal ordering for time-based security"
+      },
+      {
+        "assumption": "Context tags are emitted in order and parsers enforce ordering",
+        "type": "explicit",
+        "if_violated": "Parser confusion with out-of-order tags potentially enabling field misinterpretation"
+      },
+      {
+        "assumption": "Node omission semantics are consistently interpreted by sender and receiver",
+        "type": "implicit",
+        "if_violated": "Routing confusion where messages are processed by unintended nodes"
+      },
+      {
+        "assumption": "Group ID in message header DST field matches group addressing intent",
+        "type": "explicit",
+        "if_violated": "Group confusion where messages route to wrong fabric group"
+      },
+      {
+        "assumption": "ListIndex numeric values are rejected and only omitted/null are accepted",
+        "type": "explicit",
+        "if_violated": "Undefined behavior with numeric indices enables out-of-bounds access or inconsistent list operations"
+      },
+      {
+        "assumption": "ACL and Extension attributes receive special handling for single-IB writes",
+        "type": "explicit",
+        "if_violated": "ACL updates may fail or behave unpredictably using wrong patterns"
+      },
+      {
+        "assumption": "DataVersion compression inheritance follows same Action boundary rules as path compression",
+        "type": "implicit",
+        "if_violated": "DataVersion confusion where compressed IBs inherit wrong version from prior actions"
+      },
+      {
+        "assumption": "DataVersionFilterIB correctly matches cluster paths and compares versions",
+        "type": "implicit",
+        "if_violated": "Filter suppression errors causing missing data updates or unnecessary data transmission"
+      },
+      {
+        "assumption": "EventFilterIB EventMin thresholds are correctly compared against EventNumber",
+        "type": "explicit",
+        "if_violated": "Event suppression errors causing replay of old events or missing recent events"
+      },
+      {
+        "assumption": "Exactly one timestamp type is present in EventDataIB (one-of constraint enforced)",
+        "type": "explicit",
+        "if_violated": "Timestamp ambiguity or missing timestamps breaking temporal ordering"
+      },
+      {
+        "assumption": "Epoch and System timestamp types are correctly distinguished and processed separately",
+        "type": "implicit",
+        "if_violated": "Timestamp type confusion causing incorrect time comparisons across different clock domains"
+      },
+      {
+        "assumption": "InvokeResponseIB contains exactly one of Command or Status (mutual exclusion enforced)",
+        "type": "explicit",
+        "if_violated": "Response ambiguity where both or neither present causing processing errors"
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": false,
+      "cryptographic_operations_detailed": false,
+      "error_states_included": true
+    }
+  }
+}

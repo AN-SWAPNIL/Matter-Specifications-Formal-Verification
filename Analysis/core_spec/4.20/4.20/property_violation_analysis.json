@@ -1,0 +1,1030 @@
+{
+  "vulnerability_analysis": {
+    "analysis_metadata": {
+      "specification": "Matter Core Specification v1.5, Section 4.20 PAFTP",
+      "fsm_model": "paftp_fsm.json",
+      "analysis_date": "2026-02-13",
+      "total_properties": 25,
+      "properties_analyzed": 25,
+      "analysis_complete": true,
+      "status": "complete"
+    },
+    "property_verdicts": [
+      {
+        "property_id": "PROP_001",
+        "property_name": "VERSION_DOWNGRADE_PREVENTION",
+        "verdict": "VIOLATED",
+        "confidence": 0.95,
+        "verdict_explanation": "Handshake request version list can be modified by MITM attacker. No cryptographic protection or authentication on version negotiation."
+      },
+      {
+        "property_id": "PROP_002",
+        "property_name": "VERSION_INCOMPATIBILITY_DISCONNECT",
+        "verdict": "HOLDS",
+        "confidence": 0.99,
+        "verdict_explanation": "FSM explicitly models Device closing WFA-USD connection when no common version exists via T_DL_05 and T_DL_06"
+      },
+      {
+        "property_id": "PROP_003",
+        "property_name": "SEQUENCE_NUMBER_INTEGRITY",
+        "verdict": "VIOLATED",
+        "confidence": 0.90,
+        "verdict_explanation": "No cryptographic protection on sequence numbers. Attacker can inject/modify packets with arbitrary sequences. Validation only checks monotonic incrementby-1, not authenticity."
+      },
+      {
+        "property_id": "PROP_004",
+        "property_name": "ACKNOWLEDGEMENT_VALIDITY",
+        "verdict": "VIOLATED",
+        "confidence": 0.90,
+        "verdict_explanation": "No cryptographic integrity on ack field. Attacker can forge acks for packets that were never sent. FSM checks against outstanding list but list itself can be manipulated via injected packets."
+      },
+      {
+        "property_id": "PROP_005",
+        "property_name": "FLOW_CONTROL_WINDOW_ENFORCEMENT",
+        "verdict": "VIOLATED",
+        "confidence": 0.85,
+        "verdict_explanation": "Window enforcement relies on remote_window_counter which is computed from acks. Without cryptographic protection on acks, attacker can forge acks to artificially reopen window, bypassing flow control."
+      },
+      {
+        "property_id": "PROP_006",
+        "property_name": "DEADLOCK_PREVENTION",
+        "verdict": "PARTIALLY_HOLDS",
+        "confidence": 0.80,
+        "verdict_explanation": "T_PE_28 blocks sending when window=1 and no pending ack. However, race condition exists: if both peers transition to this state simultaneously before either's message propagates, mutual deadlock occurs. Spec acknowledges this but doesn't provide recovery mechanism beyond timeout."
+      },
+      {
+        "property_id": "PROP_007",
+        "property_name": "IDLE_TIMEOUT_ENFORCEMENT",
+        "verdict": "VIOLATED",
+        "confidence": 0.75,
+        "verdict_explanation": "Idle timeout enforced ONLY by Commissioner (T_PE_22-24), not Device. Asymmetric enforcement creates zombie sessions from Device perspective. Spec says 'Commissioner must close' but Device behavior unspecified."
+      },
+      {
+        "property_id": "PROP_008",
+        "property_name": "SDU_TRANSMISSION_ATOMICITY",
+        "verdict": "VIOLATED",
+        "confidence": 0.70,
+        "verdict_explanation": "No explicit FSM state tracking partial SDU transmission. If session closes mid-SDU (during fragmented transfer across multiple segments), receiver has incomplete message with no detection mechanism. Spec requires 'entire SDU delivered to application' but doesn't mandate atomicity on failure."
+      },
+      {
+        "property_id": "PROP_009",
+        "property_name": "REASSEMBLY_LENGTH_VERIFICATION",
+        "verdict": "PARTIALLY_HOLDS",
+        "confidence": 0.85,
+        "verdict_explanation": "Spec requires checking reassembled length against Message Length (S52). FSM models this in reassemble_segments() but without cryptographic protection on Message Length field, attacker can modify it, causing: 1) False acceptance of truncated messages, 2) Buffer overflow if declared length > actual buffer."
+      },
+      {
+        "property_id": "PROP_010",
+        "property_name": "RESERVED_BITS_ZERO",
+        "verdict": "VIOLATED",
+        "confidence": 0.90,
+        "verdict_explanation": "Spec requires reserved bits to be zero (S47, S81) but doesn't mandate validation. FSM has no guard checking reserved_bits == 0 on packet reception. Non-zero reserved bits may indicate: 1) Implementation bug, 2) Future version mismatch, 3) Attacker probing for parsing vulnerabilities. Lack of validation creates forward-compatibility issues."
+      },
+      {
+        "property_id": "PROP_011",
+        "property_name": "M_BIT_CONSISTENCY_ACROSS_SEGMENTS",
+        "verdict": "HOLDS",
+        "confidence": 0.95,
+        "verdict_explanation": "FSM correctly models M-bit logic: set on all fragments except last (S50). validate_m_bit_consistency() in process_segment_payload() checks this. Spec is clear: 'M SHALL be set to 1 for all but the final segment'. No obvious violation paths found."
+      },
+      {
+        "property_id": "PROP_012",
+        "property_name": "HANDSHAKE_TIMEOUT_ENFORCEMENT",
+        "verdict": "VIOLATED",
+        "confidence": 0.80,
+        "verdict_explanation": "Spec defines handshake timeout (PAFTP_HANDSHAKE_TIMEOUT) but doesn't specify WHICH peer enforces it or WHEN. FSM has T_CL_05, T_DL_07 for timeout but guards unclear: does timeout start at request-send or request-receive? Device waiting for request has no timeout (DoS vector)."
+      },
+      {
+        "property_id": "PROP_013",
+        "property_name": "ACK_TIMEOUT_ENFORCEMENT",
+        "verdict": "HOLDS",
+        "confidence": 0.90,
+        "verdict_explanation": "Ack timeout clearly defined: 15s (S70). FSM models timeout on all states with ack-rx timer ticking (T_PE_12, T_PE_13, T_PE_14, T_PE_15). Actions correctly close session on timeout. Well-specified."
+      },
+      {
+        "property_id": "PROP_014",
+        "property_name": "SEGMENT_ORDERING_ENFORCEMENT",
+        "verdict": "VIOLATED",
+        "confidence": 0.85,
+        "verdict_explanation": "Spec requires 'segments SHALL be sent in order' and 'reassembled in ascending order' (S48, S51) but allows out-of-order RECEPTION (spec acknowledges sequence wrap, lost packets). Without crypto, attacker can reorder segments causing: 1) Incorrect reassembly if seq wraps, 2) Early completion if final segment arrives before middle segments."
+      },
+      {
+        "property_id": "PROP_015",
+        "property_name": "OVERSIZED_SEGMENT_REJECTION",
+        "verdict": "PARTIALLY_HOLDS",
+        "confidence": 0.80,
+        "verdict_explanation": "Spec requires: 'peer receives segment exceeding maximum packet size SHALL close session' (S52). FSM models this in validate_segment_size(). However, 'maximum packet size' value comes from handshake negotiation (Selected Maximum Service Specific Info Length) which can be downgrade-attacked (PROP_001), causing false rejection of legitimate segments."
+      },
+      {
+        "property_id": "PROP_016",
+        "property_name": "SESSION_ISOLATION",
+        "verdict": "HOLDS",
+        "confidence": 0.95,
+        "verdict_explanation": "Spec explicitly requires: 'Concurrent PAFTP sessions SHALL maintain separate timers, sequence numbers, receive windows' (Section 4.20.3.4). FSM models this via session_id context. Each session has independent state machine instance. Proper isolation."
+      },
+      {
+        "property_id": "PROP_017",
+        "property_name": "MATTER_ONLY_TRANSPORT",
+        "verdict": "HOLDS",
+        "confidence": 0.99,
+        "verdict_explanation": "Spec design intent: PAFTP transports Matter commissioning messages only. Not a security property but architectural constraint. FSM doesn't violate this - it's a usage requirement, not enforceable at PAFTP layer."
+      },
+      {
+        "property_id": "PROP_018",
+        "property_name": "CUMULATIVE_ACKNOWLEDGEMENT_CORRECTNESS",
+        "verdict": "VIOLATED",
+        "confidence": 0.75,
+        "verdict_explanation": "Cumulative ack means 'ack seq N implies all seq ≤N received' (S69). Without crypto on acks, attacker can forge ack=N to falsely acknowledge multiple packets (0 to N) that were never sent or received. Sender incorrectly frees resources for phantom acks."
+      },
+      {
+        "property_id": "PROP_019",
+        "property_name": "TIMER_RELATIONSHIP_CONSTRAINT",
+        "verdict": "HOLDS",
+        "confidence": 0.90,
+        "verdict_explanation": "Spec requires: send-ack timer (7.5s) < ack-rx timeout (15s), i.e., 2:1 ratio. Table 42 defines these correctly. FSM uses correct constants. Relationship preserved to ensure ack sent before timeout."
+      },
+      {
+        "property_id": "PROP_020",
+        "property_name": "ASYMMETRIC_INITIALIZATION_CORRECTNESS",
+        "verdict": "HOLDS",
+        "confidence": 0.95,
+        "verdict_explanation": "Spec requires: Commissioner initial seq=0, Device initial seq=1 (because handshake response is implicit seq=0). FSM correctly models this in T_CL_04, T_DL_04 with role-based initialization. Well-specified asymmetry."
+      },
+      {
+        "property_id": "PROP_021",
+        "property_name": "MANDATORY_PIGGYBACKING",
+        "verdict": "PARTIALLY_HOLDS",
+        "confidence": 0.70,
+        "verdict_explanation": "Spec says: 'acknowledgements SHALL be piggybacked on data packets when both exist' (S77). FSM attempts this in T_PE_04, T_PE_07 but guard: 'has_pending_ack && remote_window_counter > 0' may prevent piggybacking if window=0, forcing standalone ack. Window=0 scenario violates 'SHALL piggyback'."
+      },
+      {
+        "property_id": "PROP_022",
+        "property_name": "WINDOW_COUNTER_CONSISTENCY",
+        "verdict": "VIOLATED",
+        "confidence": 0.75,
+        "verdict_explanation": "Remote window counter computed from acks. Local window counter computed from received seqs. Both lack crypto protection. Attacker can desynchronize counters by forging acks (inflate remote counter) or injecting seqs (deflate local counter), causing flow control bypass or deadlock."
+      },
+      {
+        "property_id": "PROP_023",
+        "property_name": "STANDALONE_ACK_ACKNOWLEDGEMENT",
+        "verdict": "HOLDS",
+        "confidence": 0.90,
+        "verdict_explanation": "Spec requires: 'standalone ack consumes sequence number and SHALL be acknowledged' (S79). FSM correctly models this in T_PE_05 actions: 'add_to_outstanding(local_seq_number)' after sending standalone ack. Proper ack-of-ack mechanism."
+      },
+      {
+        "property_id": "PROP_024",
+        "property_name": "EARLY_ACK_ON_WINDOW_PRESSURE",
+        "verdict": "HOLDS",
+        "confidence": 0.85,
+        "verdict_explanation": "Spec requires: 'if own window counter ≤ 2, send ack immediately before send-ack timer' (S80). FSM models this via early_ack_threshold check in transitions. Proactive flow control to prevent window closure."
+      },
+      {
+        "property_id": "PROP_025",
+        "property_name": "FIFO_ORDERING_FOR_QUEUED_SDUS",
+        "verdict": "HOLDS",
+        "confidence": 0.95,
+        "verdict_explanation": "Spec requires: 'SDUs SHALL be queued FIFO if transmission in progress' (Section 4.20.3.5). FSM references sdu_transmission_queue. FIFO ordering is algorithmic requirement, properly specified."
+      }
+    ],
+    "detailed_analyses": [
+      {
+        "property_id": "PROP_001",
+        "property_name": "VERSION_DOWNGRADE_PREVENTION",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "CL_WFA_USD_Connected",
+              "trigger": "initiate_paftp_session",
+              "action": "build_handshake_request(supported_versions, ...)",
+              "result_state": "CL_Handshake_Request_Sent",
+              "attacker_action": "MITM intercepts handshake request"
+            },
+            {
+              "state": "packet_in_transit",
+              "attacker_action": "Attacker modifies version list: removes newest versions (e.g., removes v4, leaves only v2 if vulnerable)",
+              "result": "Modified handshake request forwarded to Device"
+            },
+            {
+              "state": "DL_Handshake_Request_Received",
+              "trigger": "paftp_handshake_request_received",
+              "guard": "valid_handshake_request(request) == true",
+              "guard_insufficiency": "valid_handshake_request() checks format (0x65, 0x6C, sorted) but NOT authenticity/integrity",
+              "action": "negotiated_version := select_newest_common_version(local_supported_versions, received_commissioner_versions)",
+              "result_state": "DL_Connected",
+              "violation": "Device selects v2 (oldest common after attack) instead of v4 (newest common without attack)"
+            }
+          ],
+          "violation_mechanism": "No cryptographic binding or authentication on handshake request. Spec requires 'sorted descending' (S08) and 'select newest common' (S13) but doesn't prevent modification in transit. PAFTP has no integrity protection (per security_assumptions: 'PAFTP itself specifies no cryptographic protection').",
+          "violation_paths_found": 1
+        },
+        "specification_evidence": [
+          {
+            "quote": "The Commissionable Device SHALL select a PAFTP protocol version that is the newest which it and the Commissioner both support, where newer protocol version numbers are strictly larger than those of older versions.",
+            "source": "Section 4.20.3.3, 'Session Establishment', Paragraph on version selection",
+            "context": "Describes version negotiation algorithm",
+            "supports_verdict": "Spec requires selecting newest common version but doesn't specify HOW to ensure version list authenticity"
+          },
+          {
+            "quote": "The list of supported protocol versions SHALL be sorted in descending numerical order.",
+            "source": "Section 4.20.3.3, 'Session Establishment', Paragraph on handshake request",
+            "context": "Handshake request format requirement",
+            "gap": "Sorting requirement is a FORMAT check, not a SECURITY guarantee. Doesn't prevent attacker from reordering/removing versions"
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Device SHALL select newest common version (S13)",
+          "what_spec_fails_to_specify": "How to ensure version list received by Device is authentic and unmodified from what Commissioner sent. No cryptographic binding, no authentication mechanism, no integrity check beyond format validation.",
+          "consequence": "MITM attacker can force downgrade to vulnerable protocol version by modifying version list in handshake request",
+          "security_impact": "If older PAFTP versions have known vulnerabilities (e.g., weaker sequence number handling, smaller windows, implementation bugs), attacker can exploit them by forcing downgrade"
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Commissioner supports PAFTP v2, v3, v4; sends handshake request: [4, 3, 2, 0, 0, 0, 0, 0]",
+            "Device supports PAFTP v2, v3, v4",
+            "Without attack: Device would select v4 (newest common)",
+            "Attack: MITM intercepts handshake request",
+            "Attacker modifies version list to: [2, 0, 0, 0, 0, 0, 0, 0] (removes v4, v3)",
+            "Device receives modified request",
+            "Device executes: common_version_exists([4,3,2], [2]) → TRUE (v2 is common)",
+            "Device executes: select_newest_common_version([4,3,2], [2]) → 2",
+            "Device sends handshake response with Final Protocol Version = 2",
+            "Session established on PAFTP v2 (vulnerable) instead of v4 (current)",
+            "Impact: If v2 has known vulnerabilities, attacker can now exploit them"
+          ],
+          "severity": "CRITICAL",
+          "note": "This is classic version downgrade attack. Requires MITM position on Wi-Fi. Made possible because PAFTP spec explicitly states it has no cryptographic protection (relies on WFA-USD or Matter layer). If those layers don't protect handshake, vulnerability exists."
+        },
+        "recommendations": [
+          "Spec should require: 'Version negotiation SHALL be cryptographically authenticated by Matter session layer' OR 'WFA-USD SHALL provide authenticated channel for handshake'",
+          "Alternative: Include version commitment in handshake response that Matter layer can verify: e.g., HMAC(commissioner_version_list || device_version_list, matter_session_key)",
+          "Document explicitly: 'Version downgrade attacks are mitigated by [specific mechanism in WFA-USD/Matter layer]' with reference to those specs"
+        ]
+      },
+      {
+        "property_id": "PROP_003",
+        "property_name": "SEQUENCE_NUMBER_INTEGRITY",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "PE_AckRx_Stopped_AckTx_Ticking",
+              "trigger": "packet_received",
+              "guard": "valid_sequence_number(received_packet) == true",
+              "guard_insufficiency": "valid_sequence_number() checks seq == expected_seq, but doesn't verify packet authenticity. Attacker can craft packet with correct seq.",
+              "action": "validate_sequence_increment(received_packet)",
+              "result_state": "PE_AckRx_Stopped_AckTx_Ticking (stay)",
+              "violation": "Injected packet with forged but  valid seq accepted"
+            }
+          ],
+          "violation_mechanism": "Sequence number validation (S49) only checks monotonic increment by 1. No cryptographic MAC or signature on packets. Attacker can: 1) Observe expected_seq, 2) Inject packet with seq=expected_seq, 3) Packet passes validation. Even though spec says 'Peers SHALL check proper increment' (S49), checking sequence value doesn't ensure packet came from legitimate peer.",
+          "violation_paths_found": 1
+        },
+        "specification_evidence": [
+          {
+            "quote": "Peers SHALL check to ensure that all received PAFTP packets properly increment the sender's previous sequence number by 1. If this check fails, the peer SHALL close the PAFTP session and report an error to the application.",
+            "source": "Section 4.20.3.6, 'Sequence Numbers', Paragraph on validation",
+            "context": "Sequence number validation requirement",
+            "gap": "Spec requires checking sequence INCREMENT but not checking sequence AUTHENTICITY. Assumes packets cannot be injected/forged."
+          },
+          {
+            "quote": "PAFTP itself specifies no cryptographic protection (no encryption, MAC, or signatures).",
+            "source": "Section in security_assumptions (from generated FSM analysis)",
+            "context": "PAFTP design decision to rely on lower/upper layers for security",
+            "supports_verdict": "Explicit acknowledgement that PAFTP has no packet authentication"
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Sequence number integrity prevents replay and injection (property description)",
+          "what_spec_fails_to_specify": "Sequence number validation alone doesn't provide integrity. Need cryptographic protection. Spec acknowledges 'relies on WFA-USD or Matter layer' but doesn't specify WHAT protection is needed (MAC? Encryption? Both?) or WHERE in those layers.",
+          "consequence": "Active attacker on Wi-Fi can inject packets with correct sequence numbers, causing: 1) Command injection, 2) Replay attacks (if attacker observes valid packet and replays with correct seq), 3) Session hijacking",
+          "security_impact": "Breaks 'authenticity' type of this property. Sequence numbers provide ordering but not origin authentication."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Legitimate session established between Commissioner and Device",
+            "Attacker observes: expected_seq = 5 (by observing previous packets or inferring from traffic pattern)",
+            "Attacker crafts malicious packet: [Control_Flags][Seq=5][Payload=malicious_command]",
+            "Attacker injects packet on Wi-Fi",
+            "Receiver executes: validate_sequence_increment() → seq=5 matches expected_seq=5 → PASS",
+            "Receiver processes malicious payload as legitimate",
+            "Legitimate sender's packet arriving later with seq=5 will fail validation (seq doesn't increment)",
+            "Impact: Attacker successfully injected command; legitimate command rejected"
+          ],
+          "severity": "CRITICAL",
+          "note": "This attack requires: 1) MITM/injection capability on Wi-Fi, 2) Knowledge of expected sequence number (easy to infer), 3) Absence of cryptographic protection on packets. Spec assumption that WFA-USD/Matter provide protection may not hold if those layers don't protect this specific frame type."
+        },
+        "recommendations": [
+          "Spec should explicitly state: 'PAFTP sequence number integrity depends on [WFA-USD/Matter] providing authenticated encryption with section reference'",
+          "Spec should warn: 'Implementations must verify that WFA-USD SDF Follow-up messages carrying PAFTP are cryptographically protected against injection and modification'",
+          "Spec should reference: Specific sections in WFA-USD and Matter specs that define required protection"
+        ]
+      },
+      {
+        "property_id": "PROP_004",
+        "property_name": "ACKNOWLEDGEMENT_VALIDITY",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "PE_AckRx_Ticking_AckTx_Stopped",
+              "description": "Peer has sent packet seq=10, waiting for ack, timer ticking",
+              "attacker_observation": "Attacker observes outstanding packet seq=10"
+            },
+            {
+              "state": "packet_injection",
+              "attacker_action": "Attacker injects forged packet: [A=1][Ack=10][Seq=arbitrary]",
+              "reason": "Prematurely ack the packet to manipulate window or cause timeout"
+            },
+            {
+              "state": "PE_AckRx_Ticking_AckTx_Stopped",
+              "trigger": "ack_received_for_most_recent",
+              "guard": "is_valid_ack(received_ack) == true && received_ack == most_recent_sent_seq",
+              "guard_evaluation": "is_valid_ack(10) checks: '10 ∈ outstanding_unacked_seqs' → TRUE (packet 10 is outstanding)",
+              "guard_insufficiency": "is_valid_ack() doesn't verify ack CAME FROM legitimate peer, only that ack VALUE corresponds to outstanding packet",
+              "action": "acknowledge_cumulative(10), stop_timer(ack_rx_timer)",
+              "result_state": "PE_AckRx_Stopped_AckTx_Ticking",
+              "violation": "Forged ack accepted, timer stopped, window reopened prematurely"
+            }
+          ],
+          "violation_mechanism": "Acknowledgement validation (S71: 'invalid if seq doesn't correspond to outstanding packet') checks VALUE validity but not ORIGIN authenticity. Attacker knowing outstanding seq can forge ack. Without cryptographic MAC, receiver cannot distinguish legitimate ack from forged ack.",
+          "violation_paths_found": 1
+        },
+        "specification_evidence": [
+          {
+            "quote": "An acknowledgement is invalid if the acknowledged sequence number does not correspond to an outstanding, unacknowledged PAFTP packet sequence number. [...] if a peer receives an invalid acknowledgement, the peer SHALL close the PAFTP session",
+            "source": "Section 4.20.3.8, 'Packet Acknowledgements', Paragraph on ack validity (S71)",
+            "context": "Defines what makes an ack 'invalid'",
+            "gap": "Definition of 'invalid' is based on sequence number VALUE only, not on cryptographic authenticity. Doesn't protect against forged acks with valid sequence numbers."
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Invalid acknowledgements cause session closure, preventing state corruption (property description)",
+          "what_spec_fails_to_specify": "How to determine if acknowledgement is AUTHENTIC (from legitimate peer) vs. VALID (correct sequence value). Spec only defines value-based validity, assumes authenticity via unspecified lower-layer protection.",
+          "consequence": "Attacker can forge acknowledgements to: 1) Prematurely reopen send window → flood attack, 2) Stop ack-rx timer → prevent timeout on unresponsive peer, 3) Manipulate flow control state",
+          "security_impact": "Breaks 'consistency' type of this property. Flow control and timeout mechanisms can be bypassed."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Commissioner sends data packet seq=10 to Device",
+            "Commissioner starts ack-rx timer (15s)",
+            "Device should ack within 7.5s (send-ack timer)",
+            "Attack scenario: Device is compromised/offline, won't send ack",
+            "Attacker (separate entity) observes seq=10 was sent",
+            "Attacker injects forged ack: [A=1][Ack=10][Seq=100]",
+            "Commissioner receives forged ack",
+            "Commissioner validates: is_valid_ack(10) → '10 in outstanding_unacked?' → YES",
+            "Commissioner executes: acknowledge_cumulative(10), stop_timer(ack_rx_timer), remote_window_counter++",
+            "Result: Commissioner believes Device received packet (it didn't), timer stopped (won't timeout), window reopened (can send more)",
+            "Impact: Session stays alive despite Device being unresponsive (zombie session), flow control bypassed"
+          ],
+          "severity": "HIGH",
+          "note": "This enables: 1) Flood attacks (premature window reopen), 2) DoS (prevent legitimate timeout/recovery), 3) State desynchronization (sender thinks receiver has data, receiver doesn't)"
+        },
+        "recommendations": [
+          "Spec must state: 'Acknowledgement authenticity is provided by [specific mechanism]' with reference to WFA-USD/Matter layer spec sections",
+          "Spec should add: 'Implementation SHALL verify that WFA-USD provides authenticated channel for all PAFTP packets including standalone acks'",
+          "Consider: Add ack validation beyond sequence check, e.g., timing constraints (ack arrival time consistent with RTT), nonce/challenge-response"
+        ]
+      },
+      {
+        "property_id": "PROP_007",
+        "property_name": "IDLE_TIMEOUT_ENFORCEMENT",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "DL_Connected (Device)",
+              "description": "Device has established PAFTP session with Commissioner",
+              "current_behavior": "Device has NO idle timeout transitions in FSM (no T_DL_Idle_Timeout equivalent)"
+            },
+            {
+              "state": "PE_AckRx_Ticking_AckTx_Stopped (Device)",
+              "description": "Device is in post-establishment state",
+              "spec_requirement": "Idle timeout of 30s for 'no unique data sent'",
+              "fsm_transitions": "T_PE_22, T_PE_23, T_PE_24 - ALL have guard: 'role == commissioner'",
+              "violation": "Device role does NOT have idle timeout transitions"
+            },
+            {
+              "state": "Idle scenario",
+              "scenario": "Commissioner goes offline without closing connection",
+              "expected_behavior_commissioner": "Commissioner should timeout after 30s and close (T_PE_22-24)",
+              "actual_behavior_commissioner": "Commissioner is offline, cannot execute timeout",
+              "expected_behavior_device": "Device should also timeout and close session",
+              "actual_behavior_device": "Device has NO idle timeout mechanism, session remains open indefinitely",
+              "result": "Zombie session on Device: resources locked, session slot occupied, never freed"
+            }
+          ],
+          "violation_mechanism": "FSM models idle timeout (PAFTP_CONN_IDLE_TIMEOUT) only for Commissioner role (T_PE_22-24 guards all have 'role == commissioner'). Device has no equivalent transitions. Spec says 'Commissioner must close' but is silent on Device behavior. Asymmetric timeout enforcement creates resource exhaustion vulnerability on Device side.",
+          "violation_paths_found": 1
+        },
+        "specification_evidence": [
+          {
+            "quote": "PAFTP_CONN_IDLE_TIMEOUT: The maximum amount of time no unique data has been sent over a PAFTP session before the Commissioner must close the PAFTP session.",
+            "source": "Table 42, 'Glossary of constants', PAFTP_CONN_IDLE_TIMEOUT row",
+            "context": "Defines idle timeout constant",
+            "gap": "Explicitly says 'Commissioner must close' but doesn't specify Device behavior. Device timeout is unspecified."
+          },
+          {
+            "quote": "A Commissionable Device MAY terminate the publish instance, to close a PAFTP session.",
+            "source": "Section 4.20.3.10, 'Connection Shutdown'",
+            "context": "Discusses connection termination",
+            "gap": "'MAY terminate' is permissive, not mandatory. Doesn't require Device to timeout idle sessions. No timeout duration specified for Device."
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Idle timeout limits idle resource consumption (property description for IDLE_TIMEOUT_ENFORCEMENT)",
+          "what_spec_fails_to_specify": "Device behavior on idle timeout. Spec only mandates Commissioner timeout (30s). Device has 'MAY terminate' but no SHALL requirement, no timeout value, no conditions under which Device should close idle session.",
+          "consequence": "If Commissioner crashes/disconnects without closing (e.g., power loss, network partition), Device session remains open indefinitely. Repeated occurrences exhaust Device session slots → DoS.",
+          "security_impact": "Resource exhaustion on Commissionable Device. Attacker repeatedly initiates sessions from Commissioner, crashes Commissioner before idle timeout, Device accumulates zombie sessions until unable to accept new legitimate connections."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Commissioner establishes PAFTP session with Device",
+            "Commissioner sends one packet, session goes idle",
+            "Commissioner crashes (power loss, forced reboot) without sending close",
+            "Expected: Both peers should timeout and free resources after 30s idle",
+            "Actual Commissioner: Commissioner offline, no timeout executed (but resources already lost due to crash)",
+            "Actual Device: FSM has NO idle timeout for Device role",
+            "Device behavior: T_PE_23 guard: 'idle_timer_remaining == 0 && role == commissioner' → FALSE (Device role)",
+            "30 seconds pass... Device session remains OPEN",
+            "60 seconds pass... Device session remains OPEN",
+            "Result: Zombie session on Device persists until manual intervention or device reboot",
+            "Attack: Attacker repeats this 10 times → 10 zombie sessions on Device → Device exhausts session slots → cannot accept new legitimate Commissioners"
+          ],
+          "severity": "MEDIUM",
+          "note": "Attack requires ability to crash Commissioner or force network partition. Severity is MEDIUM (not HIGH) because it's resource exhaustion not data corruption, and requires specific conditions. But it's a clear protocol design asymmetry."
+        },
+        "recommendations": [
+          "Spec should add: 'Commissionable Device SHALL also close PAFTP session after PAFTP_CONN_IDLE_TIMEOUT (30 seconds) of no unique data received or sent'",
+          "Define: 'Both peers SHALL maintain idle timer. Either peer detecting idle timeout SHALL initiate session closure.'",
+          "Or: 'Device SHALL close session after PAFTP_DEVICE_IDLE_TIMEOUT (recommend 60s, 2x Commissioner timeout) to account for Commissioner processing delay'"
+        ]
+      },
+      {
+        "property_id": "PROP_008",
+        "property_name": "SDU_TRANSMISSION_ATOMICITY",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "DT_Fragments_Pending",
+              "description": "Sender is transmitting multi-segment SDU (fragmented message)",
+              "scenario": "SDU size: 1000 bytes, segment size: 300 bytes → requires 4 segments (seq 10, 11, 12, 13)",
+              "current_progress": "Sent segments seq=10, 11, 12 (M=1 for all). Segment 13 (M=0, final) pending"
+            },
+            {
+              "state": "DT_Fragments_Pending",
+              "trigger": "error_occurs (e.g., ack timeout, invalid packet received, application error)",
+              "action": "close_session(error_reason)",
+              "result_state": "PE_Closing",
+              "receiver_state": "Received segments 10, 11, 12; waiting for final segment 13"
+            },
+            {
+              "state": "PE_Closing → PE_Closed",
+              "description": "Session closes before final segment sent",
+              "receiver_behavior": "Has partial SDU (900 bytes of 1000 bytes) in reassembly buffer",
+              "spec_requirement": "S53: 'PAFTP SHALL deliver entire SDU or nothing'",
+              "actual_behavior": "FSM has NO detection that SDU was incomplete. No M-bit check on session close. No callback to clear partial reassembly buffer.",
+              "violation": "Receiver may deliver incomplete SDU to application OR leave partial SDU in memory (leak)"
+            }
+          ],
+          "violation_mechanism": "FSM models session closure transitions (T_PE_12-19, T_PE_22-24) but NONE check if partial SDU reassembly is in progress. No guard: 'has_incomplete_sdu() == false' before allowing close. Spec S53 says 'SHALL deliver entire SDU or nothing' but doesn't mandate checking this on abnormal close. Race condition: timeout/error can occur between M=1 segment and M=0 segment.",
+          "violation_paths_found": 8
+        },
+        "specification_evidence": [
+          {
+            "quote": "PAFTP SHALL ensure that application service data units (SDUs) being transmitted are either fully received by the intended peer or if the reliable delivery is not possible a clear indication of the failure SHALL be reported to the application.",
+            "source": "Section 4.20.3.5, 'Reliable Delivery', S52",
+            "context": "Atomicity requirement for SDU transmission",
+            "gap": "Spec says 'SHALL ensure entire SDU delivered' but doesn't specify mechanism for: 1) Detecting partial SDU on close, 2) Notifying application of incomplete transfer, 3) Cleaning up partial reassembly state"
+          },
+          {
+            "quote": "If the final segment has been sent and acknowledged (M was set to 0 in that segment and an acknowledgement was received), the SDU is considered fully transmitted.",
+            "source": "Section 4.20.3.5, 'Reliable Delivery', Paragraph on SDU completion",
+            "context": "Definition of successful SDU transmission",
+            "gap": "Defines success case but not failure case. What happens if session closes before final segment (M=0) is sent/acked? Should sender notify application? Should receiver discard partial SDU?"
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "SDU atomicity: entire SDU delivered or clear failure indication (S52)",
+          "what_spec_fails_to_specify": "Behavior on session close with partial SDU: 1) Sender-side: Does sender notify application that SDU failed? Which error code? 2) Receiver-side: Does receiver discard partial SDU? Deliver partial SDU with error? How to detect incomplete? 3) FSM: No state tracking 'SDU_transmission_in_progress' to prevent close during critical transfer",
+          "consequence": "Application may believe SDU was sent when it wasn't (sender false negative), or receive corrupted partial data (receiver false positive). Memory leak from unreleased reassembly buffers.",
+          "security_impact": "Medium. Data corruption at application layer. Potential DoS via repeated partial SDU transfers exhausting receiver memory."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Matter application sends 1000-byte commissioning credential to Device",
+            "PAFTP fragments into 4 segments (each 250 bytes): seq=20(M=1), 21(M=1), 22(M=1), 23(M=0)",
+            "Sender successfully transmits seq=20, 21, 22; acks received; remote_window_counter decremented",
+            "Before sending seq=23 (final): ack-rx timer expires (15s) due to network congestion",
+            "Sender executes: T_PE_12: ack_rx_timer_expired → PE_Closing",
+            "Sender closes session, reports error to Matter layer",
+            "Receiver has seq=20, 21, 22 in reassembly buffer (750 bytes), waiting for M=0 segment",
+            "Receiver detects session close (T_PE_16: close_received)",
+            "Spec behavior undefined: Does receiver call application_sdu_delivery_failed()? Or application_sdu_complete(partial_data)?",
+            "Attack scenario: Attacker repeatedly triggers close during SDU transfer (e.g., by dropping acks) to exhaust receiver memory with partial SDUs in reassembly buffers",
+            "Impact: Credential not delivered (commissioning fails), OR partial credential delivered (250 bytes missing → authentication fails cryptically)"
+          ],
+          "severity": "MEDIUM",
+          "note": "Severity is MEDIUM not HIGH because: 1) Requires specific timing (close during fragmented transfer), 2) Impact is data corruption not system compromise. But still violates spec claim of 'entire SDU or nothing'."
+        },
+        "recommendations": [
+          "Spec should add: 'On session close, both peers SHALL discard any partially reassembled SDUs and report SDU_DELIVERY_FAILED to application for each incomplete SDU'",
+          "FSM should add guard: 'before allowing close, call clear_partial_reassembly_buffers()'",
+          "Define error code: 'PAFTP_SDU_INCOMPLETE' to distinguish session close with pending SDU from normal close",
+          "Add state: 'DT_SDU_in_Progress' with counter tracking: 'Count of M=1 segments sent but final M=0 not yet acked'. Block close if counter > 0 unless timeout/error."
+        ]
+      },
+      {
+        "property_id": "PROP_009",
+        "property_name": "REASSEMBLY_LENGTH_VERIFICATION",
+        "verdict": "PARTIALLY_HOLDS",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "DT_Receiving_Fragment",
+              "description": "Receiver accumulating segments for reassembly",
+              "normal_operation": "First segment contains Message Length field (2 bytes) declaring total SDU size"
+            },
+            {
+              "state": "packet_injection",
+              "attacker_action": "Attacker modifies Message Length field in first segment",
+              "example": "Actual SDU is 1000 bytes (4 segments), attacker changes Message Length to 600 bytes (truncation) or 1500 bytes (overflow)"
+            },
+            {
+              "state": "DT_Reassembly_Complete",
+              "trigger": "final_segment_received (M=0)",
+              "action": "reassemble_segments(received_segments, declared_message_length)",
+              "spec_check": "S52: 'peer SHALL check segments reassemble to declared length'",
+              "fsm_implementation": "reassemble_complete_sdu() performs check: reassembled_length == message_length",
+              "vulnerability_1_truncation": "If attacker set message_length=600 but actual SDU=1000 bytes → Check FAILS at 600 bytes, discards segments 601-1000 → receiver accepts truncated message as complete",
+              "vulnerability_2_overflow": "If attacker set message_length=1500 but actual SDU=1000 bytes → Check FAILS (expects more), may allocate 1500-byte buffer → potential buffer over-read or DoS waiting for phantom segments"
+            }
+          ],
+          "violation_mechanism": "Spec requires length verification (S52) and FSM implements it in reassemble_segments(). HOWEVER: Without cryptographic protection on Message Length field, attacker can modify it. Spec assumes integrity of header fields but PAFTP has no crypto (security_assumptions: 'no MAC, no encryption'). Length check HOLDS against corruption/accident but VIOLATED against active attacker.",
+          "violation_paths_found": 2
+        },
+        "specification_evidence": [
+          {
+            "quote": "When the peer receives all of the segments for a given message, the peer SHALL check to ensure that these segments correctly reassemble to the original Service Data Unit according to the Message Length. If this check fails, the peer SHALL close the PAFTP session and report an error to the application.",
+            "source": "Section 4.20.3.5, 'Reliable Delivery', S52",
+            "context": "Reassembly verification requirement",
+            "supports_verdict": "Spec mandates verification but assumes Message Length field is authentic. Doesn't address modified Message Length attack."
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Reassembly length verification prevents corruption (property description: 'consistency' type)",
+          "what_spec_fails_to_specify": "Message Length field integrity. Spec requires checking reassembled_length == message_length but doesn't ensure message_length itself is trustworthy. If attacker modifies message_length in transit, verification becomes meaningless (garbage-in, garbage-out).",
+          "consequence": "Attacker can cause: 1) Truncation attack (reduce message_length → receiver accepts partial SDU), 2) Overflow(potential) (increase message_length → buffer sizing issues), 3) DoS (set message_length to huge value → memory exhaustion)",
+          "security_impact": "Medium-High. Data integrity violation (truncation), potential memory corruption (overflow), DoS (resource exhaustion)"
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Commissioner sends 1000-byte SDU: Message Length=1000, 4 segments",
+            "First segment: [Seq=10][M=1][Message Length=1000][Payload 0-299]",
+            "Attacker intercepts first segment, modifies: Message Length=1000 → 400",
+            "Device receives modified first segment: Message Length=400",
+            "Device receives segments seq=10, 11 (800 bytes total)",
+            "Attacker drops segments seq=12, 13 (bytes 800-999)",
+            "Device waits 15s (ack timeout), then executes: reassembled_length(800) != message_length(400) → FALSE",
+            "Wait, this doesn't match. Let me reconsider...",
+            "Actually, if attacker sets Message Length=400 and allows segments 10, 11 (first 400 bytes) through, then drops 12, 13:",
+            "Device receives seq=10 (300 bytes, M=1), seq=11 (100 bytes, M=1)",
+            "If segment 11 has M=0 modified by attacker: Device thinks SDU complete at 400 bytes",
+            "Device executes: reassembled_length(400) == message_length(400) → TRUE → accept_sdu(truncated_400_bytes)",
+            "Application receives credential_part1 without credential_part2 → authentication fails cryptically",
+            "Impact: Truncation attack successful, data corruption at application layer"
+          ],
+          "severity": "HIGH",
+          "note": "This attack requires: 1) MITM to modify Message Length and M-bit, 2) Ability to drop subsequent segments. Severity HIGH because it causes data corruption that passes validation."
+        },
+        "recommendations": [
+          "Spec should require: 'Message Length field SHALL be cryptographically protected by [WFA-USD/Matter layer]'",
+          "Add sanity check: 'Message Length SHALL NOT exceed 10 * Supported Maximum Service Specific Info Length' to prevent overflow DoS",
+          "Spec should reference: Specific sections in WFA-USD/Matter that provide field integrity protection"
+        ]
+      },
+      {
+        "property_id": "PROP_010",
+        "property_name": "RESERVED_BITS_ZERO",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "PE_AckRx_Stopped_AckTx_Ticking",
+              "trigger": "packet_received",
+              "guard_condition": "valid_sequence_number(received_packet) == true",
+              "guard_insufficiency": "valid_sequence_number() checks seq field only. NO CHECK: reserved_bits(received_packet) == 0",
+              "spec_requirement": "S47: 'Reserved bits SHALL be set to 0'. S81: 'Reserved bits…set to 0 by sender'",
+              "actual_fsm_behavior": "No guard validates reserved bits. Packet with non-zero reserved bits accepted and processed.",
+              "result": "Packet processed normally despite violating spec S47"
+            }
+          ],
+          "violation_mechanism": "Spec requires reserved bits to be zero (S47 for data packets, S81 for handshake response, S84 for close) but mandates this on SENDER ('SHALL set to 0') without mandating RECEIVER validation ('SHALL reject if not 0'). FSM has no validation logic. This creates: 1) Forward-compatibility hazard (if future version uses reserved bits, old implementation won't detect version mismatch), 2) Robustness issue (corrupted packets with flipped reserved bits accepted), 3) Security probing vector (attacker tests reserved bits to fingerprint implementation)",
+          "violation_paths_found": 1
+        },
+        "specification_evidence": [
+          {
+            "quote": "All Control Flags bits not mentioned in the above list are reserved, and SHALL be set to '0'.",
+            "source": "Section 4.20.3.4, 'PAFTP Packet Format', Control Flags description (S47)",
+            "context": "Reserved bits requirement for data packets",
+            "gap": "Says 'SHALL be set to 0' (sender requirement) but silent on receiver validation. Doesn't say 'SHALL reject if not 0' or 'SHALL ignore'"
+          },
+          {
+            "quote": "The 4-bit field following the Final Protocol Version SHALL be set to 0.",
+            "source": "Section 4.20.3.2, 'PAFTP Handshake Response', Reserved field description (S81)",
+            "context": "Reserved bits in handshake response",
+            "gap": "Same issue: sender requirement without receiver validation mandate"
+          },
+          {
+            "quote": "Reserved fields in the PAFTP Close Packet SHALL be set to '0'.",
+            "source": "Section 4.20.3.10, 'Connection Shutdown', Close packet format (S84)",
+            "context": "Reserved bits in close packet",
+            "gap": "Same pattern: transmission requirement without reception validation"
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Reserved bits protocol consistency (property description: 'consistency' type)",
+          "what_spec_fails_to_specify": "Receiver behavior when reserved bits are non-zero. Three options: 1) REJECT packet (strict), 2) IGNORE reserved bits (tolerant), 3) UNSPECIFIED (current). Spec chose #3 by omission. This violates Postel's Robustness Principle ('be conservative in what you send, liberal in what you accept') - no guidance on reception.",
+          "consequence": "1) Forward-compatibility issue: If PAFTP v5 defines meaning for reserved bit, v4 implementation will silently accept v5 packets without detecting version mismatch, causing undefined behavior. 2) Security: Attacker sets reserved bits to fingerprint implementations or probe for buffer overflows in parsing. 3) Debugging difficulty: Corrupted packets with flipped bits accepted, making diagnosis harder.",
+          "security_impact": "LOW. More of a robustness/compatibility issue than direct security vulnerability. But enables implementation fingerprinting and potential future exploits in version negotiation."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Legitimate PAFTP v4 session established",
+            "Attacker injects packet: [Control_Flags=0x25][Seq=10][...] where bit-6 (reserved in v4) is set to 1",
+            "Spec requires: 'Reserved bits SHALL be 0' → packet should be rejected",
+            "FSM behavior: valid_sequence_number(packet) checks seq=10 → TRUE (expected seq)",
+            "No guard checks: reserved_bits(packet) == 0",
+            "Packet accepted and processed with reserved bit set",
+            "Scenario A (Fingerprinting): Attacker tests which reserved bits cause rejection → identifies exact PAFTP version/implementation",
+            "Scenario B (Future vulnerability): PAFTP v5 defines bit-6 as 'enable_compression'. v4 receiver accepts v5 packet, misinterprets compressed payload as uncompressed → buffer overflow or crash",
+            "Impact: Version mismatch not detected, undefined behavior"
+          ],
+          "severity": "LOW",
+          "note": "Low severity in current spec context. But failure to validate reserved fields is a protocol design antipattern that enables future vulnerabilities."
+        },
+        "recommendations": [
+          "Spec should add: 'Peers SHALL reject any packet with non-zero reserved bits and close the PAFTP session with error UNSUPPORTED_PACKET_FORMAT'",
+          "Or (more tolerant): 'Peers SHALL ignore the value of reserved bits for forward compatibility'",
+          "FSM should add guard: 'reserved_bits(received_packet) == 0' to all packet reception transitions",
+          "Alternatively: Add to valid_packet() function: 'Check reserved fields are zero as part of format validation'"
+        ]
+      },
+      {
+        "property_id": "PROP_012",
+        "property_name": "HANDSHAKE_TIMEOUT_ENFORCEMENT",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "DL_WFA_USD_Connected",
+              "description": "Device listening for handshake request from Commissioner",
+              "spec_says": "Table 42: PAFTP_HANDSHAKE_TIMEOUT = 30 seconds",
+              "spec_gap": "Spec doesn't say WHO enforces timeout or WHEN timer starts. Does Device timeout waiting for request?"
+            },
+            {
+              "state": "DL_WFA_USD_Connected (Device waiting)",
+              "attack": "Commissioner establishes WFA-USD but never sends handshake request (malicious or crashed)",
+              "fsm_behavior": "FSM has no T_DL_Timeout_Waiting_For_Request transition",
+              "expected": "Device should timeout after 30s and close WFA-USD connection",
+              "actual": "Device waits indefinitely in DL_WFA_USD_Connected state",
+              "result": "Resource exhaustion: Device holds WFA-USD connection slot forever, cannot accept new Commissioners"
+            },
+            {
+              "state": "CL_Handshake_Request_Sent",
+              "description": "Commissioner sent request, waiting for response",
+              "fsm_has": "T_CL_05: handshake_timeout → CL_Error",
+              "guard": "handshake_timer_remaining == 0",
+              "spec_alignment": "Correctly implements timeout on Commissioner side"
+            },
+            {
+              "state": "DL_Handshake_Request_Received",
+              "description": "Device received request, processing",
+              "fsm_has": "T_DL_07: internal_processing_timeout → DL_Error",
+              "issue": "This is 'processing timeout' not 'handshake timeout'. Spec unclear if these are same timer or different timers."
+            }
+          ],
+          "violation_mechanism": "Spec defines PAFTP_HANDSHAKE_TIMEOUT constant but doesn't specify: 1) INITIATOR timeout (Commissioner waiting for response) - FSM has this (T_CL_05), 2) RESPONDER timeout (Device waiting for request to arrive) - FSM MISSING this, 3) When timer starts: at WFA-USD connect or at first packet? Asymmetry: Commissioner has timeout, Device doesn't (for initial wait).",
+          "violation_paths_found": 1
+        },
+        "specification_evidence": [
+          {
+            "quote": "PAFTP_HANDSHAKE_TIMEOUT: The maximum amount of time a peer will wait for successful PAFTP connection establishment before canceling the attempt.",
+            "source": "Table 42, 'Glossary of constants', PAFTP_HANDSHAKE_TIMEOUT row",
+            "context": "Defines 30-second handshake timeout",
+            "gap": "'peer will wait for successful establishment' is vague. Does this apply to: A) Commissioner waiting for response after sending request? B) Device waiting for request after WFA-USD connect? C) Both? Spec doesn't distinguish roles."
+          },
+          {
+            "quote": "The Commissioner SHALL send a PAFTP handshake request message on this WFA-USD connection immediately after the WFA-USD connection becomes established.",
+            "source": "Section 4.20.3.3, 'Session Establishment'",
+            "context": "Commissioner behavior on WFA-USD connect",
+            "gap": "'Immediately' suggests no delay, but what if Commissioner crashes after WFA-USD connect before sending request? Device has no protection."
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Handshake timeout limits connection establishment time (30s)",
+          "what_spec_fails_to_specify": "Device behavior when handshake request never arrives. Spec says Commissioner shall send 'immediately' but doesn't mandate Device timeout for this case. Only Commissioner has explicit timeout (waiting for response). Creates asymmetric vulnerability.",
+          "consequence": "Device DoS: Attacker establishes many WFA-USD connections without sending handshake requests. Each Device waits indefinitely, exhausting connection slots. Device cannot accept legitimate Commissioners.",
+          "security_impact": "MEDIUM. Resource exhaustion on Device. Requires attacker to establish multiple WFA-USD connections (requires proximity, Wi-Fi access)."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Attacker(s) establish 10 WFA-USD connections to Device (within Wi-Fi range)",
+            "For each connection: Attacker completes WFA-USD handshake but never sends PAFTP handshake request",
+            "Device FSM: 10 sessions in DL_WFA_USD_Connected state, waiting for handshake requests",
+            "Expected (per PAFTP_HANDSHAKE_TIMEOUT): Each should timeout after 30s, close connection",
+            "Actual: No timeout transition exists for DL_WFA_USD_Connected → DL_Error/DL_Closed",
+            "Result: All 10 sessions wait indefinitely",
+            "Device exhausts connection slots (spec doesn't define limit but implementation will have one)",
+            "Legitimate Commissioner cannot establish WFA-USD connection (slots full)",
+            "Impact: Device unavailable for commissioning, DoS"
+          ],
+          "severity": "MEDIUM",
+          "note": "Severity MEDIUM because: 1) Requires attacker proximity (Wi-Fi range), 2) Requires multiple WFA-USD connections (implementation may limit), 3) Device reboot recovers. But it's a clear protocol asymmetry enabling DoS."
+        },
+        "recommendations": [
+          "Spec should add: 'Commissionable Device SHALL close WFA-USD connection if PAFTP handshake request not received within PAFTP_HANDSHAKE_TIMEOUT (30 seconds) after WFA-USD connection established'",
+          "FSM should add: T_DL_Timeout_Waiting_Request: DL_WFA_USD_Connected → DL_Error, guard: 'time_since_wfa_usd_connect > PAFTP_HANDSHAKE_TIMEOUT', action: 'close_wfa_usd_connection(HANDSHAKE_TIMEOUT)'",
+          "Clarify: Start handshake timer on both peers at WFA-USD connection establishment"
+        ]
+      },
+      {
+        "property_id": "PROP_014",
+        "property_name": "SEGMENT_ORDERING_ENFORCEMENT",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "DT_Receiving_Fragment",
+              "description": "Receiver accumulating segments for multi-segment SDU",
+              "normal_flow": "Sender transmits segments seq=10, 11, 12, 13 (in order). Receiver assembles in order.",
+              "spec_requirement": "S48: 'segments SHALL be sent in order'. S51: 'peer SHALL reassemble in ascending order of sequence numbers'"
+            },
+            {
+              "state": "Attack: Out-of-order delivery",
+              "attacker_capability": "Attacker has MITM position, can reorder packets on Wi-Fi",
+              "attack": "Attacker reorders: sends seq=13 (final, E=1) before seq=12",
+              "receiver_sees": "seq=10 (M=1), seq=11 (M=1), seq=13 (E=1), seq=12 (M=1)"
+            },
+            {
+              "state": "DT_Reassembly",
+              "fsm_action": "reassemble_segments() with 'ascending order' requirement",
+              "problem": "Algorithm: 'sort received segments by seq, concatenate payloads'",
+              "scenario_A": "If seq doesn't wrap: sorted order = 10,11,12,13 → correct reassembly despite delivery order",
+              "scenario_B": "If seq wraps: received seq=254, 255, 0, 1 but delivered out-of-order: 255, 1, 254, 0. Naïve numeric sort: 0, 1, 254, 255 → INCORRECT order (should be 254, 255, 0, 1)",
+              "vulnerability": "With 8-bit seq (wraps at 256), attacker can exploit wrap boundary to cause incorrect reassembly"
+            }
+          ],
+          "violation_mechanism": "Spec requires sending in order (S48) but cannot enforce reception in order (network may reorder, attacker may reorder). Reassembly algorithm must handle out-of-order arrival robustly. However, with 8-bit sequence numbers wrapping at 256, distinguishing 'seq=255 then seq=0' (normal wrap) from 'seq=0 then seq=255' (out-of-order) requires additional context (e.g., tracking expected seq). FSM's reassemble_segments() using 'ascending order' is ambiguous at wrap boundary. Without crypto, attacker can deliberately reorder to exploit this.",
+          "violation_paths_found": 1
+        },
+        "specification_evidence": [
+          {
+            "quote": "If a PAFTP SDU is split into more than one PAFTP segment, the PAFTP segments SHALL be sent in order of their position in the original PAFTP SDU, starting with the PAFTP segment at the buffer's head.",
+            "source": "Section 4.20.3.5, 'Message Segmentation and Reassembly', S48",
+            "context": "Sending requirement",
+            "gap": "Requires sender to send in order but doesn't address: 1) How receiver handles out-of-order arrival, 2) Whether out-of-order arrival is allowed or should cause error"
+          },
+          {
+            "quote": "A peer SHALL reassemble PAFTP segments in the ascending order of the segment sequence numbers.",
+            "source": "Section 4.20.3.5, 'Message Segmentation and Reassembly', S51",
+            "context": "Reassembly requirement",
+            "gap": "'Ascending order' is ambiguous with wraparound. Does it mean: A) Numerical ascending (0 < 1 < 255), or B) Sequence-flow ascending (255 → 0 wrap)? For 8-bit seq, these differ at boundary."
+          },
+          {
+            "quote": "Peers SHALL check to ensure that all received PAFTP packets properly increment the sender's previous sequence number by 1. If this check fails, the peer SHALL close the PAFTP session and report an error to the application.",
+            "source": "Section 4.20.3.6, 'Sequence Numbers', S49",
+            "context": "Sequence validation",
+            "implication": "Strict 'increment by 1' check means out-of-order arrival should fail validation → session close. So out-of-order is NOT allowed."
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Segments reassembled in correct order (S51), sequence increment validated (S49)",
+          "what_spec_fails_to_specify": "Conflict: S49 says 'increment by 1' which implies order enforcement (reject out-of-order), but S51 says 'reassemble in ascending order' which implies tolerating out-of-order arrival. Which takes precedence? If S49 is strict, out-of-order causes close (correct but harsh). If S51 allows reordering, S49 must be relaxed (buffers out-of-order segments until gap fills). Spec doesn't choose.",
+          "consequence": "Implementation ambiguity leads to: 1) Strict interpretation (S49 enforced) → network reordering causes false session close → poor reliability, 2) Lenient interpretation (S51 buffering) → must handle wraparound correctly → complex, potential bugs. Without crypto, attacker exploits whichever interpretation exists.",
+          "security_impact": "MEDIUM. If strict: DoS via induced reordering. If lenient: potential reassembly bugs at wraparound boundary."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Commissioner sends large SDU requiring segments seq=253, 254, 255, 0, 1 (5 segments, wraparound at 256)",
+            "Normal network: slight reordering causes arrival order: 253, 254, 0, 255, 1",
+            "Strict enforcement (S49): seq=0 arrives after 254 → expected_seq=255 but received=0 → FAIL → close session",
+            "Lenient approach (S51 buffering): buffer 253, 254, 0; wait for 255; receive 255; sort: [253, 254, 255, 0, 1] → WRONG order (should be 253,254,255,0,1 in sequence-flow)",
+            "Attack scenario: Attacker intentionally reorders to trigger wraparound bug",
+            "If implementation uses naive numeric sort: sorted=[0, 1, 253, 254, 255] → payload concatenated as segment_0 + segment_1 + segment_253 + segment_254 + segment_255 → INCORRECT SDU",
+            "Message Length check (S52) may catch this if reassembled length wrong, but payload is corrupted",
+            "Impact: Data corruption, potential buffer overflow if length-check has bug"
+          ],
+          "severity": "MEDIUM",
+          "note": "Requires attacker to induce reordering at wraparound boundary (timing-sensitive) or network to naturally reorder (rare with Wi-Fi). Mitigated if strict S49 enforcement exists, but then creates reliability issues."
+        },
+        "recommendations": [
+          "Spec should clarify: 'Peers SHALL reject out-of-order segments (enforce strict sequence increment). If seq != expected_seq + 1 (mod 256), close session.' This makes S49 precedence clear.",
+          "Or: 'Peers MAY buffer up to N out-of-order segments. Reassembly algorithm SHALL correctly handle sequence wraparound by tracking expected_seq, not numeric comparison.'",
+          "Define: 'Sequence numbers SHALL NOT wrap during a single SDU transmission (SDU SHALL be smaller than 256 * max_segment_size to avoid mid-SDU wraparound)' - simplifies reassembly logic.",
+          "Add cryptographic protection to prevent attacker-induced reordering"
+        ]
+      },
+      {
+        "property_id": "PROP_018",
+        "property_name": "CUMULATIVE_ACKNOWLEDGEMENT_CORRECTNESS",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "PE_AckRx_Ticking_AckTx_Stopped",
+              "description": "Sender has sent packets seq=10, 11, 12, 13, 14; waiting for acks",
+              "outstanding": "outstanding_unacked_seqs = [10, 11, 12, 13, 14]",
+              "remote_window_counter": "5 packets outstanding → remote_window_counter = 0 (if window size=5)"
+            },
+            {
+              "state": "Attack: Forged cumulative ack",
+              "attacker_observes": "Packets seq=10-14 sent by Commissioner",
+              "attack": "Attacker injects forged ack: [A=1][Ack=13][Seq=arbitrary]",
+              "cumulative_meaning": "Ack=13 means: 'All packets seq ≤ 13 received successfully' per S69"
+            },
+            {
+              "state": "PE_AckRx_Ticking_AckTx_Stopped",
+              "trigger": "ack_received_for_non_most_recent (Ack=13 received, but most_recent=14)",
+              "action": "acknowledge_cumulative(13)",
+              "cumulative_effect": "outstanding_unacked_seqs updated: remove [10,11,12,13], keep [14] → outstanding_unacked_seqs=[14]",
+              "window_effect": "remote_window_counter += count_newly_acked(13) = +4 → remote_window_counter=4",
+              "violation": "Packets 10-13 never actually received by legitimate peer, but sender believes they were received and frees resources"
+            },
+            {
+              "state": "Consequence",
+              "sender_state": "Thinks packets 10-13 delivered successfully",
+              "receiver_state": "Actually never received packets 10-13 (attacker blocked them or they're still in flight)",
+              "desynchronization": "Sender closes session normally. Receiver missing 80% of data, session closes with incomplete SDU.",
+              "impact": "Data loss, sender false positive (thinks delivery succeeded but failed)"
+            }
+          ],
+          "violation_mechanism": "Cumulative ack semantics: 'ack N implies all ≤N received' (S69). This is efficient (one ack acknowledges multiple packets) but fragile without authenticity. Attacker forging ack=N falsely acknowledges N+1 packets with single forgery. Sender's acknowledge_cumulative() trusts ack value, updates outstanding list optimistically. Without cryptographic MAC on ack field, sender cannot distinguish legitimate ack from forged ack.",
+          "violation_paths_found": 1
+        },
+        "specification_evidence": [
+          {
+            "quote": "An acknowledgement, therefore, implicitly acknowledges all packets with sequence numbers less than the acknowledged sequence number.",
+            "source": "Section 4.20.3.8, 'Packet Acknowledgements', S69",
+            "context": "Cumulative acknowledgement semantics",
+            "gap": "Spec describes cumulative semantics but doesn't require cryptographic protection on ack field. Trusts ack value is authentic."
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Cumulative ack semantics correctly acknowledge multiple packets (S69)",
+          "what_spec_fails_to_specify": "Ack authenticity. Cumulative ack amplifies impact of forged ack: single forged ack can falsely acknowledge many packets. Spec assumes acks are authentic (via WFA-USD/Matter) but doesn't specify what protection is needed or reference where it's provided.",
+          "consequence": "Attacker forges single ack to falsely acknowledge multiple packets → sender believes packets delivered → sender may close session → receiver missing data → data loss. Amplification: 1 forged ack = N false acknowledgements (N = ack value).",
+          "security_impact": "HIGH. Data integrity violation. Sender-side false positive (believes delivery succeeded when it failed). Can cause application-layer failures (incomplete credentials, corrupted commands)."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Commissioner commissioning Device: sends 20-packet SDU (seq 0-19)",
+            "Device legitimately receives and acks packets 0-5 (ack=5)",
+            "Packets 6-19 still in flight (network delay)",
+            "Attacker observes seq=19 was sent (final packet, E=1)",
+            "Attacker injects forged ack: [A=1][Ack=19] (claiming all 20 packets received)",
+            "Commissioner receives forged ack",
+            "Commissioner executes: acknowledge_cumulative(19) → clears outstanding_unacked_seqs [6-19]",
+            "Commissioner believes entire SDU transmitted successfully",
+            "Commissioner proceeds to next phase (e.g., closes session, sends new command)",
+            "Reality: Packets 6-19 never delivered (attacker dropped them)",
+            "Device received only packets 0-5 (first 30% of SDU), missing 6-19 (70% of SDU)",
+            "Device waits for remaining packets... Commissioner already moved on",
+            "Result: SDU incomplete, commissioning fails cryptically",
+            "Impact: If SDU contained authorization credentials, Device not commissioned (DoS). If contained configuration, Device misconfigured."
+          ],
+          "severity": "HIGH",
+          "note": "Cumulative ack design is standard (TCP uses it) but requires authenticated channel. Without crypto, it's high-impact vulnerability."
+        },
+        "recommendations": [
+          "Spec must require: 'Acknowledgement field SHALL be cryptographically authenticated by [WFA-USD/Matter layer MAC/signature]'",
+          "Alternative: Selective ack (SACK) instead of cumulative ack, reducing impact of single forged ack",
+          "Add application-layer verification: 'After Matter message delivery, application SHALL send confirmation message' (end-to-end acknowledgement, independent of PAFTP layer)"
+        ]
+      },
+      {
+        "property_id": "PROP_022",
+        "property_name": "WINDOW_COUNTER_CONSISTENCY",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "PE_AckRx_Stopped_AckTx_Ticking",
+              "description": "Normal operation: Commissioner and Device track each other's window counters",
+              "commissioner_state": "remote_window_counter = 4 (Device has 4 slots available), own_window_counter = 3 (Commissioner has 3 received, 1 unacked)",
+              "device_state": "remote_window_counter = 5 (Commissioner has 5 slots), own_window_counter = 0 (all received packets acked)"
+            },
+            {
+              "state": "Attack 1: Inflate remote counter",
+              "attacker_forges": "Acks for phantom packets → Commissioner remote_window_counter += N",
+              "effect": "Commissioner thinks Device has more capacity than reality → sends more packets than Device can handle → Device buffer overflow or packet drop"
+            },
+            {
+              "state": "Attack 2: Deflate own counter",
+              "attacker_injects": "Phantom packets with valid seq → Device own_window_counter += N",
+              "effect": "Device thinks its own window full → stops accepting legitimate packets OR triggers early ack (S80) prematurely → unnecessary network traffic"
+            },
+            {
+              "state": "Attack 3: Desynchronize both peers",
+              "combined": "Forge acks to inflate Commissioner remote_window_counter + inject seqs to deflate Device own_window_counter",
+              "result": "Commissioner sends more packets (thinks Device has space) + Device rejects packets (thinks window full) → deadlock or data loss"
+            }
+          ],
+          "violation_mechanism": "Window counters provide flow control (S59-S66). remote_window_counter decremented on send, incremented on ack receipt. own_window_counter incremented on packet receipt, decremented on ack send. Both counters depend on untrusted inputs: acks and seq numbers. Without crypto: 1) Forged acks → incorrect remote_window_counter, 2) Injected seq → incorrect own_window_counter. Counters desynchronize from reality → flow control broken.",
+          "violation_paths_found": 3
+        },
+        "specification_evidence": [
+          {
+            "quote": "Both peers SHALL maintain a counter to reflect the current size of the remote peer's receive window. Each peer SHALL decrement this counter when it sends a packet and increment this counter when a sent packet is acknowledged.",
+            "source": "Section 4.20.3.7, 'Receive Windows', S60",
+            "context": "Remote window counter maintenance",
+            "gap": "Spec assumes acks are authentic. If acks can be forged, counter incremented incorrectly."
+          },
+          {
+            "quote": "Both peers SHALL also keep a counter of their own receive window size based on the sequence number difference between the last packet they received and the last packet they acknowledged.",
+            "source": "Section 4.20.3.7, 'Receive Windows', S61",
+            "context": "Own window counter maintenance",
+            "gap": "Spec assumes received seq numbers are authentic. If seq can be injected, counter computed incorrectly."
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Window counter consistency enables reliable flow control (property description: 'consistency' type)",
+          "what_spec_fails_to_specify": "Counter correctness depends on packet authenticity. Spec defines counter algorithms (S60, S61) but doesn't ensure inputs (acks, seq) are trustworthy. Assumed protection (WFA-USD/Matter) not specified or referenced.",
+          "consequence": "Flow control bypass (attacker inflates remote counter → flood), Flow control DoS (attacker deflates own counter → premature window closure), Deadlock (desynchronized counters → both peers block), Resource exhaustion (incorrect counters → buffer overflows or leaks).",
+          "security_impact": "HIGH. Breaks core flow control mechanism, leading to multiple attack vectors."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Established session: Both peers have window size=5",
+            "Commissioner remote_window_counter=5, has 5 packets to send",
+            "Commissioner sends seq=0,1,2,3,4 → remote_window_counter=0 (window closed)",
+            "Device should ack to reopen window",
+            "Attack: Before Device sends acks, attacker injects 3 forged acks: ack=0, ack=1, ack=2",
+            "Commissioner receives forged acks: remote_window_counter += 3 → remote_window_counter=3",
+            "Commissioner sends seq=5,6,7 (thinks Device has space)",
+            "Device receives seq=0-7 (8 packets), but window size=5 → buffer overflow",
+            "Device drops seq=5,6,7 or overwrites earlier packets",
+            "Device sends real acks for seq=0-4 (before seeing 5-7)",
+            "Commissioner receives real acks: remote_window_counter += 5 → remote_window_counter=8",
+            "Commissioner remote_window_counter=8 but negotiated window size=5 → inconsistency",
+            "Commissioner can now send 8 more packets despite Device capacity=5",
+            "Result: Persistent overflow, data loss, potential Device crash"
+          ],
+          "severity": "HIGH",
+          "note": "Flow control is critical for resource-constrained IoT devices. Breaking it enables memory exhaustion attacks."
+        },
+        "recommendations": [
+          "Spec must require: 'Packet sequence numbers and acknowledgements SHALL be cryptographically authenticated'",
+          "Add bounds checking: 'remote_window_counter SHALL never exceed negotiated maximum window size. If incremented beyond max, close session with WINDOW_OVERFLOW error'",
+          "Add own_window_counter validation: 'If own_window_counter computation exceeds negotiated window size, close session with SEQUENCE_ERROR'"
+        ]
+      }
+    ],
+    "summary": {
+      "properties_analyzed": 25,
+      "properties_holding": 10,
+      "properties_violated": 11,
+      "properties_partially_holding": 4,
+      "properties_unverifiable": 0,
+      "critical_violations": 2,
+      "high_severity_violations": 4,
+      "medium_severity_violations": 4,
+      "low_severity_violations": 1,
+      "analysis_completion_percentage": 100,
+      "key_findings": [
+        "ROOT CAUSE: Lack of cryptographic protection. PAFTP spec explicitly states 'no encryption, MAC, or signatures' relying on WFA-USD/Matter layers, but doesn't specify WHAT protection is needed or WHERE it's provided.",
+        "AUTHENTICATION FAILURES: 9 out of 11 violations stem from inability to verify packet authenticity (version downgrade, sequence integrity, ack validity, flow control, cumulative ack, window consistency).",
+        "ASYMMETRY ISSUES: Idle timeout only enforced by Commissioner (PROP_007), handshake timeout missing for Device-side waiting (PROP_012).",
+        "ATOMICITY GAPS: SDU transmission atomicity not enforced on abnormal close (PROP_008), reassembly length verification vulnerable to field modification (PROP_009).",
+        "SPECIFICATION INCOMPLETENESS: Multiple properties have unclear receiver behavior (reserved bits validation, segment ordering out-of-order handling, window=0 piggybacking)."
+      ],
+      "high_risk_attack_vectors": [
+        "Version downgrade attack via MITM modification of handshake request version list",
+        "Packet injection with forged but valid sequence numbers bypassing sequence integrity checks",
+        "Ack forgery enabling flow control bypass, cumulative ack exploitation, window counter desynchronization",
+        "DoS via resource exhaustion: zombie sessions (idle timeout asymmetry), connection slot exhaustion (handshake timeout missing)",
+        "Data corruption via reassembly manipulation: modified Message Length field, segment reordering at wraparound boundary"
+      ]
+    }
+  },
+  "analysis_metadata": {
+    "analysis_start_time": "2024-01-XX",
+    "analysis_completion_time": "2024-01-XX",
+    "fsm_file_analyzed": "paftp_fsm.json",
+    "spec_file_analyzed": "4.20.md",
+    "methodology": "Property-by-property FSM path tracing with guard sufficiency analysis and specification evidence collection",
+    "total_properties": 25,
+    "properties_analyzed": 25,
+    "status": "complete",
+      "vulnerabilities_found": 0,
+      "vulnerabilities_by_severity": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0
+      },
+      "next_action": "Begin systematic property analysis"
+    }
+  }
+}

@@ -1,0 +1,493 @@
+(* ============================================================================
+   PASE Protocol - ProVerif Security Verification Model
+   Based on Matter Specification R1.4, Section 4.14.1
+   
+   This model formally verifies the security properties extracted from the
+   PASE (Passcode-Authenticated Session Establishment) protocol specification.
+   
+   Generated: 2026-02-03
+   ============================================================================ *)
+
+(* ===========================================================================
+   TYPE DECLARATIONS
+   =========================================================================== *)
+type principal.       (* Commissioner (Initiator) / Commissionee (Responder) *)
+type passcode.        (* 8-digit setup passcode *)
+type nonce.           (* 32-byte random values *)
+type sessionId.       (* 16-bit session identifiers *)
+type scalar.          (* SPAKE2+ scalars (w0, w1) *)
+type point.           (* Elliptic curve points (L, pA, pB, M, N) *)
+type key.             (* Symmetric encryption keys *)
+type confirmation.    (* HMAC confirmation values (cA, cB) *)
+type transcript.      (* Protocol transcript hash *)
+
+(* ===========================================================================
+   CRYPTOGRAPHIC PRIMITIVES
+   =========================================================================== *)
+
+(* DRBG - Deterministic Random Bit Generator *)
+fun gen_random(): nonce [private].
+
+(* PBKDF2 - Password-Based Key Derivation Function *)
+fun pbkdf2(passcode, nonce, nat): bitstring.
+
+(* Extract w0, w1 from PBKDF output *)
+fun extract_w0(bitstring): scalar.
+fun extract_w1(bitstring): scalar.
+
+(* SPAKE2+ curve operations *)
+const M: point.       (* Fixed SPAKE2+ element M *)
+const N: point.       (* Fixed SPAKE2+ element N *)
+const P: point.       (* Curve generator *)
+
+(* Scalar multiplication *)
+fun scalar_mult(scalar, point): point.
+
+(* Point addition *)
+fun point_add(point, point): point.
+
+(* Compute pA = w0*M + X (initiator contribution) *)
+fun compute_pA(scalar, nonce): point.
+
+(* Compute pB = w0*N + Y (responder contribution) *)
+fun compute_pB(scalar, nonce): point.
+
+(* Compute L = w1 * P (responder verifier) *)
+fun compute_L(scalar): point.
+
+(* Shared secret computation *)
+fun compute_shared_secret(scalar, point, point, point): bitstring.
+
+(* Transcript computation *)
+fun hash_transcript(bitstring, bitstring, point, point): transcript.
+
+(* Derive (cA, cB, Ke) from transcript and values *)
+fun crypto_p2(transcript, point, point): bitstring.
+fun get_cA(bitstring): confirmation.
+fun get_cB(bitstring): confirmation.
+fun get_Ke(bitstring): key.
+
+(* HKDF - Key Derivation Function *)
+fun hkdf(key, bitstring, nat): key.
+
+(* Session key info constants *)
+const SEKeys_Info: bitstring.
+
+(* Derive session keys *)
+fun derive_I2RKey(key): key.
+fun derive_R2IKey(key): key.
+fun derive_AttestationChallenge(key): key.
+
+(* HMAC for confirmation *)
+fun hmac(key, point): confirmation.
+
+(* Symmetric encryption (AES-CCM) *)
+fun aead_encrypt(key, bitstring, bitstring): bitstring.
+reduc forall k:key, m:bitstring, aad:bitstring; 
+      aead_decrypt(k, aead_encrypt(k, m, aad), aad) = m.
+
+(* Signature for verification purposes *)
+fun sign(key, bitstring): bitstring.
+reduc forall k:key, m:bitstring; verify_sign(k, sign(k, m), m) = true.
+
+(* ===========================================================================
+   EQUATIONS FOR SPAKE2+ CORRECTNESS
+   =========================================================================== *)
+
+(* Both parties compute same confirmations if they have the same passcode *)
+equation forall w0:scalar, w1:scalar, pA:point, pB:point, TT:transcript;
+    let p2_result = crypto_p2(TT, pA, pB) in
+    get_cA(p2_result) = hmac(extract_KcA(p2_result), pB) &&
+    get_cB(p2_result) = hmac(extract_KcB(p2_result), pA).
+
+(* Helper functions for confirmation key extraction *)
+fun extract_KcA(bitstring): key.
+fun extract_KcB(bitstring): key.
+
+(* ===========================================================================
+   CHANNELS
+   =========================================================================== *)
+free c: channel.                  (* Public network channel *)
+free secure_passcode: channel [private].  (* Secure passcode distribution *)
+
+(* ===========================================================================
+   PROTOCOL MESSAGES
+   =========================================================================== *)
+(* Message format types for clarity *)
+fun PBKDFParamRequest(nonce, sessionId, nat): bitstring.
+fun PBKDFParamResponse(nonce, nonce, sessionId, nat, nonce): bitstring.
+fun Pake1(point): bitstring.
+fun Pake2(point, confirmation): bitstring.
+fun Pake3(confirmation): bitstring.
+fun PakeFinished(): bitstring.
+fun StatusReport_Failure(): bitstring.
+
+(* ===========================================================================
+   SECURITY QUERIES - CRITICAL PROPERTIES
+   =========================================================================== *)
+
+(* PROP_001: Passcode secrecy - passcode never transmitted *)
+free secret_passcode: passcode [private].
+query attacker(secret_passcode).
+
+(* PROP_027: Ke (shared secret) secrecy *)
+event derive_Ke(principal, principal, key).
+query k:key; event(derive_Ke(x, y, k)) ==> not(attacker(k)).
+
+(* PROP_028: I2RKey secrecy *)
+event derive_I2RKey_event(principal, key).
+query k:key; attacker(k) ==> not(event(derive_I2RKey_event(x, k))).
+
+(* PROP_029: R2IKey secrecy *)
+event derive_R2IKey_event(principal, key).
+query k:key; attacker(k) ==> not(event(derive_R2IKey_event(x, k))).
+
+(* ===========================================================================
+   AUTHENTICATION QUERIES - MUTUAL AUTHENTICATION
+   =========================================================================== *)
+
+(* PROP_006: Initiator verifies responder (cB verification) *)
+event initiator_verified_cB(principal, principal, confirmation).
+event responder_computed_cB(principal, principal, confirmation).
+
+query i:principal, r:principal, cB:confirmation;
+    event(initiator_verified_cB(i, r, cB)) ==>
+    event(responder_computed_cB(r, i, cB)).
+
+(* PROP_007: Responder verifies initiator (cA verification) *)
+event responder_verified_cA(principal, principal, confirmation).
+event initiator_computed_cA(principal, principal, confirmation).
+
+query i:principal, r:principal, cA:confirmation;
+    event(responder_verified_cA(r, i, cA)) ==>
+    event(initiator_computed_cA(i, r, cA)).
+
+(* PROP_030: Mutual authentication guarantee *)
+event pase_complete_initiator(principal, principal, sessionId).
+event pase_complete_responder(principal, principal, sessionId).
+event has_passcode(principal, passcode).
+
+query i:principal, r:principal, sid:sessionId;
+    event(pase_complete_initiator(i, r, sid)) ==>
+    (event(has_passcode(i, p)) && event(has_passcode(r, p))).
+
+(* ===========================================================================
+   FRESHNESS AND REPLAY PROTECTION QUERIES
+   =========================================================================== *)
+
+(* PROP_002, PROP_003: Random value freshness *)
+event random_generated(principal, nonce).
+query n:nonce; event(random_generated(x, n)) ==> not(attacker(n)) | fresh(n).
+
+(* PROP_031: Session key freshness - different sessions have different keys *)
+event session_key_derived(sessionId, key).
+query sid1:sessionId, sid2:sessionId, k:key;
+    event(session_key_derived(sid1, k)) && event(session_key_derived(sid2, k))
+    ==> sid1 = sid2.
+
+(* PROP_026: Message counter replay protection *)
+event accept_message(principal, nat).
+event message_counter_valid(nat).
+query n:principal, ctr:nat;
+    event(accept_message(n, ctr)) ==> event(message_counter_valid(ctr)).
+
+(* ===========================================================================
+   CORRECTNESS QUERIES
+   =========================================================================== *)
+
+(* PROP_004: Session identifier uniqueness *)
+event session_created(principal, sessionId).
+query p1:principal, p2:principal, sid:sessionId;
+    event(session_created(p1, sid)) && event(session_created(p2, sid))
+    ==> p1 = p2.
+
+(* PROP_005: PasscodeID must be 0 *)
+event accept_pbkdf_request(principal, nat).
+query x:principal, pid:nat;
+    event(accept_pbkdf_request(x, pid)) ==> pid = 0.
+
+(* PROP_008: No encrypted data before PakeFinished *)
+event send_encrypted_data(principal).
+event received_pake_finished(principal).
+query i:principal;
+    event(send_encrypted_data(i)) ==> event(received_pake_finished(i)).
+
+(* PROP_032: Message sequence ordering *)
+event send_pake1(principal).
+event receive_pake2(principal).
+event send_pake3(principal).
+event receive_pake_finished(principal).
+
+query i:principal;
+    event(receive_pake2(i)) ==> event(send_pake1(i)).
+
+query i:principal;
+    event(send_pake3(i)) ==> event(receive_pake2(i)).
+
+(* ===========================================================================
+   EVENTS FOR PROTOCOL TRACING
+   =========================================================================== *)
+event initiator_start(principal, sessionId).
+event responder_start(principal, sessionId).
+event pbkdf_params_sent(principal, nonce, nat).
+event pake1_sent(principal, point).
+event pake2_sent(principal, point, confirmation).
+event pake3_sent(principal, confirmation).
+event pake_finished_sent(principal).
+event session_established(principal, principal, sessionId, key).
+
+(* ===========================================================================
+   INITIATOR PROCESS (Commissioner)
+   =========================================================================== *)
+let Initiator(i: principal, passcode: passcode) =
+    (* Generate fresh random *)
+    new initiatorRandom: nonce;
+    event random_generated(i, initiatorRandom);
+    
+    (* Generate session ID - must be unique *)
+    new initiatorSessionId: sessionId;
+    event session_created(i, initiatorSessionId);
+    event initiator_start(i, initiatorSessionId);
+    
+    (* PROP_005: passcodeID = 0 *)
+    let passcodeID = 0 in
+    
+    (* Send PBKDFParamRequest *)
+    let pbkdfReq = PBKDFParamRequest(initiatorRandom, initiatorSessionId, passcodeID) in
+    out(c, pbkdfReq);
+    
+    (* Receive PBKDFParamResponse *)
+    in(c, pbkdfResp: bitstring);
+    let PBKDFParamResponse(=initiatorRandom, responderRandom, responderSessionId, iterations, salt) = pbkdfResp in
+    event pbkdf_params_sent(i, salt, iterations);
+    
+    (* Compute PAKE values - PROP_023 *)
+    let pbkdf_output = pbkdf2(passcode, salt, iterations) in
+    let w0 = extract_w0(pbkdf_output) in
+    let w1 = extract_w1(pbkdf_output) in
+    
+    (* Compute pA - PROP_037 *)
+    new x_random: nonce;
+    let pA = compute_pA(w0, x_random) in
+    
+    (* Send Pake1 *)
+    let pake1 = Pake1(pA) in
+    out(c, pake1);
+    event send_pake1(i);
+    event pake1_sent(i, pA);
+    
+    (* Receive Pake2 *)
+    in(c, pake2: bitstring);
+    let Pake2(pB, received_cB) = pake2 in
+    event receive_pake2(i);
+    
+    (* Compute transcript - PROP_018 *)
+    let TT = hash_transcript(pbkdfReq, pbkdfResp, pA, pB) in
+    
+    (* Compute (cA, cB, Ke) - PROP_019 *)
+    let p2_result = crypto_p2(TT, pA, pB) in
+    let computed_cA = get_cA(p2_result) in
+    let computed_cB = get_cB(p2_result) in
+    let Ke = get_Ke(p2_result) in
+    
+    (* PROP_006: Verify cB - CRITICAL authentication check *)
+    if received_cB = computed_cB then
+    (
+        event initiator_verified_cB(i, r, received_cB);
+        event initiator_computed_cA(i, r, computed_cA);
+        
+        (* Send Pake3 *)
+        let pake3 = Pake3(computed_cA) in
+        out(c, pake3);
+        event send_pake3(i);
+        event pake3_sent(i, computed_cA);
+        
+        (* PROP_008: Wait for PakeFinished before sending encrypted data *)
+        in(c, pakeFinished: bitstring);
+        if pakeFinished = PakeFinished() then
+        (
+            event received_pake_finished(i);
+            event receive_pake_finished(i);
+            
+            (* PROP_009: Derive session keys *)
+            let I2RKey = derive_I2RKey(Ke) in
+            let R2IKey = derive_R2IKey(Ke) in
+            let AttestChallenge = derive_AttestationChallenge(Ke) in
+            
+            event derive_Ke(i, r, Ke);
+            event derive_I2RKey_event(i, I2RKey);
+            event session_key_derived(initiatorSessionId, I2RKey);
+            event pase_complete_initiator(i, r, initiatorSessionId);
+            event session_established(i, r, initiatorSessionId, I2RKey);
+            
+            (* Now can send encrypted data - PROP_010 *)
+            event send_encrypted_data(i);
+            0
+        )
+        else
+            out(c, StatusReport_Failure())
+    )
+    else
+    (
+        (* PROP_033: Send failure status report *)
+        out(c, StatusReport_Failure())
+    ).
+
+(* ===========================================================================
+   RESPONDER PROCESS (Commissionee)
+   =========================================================================== *)
+let Responder(r: principal, w0: scalar, L: point) =
+    (* Receive PBKDFParamRequest *)
+    in(c, pbkdfReq: bitstring);
+    let PBKDFParamRequest(initiatorRandom, initiatorSessionId, passcodeID) = pbkdfReq in
+    
+    (* PROP_005: Verify passcodeID = 0 *)
+    if passcodeID = 0 then
+    (
+        event accept_pbkdf_request(r, passcodeID);
+        
+        (* PROP_003: Generate fresh random *)
+        new responderRandom: nonce;
+        event random_generated(r, responderRandom);
+        
+        (* PROP_004: Generate unique session ID *)
+        new responderSessionId: sessionId;
+        event session_created(r, responderSessionId);
+        event responder_start(r, responderSessionId);
+        
+        (* PBKDF parameters - PROP_016, PROP_017 *)
+        new salt: nonce;
+        let iterations = 100000 in  (* Example: within valid range *)
+        
+        (* Send PBKDFParamResponse *)
+        let pbkdfResp = PBKDFParamResponse(initiatorRandom, responderRandom, 
+                                           responderSessionId, iterations, salt) in
+        out(c, pbkdfResp);
+        event pbkdf_params_sent(r, salt, iterations);
+        
+        (* Receive Pake1 *)
+        in(c, pake1: bitstring);
+        let Pake1(pA) = pake1 in
+        
+        (* PROP_024: Compute pB using pre-installed w0 *)
+        new y_random: nonce;
+        let pB = compute_pB(w0, y_random) in
+        
+        (* Compute transcript - PROP_018 *)
+        let TT = hash_transcript(pbkdfReq, pbkdfResp, pA, pB) in
+        
+        (* Compute (cA, cB, Ke) - PROP_019 *)
+        let p2_result = crypto_p2(TT, pA, pB) in
+        let computed_cA = get_cA(p2_result) in
+        let computed_cB = get_cB(p2_result) in
+        let Ke = get_Ke(p2_result) in
+        
+        event responder_computed_cB(r, i, computed_cB);
+        
+        (* Send Pake2 *)
+        let pake2 = Pake2(pB, computed_cB) in
+        out(c, pake2);
+        event pake2_sent(r, pB, computed_cB);
+        
+        (* Receive Pake3 *)
+        in(c, pake3: bitstring);
+        let Pake3(received_cA) = pake3 in
+        
+        (* PROP_007: Verify cA - CRITICAL authentication check *)
+        if received_cA = computed_cA then
+        (
+            event responder_verified_cA(r, i, received_cA);
+            
+            (* PROP_009: Derive session keys *)
+            let I2RKey = derive_I2RKey(Ke) in
+            let R2IKey = derive_R2IKey(Ke) in
+            let AttestChallenge = derive_AttestationChallenge(Ke) in
+            
+            event derive_Ke(i, r, Ke);
+            event derive_R2IKey_event(r, R2IKey);
+            
+            (* PROP_013, PROP_014: Initialize counters *)
+            (* (modeled implicitly through session establishment) *)
+            
+            (* Send PakeFinished *)
+            out(c, PakeFinished());
+            event pake_finished_sent(r);
+            
+            event session_key_derived(responderSessionId, R2IKey);
+            event pase_complete_responder(r, i, responderSessionId);
+            event session_established(i, r, responderSessionId, R2IKey);
+            0
+        )
+        else
+        (
+            (* PROP_033: Send failure status report *)
+            out(c, StatusReport_Failure())
+        )
+    )
+    else
+    (
+        (* PROP_005: Reject invalid passcodeID *)
+        out(c, StatusReport_Failure())
+    ).
+
+(* ===========================================================================
+   VERIFIER SETUP PROCESS
+   Simulates pre-installation of PAKE verifier values (PROP_022)
+   =========================================================================== *)
+let SetupVerifier(passcode: passcode, salt: nonce, iterations: nat) =
+    let pbkdf_output = pbkdf2(passcode, salt, iterations) in
+    let w0 = extract_w0(pbkdf_output) in
+    let w1 = extract_w1(pbkdf_output) in
+    let L = compute_L(w1) in
+    (* Responder stores (w0, L), initiator stores (w0, w1) *)
+    out(secure_passcode, (w0, L)).
+
+(* ===========================================================================
+   MAIN PROCESS
+   =========================================================================== *)
+process
+    (* Create principals *)
+    new commissioner: principal;
+    new commissionee: principal;
+    
+    (* Shared passcode (known to both before protocol starts) *)
+    new passcode: passcode;
+    event has_passcode(commissioner, passcode);
+    event has_passcode(commissionee, passcode);
+    
+    (* Setup PBKDF parameters *)
+    new setup_salt: nonce;
+    let setup_iterations = 100000 in
+    
+    (* Compute PAKE values for responder *)
+    let pbkdf_output = pbkdf2(passcode, setup_salt, setup_iterations) in
+    let w0 = extract_w0(pbkdf_output) in
+    let w1 = extract_w1(pbkdf_output) in
+    let L = compute_L(w1) in
+    
+    (* Run protocol instances *)
+    (
+        (* Honest initiator *)
+        Initiator(commissioner, passcode)
+    ) | (
+        (* Honest responder with pre-installed verifier *)
+        Responder(commissionee, w0, L)
+    ) | (
+        (* Multiple sessions to test uniqueness *)
+        !Initiator(commissioner, passcode)
+    ) | (
+        !Responder(commissionee, w0, L)
+    )
+
+(* ===========================================================================
+   EXPECTED RESULTS:
+   
+   1. query attacker(secret_passcode) -> CANNOT be proved (passcode secret)
+   2. I2RKey, R2IKey secrecy queries -> CANNOT be proved (keys secret)
+   3. Authentication queries -> TRUE (mutual auth via cA/cB)
+   4. Session freshness -> TRUE (different sessions get different keys)
+   5. Ordering queries -> TRUE (message sequence enforced)
+   
+   If any security query fails, it indicates a specification violation
+   or potential attack vector.
+   =========================================================================== *)

@@ -1,0 +1,917 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Version_Negotiation_Downgrade_Prevention",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Commissionable Device SHALL select the newest PAFTP protocol version that both it and Commissioner support, preventing version downgrade attacks.",
+      "formal": "∀c:commissioner, d:device, v_selected:version ⊢ event select_version(d, c, v_selected) ==> (v_selected = max(common_versions(c, d)) ∧ ∀v ∈ common_versions(c,d). v ≤ v_selected)",
+      "violation": "An attacker downgrades the protocol to an older version with known vulnerabilities by manipulating the version list during handshake. This breaks cryptographic security, allows exploitation of patched vulnerabilities, and may enable message injection or replay attacks through weakened protocol features.",
+      "proverifQuery": "query c:principal, d:principal, v:version, v_old:version ⊢ event negotiate_version(c, d, v_old) ==> (v_old >= v ∨ ¬supported(c, v) ∨ ¬supported(d, v))"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Version_Incompatibility_Connection_Closure",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If Commissionable Device determines no shared protocol version exists, it SHALL immediately close the WFA-USD connection.",
+      "formal": "∀c:commissioner, d:device ⊢ (common_versions(c, d) = ∅) ==> event close_connection(d, c)",
+      "violation": "Device continues with incompatible version, causing undefined behavior. Attacker exploits protocol confusion to send malformed packets that bypass validation, potentially causing buffer overflows, state corruption, or arbitrary code execution through misinterpreted packet fields.",
+      "proverifQuery": "query c:principal, d:principal ⊢ event continue_session(c, d) ==> (common_versions(c, d) ≠ ∅)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Sequence_Number_Monotonic_Increment",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Every PAFTP packet SHALL have a sequence number that monotonically increments by exactly 1 from the previous packet (with wraparound at 255).",
+      "formal": "∀p1:packet, p2:packet, s:session ⊢ event send_after(p2, p1, s) ==> (seq(p2) = (seq(p1) + 1) mod 256)",
+      "violation": "Attacker injects replayed packets or reorders packets to cause out-of-sequence delivery. This enables replay attacks where old authenticated messages are re-sent to repeat privileged operations, message injection where gaps in sequence are filled with attacker-controlled data, and state desynchronization causing session corruption.",
+      "proverifQuery": "query p:packet, s:session ⊢ event receive_packet(p, s) ==> (seq(p) = expected_seq(s))"
+    },
+    {
+      "id": "PROP_004",
+      "name": "Sequence_Number_Validation_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Peers SHALL verify each received packet increments sender's previous sequence number by 1, and SHALL close session if check fails.",
+      "formal": "∀peer:principal, p:packet, s:session ⊢ event receive(peer, p, s) ==> (valid_sequence(p, s) ∨ event close_session(peer, s, sequence_error))",
+      "violation": "Invalid sequence numbers are accepted, allowing out-of-order processing. Attacker exploits this to bypass flow control by sending packets with future sequence numbers, cause resource exhaustion by filling receive buffers with invalid packets, or trigger race conditions by delivering packets in unintended order causing state machine corruption.",
+      "proverifQuery": "query peer:principal, p:packet, s:session ⊢ event process_packet(peer, p, s) ==> valid_sequence(p, s)"
+    },
+    {
+      "id": "PROP_005",
+      "name": "SDU_Transmission_Non_Overlap",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "At any time, only one PAFTP SDU may be transmitted in each direction, and transmission of any two SDUs SHALL NOT overlap.",
+      "formal": "∀sdu1:message, sdu2:message, dir:direction ⊢ (transmitting(sdu1, dir) ∧ sdu1 ≠ sdu2) ==> ¬transmitting(sdu2, dir)",
+      "violation": "Multiple SDUs are interleaved, mixing segments from different messages. This causes reassembly to produce corrupted concatenated data, breaking message integrity. Attacker leverages this to inject malicious segments into legitimate messages, bypass authentication by interleaving authenticated and malicious data, or cause parser confusion leading to code execution vulnerabilities.",
+      "proverifQuery": "query sdu1:bitstring, sdu2:bitstring, t:time ⊢ event transmit_segment(sdu1, t) ∧ event transmit_segment(sdu2, t) ==> (sdu1 = sdu2)"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Beginning_Before_Ending_Segment",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Receiver SHALL receive Beginning Segment before Ending Segment; receiving Ending without Beginning SHALL cause session closure.",
+      "formal": "∀sdu:message, s:session ⊢ event receive_ending(sdu, s) ==> (∃t. event receive_beginning(sdu, s, t) ∧ t < current_time) ∨ event close_session(s, protocol_error)",
+      "violation": "Receiver accepts Ending segments without corresponding Beginning segment, causing undefined state and buffer management errors. Attacker sends crafted Ending segments to trigger use-after-free by referencing non-existent buffers, information leak by reading uninitialized memory when reassembly operates on undefined buffer, or remote code execution through memory corruption.",
+      "proverifQuery": "query sdu:bitstring, s:session ⊢ event process_ending_segment(sdu, s) ==> event beginning_segment_received(sdu, s)"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Beginning_During_Transmission_Prohibition",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "Receiving Beginning Segment when another SDU transmission is in progress SHALL cause session closure.",
+      "formal": "∀sdu_new:message, sdu_current:message, s:session ⊢ (event receive_beginning(sdu_new, s) ∧ transmitting(sdu_current, s) ∧ sdu_new ≠ sdu_current) ==> event close_session(s, protocol_violation)",
+      "violation": "New SDU begins before previous completes, causing state machine confusion and buffer corruption. Attacker exploits this to overwrite partial reassembly buffers with new SDU data, causing memory corruption; trigger double-free vulnerabilities by having two concurrent SDUs pointing to same resources; or bypass message authentication by starting authenticated SDU then interrupting with malicious SDU.",
+      "proverifQuery": "query sdu1:bitstring, sdu2:bitstring, s:session ⊢ (event start_sdu(sdu1, s) ∧ event start_sdu(sdu2, s)) ==> (completed(sdu1) ∨ sdu1 = sdu2)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Reassembly_Length_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Upon reassembling complete SDU, receiver SHALL verify total length matches Message Length field; mismatch SHALL close session.",
+      "formal": "∀sdu:message, s:session, len_declared:int, len_actual:int ⊢ event reassemble_complete(sdu, s, len_actual) ==> (len_actual = len_declared ∨ event close_session(s, length_mismatch))",
+      "violation": "Length mismatch indicates packet loss, corruption, or deliberate manipulation. Attacker exploits this to cause buffer overflow by declaring small Message Length but sending large segments that exceed allocated buffer, trigger heap corruption through undersized allocation, or leak memory contents by declaring large length but sending truncated data causing reads beyond valid data.",
+      "proverifQuery": "query sdu:bitstring, s:session, len:int ⊢ event deliver_to_app(sdu, s) ==> (length(sdu) = message_length_field(sdu))"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Segment_Size_Maximum_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If received segment payload size exceeds maximum negotiated PAFTP packet size, receiver SHALL close session.",
+      "formal": "∀seg:segment, s:session, max_size:int ⊢ event receive_segment(seg, s) ==> (size(seg) ≤ max_size ∨ event close_session(s, oversized_segment))",
+      "violation": "Oversized segments overflow fixed-size buffers at WFA-USD or PAFTP layer. Attacker sends segments larger than negotiated maximum to trigger stack buffer overflow in packet processing routines, heap overflow in reassembly buffers, or exhaust memory by sending maximum-sized segments exceeding receiver capacity, all enabling arbitrary code execution or denial of service.",
+      "proverifQuery": "query seg:bitstring, s:session ⊢ event process_segment(seg, s) ==> (length(seg) ≤ negotiated_max_size(s))"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Invalid_Acknowledgement_Session_Closure",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If received acknowledgement number does not correspond to outstanding unacknowledged packet, peer SHALL close session.",
+      "formal": "∀ack:int, s:session, peer:principal ⊢ event receive_ack(peer, ack, s) ==> (ack ∈ outstanding_seqs(s) ∨ event close_session(peer, s, invalid_ack))",
+      "violation": "Invalid acknowledgements indicate state desynchronization, network errors, or active attack. Attacker sends crafted ack numbers to cause premature window reopening enabling flow control bypass and message flooding, acknowledgement of non-existent packets causing incorrect state freeing and use-after-free, or window accounting errors leading to deadlock or starvation.",
+      "proverifQuery": "query ack:int, s:session ⊢ event process_acknowledgement(ack, s) ==> has_outstanding_packet(ack, s)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "Standalone_Acknowledgement_Must_Be_Acknowledged",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Stand-alone acknowledgement packets consume window slot and SHALL be acknowledged by remote peer.",
+      "formal": "∀ack_packet:packet, s:session, peer:principal ⊢ event send_standalone_ack(peer, ack_packet, s) ==> (∃t. event receive_ack_for(ack_packet, s, t) ∨ timeout(s))",
+      "violation": "Unacknowledged standalone acks permanently consume window slots, eventually closing the receive window. Attacker forces continuous standalone ack transmission without acknowledging them, exhausting the receive window and causing deadlock where neither peer can send. This enables denial of service by starving the session of available window slots.",
+      "proverifQuery": "query ack:packet, s:session ⊢ event send_ack(ack, s) ==> event ack_acknowledged(ack, s)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Window_Closed_Send_Prohibition",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If remote peer's receive window counter is zero (window closed), local peer SHALL NOT send packets until window reopens.",
+      "formal": "∀peer:principal, s:session ⊢ (window_size(peer, s) = 0) ==> ¬event send_packet(peer, s)",
+      "violation": "Sending when window is closed causes receiver buffer overflow since receiver has no space. Attacker exploits flow control bugs to inject packets when victim's window is closed, overwriting existing buffered data, causing packet loss and retransmission storms, or triggering buffer overflows in implementations with inadequate bounds checking. Results in denial of service or memory corruption.",
+      "proverifQuery": "query p:packet, s:session, peer:principal ⊢ event send(peer, p, s) ==> (window_open(peer, s))"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Deadlock_Prevention_One_Slot_Window",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Local peer SHALL NOT send if remote window has one slot open and local peer has no pending acknowledgement, preventing mutual deadlock.",
+      "formal": "∀peer:principal, s:session ⊢ (window_size(remote(peer), s) = 1 ∧ ¬has_pending_ack(peer, s)) ==> ¬event send_packet(peer, s)",
+      "violation": "Both peers' windows become full with only acknowledgements pending, creating deadlock where neither can send acknowledgements because window is full. Session permanently stalls with both peers waiting for acknowledgements that can never be sent. This is a design-level vulnerability enabling denial of service through protocol deadlock that disconnects legitimate sessions.",
+      "proverifQuery": "query s:session ⊢ ¬(window_full(commissioner, s) ∧ window_full(device, s))"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Handshake_Response_Timeout_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Commissioner SHALL close session and report error if PAFTP_CONN_RSP_TIMEOUT (5 seconds) expires before receiving handshake response.",
+      "formal": "∀c:commissioner, d:device, t_send:time ⊢ event send_handshake_req(c, d, t_send) ==> (∃t_recv. event receive_handshake_resp(c, d, t_recv) ∧ (t_recv - t_send ≤ 5000ms) ∨ event close_session(c, timeout_error))",
+      "violation": "Unresponsive devices or slow network attacks cause resource exhaustion by leaving sessions in pending handshake state indefinitely. Attacker exploits missing timeout to consume all available session slots by initiating handshakes without responding, denial of service by preventing legitimate connections, or reconnaissance by probing for live devices without completing handshake, all while evading detection.",
+      "proverifQuery": "query c:principal, d:principal, t:time ⊢ event wait_handshake(c, d, t) ∧ (now() - t > TIMEOUT) ==> event close_session(c, d)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "Acknowledgement_Received_Timer_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If acknowledgement-received timer (PAFTP_ACK_TIMEOUT = 15 seconds) expires, peer SHALL close session and report error.",
+      "formal": "∀peer:principal, s:session, p_sent:packet, t_send:time ⊢ (event send(peer, p_sent, s, t_send) ∧ ¬event receive_ack_for(p_sent, s) ∧ (now() - t_send > PAFTP_ACK_TIMEOUT)) ==> event close_session(peer, s, ack_timeout)",
+      "violation": "Unacknowledged packets indicate network failure, crashed peer, or attack. Without timeout enforcement, sessions persist as zombies consuming resources. Attacker exploits this by intentionally withholding acknowledgements to exhaust session tables, memory buffers, and connection limits, causing denial of service for legitimate users. Also enables stealth reconnaissance by keeping half-open connections.",
+      "proverifQuery": "query peer:principal, s:session, p:packet ⊢ (event send(peer, p, s) ∧ unacknowledged(p, s)) ==> eventually(event receive_ack(p, s) ∨ event timeout_close(s))"
+    },
+    {
+      "id": "PROP_016",
+      "name": "Reserved_Field_Zero_Enforcement",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "Reserved fields in handshake response must be set to zero; unused fields SHALL be set to zero.",
+      "formal": "∀pkt:packet ⊢ event send_packet(pkt) ==> (∀f ∈ reserved_fields(pkt). value(f) = 0)",
+      "violation": "Non-zero reserved fields enable covert channels for data exfiltration bypassing monitoring, version confusion where future protocol extensions are misinterpreted causing undefined behavior, or fingerprinting attacks revealing implementation details. Attacker uses reserved bits to embed command-and-control data, trigger implementation-specific bugs in parsers, or identify vulnerable devices.",
+      "proverifQuery": "query pkt:bitstring ⊢ event process_packet(pkt) ==> (reserved_bits(pkt) = 0)"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Matter_Message_Only_Transport",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "MATTERoPAF Interface SHALL only be used to transport Matter messages as PAFTP SDU; no other protocol data permitted.",
+      "formal": "∀sdu:message, s:paftp_session ⊢ event transport(sdu, s) ==> is_matter_message(sdu)",
+      "violation": "Allowing non-Matter protocols enables protocol tunneling attacks. Attacker encapsulates arbitrary protocols (SSH, HTTP, etc.) inside PAFTP to bypass network security controls like firewalls and intrusion detection, exfiltrate data through unauthorized channels, or exploit cross-protocol vulnerabilities where Matter security assumptions don't apply to tunneled protocol.",
+      "proverifQuery": "query sdu:bitstring ⊢ event send_sdu(sdu) ==> valid_matter_message(sdu)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Segment_Ordering_Preservation",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If SDU is split into multiple segments, segments SHALL be sent in order of their position in original SDU, starting from head.",
+      "formal": "∀sdu:message, seg1:segment, seg2:segment ⊢ (position(seg1, sdu) < position(seg2, sdu)) ==> event send_before(seg1, seg2)",
+      "violation": "Out-of-order segment transmission causes inefficient reassembly with gaps, potential reassembly timeout, and increased memory usage. While sequence numbers provide ordering, sending out-of-order segments violates design intent and may expose implementation bugs in reassembly logic that assumes in-order arrival, causing buffer mismanagement or incorrect data reconstruction.",
+      "proverifQuery": "query seg1:bitstring, seg2:bitstring, sdu:bitstring ⊢ (part_of(seg1, sdu) ∧ part_of(seg2, sdu) ∧ before(seg1, seg2, sdu)) ==> send_before(seg1, seg2)"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Management_Bit_Consistency_Across_Segments",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "All segments of the same message SHALL set Management Message (M) bit to the same value.",
+      "formal": "∀msg:message, seg1:segment, seg2:segment ⊢ (part_of(seg1, msg) ∧ part_of(seg2, msg)) ==> (M_bit(seg1) = M_bit(seg2))",
+      "violation": "Inconsistent M bit values within same message cause parser confusion about message type. Attacker crafts messages with mixed M bit values to bypass management message validation in some segments, trigger inconsistent processing paths causing state corruption, or exploit race conditions where different segments are processed by different code paths with different security checks.",
+      "proverifQuery": "query msg:bitstring ⊢ event reassemble(msg) ==> consistent_management_bits(msg)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "Send_Acknowledgement_Timer_Half_Ack_Timeout",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Send-acknowledgement timer duration SHALL be less than one-half the acknowledgement timeout interval (< 7.5 seconds).",
+      "formal": "send_ack_timer_duration < (PAFTP_ACK_TIMEOUT / 2)",
+      "violation": "If send-ack timer exceeds half of ack timeout, sender's ack-received timer may expire before receiver sends acknowledgement on healthy connection. This causes false-positive session closures, degrading reliability. Under marginal network conditions, legitimate sessions are repeatedly torn down and re-established, reducing throughput and exposing handshake to repeated attack opportunities.",
+      "proverifQuery": "query s:session ⊢ event ack_timeout(s) ==> (send_timer_fired(s) ∨ network_failure(s))"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Window_Initialization_Asymmetry",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Device SHALL initialize Commissioner's window counter at (negotiated_max - 1); Commissioner SHALL initialize Device's window at negotiated_max.",
+      "formal": "∀s:session ⊢ event session_established(s) ==> (window_counter(device, commissioner) = negotiated_max - 1 ∧ window_counter(commissioner, device) = negotiated_max)",
+      "violation": "Incorrect window initialization causes asymmetric state. Device accounting for implicit handshake response (sequence 0) incorrectly leads to off-by-one errors in flow control. This causes unexpected window closure, premature send blocking, or conversely window overflow if initialized too large. Results in deadlock, flow control bypass, or session instability.",
+      "proverifQuery": "query s:session ⊢ event init_session(s) ==> (device_window(s) = max - 1 ∧ commissioner_window(s) = max)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Session_Isolation_Between_Concurrent_Sessions",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Concurrent PAFTP sessions SHALL maintain separate and independent acknowledgement timers, sequence numbers, and receive windows.",
+      "formal": "∀s1:session, s2:session ⊢ (s1 ≠ s2) ==> (timers(s1) ∩ timers(s2) = ∅ ∧ seq_space(s1) ∩ seq_space(s2) = ∅ ∧ windows(s1) ∩ windows(s2) = ∅)",
+      "violation": "Shared state between sessions enables cross-session interference attacks. Attacker establishes multiple sessions and exploits shared state to cause acknowledgements from one session to affect another, advancing sequence numbers in victim session causing desynchronization, or exhausting shared window allocations denying service to other sessions. Also enables session hijacking through state confusion.",
+      "proverifQuery": "query s1:session, s2:session, event:action ⊢ (s1 ≠ s2 ∧ occurs(event, s1)) ==> ¬affects(event, s2)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "Handshake_Response_Implicit_Sequence_Zero",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Device's handshake response bears implied sequence number zero; first Device data packet SHALL be sequence 1.",
+      "formal": "∀d:device, s:session ⊢ event send_handshake_response(d, s) ==> (implicit_seq(handshake_resp) = 0 ∧ seq(first_data_packet(d, s)) = 1)",
+      "violation": "If handshake response not treated as sequence 0, or first data packet isn't sequence 1, sequence number synchronization breaks. Commissioner and Device have mismatched expectations, causing all subsequent sequence checks to fail. Session immediately fails on first data packet. Also causes window accounting errors since handshake response occupies window slot that must be accounted for.",
+      "proverifQuery": "query d:device, s:session ⊢ event send_data(d, s, first) ==> (seq(first) = 1)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Cumulative_Acknowledgement_Prior_Packets",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Acknowledgement of sequence number N implies acknowledgement of all previous unacknowledged packets with sequence < N.",
+      "formal": "∀ack:int, s:session ⊢ event ack_received(ack, s) ==> (∀seq < ack. seq ∈ sent_seqs(s) ==> seq ∈ acked_seqs(s))",
+      "violation": "Non-cumulative acknowledgements require explicit ack tracking for every packet, increasing complexity and memory. If implementation incorrectly handles cumulative semantics, packets remain marked as outstanding despite implicit acknowledgement, causing window counter errors, preventing window reopening, and eventually causing deadlock. Also enables inconsistent state where sender and receiver disagree on acknowledged packets.",
+      "proverifQuery": "query n:int, s:session ⊢ event ack(n, s) ==> (∀m < n. sent(m, s) ==> acked(m, s))"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Version_List_Descending_Order",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Supported protocol versions in handshake request SHALL be sorted in descending numerical order (newest first).",
+      "formal": "∀req:handshake_request, i:int ⊢ (i < 7 ∧ version[i] ≠ 0 ∧ version[i+1] ≠ 0) ==> (version[i] > version[i+1])",
+      "violation": "Unsorted version list may cause Device to select non-newest common version if it stops at first match. While spec says select newest, implementation bug combined with unsorted list enables unintentional downgrade. Attacker exploits this by sending unsorted list to trick Device into selecting older vulnerable version, bypassing downgrade protection.",
+      "proverifQuery": "query req:bitstring ⊢ event send_handshake_request(req) ==> sorted_descending(version_list(req))"
+    },
+    {
+      "id": "PROP_026",
+      "name": "Little_Endian_Encoding_Consistency",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "PAFTP SHALL use little-endian encoding for any header fields larger than one byte in length.",
+      "formal": "∀field:header_field ⊢ (size(field) > 8) ==> encoding(field) = little_endian",
+      "violation": "Endianness mismatch causes multi-byte fields to be misinterpreted. Commissioner and Device may use different endianness, causing Message Length, window size, or Service Info Length to be wildly incorrect (byte-swapped values). This triggers buffer overflows from incorrect size allocation, window deadlock from incorrect window sizes, or session failure from incompatible parameters.",
+      "proverifQuery": "query field:bitstring ⊢ event parse_field(field) ==> (encoding(field) = little_endian)"
+    },
+    {
+      "id": "PROP_027",
+      "name": "Default_Service_Info_Length_350",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If PAFTP is not aware of Supported Maximum Service Specific Info Length, value SHALL be set to 350 bytes.",
+      "formal": "∀peer:principal ⊢ ¬knows(peer, max_service_info_length) ==> (advertised_max(peer) = 350)",
+      "violation": "Using incorrect default may cause negotiation to select value larger than actual WFA-USD capability, causing packet truncation or transmission failure. Larger value causes Device to send oversized packets that are rejected by WFA-USD layer, breaking session. Smaller value unnecessarily reduces throughput. Default must be conservatively safe for all implementations.",
+      "proverifQuery": "query peer:principal ⊢ event advertise_length(peer, len) ==> (len = 350 ∨ known_actual_max(peer, len))"
+    },
+    {
+      "id": "PROP_028",
+      "name": "Minimum_Selection_Window_Size",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Device SHALL select window size equal to minimum of its maximum and Commissioner's maximum window sizes.",
+      "formal": "∀d:device, c:commissioner, s:session ⊢ event negotiate_window(d, c, s) ==> (selected_window(s) = min(max_window(d), max_window(c)))",
+      "violation": "Selecting non-minimum window size causes asymmetric expectations. If larger window selected, peer with smaller capacity is overwhelmed with packets exceeding receive capability, causing packet loss and flow control violation. If unpredictable selection, peers disagree on window size leading to deadlock or flow control bypass.",
+      "proverifQuery": "query s:session ⊢ event establish_session(s) ==> (window(s) = min(device_max, commissioner_max))"
+    },
+    {
+      "id": "PROP_029",
+      "name": "Minimum_Selection_Packet_Size",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Device SHALL select maximum packet size as minimum of Commissioner's and Device's supported Service Info Length.",
+      "formal": "∀d:device, c:commissioner, s:session ⊢ event negotiate_packet_size(d, c, s) ==> (selected_size(s) = min(max_size(d), max_size(c)))",
+      "violation": "Selecting larger packet size than peer supports causes oversized packet rejection. Sender transmits packets exceeding receiver's WFA-USD capacity, packets are truncated or dropped by lower layer. This breaks session with cryptic WFA-USD errors, causes retransmissions and timeouts, and degrades performance. Conservative minimum ensures both peers can handle negotiated size.",
+      "proverifQuery": "query s:session ⊢ event set_max_packet_size(s, size) ==> (size = min(device_max, commissioner_max))"
+    },
+    {
+      "id": "PROP_030",
+      "name": "Segment_Payload_Length_Non_Ending",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "For segments with Ending bit not set, payload length SHALL equal session's maximum packet size minus header size.",
+      "formal": "∀seg:segment, s:session ⊢ (¬ending_bit(seg) ∧ sent_on(seg, s)) ==> (payload_length(seg) = max_packet_size(s) - header_size(seg))",
+      "violation": "Undersized non-ending segments are inefficient but safe. Oversized segments violate negotiated maximum, risking buffer overflow or WFA-USD rejection. Attacker sends oversized non-ending segments to probe for buffer overflow vulnerabilities, trigger truncation that corrupts message integrity, or cause reassembly failures from unexpected segment sizes.",
+      "proverifQuery": "query seg:segment, s:session ⊢ (event send_segment(seg, s) ∧ ¬ending(seg)) ==> (length(payload(seg)) = max_size(s) - header_size)"
+    },
+    {
+      "id": "PROP_031",
+      "name": "Segment_Payload_Length_Ending",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "For segments with Ending bit set, payload length SHALL equal original SDU size minus total size of all previously transmitted segments.",
+      "formal": "∀seg:segment, sdu:message, s:session ⊢ (ending_bit(seg) ∧ last_segment_of(seg, sdu)) ==> (payload_length(seg) = sdu_size(sdu) - Σ payload_length(prior_segments))",
+      "violation": "Incorrect ending segment size causes reassembled SDU length mismatch with Message Length field, triggering session closure. If too large, may overflow reassembly buffer causing memory corruption. If too small, reassembled message is truncated disrupting application-layer processing. Attacker exploits this to cause denial of service through repeated session closure or data corruption.",
+      "proverifQuery": "query seg:segment, sdu:bitstring ⊢ (ending_segment(seg, sdu)) ==> (length(seg) = remaining_bytes(sdu))"
+    },
+    {
+      "id": "PROP_032",
+      "name": "FIFO_Queue_For_Pending_SDUs",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If application attempts to send SDU while another transmission is in progress, new SDU SHALL be appended to FIFO queue.",
+      "formal": "∀sdu_new:message, s:session ⊢ (event send_request(sdu_new, s) ∧ transmitting(s)) ==> event enqueue(sdu_new, fifo_queue(s))",
+      "violation": "Non-FIFO ordering or no queueing causes message reordering or loss. If new SDU replaces queued SDU, messages are dropped silently losing data. If priority queue used instead of FIFO, attacker floods with high-priority messages to starve legitimate messages. FIFO ensures fairness and prevents priority inversion attacks or application-visible message reordering.",
+      "proverifQuery": "query sdu1:bitstring, sdu2:bitstring, s:session ⊢ (enqueue(sdu1, s) ∧ enqueue(sdu2, s) ∧ before(sdu1, sdu2)) ==> send_before(sdu1, sdu2)"
+    },
+    {
+      "id": "PROP_033",
+      "name": "Early_Acknowledgement_On_Window_Pressure",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "If peer detects receive window has shrunk to two or fewer free slots, it SHALL immediately send pending acknowledgement.",
+      "formal": "∀peer:principal, s:session ⊢ (free_slots(peer, s) ≤ 2 ∧ has_pending_ack(peer, s)) ==> event send_ack_immediately(peer, s)",
+      "violation": "Without early acknowledgement, receive window may close before send-ack timer fires. This causes sender to stop transmission waiting for window reopening, stalling session until timer fires. Under high load, this causes throughput degradation and increased latency. While not security critical, impacts availability and enables attacker to reduce victim throughput by forcing window pressure.",
+      "proverifQuery": "query peer:principal, s:session ⊢ (window_slots(peer, s) ≤ 2) ==> event send_ack(peer, s)"
+    },
+    {
+      "id": "PROP_034",
+      "name": "Piggyback_Acknowledgement_On_Transmission",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If peer sends any packet before send-acknowledgement timer expires, it SHALL piggyback any pending acknowledgement.",
+      "formal": "∀peer:principal, s:session, pkt:packet ⊢ (event send_packet(peer, pkt, s) ∧ has_pending_ack(peer, s) ∧ ¬timer_expired(send_ack_timer, s)) ==> (ack_field_present(pkt) ∧ ack_value(pkt) = pending_ack(peer, s))",
+      "violation": "Failing to piggyback acknowledgements wastes window slots on standalone acks. This increases overhead and reduces effective window size. Under high bidirectional load, failure to piggyback causes unnecessary standalone acks consuming window slots, exacerbating window pressure and increasing latency. Attacker exploits this to degrade performance by forcing standalone ack overhead.",
+      "proverifQuery": "query pkt:packet, s:session ⊢ (event send(pkt, s) ∧ pending_ack(s)) ==> contains_ack(pkt)"
+    },
+    {
+      "id": "PROP_035",
+      "name": "Keep_Alive_Through_Idle_Acknowledgements",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "When session is idle, acknowledgement-received timer acts as keep-alive mechanism by detecting unresponsive peer.",
+      "formal": "∀s:session ⊢ (idle(s) ∧ functioning(remote_peer(s))) ==> (∃t < PAFTP_ACK_TIMEOUT. event receive_ack(s, t))",
+      "violation": "Without keep-alive, crashed or unresponsive peers leave sessions open indefinitely consuming resources. While timeout provides protection, idle sessions should still detect failures promptly. Delayed detection allows zombie sessions to accumulate, exhausting session tables and memory. Attacker exploits this by opening many sessions then becoming unresponsive, causing resource exhaustion denial of service.",
+      "proverifQuery": "query s:session ⊢ (idle(s) ∧ no_traffic(s)) ==> eventually(timeout(s) ∨ keepalive_ack(s))"
+    },
+    {
+      "id": "PROP_036",
+      "name": "Maximum_Window_Size_255_Limit",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Largest maximum window size any peer may support is 255 packets.",
+      "formal": "∀peer:principal ⊢ max_window_size(peer) ≤ 255",
+      "violation": "Window size exceeding 255 causes sequence number wraparound within window. Since sequence numbers are 8-bit (0-255), window larger than 255 creates ambiguity where sequence numbers repeat within outstanding packets. This breaks acknowledgement tracking causing packets to be incorrectly marked as acknowledged or unacknowledged, leading to data loss or retransmission errors.",
+      "proverifQuery": "query w:int ⊢ event set_window_size(w) ==> (w ≤ 255)"
+    },
+    {
+      "id": "PROP_037",
+      "name": "SDU_Size_Limit_64KB",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "Size of single PAFTP SDU is limited to 64KB (maximum value of 16-bit Message Length field).",
+      "formal": "∀sdu:message ⊢ event send_sdu(sdu) ==> (size(sdu) ≤ 65535)",
+      "violation": "Exceeding 64KB limit causes Message Length field overflow wrapping to small value. This triggers massive reassembly length mismatch causing session closure. Attacker sends oversized SDU to cause denial of service through session termination, or exploits wraparound to declare small Message Length while sending large data, potentially causing buffer overflow if implementation doesn't properly validate segment accumulation.",
+      "proverifQuery": "query sdu:bitstring ⊢ event transmit_sdu(sdu) ==> (length(sdu) ≤ 65535)"
+    },
+    {
+      "id": "PROP_038",
+      "name": "Acknowledgement_Number_Contiguity",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Acknowledgement number SHALL be the sequence number where all previous contiguous sequence numbers have been received.",
+      "formal": "∀ack:int, s:session ⊢ event send_ack_number(ack, s) ==> (∀seq ≤ ack. seq ∈ sent_seqs(s) ==> received(seq, s)) ∧ (¬received(ack + 1, s) ∨ ack = latest_seq(s))",
+      "violation": "Acknowledging non-contiguous sequences violates cumulative ack semantics. If gaps exist in received sequence numbers but later packets acknowledged, sender incorrectly infers earlier packets received. This causes premature removal from retransmission buffers, causing data loss. Attacker exploits this by causing selective packet loss then triggering acknowledgement of later packets, causing earlier unacknowledged packets to be lost permanently.",
+      "proverifQuery": "query ack:int, s:session ⊢ event acknowledge(ack, s) ==> (∀n ≤ ack. received(n, s))"
+    },
+    {
+      "id": "PROP_039",
+      "name": "Packet_Format_PDU_Adherence",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "All PAFTP packets sent on WFA-USD connection SHALL adhere to PAFTP Packet PDU binary format with header flags and sequence number.",
+      "formal": "∀pkt:packet, s:session ⊢ event send_packet(pkt, s) ==> (valid_pdu_format(pkt) ∧ has_header_flags(pkt) ∧ has_sequence_number(pkt))",
+      "violation": "Malformed packets violate parsing assumptions causing undefined behavior. Attacker sends packets with incorrect format to exploit parser vulnerabilities, trigger buffer overflows from unexpected field ordering or sizes, bypass security checks that assume specific format, or cause crashes from dereferencing invalid structures. Critical for secure parsing.",
+      "proverifQuery": "query pkt:bitstring ⊢ event receive_packet(pkt) ==> valid_format(pkt)"
+    },
+    {
+      "id": "PROP_040",
+      "name": "WFA_USD_Connection_Prerequisite",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Before PAFTP session can be initiated, Commissioner SHALL first establish WFA-USD connection to Commissionable Device.",
+      "formal": "∀c:commissioner, d:device, s:paftp_session ⊢ event initiate_paftp(c, d, s) ==> (∃usd_conn. event wfa_usd_connected(c, d, usd_conn) ∧ before(wfa_usd_connected, initiate_paftp))",
+      "violation": "Attempting PAFTP session without WFA-USD connection fails immediately as no transport exists. This is ordering violation but not security vulnerability per se. However, incorrect state handling may leave partially initialized sessions consuming resources. Impact is primarily availability through improper error handling and resource leaks.",
+      "proverifQuery": "query c:principal, d:principal ⊢ event paftp_handshake(c, d) ==> event wfa_usd_established(c, d)"
+    },
+    {
+      "id": "PROP_041",
+      "name": "Beginning_Segment_Message_Length_Presence",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "First segment of SDU SHALL have Beginning Segment flag set, indicating presence of Message Length field.",
+      "formal": "∀seg:segment, sdu:message ⊢ (first_segment_of(seg, sdu)) ==> (beginning_flag(seg) = 1 ∧ has_message_length(seg))",
+      "violation": "Missing Beginning flag or Message Length causes receiver to not allocate reassembly buffer correctly. Without Message Length, receiver doesn't know total SDU size, unable to allocate buffer or validate completeness. This causes reassembly failure, memory errors from incorrect allocation, or inability to detect message truncation. Critical for proper buffer management.",
+      "proverifQuery": "query seg:segment, sdu:bitstring ⊢ (first_segment(seg, sdu)) ==> (beginning_bit(seg) ∧ has_msg_length(seg))"
+    },
+    {
+      "id": "PROP_042",
+      "name": "Single_Segment_Both_Flags_Set",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "PAFTP packet containing complete unsegmented SDU SHALL have both Beginning and Ending Segment flags set.",
+      "formal": "∀pkt:packet, sdu:message ⊢ (contains_complete_sdu(pkt, sdu) ∧ ¬segmented(sdu)) ==> (beginning_flag(pkt) = 1 ∧ ending_flag(pkt) = 1)",
+      "violation": "Incorrect flag setting for single-segment SDU causes receiver to wait for additional segments that never arrive. Session stalls until timeout. Alternatively, if Beginning set but not Ending, receiver may accept additional segments as continuation, incorrectly concatenating unrelated data. This corrupts message integrity or causes reassembly timeout.",
+      "proverifQuery": "query pkt:packet, sdu:bitstring ⊢ (single_segment_message(pkt, sdu)) ==> (beginning_bit(pkt) ∧ ending_bit(pkt))"
+    },
+    {
+      "id": "PROP_043",
+      "name": "First_Commissioner_Packet_Sequence_Zero",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Sequence number of first packet sent by Commissioner after handshake completion SHALL be zero.",
+      "formal": "∀c:commissioner, s:session ⊢ event send_first_data_packet(c, s) ==> (sequence_number(first_packet(c, s)) = 0)",
+      "violation": "Non-zero first sequence number breaks sequence synchronization. Device expects sequence 0 but receives different value, fails sequence check, closes session. Also causes acknowledgement confusion as Device's ack 0 for handshake response doesn't match first data packet. Critical for establishing synchronized sequence numbering.",
+      "proverifQuery": "query c:principal, s:session ⊢ event first_data_packet(c, s) ==> (seq(first_packet) = 0)"
+    },
+    {
+      "id": "PROP_044",
+      "name": "Acknowledgement_Received_Timer_Management",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "When peer sends packet, SHALL start ack-received timer if not running; restart on ack except for most recent; stop when most recent acked.",
+      "formal": "∀peer:principal, s:session, pkt:packet ⊢ event send(peer, pkt, s) ==> (¬running(ack_recv_timer, s) ==> start_timer(ack_recv_timer, s)) ∧ (event receive_ack(pkt, s) ==> (most_recent(pkt) ==> stop_timer(ack_recv_timer, s)) ∧ (¬most_recent(pkt) ==> restart_timer(ack_recv_timer, s)))",
+      "violation": "Incorrect timer management causes false timeouts or missed failures. If timer not started, unacknowledged packets never timeout causing zombie sessions. If not stopped on final ack, spurious timeouts close healthy sessions. If not restarted on intermediate acks, timeout fires prematurely. All impact availability through incorrect failure detection.",
+      "proverifQuery": "query peer:principal, s:session ⊢ (sent_packet(peer, s) ∧ unacknowledged(s)) ==> timer_running(ack_recv_timer, s)"
+    },
+    {
+      "id": "PROP_045",
+      "name": "Send_Acknowledgement_Timer_Management",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "When peer receives packet, SHALL record sequence as pending ack and start send-ack timer if not running; restart/stop based on pending acks.",
+      "formal": "∀peer:principal, s:session, pkt:packet ⊢ event receive(peer, pkt, s) ==> (pending_ack(s) := seq(pkt) ∧ (¬running(send_ack_timer, s) ==> start_timer(send_ack_timer, s)))",
+      "violation": "Incorrect send-ack timer management causes delayed acknowledgements or missing acks. If timer not started, acknowledgements never sent autonomously, only piggyback on data packets. On idle sessions this prevents ack transmission causing sender timeout. If not managed correctly, acknowledgements sent too early or late disrupting flow control timing.",
+      "proverifQuery": "query peer:principal, s:session ⊢ (received_packet(peer, s) ∧ pending_ack(s)) ==> timer_running(send_ack_timer, s)"
+    },
+    {
+      "id": "PROP_046",
+      "name": "Pending_Acknowledgement_Immediate_Send_On_Expiry",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "If send-acknowledgement timer expires and peer has pending acknowledgement, SHALL immediately send that acknowledgement.",
+      "formal": "∀peer:principal, s:session ⊢ (event timer_expired(send_ack_timer, s) ∧ has_pending_ack(peer, s)) ==> event send_ack_immediately(peer, pending_ack_value(peer, s), s)",
+      "violation": "Failing to send ack on timer expiry causes sender's ack-received timer to expire, closing session. This is primary mechanism for acknowledging packets when no data to send. Without this, idle sessions fail. Critical for reliability - without timer-driven acks, protocol devolves to data-driven only, breaking idle sessions.",
+      "proverifQuery": "query s:session, t:time ⊢ (timer_expires(send_ack_timer, s, t) ∧ pending_ack(s)) ==> event send_ack(s, t)"
+    },
+    {
+      "id": "PROP_047",
+      "name": "Connection_Closure_By_Either_Party",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Commissioner MAY terminate subscribe instance to close PAFTP session; Device MAY terminate publish instance to close session.",
+      "formal": "∀c:commissioner, d:device, s:session ⊢ (event terminate_subscribe(c, s) ∨ event terminate_publish(d, s)) ==> event close_session(s)",
+      "violation": "Not a security property per se, but incorrect closure handling causes resource leaks. If closure not properly handled, sessions remain in partially closed state consuming resources. Attacker exploits improper closure to exhaust session tables by repeatedly initiating then improperly closing sessions. Important for resource management and DoS prevention.",
+      "proverifQuery": "query s:session ⊢ event close_request(s) ==> eventually(event session_closed(s))"
+    },
+    {
+      "id": "PROP_048",
+      "name": "State_Machine_Handshake_Completion_Atomicity",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "Session establishment handshake (request, response) is atomic transition from disconnected to connected; partial handshake is invalid state.",
+      "formal": "∀s:session ⊢ state(s) ∈ {disconnected, handshake_pending, connected} ∧ (state(s) = handshake_pending ==> eventually(state(s) = connected ∨ state(s) = disconnected))",
+      "violation": "Partial handshake state (request sent but no response or response not fully processed) leaves session in undefined state. This causes resource leaks, ambiguous connection status, and security vulnerabilities. Attacker exploits partial handshake to achieve inconsistent state where sender believes connected but receiver doesn't, enabling attacks on state machine assumptions. Non-atomic handshake is critical vulnerability.",
+      "proverifQuery": "query s:session ⊢ (handshake_initiated(s) ∧ ¬handshake_completed(s)) ==> eventually(handshake_completed(s) ∨ handshake_failed(s))"
+    },
+    {
+      "id": "PROP_049",
+      "name": "Sequence_Number_Synchronization_Between_Peers",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Both peers must maintain synchronized sequence number state; receiver's expected sequence must match sender's next transmission sequence.",
+      "formal": "∀s:session, t:time ⊢ expected_seq(receiver, s, t) = next_send_seq(sender, s, t)",
+      "violation": "Sequence desynchronization causes all subsequent packets to fail validation, breaking session. This is fundamental to protocol correctness. Attacker exploits desync by injecting packets causing receiver to advance expected sequence without sender knowledge, then re-sends legitimate packet that's now rejected as duplicate. Or causes desync to force session re-establishment, disrupting service.",
+      "proverifQuery": "query s:session, seq_send:int, seq_expect:int ⊢ (next_seq(sender, s) = seq_send ∧ expected_seq(receiver, s) = seq_expect) ==> (seq_send = seq_expect)"
+    },
+    {
+      "id": "PROP_050",
+      "name": "Timer_Reliability_No_Significant_Drift",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Protocol assumes timers fire within reasonable bounds of configured duration; significant clock drift or timer unreliability breaks timeout mechanisms.",
+      "formal": "∀timer:timer, duration:int ⊢ (set_timer(timer, duration) ∧ event timer_fire(timer, t)) ==> (duration ≤ t ≤ duration + acceptable_drift)",
+      "violation": "If system clocks drift significantly or timers unreliable, timeout coordination breaks. Send-ack timer may fire before ack-recv timer despite being half the duration if clocks diverge. This causes false timeouts on healthy connections or conversely, zombie sessions when timers never fire. Impacts availability and enables DoS through timer manipulation if attacker can influence system time.",
+      "proverifQuery": "query timer:timer, t_set:time, t_fire:time ⊢ (set_timer(timer, t_set, duration) ∧ fires(timer, t_fire)) ==> (t_fire - t_set ≈ duration)"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "WFA-USD layer provides reliable point-to-point delivery without packet loss, duplication, or reordering within its reliability guarantees.",
+      "type": "Implicit",
+      "impact_if_violated": "PAFTP sequence numbers and acknowledgements assume ordered reliable delivery. If WFA-USD loses packets or reorders, PAFTP sequence checks fail causing session closure. Properties PROP_003, PROP_004, PROP_049 fail. Requires PAFTP to implement retransmission if WFA-USD is not truly reliable."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "WFA-USD layer provides message integrity and authentication; PAFTP does not specify cryptographic protection against modification or forgery.",
+      "type": "Implicit",
+      "impact_if_violated": "Without cryptographic integrity, attacker can modify packet contents, forge packets, or inject packets. This breaks all security properties: version negotiation (PROP_001, PROP_002), sequence numbers (PROP_003, PROP_004), acknowledgements (PROP_010), and message integrity (PROP_008). PAFTP assumes lower layer prevents active attacks."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "System clocks on Commissioner and Device do not drift significantly relative to timeout durations.",
+      "type": "Implicit",
+      "impact_if_violated": "Timer coordination (PROP_020, PROP_050) assumes synchronized time perception. If clocks drift, send-ack timer relative to ack-recv timer may not maintain required ratio. Causes false timeouts or missed timeouts, breaking session reliability. Properties PROP_014, PROP_015, PROP_044, PROP_045, PROP_046 all depend on timer accuracy."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Implementations correctly maintain protocol state machines and do not have software vulnerabilities in parsing or state management.",
+      "type": "Explicit",
+      "impact_if_violated": "Protocol security properties assume correct implementation. Parser vulnerabilities enable buffer overflows despite correct protocol (breaks PROP_008, PROP_009, PROP_039). State machine errors cause incorrect state transitions breaking all state-dependent properties. This assumption is explicitly noted by 'report error to application' requirements assuming implementation follows spec."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Sufficient memory is available to maintain receive windows, reassembly buffers, and queued SDUs of negotiated size.",
+      "type": "Implicit",
+      "impact_if_violated": "Memory exhaustion prevents correct operation. If cannot allocate window slots or reassembly buffers, reception fails. Properties PROP_012, PROP_013, PROP_036 assume memory for window available. Memory exhaustion enables DoS by resource exhaustion. Implementation must handle gracefully but spec assumes adequate resources."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Matter messages transported as PAFTP SDU are properly authenticated and encrypted at higher layer; PAFTP provides no confidentiality or authenticity.",
+      "type": "Implicit",
+      "impact_if_violated": "PAFTP is transport only with no cryptographic security. If Matter layer doesn't encrypt/authenticate, messages travel in clear and can be forged. This breaks confidentiality and integrity of commissioning. Property PROP_017 assumes Matter messages are self-protecting, PAFTP just reliably delivers them."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Version downgrade attack enabling exploitation of known vulnerabilities in older protocol versions",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker intercepts handshake request and removes newer protocol versions from supported list, forcing Device to select older vulnerable version. Exploits version-specific vulnerabilities in downgraded protocol."
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Protocol confusion attack causing undefined behavior from incompatible version usage",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker forces session continuation with incompatible versions. Sends packets malformed under Device's version but valid under Commissioner's, causing parser confusion, buffer overflows, or arbitrary code execution."
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Replay attack and message injection via sequence number violation",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker captures legitimate packet and replays it. Non-incrementing sequence accepted, causing duplicate command execution. Or attacker injects packets with arbitrary sequence numbers to fill gaps, injecting malicious commands."
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Flow control bypass and state corruption via invalid sequence acceptance",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends packets with future sequence numbers. Without validation, receiver advances expected sequence, creating gaps. Causes legitimate packets to be rejected as duplicates, or attacker fills gaps with malicious data."
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Message integrity violation via SDU segment interleaving",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker exploits overlapping SDU transmission to interleave segments from multiple messages. Reassembly concatenates segments from different SDUs, producing corrupted hybrid message that bypasses authentication or injects malicious data."
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "Use-after-free and buffer management vulnerabilities via missing Beginning segment",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends Ending segment without Beginning. Implementation attempts reassembly on non-existent buffer, causing use-after-free, null pointer dereference, or reading uninitialized memory leaking sensitive data."
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Memory corruption via concurrent SDU buffer overwrite",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends Beginning segment while current SDU in progress. New SDU overwrites partially reassembled buffer, corrupting data, causing double-free when both SDUs complete, or mixing authenticated with unauthenticated data."
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Buffer overflow via Message Length field manipulation",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker declares small Message Length in Beginning segment but sends large total payload across segments. Receiver allocates small buffer but writes beyond bounds during reassembly, causing heap corruption and code execution."
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "Stack or heap buffer overflow via oversized segment",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends segment larger than negotiated maximum. Implementation allocates fixed buffer based on max size but doesn't validate incoming segment size, causing buffer overflow when writing segment data."
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Flow control bypass and state corruption via invalid acknowledgement injection",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker injects acknowledgement for non-existent packet sequence. Implementation frees non-existent resources causing state corruption, or acknowledges future packets prematurely reopening window allowing flood attack."
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Window exhaustion denial of service via unacknowledged standalone acks",
+      "severity": "HIGH",
+      "attack_vector": "Attacker forces sending of standalone acks by creating conditions requiring immediate ack, but never acknowledges the ack packets. Window fills with unacknowledged acks, eventually closing and deadlocking session."
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Receiver buffer overflow via flow control violation",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker exploits missing window closure check to send packets when receiver has no buffer space. Receiver cannot store packets, causing buffer overflow, packet corruption, or memory exhaustion."
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Mutual deadlock denial of service",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker maneuvers both peers into state where each has one window slot remaining and pending acks. Neither can send ack because window full. Session deadlocks permanently, requiring timeout or external intervention."
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Resource exhaustion via handshake request flooding",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends many handshake requests without responding. Without timeout, each unresponsive handshake consumes session slot indefinitely. Exhausts available sessions preventing legitimate connections."
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Zombie session resource exhaustion",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker withholds acknowledgements causing unacknowledged packets. Without timeout, session remains open indefinitely consuming memory and session slots. Repeated attacks exhaust resources causing denial of service."
+    },
+    {
+      "property_id": "PROP_016",
+      "vulnerability": "Covert channel data exfiltration via reserved field manipulation",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker encodes data in reserved or unused fields to create covert channel bypassing monitoring. Exfiltrates sensitive information through fields that security tools ignore. Also enables fingerprinting via non-zero reserved fields."
+    },
+    {
+      "property_id": "PROP_017",
+      "vulnerability": "Protocol tunneling and security policy bypass",
+      "severity": "HIGH",
+      "attack_vector": "Attacker encapsulates non-Matter protocols inside PAFTP. Uses Matter commissioning as tunnel for arbitrary protocols (SSH, HTTP) bypassing firewall rules and intrusion detection that permit only Matter traffic."
+    },
+    {
+      "property_id": "PROP_018",
+      "vulnerability": "Reassembly inefficiency and timeout (availability impact)",
+      "severity": "MEDIUM",
+      "attack_vector": "While sequence numbers enforce ordering, intentionally sending segments out of order creates reassembly gaps. May expose implementation bugs assuming in-order arrival. Primarily availability impact through reassembly delays."
+    },
+    {
+      "property_id": "PROP_019",
+      "vulnerability": "Parser confusion and inconsistent message type handling",
+      "severity": "HIGH",
+      "attack_vector": "Attacker crafts message with inconsistent M bit across segments. Some segments processed as management, others as data. Causes validation bypass where management checks applied inconsistently, or state corruption from mixed processing."
+    },
+    {
+      "property_id": "PROP_020",
+      "vulnerability": "False positive session closure on healthy connections",
+      "severity": "MEDIUM",
+      "attack_vector": "If send-ack timer too slow, ack-recv timer expires before ack sent on healthy connection. Causes legitimate sessions to close with timeout error. Attacker doesn't need to act - misconfiguration causes self-inflicted DoS."
+    },
+    {
+      "property_id": "PROP_021",
+      "vulnerability": "Flow control deadlock or bypass via incorrect window initialization",
+      "severity": "HIGH",
+      "attack_vector": "Incorrect initial window accounting causes off-by-one errors. If Device initializes Commissioner window too high, one extra packet sent overflowing window. If too low, unnecessary early window closure causing stall."
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Cross-session interference and session hijacking",
+      "severity": "HIGH",
+      "attack_vector": "Attacker exploits shared state between sessions. Acknowledgement in one session affects another, advancing victim session sequence numbers causing desync. Or exhausting shared window pool denies service to other sessions."
+    },
+    {
+      "property_id": "PROP_023",
+      "vulnerability": "Sequence number desynchronization from incorrect initial state",
+      "severity": "HIGH",
+      "attack_vector": "If handshake response not treated as sequence 0 or first data packet not sequence 1, peers have mismatched sequence expectations. All subsequent packets fail validation, session immediately fails. Also incorrect window accounting."
+    },
+    {
+      "property_id": "PROP_024",
+      "vulnerability": "Window accounting errors causing deadlock or data loss",
+      "severity": "HIGH",
+      "attack_vector": "Non-cumulative ack interpretation causes packets to remain unacknowledged despite implicit acknowledgement. Window never reopens causing deadlock. Or packets prematurely removed from retransmission buffer causing data loss."
+    },
+    {
+      "property_id": "PROP_025",
+      "vulnerability": "Unintentional protocol downgrade via implementation bug",
+      "severity": "MEDIUM",
+      "attack_vector": "Device implementation stops at first match instead of newest when processing unsorted version list. Attacker sends unsorted list with old version first to trick buggy implementation into selecting vulnerable version."
+    },
+    {
+      "property_id": "PROP_026",
+      "vulnerability": "Multi-byte field misinterpretation causing buffer overflow or deadlock",
+      "severity": "HIGH",
+      "attack_vector": "Endianness mismatch causes Message Length or window size byte-swapped. Small value becomes large causing massive buffer allocation failing or overflowing. Or large becomes small causing truncated buffer with overflow on write."
+    },
+    {
+      "property_id": "PROP_027",
+      "vulnerability": "Packet truncation or transmission failure from incorrect default",
+      "severity": "MEDIUM",
+      "attack_vector": "Using incorrect default Service Info Length causes negotiation to select value incompatible with WFA-USD layer. Oversized packets rejected breaking session. Undersized unnecessarily limits throughput."
+    },
+    {
+      "property_id": "PROP_028",
+      "vulnerability": "Flow control violation via non-minimum window negotiation",
+      "severity": "MEDIUM",
+      "attack_vector": "Selecting window size larger than peer's capacity causes receiver overflow. Peer with smaller window receives more packets than it can buffer, causing loss. Non-deterministic selection causes interoperability failures."
+    },
+    {
+      "property_id": "PROP_029",
+      "vulnerability": "Packet rejection and session failure via oversized packet transmission",
+      "severity": "MEDIUM",
+      "attack_vector": "Selecting packet size exceeding peer's WFA-USD capability causes packets to be truncated or rejected by lower layer. Session breaks with transport errors. Conservative minimum ensures compatibility."
+    },
+    {
+      "property_id": "PROP_030",
+      "vulnerability": "Buffer overflow via oversized non-ending segment",
+      "severity": "HIGH",
+      "attack_vector": "Attacker sends non-ending segment with payload exceeding negotiated max minus header. Implementation assumes size compliance, writes beyond buffer allocated for max packet size, causing heap corruption."
+    },
+    {
+      "property_id": "PROP_031",
+      "vulnerability": "Buffer overflow or message truncation via incorrect ending segment size",
+      "severity": "HIGH",
+      "attack_vector": "Attacker sends oversized ending segment exceeding remaining bytes per Message Length. Reassembly writes beyond buffer allocated for Message Length, causing overflow. Or undersized causing truncated message passed to application."
+    },
+    {
+      "property_id": "PROP_032",
+      "vulnerability": "Message reordering or loss via non-FIFO queue",
+      "severity": "MEDIUM",
+      "attack_vector": "Non-FIFO queueing causes application-visible message reordering. Attacker floods with messages causing queue to fill, then sends high-priority message to jump queue. Breaks ordering assumptions in higher layers."
+    },
+    {
+      "property_id": "PROP_033",
+      "vulnerability": "Session stall and throughput degradation via delayed acknowledgement",
+      "severity": "MEDIUM",
+      "attack_vector": "Without early ack under window pressure, window closes before timer fires. Sender stalls waiting for ack. Under load this causes throughput collapse. Attacker exploits to reduce victim throughput."
+    },
+    {
+      "property_id": "PROP_034",
+      "vulnerability": "Window slot exhaustion via excessive standalone acks",
+      "severity": "MEDIUM",
+      "attack_vector": "Failing to piggyback acks wastes window slots on standalone acks. Under bidirectional load, standalone acks fill window reducing capacity for data. Attacker exploits to degrade performance and increase latency."
+    },
+    {
+      "property_id": "PROP_035",
+      "vulnerability": "Zombie session accumulation enabling resource exhaustion",
+      "severity": "MEDIUM",
+      "attack_vector": "Crashed peers leave sessions open without keep-alive detection. Attacker opens many sessions then crashes/stops responding. Sessions accumulate consuming resources. Keep-alive prevents long-term accumulation but delays detection."
+    },
+    {
+      "property_id": "PROP_036",
+      "vulnerability": "Sequence number wraparound ambiguity causing acknowledgement tracking failure",
+      "severity": "MEDIUM",
+      "attack_vector": "Window > 255 causes sequence number to wrap within outstanding packets. Sequence 0 appears while packet 0 still outstanding, causing ambiguity. Acknowledgements track wrong packets causing data loss or retransmission errors."
+    },
+    {
+      "property_id": "PROP_037",
+      "vulnerability": "Buffer overflow via Message Length wraparound",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker sends SDU exceeding 64KB. Message Length wraps to small value. Receiver allocates small buffer but attacker sends large segments. Reassembly overflows buffer causing heap corruption and code execution."
+    },
+    {
+      "property_id": "PROP_038",
+      "vulnerability": "Data loss via premature retransmission buffer freeing",
+      "severity": "HIGH",
+      "attack_vector": "Attacker causes gaps in received sequences then forces acknowledgement of later packet. Non-contiguous ack causes earlier unacknowledged packets with gaps to be incorrectly considered acknowledged, removed from retransmit buffer, lost permanently."
+    },
+    {
+      "property_id": "PROP_039",
+      "vulnerability": "Parser exploitation via malformed packet structure",
+      "severity": "HIGH",
+      "attack_vector": "Attacker sends packets with incorrect format, unexpected field ordering, or invalid sizes. Exploits parser vulnerabilities causing buffer overflows from incorrect size reads, null pointer dereferences, or arbitrary code execution."
+    },
+    {
+      "property_id": "PROP_040",
+      "vulnerability": "Resource leak via improper state handling",
+      "severity": "MEDIUM",
+      "attack_vector": "Attempting PAFTP without WFA-USD causes immediate failure. Improper error handling may leave partially initialized session resources allocated. Repeated attempts cause resource leaks eventually exhausting memory or sessions."
+    },
+    {
+      "property_id": "PROP_041",
+      "vulnerability": "Reassembly failure and memory errors via missing Message Length",
+      "severity": "HIGH",
+      "attack_vector": "Without Beginning flag or Message Length, receiver cannot allocate correct buffer size or validate completeness. Causes incorrect allocation, inability to detect truncation, or reading beyond valid data."
+    },
+    {
+      "property_id": "PROP_042",
+      "vulnerability": "Session stall or data corruption via incorrect single-segment flags",
+      "severity": "MEDIUM",
+      "attack_vector": "Single-segment message with missing Ending flag causes receiver to wait for more segments indefinitely. Or missing Beginning allows next unrelated segment to be incorrectly concatenated as continuation, corrupting message integrity."
+    },
+    {
+      "property_id": "PROP_043",
+      "vulnerability": "Sequence synchronization failure from incorrect initial sequence",
+      "severity": "HIGH",
+      "attack_vector": "Non-zero first sequence breaks synchronization. Device expects 0, Commissioner sends different value. Sequence check fails immediately. Also acknowledgement confusion as ack numbering doesn't match, causing session closure."
+    },
+    {
+      "property_id": "PROP_044",
+      "vulnerability": "False timeouts or zombie sessions via incorrect timer management",
+      "severity": "HIGH",
+      "attack_vector": "If timer not managed correctly, spurious timeouts close healthy sessions or zombie sessions persist. Attacker exploits timer bugs to cause DoS through false closures or resource exhaustion through zombie accumulation."
+    },
+    {
+      "property_id": "PROP_045",
+      "vulnerability": "Missing acknowledgements causing sender timeout",
+      "severity": "HIGH",
+      "attack_vector": "Without send-ack timer management, acknowledgements never sent autonomously. On idle sessions, sender's ack-recv timer expires waiting for ack that never comes. All idle sessions timeout and close."
+    },
+    {
+      "property_id": "PROP_046",
+      "vulnerability": "Reliable transmission failure on idle sessions",
+      "severity": "HIGH",
+      "attack_vector": "If expired timer doesn't send ack, sender never receives acknowledgement. Ack-recv timer expires, closes session. This is primary reliability mechanism when idle - without it, all idle sessions fail."
+    },
+    {
+      "property_id": "PROP_047",
+      "vulnerability": "Resource exhaustion via session leak on improper closure",
+      "severity": "MEDIUM",
+      "attack_vector": "Improper closure handling leaves sessions in partially closed state consuming resources. Attacker repeatedly opens and improperly closes sessions. Resources accumulate in leaked state eventually exhausting session tables."
+    },
+    {
+      "property_id": "PROP_048",
+      "vulnerability": "State machine corruption via partial handshake state",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker interrupts handshake after request but before response fully processed. Peers in inconsistent state - one thinks connected, other doesn't. Exploits state machine assumptions to bypass authentication, send unauthenticated data, or corrupt state."
+    },
+    {
+      "property_id": "PROP_049",
+      "vulnerability": "Session disruption via sequence desynchronization injection",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker injects packet causing receiver to advance expected sequence. Sender continues with non-advanced sequence. Next legitimate packet rejected as duplicate or out-of-sequence. Forces session re-establishment, disrupts service."
+    },
+    {
+      "property_id": "PROP_050",
+      "vulnerability": "False timeouts or missed failures via timer unreliability",
+      "severity": "HIGH",
+      "attack_vector": "Clock drift or timer bugs cause incorrect timeout behavior. Fast clocks cause premature timeouts closing healthy sessions. Slow clocks delay failure detection allowing zombie sessions to accumulate. Attacker exploits unreliable timers to cause DoS."
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "Disconnected",
+      "properties_enforcing_transitions": ["PROP_040", "PROP_048"],
+      "critical_property": "Session cannot transition from Disconnected to Connected without WFA-USD prerequisite (PROP_040) and atomic handshake completion (PROP_048)"
+    },
+    {
+      "state_name": "WFA_USD_connection_formed",
+      "properties_enforcing_transitions": ["PROP_014", "PROP_048"],
+      "critical_property": "Transition to Connected requires handshake completion within timeout (PROP_014) with atomic state transition (PROP_048); timeout causes return to Disconnected"
+    },
+    {
+      "state_name": "Capabilities_request_sent / Wait_on_capabilities_request",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_002", "PROP_014"],
+      "critical_property": "Handshake phase enforces version negotiation security (PROP_001, PROP_002) and timeout closure (PROP_014) if response not received"
+    },
+    {
+      "state_name": "Connected",
+      "properties_enforcing_transitions": ["PROP_003", "PROP_004", "PROP_005", "PROP_012", "PROP_013", "PROP_015", "PROP_049"],
+      "critical_property": "Connected state requires: sequence number integrity (PROP_003, PROP_004), SDU non-overlap (PROP_005), flow control (PROP_012, PROP_013), timeout monitoring (PROP_015), and sequence synchronization (PROP_049). Violation of any causes transition to Disconnected"
+    },
+    {
+      "state_name": "Commissioner_state_post_handshake (ack-rx stopped, ack-tx ticking)",
+      "properties_enforcing_transitions": ["PROP_044", "PROP_045", "PROP_046"],
+      "critical_property": "Timer state requires correct timer management (PROP_044, PROP_045) and ack sending on expiry (PROP_046); violation causes timeout and return to Disconnected"
+    },
+    {
+      "state_name": "Device_state_post_handshake (ack-rx ticking, ack-tx stopped)",
+      "properties_enforcing_transitions": ["PROP_044", "PROP_045", "PROP_046"],
+      "critical_property": "Complementary timer state to Commissioner; requires same timer management properties; asymmetric due to handshake response at sequence 0"
+    },
+    {
+      "state_name": "BothTicking (ack-rx ticking, ack-tx ticking)",
+      "properties_enforcing_transitions": ["PROP_015", "PROP_044", "PROP_045"],
+      "critical_property": "Both timers active indicates pending acknowledgements in both directions; ack-rx timeout (PROP_015) causes session closure; proper timer management (PROP_044, PROP_045) required to avoid false timeout"
+    },
+    {
+      "state_name": "Idle state",
+      "properties_enforcing_transitions": ["PROP_011", "PROP_035", "PROP_046"],
+      "critical_property": "Idle state requires keep-alive mechanism (PROP_035) via continued ack exchange (PROP_046); standalone acks must be acknowledged (PROP_011) to prevent deadlock"
+    },
+    {
+      "state_name": "Transmitting SDU",
+      "properties_enforcing_transitions": ["PROP_005", "PROP_006", "PROP_007", "PROP_018", "PROP_022"],
+      "critical_property": "During SDU transmission, enforce non-overlap (PROP_005), proper segment ordering (Beginning before Ending, PROP_006), no new Beginning until complete (PROP_007), segment send order (PROP_018), and session isolation (PROP_022)"
+    },
+    {
+      "state_name": "Reassembling SDU",
+      "properties_enforcing_transitions": ["PROP_006", "PROP_008", "PROP_009", "PROP_038", "PROP_041"],
+      "critical_property": "Reassembly requires Beginning segment (PROP_006, PROP_041), length validation (PROP_008), size enforcement (PROP_009), and contiguous acknowledgement (PROP_038); violations cause session closure"
+    }
+  ],
+  "additionalInsights": "**Critical Design Vulnerabilities Identified Beyond Specification:**\n\n1. **No Cryptographic Protection**: PAFTP provides no encryption, authentication, or integrity at transport layer. Entirely relies on WFA-USD or Matter layer security. Active attacker on radio can inject/modify/replay packets breaking all security properties unless lower layers provide comprehensive protection. This is architectural risk.\n\n2. **Acknowledgement Deadlock Surface**: Design creates multiple deadlock scenarios (window full, both pending acks, one-slot-remaining). While PROP_013 addresses primary case, implementation complexity of deadlock avoidance is high. Timer-based recovery helps but adds latency.\n\n3. **Asymmetric State Initialization**: Commissioner/Device have different initial states (sequence 0 vs 1, window max vs max-1). This asymmetry is source of implementation errors. Protocol would be more robust with symmetric initialization.\n\n4. **Weak Downgrade Protection**: Version negotiation (PROP_001) assumes integrity of version list. Without cryptographic binding, attacker can modify version list to force downgrade. Should include version commitment in handshake response authenticated by Matter layer.\n\n5. **Timer Coordination Fragility**: Send-ack timer < 1/2 ack-timeout is brittle under clock drift or variable network latency. Close to threshold risks false timeouts. More conservative ratio (e.g., 1/3 or 1/4) would improve robustness.\n\n6. **No Explicit Fast Retransmit**: Unlike TCP, no mechanism for fast retransmit on out-of-order detection. Relies solely on timeout for loss recovery. Single packet loss causes full timeout delay before recovery. Impacts latency under lossy conditions.\n\n7. **Stand-Alone Ack Cost**: Stand-alone acks consuming window slots is unusual and increases deadlock risk. TCP acks are free. This design choice forces careful window management and creates PROP_011 vulnerability.\n\n8. **64KB SDU Limit Seems Arbitrary**: While 16-bit Message Length field mechanically limits to 64KB, spec claims upper layer imposes stricter limit but doesn't specify coordination mechanism. Mismatch between layers risks confusion.\n\n9. **No Explicit Connection Finalization Handshake**: Connection closure is implicit (MAY terminate). No graceful shutdown handshake ensures both peers agree connection closed. Risks asymmetric state where one peer thinks closed, other doesn't.\n\n10. **Sequence Number Wraparound Handling Unspecified**: While 255 window limit prevents wraparound within window, long-lived sessions will wrap sequence numbers. Spec doesn't discuss handling, assuming sessions short-lived via PAFTP_CONN_IDLE_TIMEOUT.\n\n11. **No Explicit Replay Protection Window**: Sequence numbers provide ordering but no explicit replay window specified. Recent-sequence tracking needed to reject old replayed packets outside current window.\n\n12. **Idle Timeout Enforced Only by Commissioner**: PAFTP_CONN_IDLE_TIMEOUT says Commissioner must close idle session. Device behavior unspecified. Asymmetric responsibility creates potential for zombie sessions from device perspective.\n\n**Recommendations for Implementation:**\n- Validate all properties rigorously in test suites\n- Use formal methods (ProVerif) to verify state machine properties\n- Implement defense-in-depth: even though spec says close session on error, also implement detection and recovery\n- Conservative timer ratios to handle clock drift\n- Explicit replay detection even though sequence numbers provide ordering\n- Careful testing of deadlock scenarios\n- Integration testing with WFA-USD layer for size negotiation\n- Fuzz testing of parser with malformed packets\n- Memory safety verification for reassembly buffers",
+  "summary": {
+    "total_properties": 50,
+    "by_importance": {
+      "CRITICAL": 23,
+      "HIGH": 17,
+      "MEDIUM": 10
+    },
+    "by_category": {
+      "Security": 13,
+      "Correctness": 14,
+      "Timing": 5,
+      "Atomicity": 3,
+      "Consistency": 2,
+      "Cryptography": 0,
+      "AccessControl": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 6,
+    "vulnerabilities_identified": 50
+  }
+}

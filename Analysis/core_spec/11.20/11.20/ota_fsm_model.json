@@ -1,0 +1,1941 @@
+{
+  "fsm_model": {
+    "section_name": "11.20. Over-the-Air (OTA) Software Update",
+    "section_ref": "Matter 1.4 Core Specification, Section 11.20",
+    "states": [
+      {
+        "name": "Unknown",
+        "description": "Current state is not yet determined. Initial state before OTA mechanism is initialized.",
+        "is_initial": true,
+        "invariants": [
+          "state_determination_pending == true"
+        ],
+        "state_variables": {
+          "state_determination_pending": "boolean",
+          "initialization_complete": "boolean"
+        }
+      },
+      {
+        "name": "Idle",
+        "description": "Not in process of software update, awaiting next query opportunity.",
+        "is_initial": false,
+        "invariants": [
+          "no_active_query == true",
+          "no_active_download == true",
+          "no_pending_apply == true"
+        ],
+        "state_variables": {
+          "last_query_time": "epoch_us or null",
+          "next_query_time": "epoch_us",
+          "default_providers_list": "list of ProviderLocation",
+          "cached_providers_list": "list of ProviderLocation",
+          "downloaded_image": "image_data or null",
+          "downloaded_image_version": "uint32 or null",
+          "downloaded_image_verified": "boolean",
+          "update_possible": "boolean",
+          "update_state_progress": "uint8 0-100 or null"
+        }
+      },
+      {
+        "name": "Querying",
+        "description": "In process of querying OTA Provider with QueryImage command, awaiting QueryImageResponse.",
+        "is_initial": false,
+        "invariants": [
+          "query_in_flight == true",
+          "selected_provider != null"
+        ],
+        "state_variables": {
+          "selected_provider": "ProviderLocation",
+          "query_sent_time": "epoch_us",
+          "current_software_version": "uint32",
+          "vendor_id": "uint16",
+          "product_id": "uint16",
+          "hardware_version": "uint16 or null",
+          "protocols_supported": "list of DownloadProtocolEnum",
+          "requestor_can_consent": "boolean",
+          "metadata_for_provider": "octstr or null"
+        }
+      },
+      {
+        "name": "DelayedOnQuery",
+        "description": "Waiting after receiving Busy response from Provider, must delay before re-querying.",
+        "is_initial": false,
+        "invariants": [
+          "delay_timer_active == true",
+          "busy_response_received == true"
+        ],
+        "state_variables": {
+          "delay_start_time": "epoch_us",
+          "delay_duration": "uint32 seconds",
+          "provider_that_sent_busy": "ProviderLocation",
+          "retry_same_provider": "boolean"
+        }
+      },
+      {
+        "name": "DelayedOnUserConsent",
+        "description": "Capable of obtaining user consent through own means, awaiting consent after determining update available.",
+        "is_initial": false,
+        "invariants": [
+          "user_consent_needed == true",
+          "requestor_can_consent == true",
+          "update_available == true"
+        ],
+        "state_variables": {
+          "image_uri": "string",
+          "software_version": "uint32",
+          "software_version_string": "string",
+          "update_token": "octstr 8-32 bytes",
+          "user_consent_obtained": "boolean",
+          "consent_request_time": "epoch_us"
+        }
+      },
+      {
+        "name": "Downloading",
+        "description": "Currently downloading software update image via BDX or HTTPS protocol.",
+        "is_initial": false,
+        "invariants": [
+          "download_in_progress == true",
+          "image_uri != null"
+        ],
+        "state_variables": {
+          "image_uri": "string",
+          "download_protocol": "DownloadProtocolEnum",
+          "software_version": "uint32",
+          "software_version_string": "string",
+          "update_token": "octstr 8-32 bytes",
+          "download_start_time": "epoch_us",
+          "bytes_downloaded": "uint64",
+          "total_image_size": "uint64 or null",
+          "download_progress_percent": "uint8 0-100 or null",
+          "is_resuming_partial": "boolean",
+          "resume_offset": "uint64",
+          "block_size": "uint16",
+          "transfer_idle_start": "epoch_us or null",
+          "retry_count": "uint8"
+        }
+      },
+      {
+        "name": "Applying",
+        "description": "Currently verifying and applying downloaded software update image.",
+        "is_initial": false,
+        "invariants": [
+          "apply_in_progress == true",
+          "image_downloaded == true",
+          "image_verified == true"
+        ],
+        "state_variables": {
+          "downloaded_image": "image_data",
+          "software_version": "uint32",
+          "update_token": "octstr 8-32 bytes",
+          "apply_start_time": "epoch_us",
+          "verification_complete": "boolean",
+          "signature_valid": "boolean",
+          "applying_after_reboot": "boolean"
+        }
+      },
+      {
+        "name": "DelayedOnApply",
+        "description": "Waiting because received AwaitNextAction response from Provider before applying update.",
+        "is_initial": false,
+        "invariants": [
+          "apply_delay_timer_active == true",
+          "image_ready_to_apply == true"
+        ],
+        "state_variables": {
+          "delay_start_time": "epoch_us",
+          "delay_duration": "uint32 seconds",
+          "total_delay_accumulated": "uint32 seconds",
+          "update_token": "octstr 8-32 bytes",
+          "new_version": "uint32",
+          "downloaded_image": "image_data",
+          "image_verified": "boolean"
+        }
+      },
+      {
+        "name": "RollingBack",
+        "description": "In process of recovering to previous version from new version that could not remain in force.",
+        "is_initial": false,
+        "invariants": [
+          "rollback_in_progress == true",
+          "new_version_failed == true"
+        ],
+        "state_variables": {
+          "failed_version": "uint32",
+          "rollback_start_time": "epoch_us",
+          "rollback_reason": "string",
+          "previous_version": "uint32"
+        }
+      },
+      {
+        "name": "DownloadFailed",
+        "description": "Download encountered terminal failure after exhausting retries.",
+        "is_initial": false,
+        "invariants": [
+          "download_failed == true",
+          "retry_exhausted == true"
+        ],
+        "state_variables": {
+          "failure_reason": "string",
+          "failed_software_version": "uint32",
+          "bytes_downloaded": "uint64",
+          "retry_count": "uint8",
+          "platform_code": "int64 or null"
+        }
+      },
+      {
+        "name": "ApplyFailed",
+        "description": "Apply operation failed and requestor must reset state.",
+        "is_initial": false,
+        "invariants": [
+          "apply_failed == true"
+        ],
+        "state_variables": {
+          "failure_reason": "string",
+          "failed_version": "uint32",
+          "can_retry": "boolean"
+        }
+      },
+      {
+        "name": "ImageDiscontinued",
+        "description": "Provider issued Discontinue action, previously downloaded image is cleared.",
+        "is_initial": false,
+        "invariants": [
+          "discontinue_received == true",
+          "image_cleared == true"
+        ],
+        "state_variables": {
+          "discontinued_version": "uint32",
+          "discontinue_time": "epoch_us"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "Unknown",
+        "to_state": "Idle",
+        "trigger": "initialization_complete",
+        "guard_condition": "default_providers_list != null || commissioners_configured_provider == true",
+        "actions": [
+          "state_determination_pending := false",
+          "initialization_complete := true",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Querying",
+        "trigger": "query_timer_expired",
+        "guard_condition": "time_now >= next_query_time && selected_provider != null && (time_now - last_query_time >= 120 || last_query_time == null)",
+        "actions": [
+          "query_in_flight := true",
+          "query_sent_time := time_now",
+          "send_query_image(selected_provider, current_software_version, vendor_id, product_id, hardware_version, protocols_supported, requestor_can_consent, metadata_for_provider)"
+        ],
+        "timing_requirement": "minimum 120 seconds since last query to same provider"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Querying",
+        "trigger": "announce_ota_provider_received",
+        "guard_condition": "announcement_reason == UrgentUpdateAvailable && random_jitter_elapsed == true",
+        "actions": [
+          "selected_provider := announced_provider",
+          "query_in_flight := true",
+          "query_sent_time := time_now",
+          "send_query_image(selected_provider, current_software_version, vendor_id, product_id, hardware_version, protocols_supported, requestor_can_consent, metadata_for_provider)"
+        ],
+        "timing_requirement": "random jitter delay 1-600 seconds for urgent announcements"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "announce_ota_provider_received",
+        "guard_condition": "announcement_reason == UpdateAvailable",
+        "actions": [
+          "cache_provider_location(announced_provider)",
+          "schedule_query_at_next_opportunity()"
+        ],
+        "timing_requirement": "query at next upcoming OTA Provider query time"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "announce_ota_provider_received",
+        "guard_condition": "announcement_reason == SimpleAnnouncement",
+        "actions": [
+          "cache_provider_location(announced_provider)",
+          "update_provider_list_if_space_available()"
+        ],
+        "timing_requirement": "no immediate action required"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "out_of_band_update_applied",
+        "guard_condition": "software_updated_externally == true && new_version > previous_version",
+        "actions": [
+          "current_software_version := new_version",
+          "boot_reason := SoftwareUpdateCompleted",
+          "send_notify_update_applied_if_provider_known(update_token_or_node_id, current_software_version)",
+          "generate_event(version_applied)"
+        ],
+        "timing_requirement": "SHOULD notify provider but SHALL NOT retry on failure"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Applying",
+        "trigger": "error_on_query_but_image_cached",
+        "guard_condition": "downloaded_image != null && downloaded_image_verified == true && downloaded_image_version > current_software_version",
+        "actions": [
+          "apply_in_progress := true",
+          "apply_start_time := time_now",
+          "skip_query_and_apply_cached()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "DelayedOnUserConsent",
+        "trigger": "query_image_response_received",
+        "guard_condition": "response.status == UpdateAvailable && response.user_consent_needed == true && requestor_can_consent == true",
+        "actions": [
+          "image_uri := response.image_uri",
+          "software_version := response.software_version",
+          "software_version_string := response.software_version_string",
+          "update_token := response.update_token",
+          "user_consent_needed := true",
+          "update_available := true",
+          "consent_request_time := time_now",
+          "request_user_consent_locally()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "Downloading",
+        "trigger": "query_image_response_received",
+        "guard_condition": "response.status == UpdateAvailable && (response.user_consent_needed == false || response.user_consent_needed == null) && response.software_version > current_software_version && is_protocol_supported(response.image_uri) == true",
+        "actions": [
+          "image_uri := response.image_uri",
+          "software_version := response.software_version",
+          "software_version_string := response.software_version_string",
+          "update_token := response.update_token",
+          "download_protocol := extract_protocol(response.image_uri)",
+          "download_in_progress := true",
+          "download_start_time := time_now",
+          "bytes_downloaded := 0",
+          "is_resuming_partial := false",
+          "retry_count := 0",
+          "wait_for_delayed_action_time_if_present(response.delayed_action_time)",
+          "initiate_download(image_uri, download_protocol)"
+        ],
+        "timing_requirement": "wait at least delayed_action_time before download if present"
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "Downloading",
+        "trigger": "query_image_response_received",
+        "guard_condition": "response.status == UpdateAvailable && response.software_version == downloaded_image_version && downloaded_image != null && downloaded_image_verified == false",
+        "actions": [
+          "image_uri := response.image_uri",
+          "update_token := response.update_token",
+          "download_protocol := extract_protocol(response.image_uri)",
+          "download_in_progress := true",
+          "is_resuming_partial := true",
+          "resume_offset := bytes_downloaded",
+          "wait_for_delayed_action_time_if_present(response.delayed_action_time)",
+          "resume_download(image_uri, download_protocol, resume_offset)"
+        ],
+        "timing_requirement": "wait at least delayed_action_time before download if present"
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "Applying",
+        "trigger": "query_image_response_received",
+        "guard_condition": "response.status == UpdateAvailable && response.software_version == downloaded_image_version && downloaded_image != null && downloaded_image_verified == true",
+        "actions": [
+          "update_token := response.update_token",
+          "software_version := response.software_version",
+          "apply_in_progress := true",
+          "apply_start_time := time_now",
+          "skip_download_proceed_to_apply()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "DelayedOnQuery",
+        "trigger": "query_image_response_received",
+        "guard_condition": "response.status == Busy",
+        "actions": [
+          "busy_response_received := true",
+          "delay_timer_active := true",
+          "delay_start_time := time_now",
+          "delay_duration := max(120, response.delayed_action_time)",
+          "provider_that_sent_busy := selected_provider",
+          "retry_same_provider := true"
+        ],
+        "timing_requirement": "SHALL NOT re-query sooner than max(120 seconds, delayed_action_time)"
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "Idle",
+        "trigger": "query_image_response_received",
+        "guard_condition": "response.status == NotAvailable",
+        "actions": [
+          "query_in_flight := false",
+          "last_query_time := time_now",
+          "next_query_time := time_now + max(120, response.delayed_action_time)",
+          "try_different_provider_or_schedule_next()"
+        ],
+        "timing_requirement": "SHALL NOT re-query sooner than max(120 seconds, delayed_action_time) if no other providers"
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "Idle",
+        "trigger": "query_image_response_received",
+        "guard_condition": "response.status == UpdateAvailable && response.software_version <= current_software_version",
+        "actions": [
+          "query_in_flight := false",
+          "last_query_time := time_now",
+          "reject_same_or_older_version()",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "Idle",
+        "trigger": "query_image_response_received",
+        "guard_condition": "response.status == UpdateAvailable && is_uri_unusable(response.image_uri) == true",
+        "actions": [
+          "query_in_flight := false",
+          "last_query_time := time_now",
+          "reject_unusable_uri()",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "Idle",
+        "trigger": "query_image_response_received",
+        "guard_condition": "response.status == DownloadProtocolNotSupported",
+        "actions": [
+          "query_in_flight := false",
+          "last_query_time := time_now",
+          "handle_protocol_not_supported()",
+          "try_different_provider_or_schedule_next()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "Idle",
+        "trigger": "query_timeout_or_error",
+        "guard_condition": "no_response_received == true && downloaded_image == null",
+        "actions": [
+          "query_in_flight := false",
+          "treat_as_not_available()",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Querying",
+        "to_state": "Applying",
+        "trigger": "query_timeout_or_error",
+        "guard_condition": "no_response_received == true && downloaded_image != null && downloaded_image_verified == true",
+        "actions": [
+          "query_in_flight := false",
+          "apply_in_progress := true",
+          "skip_query_and_apply_cached()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DelayedOnQuery",
+        "to_state": "Querying",
+        "trigger": "delay_timer_expired",
+        "guard_condition": "time_now >= (delay_start_time + delay_duration) && retry_same_provider == true",
+        "actions": [
+          "delay_timer_active := false",
+          "selected_provider := provider_that_sent_busy",
+          "query_in_flight := true",
+          "query_sent_time := time_now",
+          "send_query_image(selected_provider, current_software_version, vendor_id, product_id, hardware_version, protocols_supported, requestor_can_consent, metadata_for_provider)"
+        ],
+        "timing_requirement": "wait until delay_duration elapsed"
+      },
+      {
+        "from_state": "DelayedOnQuery",
+        "to_state": "Idle",
+        "trigger": "timekeeping_lost",
+        "guard_condition": "lost_timekeeping_state == true",
+        "actions": [
+          "delay_timer_active := false",
+          "reset_to_idle_state()",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": "may ignore timing constraints but must respect 120 second minimum"
+      },
+      {
+        "from_state": "DelayedOnUserConsent",
+        "to_state": "Downloading",
+        "trigger": "user_consent_obtained",
+        "guard_condition": "user_consent_obtained == true && local_config_disabled == false",
+        "actions": [
+          "user_consent_needed := false",
+          "user_consent_obtained := true",
+          "download_protocol := extract_protocol(image_uri)",
+          "download_in_progress := true",
+          "download_start_time := time_now",
+          "bytes_downloaded := 0",
+          "is_resuming_partial := false",
+          "retry_count := 0",
+          "initiate_download(image_uri, download_protocol)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DelayedOnUserConsent",
+        "to_state": "Idle",
+        "trigger": "user_consent_denied",
+        "guard_condition": "user_consent_obtained == false",
+        "actions": [
+          "user_consent_needed := false",
+          "update_available := false",
+          "consent_denied_reset()",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DelayedOnUserConsent",
+        "to_state": "Idle",
+        "trigger": "consent_delegation_violation",
+        "guard_condition": "local_config_disabled == true && user_consent_needed == true",
+        "actions": [
+          "user_consent_needed := false",
+          "violation_detected := true",
+          "reset_to_idle_state()",
+          "generate_event(consent_delegation_violation)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Downloading",
+        "to_state": "Applying",
+        "trigger": "download_complete",
+        "guard_condition": "bytes_downloaded == total_image_size && verify_image_integrity(downloaded_image) == true && verify_image_signature(downloaded_image) == true",
+        "actions": [
+          "download_in_progress := false",
+          "downloaded_image_verified := true",
+          "apply_in_progress := true",
+          "apply_start_time := time_now",
+          "send_apply_update_request(update_token, software_version)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Downloading",
+        "to_state": "DownloadFailed",
+        "trigger": "download_complete",
+        "guard_condition": "bytes_downloaded == total_image_size && (verify_image_integrity(downloaded_image) == false || verify_image_signature(downloaded_image) == false)",
+        "actions": [
+          "download_in_progress := false",
+          "download_failed := true",
+          "failure_reason := determine_verification_failure_reason()",
+          "failed_software_version := software_version",
+          "generate_event(download_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Downloading",
+        "to_state": "DownloadFailed",
+        "trigger": "download_error",
+        "guard_condition": "retry_count >= 3 && forward_progress_count == 0",
+        "actions": [
+          "download_in_progress := false",
+          "download_failed := true",
+          "retry_exhausted := true",
+          "failure_reason := determine_download_error_reason()",
+          "failed_software_version := software_version",
+          "generate_event(download_error)"
+        ],
+        "timing_requirement": "abort after 3 attempts with no forward progress"
+      },
+      {
+        "from_state": "Downloading",
+        "to_state": "Downloading",
+        "trigger": "download_error_with_retry",
+        "guard_condition": "retry_count < 3 && can_resume_transfer == true",
+        "actions": [
+          "retry_count := retry_count + 1",
+          "transfer_idle_start := time_now",
+          "resume_download(image_uri, download_protocol, bytes_downloaded)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Downloading",
+        "to_state": "Idle",
+        "trigger": "transfer_idle_timeout",
+        "guard_condition": "time_now - transfer_idle_start >= 300 && retry_count < 3",
+        "actions": [
+          "download_in_progress := false",
+          "partial_download_saved := true",
+          "reset_to_idle_for_retry()",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": "idle timeout >= 5 minutes"
+      },
+      {
+        "from_state": "DownloadFailed",
+        "to_state": "Idle",
+        "trigger": "reset_state_after_failure",
+        "guard_condition": "terminal_failure_handled == true",
+        "actions": [
+          "download_failed := false",
+          "retry_exhausted := false",
+          "reset_software_update_state()",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Applying",
+        "to_state": "DelayedOnApply",
+        "trigger": "apply_update_response_received",
+        "guard_condition": "response.action == AwaitNextAction && response.delayed_action_time > 0",
+        "actions": [
+          "apply_in_progress := false",
+          "apply_delay_timer_active := true",
+          "delay_start_time := time_now",
+          "delay_duration := max(120, min(response.delayed_action_time, 86400))",
+          "total_delay_accumulated := total_delay_accumulated + delay_duration",
+          "image_ready_to_apply := true"
+        ],
+        "timing_requirement": "delay_duration minimum 120 seconds, treated as max 86400 if higher"
+      },
+      {
+        "from_state": "Applying",
+        "to_state": "Applying",
+        "trigger": "apply_update_response_received",
+        "guard_condition": "response.action == Proceed && response.delayed_action_time == 0",
+        "actions": [
+          "apply_immediately(downloaded_image)",
+          "applying_after_reboot := false"
+        ],
+        "timing_requirement": "apply without additional delay"
+      },
+      {
+        "from_state": "Applying",
+        "to_state": "Applying",
+        "trigger": "apply_update_response_received",
+        "guard_condition": "response.action == Proceed && response.delayed_action_time > 0",
+        "actions": [
+          "delay_start_time := time_now",
+          "delay_duration := response.delayed_action_time",
+          "wait_then_apply(downloaded_image, delay_duration)"
+        ],
+        "timing_requirement": "wait at least delayed_action_time before applying"
+      },
+      {
+        "from_state": "Applying",
+        "to_state": "ImageDiscontinued",
+        "trigger": "apply_update_response_received",
+        "guard_condition": "response.action == Discontinue",
+        "actions": [
+          "apply_in_progress := false",
+          "discontinue_received := true",
+          "discontinued_version := software_version",
+          "discontinue_time := time_now",
+          "clear_downloaded_image()",
+          "image_cleared := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Applying",
+        "to_state": "Idle",
+        "trigger": "apply_success_reboot",
+        "guard_condition": "apply_completed == true && reboot_required == true",
+        "actions": [
+          "apply_in_progress := false",
+          "current_software_version := software_version",
+          "boot_reason := SoftwareUpdateCompleted",
+          "send_notify_update_applied(update_token, software_version)",
+          "generate_event(version_applied)",
+          "reboot_device()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Applying",
+        "to_state": "Idle",
+        "trigger": "apply_success_no_reboot",
+        "guard_condition": "apply_completed == true && reboot_required == false",
+        "actions": [
+          "apply_in_progress := false",
+          "current_software_version := software_version",
+          "send_notify_update_applied(update_token, software_version)",
+          "generate_event(version_applied)",
+          "transition_to_idle()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Applying",
+        "to_state": "ApplyFailed",
+        "trigger": "apply_error",
+        "guard_condition": "apply_failed == true",
+        "actions": [
+          "apply_in_progress := false",
+          "failure_reason := determine_apply_failure_reason()",
+          "failed_version := software_version",
+          "can_retry := evaluate_retry_possibility()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Applying",
+        "to_state": "Applying",
+        "trigger": "apply_request_timeout_or_error",
+        "guard_condition": "no_response_received == true && retry_count < 3",
+        "actions": [
+          "retry_count := retry_count + 1",
+          "retry_apply_update_request(update_token, software_version)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Applying",
+        "to_state": "Idle",
+        "trigger": "apply_request_timeout_or_error",
+        "guard_condition": "no_response_received == true && retry_count >= 3 && time_in_apply_state >= 86400",
+        "actions": [
+          "apply_in_progress := false",
+          "apply_as_last_resort(downloaded_image)"
+        ],
+        "timing_requirement": "after 3 attempts or 24 hours, may apply as last resort"
+      },
+      {
+        "from_state": "DelayedOnApply",
+        "to_state": "Applying",
+        "trigger": "delay_timer_expired",
+        "guard_condition": "time_now >= (delay_start_time + delay_duration) && total_delay_accumulated <= 86400",
+        "actions": [
+          "apply_delay_timer_active := false",
+          "apply_in_progress := true",
+          "send_apply_update_request(update_token, new_version)"
+        ],
+        "timing_requirement": "SHALL NOT delay more than 24 hours total"
+      },
+      {
+        "from_state": "DelayedOnApply",
+        "to_state": "Idle",
+        "trigger": "delay_limit_exceeded",
+        "guard_condition": "total_delay_accumulated > 86400",
+        "actions": [
+          "apply_delay_timer_active := false",
+          "delay_violation_detected := true",
+          "apply_as_last_resort(downloaded_image)"
+        ],
+        "timing_requirement": "must not exceed 24 hours total delay"
+      },
+      {
+        "from_state": "ApplyFailed",
+        "to_state": "Querying",
+        "trigger": "retry_query_after_apply_failure",
+        "guard_condition": "can_retry == true",
+        "actions": [
+          "apply_failed := false",
+          "reset_apply_state()",
+          "query_in_flight := true",
+          "send_query_image(selected_provider, current_software_version, vendor_id, product_id, hardware_version, protocols_supported, requestor_can_consent, metadata_for_provider)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ApplyFailed",
+        "to_state": "Idle",
+        "trigger": "reset_state_after_failure",
+        "guard_condition": "can_retry == false",
+        "actions": [
+          "apply_failed := false",
+          "reset_software_update_state()",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ImageDiscontinued",
+        "to_state": "Idle",
+        "trigger": "discontinue_handled",
+        "guard_condition": "image_cleared == true",
+        "actions": [
+          "discontinue_received := false",
+          "reset_software_update_state()",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "RollingBack",
+        "trigger": "new_version_failure_detected_on_boot",
+        "guard_condition": "boot_reason == SoftwareUpdateCompleted && new_version_has_critical_error == true",
+        "actions": [
+          "rollback_in_progress := true",
+          "new_version_failed := true",
+          "failed_version := current_software_version",
+          "rollback_start_time := time_now",
+          "rollback_reason := determine_rollback_reason()",
+          "initiate_rollback_to_previous_version()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RollingBack",
+        "to_state": "Idle",
+        "trigger": "rollback_complete",
+        "guard_condition": "rollback_completed == true",
+        "actions": [
+          "rollback_in_progress := false",
+          "new_version_failed := false",
+          "current_software_version := previous_version",
+          "generate_event(rollback_complete)",
+          "schedule_next_query()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RollingBack",
+        "to_state": "Unknown",
+        "trigger": "rollback_failed",
+        "guard_condition": "rollback_failed == true",
+        "actions": [
+          "rollback_in_progress := false",
+          "system_in_unknown_state := true",
+          "generate_event(rollback_failed)"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "send_query_image",
+        "parameters": [
+          {"name": "provider", "type": "ProviderLocation", "description": "OTA Provider node ID and endpoint"},
+          {"name": "current_version", "type": "uint32", "description": "current software version from Basic Information cluster"},
+          {"name": "vendor_id", "type": "uint16", "description": "vendor ID from Basic Information cluster"},
+          {"name": "product_id", "type": "uint16", "description": "product ID from Basic Information cluster"},
+          {"name": "hardware_version", "type": "uint16 or null", "description": "optional hardware version"},
+          {"name": "protocols_supported", "type": "list of DownloadProtocolEnum", "description": "list of supported download protocols (BDX, HTTPS, VendorSpecific)"},
+          {"name": "requestor_can_consent", "type": "boolean", "description": "whether requestor can obtain user consent locally"},
+          {"name": "metadata_for_provider", "type": "octstr or null", "description": "optional vendor-specific metadata"}
+        ],
+        "return_type": "void",
+        "description": "Sends QueryImage command to OTA Provider with requestor's current software version and capabilities. Establishes CASE session with provider and invokes QueryImage command on OTA Software Update Provider cluster.",
+        "algorithm_detail": "Establishes CASE secure channel to provider.NodeId on provider.Endpoint. Constructs QueryImage command payload with all parameters. Sends command and awaits QueryImageResponse.",
+        "usage_in_fsm": "Called in Idle->Querying and DelayedOnQuery->Querying transitions to initiate update query"
+      },
+      {
+        "name": "extract_protocol",
+        "parameters": [
+          {"name": "image_uri", "type": "string", "description": "URI from QueryImageResponse"}
+        ],
+        "return_type": "DownloadProtocolEnum",
+        "description": "Extracts protocol type from image URI by parsing scheme (bdx:// for BDX, https:// for HTTPS)",
+        "algorithm_detail": "Parse URI scheme. If starts with 'bdx://' return BDXSynchronous. If starts with 'https://' return HTTPS. Otherwise return VendorSpecific.",
+        "usage_in_fsm": "Called when transitioning to Downloading state to determine download method"
+      },
+      {
+        "name": "is_protocol_supported",
+        "parameters": [
+          {"name": "image_uri", "type": "string", "description": "URI to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if protocol in URI is in requestor's protocols_supported list",
+        "algorithm_detail": "Extract protocol from URI. Check if extracted protocol is in protocols_supported list. Return true if found, false otherwise.",
+        "usage_in_fsm": "Guard condition in Querying->Downloading transitions to validate URI protocol"
+      },
+      {
+        "name": "is_uri_unusable",
+        "parameters": [
+          {"name": "image_uri", "type": "string", "description": "URI to validate"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if URI contains information that cannot be used by requestor (malformed, unsupported protocol, unreachable)",
+        "algorithm_detail": "Parse URI syntax. Check protocol support. If HTTPS, verify internet connectivity. If BDX, validate node ID format (16 uppercase hex chars) and reachability. Return true if any check fails.",
+        "usage_in_fsm": "Guard condition in Querying->Idle transition to reject unusable URIs"
+      },
+      {
+        "name": "initiate_download",
+        "parameters": [
+          {"name": "image_uri", "type": "string", "description": "URI to download from"},
+          {"name": "protocol", "type": "DownloadProtocolEnum", "description": "download protocol to use"}
+        ],
+        "return_type": "void",
+        "description": "Starts download of software image based on protocol. For BDX, initiates BDX transfer with ReceiveInit. For HTTPS, starts HTTPS GET request.",
+        "algorithm_detail": "If protocol is BDX: parse bdx:// URI to extract node ID and file designator, establish CASE session, send BDX ReceiveInit with file designator. If protocol is HTTPS: send HTTPS GET request with TLS. Track download progress and update bytes_downloaded.",
+        "usage_in_fsm": "Called in Querying->Downloading transitions to start image transfer"
+      },
+      {
+        "name": "resume_download",
+        "parameters": [
+          {"name": "image_uri", "type": "string", "description": "URI to resume from"},
+          {"name": "protocol", "type": "DownloadProtocolEnum", "description": "download protocol"},
+          {"name": "offset", "type": "uint64", "description": "byte offset to resume from"}
+        ],
+        "return_type": "void",
+        "description": "Resumes partial download from specified offset. For BDX, uses RC[STARTOFS] bit and STARTOFS field. For HTTPS, uses Range header.",
+        "algorithm_detail": "If protocol is BDX: send BDX ReceiveInit with RC[STARTOFS] bit set and STARTOFS field = offset. If protocol is HTTPS: send HTTPS GET with Range: bytes=offset-. Continue downloading from offset position.",
+        "usage_in_fsm": "Called when resuming partially downloaded image in Querying->Downloading or Downloading->Downloading transitions"
+      },
+      {
+        "name": "verify_image_integrity",
+        "parameters": [
+          {"name": "image", "type": "image_data", "description": "downloaded image data"}
+        ],
+        "return_type": "boolean",
+        "description": "Verifies image integrity by comparing computed checksum against expected checksum from OTA image header",
+        "algorithm_detail": "Extract expected checksum and checksum type from OTA image header. Compute checksum over image body using specified algorithm (SHA-256, SHA-384, etc). Compare computed checksum with expected. Return true if match, false otherwise.",
+        "usage_in_fsm": "Called in Downloading->Applying transition guard to verify image was not corrupted during download"
+      },
+      {
+        "name": "verify_image_signature",
+        "parameters": [
+          {"name": "image", "type": "image_data", "description": "downloaded image with signature"}
+        ],
+        "return_type": "boolean",
+        "description": "Verifies image authenticity by validating digital signature using vendor's public key",
+        "algorithm_detail": "Extract signature from OTA image. Retrieve vendor's signing public key (pre-installed or downloaded securely). Verify signature using asymmetric crypto (ECDSA or RSA) over image body. Return true if signature valid, false otherwise. Signature algorithm and format are vendor-specific but must ensure authenticity and integrity.",
+        "usage_in_fsm": "Called in Downloading->Applying transition guard to ensure image is from legitimate vendor"
+      },
+      {
+        "name": "send_apply_update_request",
+        "parameters": [
+          {"name": "update_token", "type": "octstr 8-32 bytes", "description": "token from QueryImageResponse or node ID if lost"},
+          {"name": "new_version", "type": "uint32", "description": "version number of image ready to apply"}
+        ],
+        "return_type": "void",
+        "description": "Sends ApplyUpdateRequest command to OTA Provider to request permission to apply downloaded image",
+        "algorithm_detail": "If update_token was saved, use it. Else encode operational node ID as 64-bit network byte order value. Construct ApplyUpdateRequest command with UpdateToken and NewVersion fields. Send to provider via CASE session. Await ApplyUpdateResponse with Action field.",
+        "usage_in_fsm": "Called in Downloading->Applying and DelayedOnApply->Applying transitions to request apply authorization"
+      },
+      {
+        "name": "apply_immediately",
+        "parameters": [
+          {"name": "image", "type": "image_data", "description": "verified image to apply"}
+        ],
+        "return_type": "void",
+        "description": "Applies software image immediately without delay. Writes image to flash, updates bootloader configuration, and triggers reboot if needed.",
+        "algorithm_detail": "Unlock flash storage. Write image to update partition. Update boot configuration to boot from new image. Verify write succeeded. If reboot required, set boot_reason attribute and initiate reboot. Otherwise activate new version in place.",
+        "usage_in_fsm": "Called in Applying state when Proceed action received with zero delay"
+      },
+      {
+        "name": "wait_then_apply",
+        "parameters": [
+          {"name": "image", "type": "image_data", "description": "verified image to apply"},
+          {"name": "delay", "type": "uint32", "description": "seconds to wait before applying"}
+        ],
+        "return_type": "void",
+        "description": "Waits specified delay duration then applies software image",
+        "algorithm_detail": "Set timer for delay seconds. When timer expires, call apply_immediately(image). Track delay start time for enforcement.",
+        "usage_in_fsm": "Called in Applying state when Proceed action received with non-zero delay"
+      },
+      {
+        "name": "apply_as_last_resort",
+        "parameters": [
+          {"name": "image", "type": "image_data", "description": "verified image to apply"}
+        ],
+        "return_type": "void",
+        "description": "Applies image as last resort after failures to contact provider for authorization. Used when requestor has valid image but cannot get apply permission.",
+        "algorithm_detail": "After 3 retry attempts or 24 hours of failures, if image is successfully downloaded and verified, bypass normal apply authorization and apply directly. Log as exceptional last resort action. Call apply_immediately(image).",
+        "usage_in_fsm": "Called in Applying->Idle transition when retry_count >= 3 or time >= 24 hours to prevent permanent vulnerable state"
+      },
+      {
+        "name": "send_notify_update_applied",
+        "parameters": [
+          {"name": "update_token", "type": "octstr 8-32 bytes", "description": "token from apply flow"},
+          {"name": "software_version", "type": "uint32", "description": "newly applied version from Basic Information cluster"}
+        ],
+        "return_type": "void",
+        "description": "Sends NotifyUpdateApplied command to provider to inform of successful update application. SHOULD be invoked but SHALL NOT retry on failure.",
+        "algorithm_detail": "Construct NotifyUpdateApplied command with UpdateToken and SoftwareVersion fields. Send to provider via CASE session. If no response received, do not retry. This is informational only.",
+        "usage_in_fsm": "Called in Applying->Idle transition after successful update to notify provider"
+      },
+      {
+        "name": "clear_downloaded_image",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clears previously downloaded and verified image from storage, typically in response to Discontinue action",
+        "algorithm_detail": "Erase downloaded image data from storage partition. Clear downloaded_image variable. Clear downloaded_image_version. Set downloaded_image_verified to false. Reclaim storage space.",
+        "usage_in_fsm": "Called in Applying->ImageDiscontinued transition when provider issues Discontinue"
+      },
+      {
+        "name": "schedule_next_query",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Schedules next query attempt based on timing constraints and recommendations",
+        "algorithm_detail": "Calculate next_query_time as current time + recommended interval (86400 seconds for daily query if capable). Ensure minimum 120 seconds since last query to same provider. Set timer for next query attempt.",
+        "usage_in_fsm": "Called when transitioning to Idle to set up next query opportunity"
+      },
+      {
+        "name": "try_different_provider_or_schedule_next",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Attempts to query different provider from list if available, otherwise schedules next query",
+        "algorithm_detail": "Check if other providers exist in cached_providers_list or default_providers_list. If yes and minimum 120 seconds elapsed since last query, select different provider and transition to Querying. Otherwise call schedule_next_query().",
+        "usage_in_fsm": "Called when current provider returns NotAvailable to try alternate sources"
+      },
+      {
+        "name": "determine_verification_failure_reason",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Analyzes why image verification failed (checksum mismatch or signature invalid)",
+        "algorithm_detail": "Check which verification step failed. If verify_image_integrity failed, return 'checksum_mismatch'. If verify_image_signature failed, return 'invalid_signature'. Return specific error description.",
+        "usage_in_fsm": "Called in Downloading->DownloadFailed transition to populate failure_reason"
+      },
+      {
+        "name": "determine_download_error_reason",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Determines reason for download failure (network error, timeout, protocol error, etc)",
+        "algorithm_detail": "Check download state variables. If transfer_idle_timeout, return 'idle_timeout'. If protocol error, return 'protocol_error'. If network disconnected, return 'network_error'. Return most specific error.",
+        "usage_in_fsm": "Called in Downloading->DownloadFailed transition to populate failure_reason"
+      },
+      {
+        "name": "determine_apply_failure_reason",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Determines reason apply operation failed (flash write error, insufficient space, corruption, etc)",
+        "algorithm_detail": "Check apply operation state. If flash write failed, return 'flash_write_error'. If insufficient space, return 'insufficient_storage'. If image corrupted during apply, return 'apply_corruption'. Return specific error.",
+        "usage_in_fsm": "Called in Applying->ApplyFailed transition to populate failure_reason"
+      },
+      {
+        "name": "determine_rollback_reason",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Determines why rollback was initiated (boot failure, runtime error, reboot loop, etc)",
+        "algorithm_detail": "Check boot history and error indicators. If repeated reboots detected, return 'reboot_loop'. If critical runtime error, return 'runtime_failure'. If boot validation failed, return 'boot_failure'. Return specific reason.",
+        "usage_in_fsm": "Called in Idle->RollingBack transition to populate rollback_reason"
+      },
+      {
+        "name": "evaluate_retry_possibility",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Evaluates whether apply operation can be retried or if failure is terminal",
+        "algorithm_detail": "Check apply failure type. If transient error (temporary resource unavailable), return true. If permanent error (corrupted image, incompatible hardware), return false. Use heuristics to classify error severity.",
+        "usage_in_fsm": "Called in Applying->ApplyFailed transition to set can_retry flag"
+      },
+      {
+        "name": "initiate_rollback_to_previous_version",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Initiates rollback to previous software version by updating boot configuration and rebooting",
+        "algorithm_detail": "Identify previous valid version from boot history. Update bootloader configuration to boot from previous version partition. Verify rollback target is intact. Set boot_reason. Initiate reboot to activate previous version.",
+        "usage_in_fsm": "Called in Idle->RollingBack transition to recover from failed update"
+      },
+      {
+        "name": "reset_software_update_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resets all software update state variables to prepare for fresh query cycle",
+        "algorithm_detail": "Clear query_in_flight, download_in_progress, apply_in_progress flags. Clear update_token. Clear delay timers. Reset retry_count. Keep default_providers_list and cached_providers_list. Preserve current_software_version.",
+        "usage_in_fsm": "Called when transitioning back to Idle after failures or completion to reset state"
+      },
+      {
+        "name": "request_user_consent_locally",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Initiates local user consent mechanism via display, voice, or other onboard UI",
+        "algorithm_detail": "If node has display or voice capability, present consent prompt with software version details and release notes URL. Await user input (approve/deny). Set user_consent_obtained flag based on user response. Must comply with LocalConfigDisabled attribute.",
+        "usage_in_fsm": "Called in Querying->DelayedOnUserConsent transition when provider delegates consent"
+      },
+      {
+        "name": "wait_for_delayed_action_time_if_present",
+        "parameters": [
+          {"name": "delayed_action_time", "type": "uint32 or null", "description": "optional delay in seconds"}
+        ],
+        "return_type": "void",
+        "description": "Waits for specified delay before proceeding if delay is present and non-zero",
+        "algorithm_detail": "If delayed_action_time is not null and > 0, set timer for delayed_action_time seconds. Wait until timer expires before proceeding with next action. If null or 0, proceed immediately.",
+        "usage_in_fsm": "Called before initiating download when DelayedActionTime is in response"
+      },
+      {
+        "name": "skip_download_proceed_to_apply",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Skips download step when image already downloaded and verified, proceeds directly to apply",
+        "algorithm_detail": "Verify downloaded_image matches expected version. Verify downloaded_image_verified is true. If both conditions met, use cached image and transition directly to apply step without re-downloading.",
+        "usage_in_fsm": "Called in Querying->Applying transition when cached verified image available"
+      },
+      {
+        "name": "skip_query_and_apply_cached",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Skips query step when error occurs but valid cached image exists, applies cached image",
+        "algorithm_detail": "Check if downloaded_image exists, is verified, and version is higher than current. If all true, bypass query flow and proceed directly to apply step with cached image.",
+        "usage_in_fsm": "Called in Idle->Applying or Querying->Applying transitions when query fails but cached image available"
+      },
+      {
+        "name": "reject_same_or_older_version",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Rejects update when offered version is same or lower than current version to prevent downgrade",
+        "algorithm_detail": "Compare response.software_version with current_software_version. If <=, reject update. Log rejection reason. Do not download or apply. Enforce version monotonicity security property.",
+        "usage_in_fsm": "Called in Querying->Idle transition guard when version check fails"
+      },
+      {
+        "name": "reject_unusable_uri",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Rejects update when image URI is malformed or cannot be used by requestor",
+        "algorithm_detail": "Log URI rejection reason (malformed syntax, unsupported protocol, unreachable destination). Do not attempt download. Return to idle state to try different provider or wait for next query cycle.",
+        "usage_in_fsm": "Called in Querying->Idle transition when URI validation fails"
+      },
+      {
+        "name": "handle_protocol_not_supported",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Handles DownloadProtocolNotSupported response by attempting different provider or waiting",
+        "algorithm_detail": "Log protocol incompatibility. If other providers available, select alternate. Otherwise wait for next query cycle. Provider indicated it cannot serve image in compatible protocol due to synchronous proxy limitations or missing range transfer support.",
+        "usage_in_fsm": "Called in Querying->Idle transition when DownloadProtocolNotSupported received"
+      },
+      {
+        "name": "treat_as_not_available",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Treats query timeout/error as NotAvailable status per specification requirement",
+        "algorithm_detail": "Specification states: failure to receive application-layer response SHOULD be considered equivalent to NotAvailable. Apply same logic as NotAvailable: try different provider if available, else schedule next query with minimum 120 second delay.",
+        "usage_in_fsm": "Called in Querying->Idle transition when no response received from provider"
+      },
+      {
+        "name": "retry_apply_update_request",
+        "parameters": [
+          {"name": "update_token", "type": "octstr 8-32 bytes", "description": "token for tracking"},
+          {"name": "new_version", "type": "uint32", "description": "version to apply"}
+        ],
+        "return_type": "void",
+        "description": "Retries ApplyUpdateRequest command after timeout or error, up to 3 total attempts",
+        "algorithm_detail": "Increment retry_count. Resend ApplyUpdateRequest with same parameters. Establish new CASE session if needed. Wait for ApplyUpdateResponse. If retry_count reaches 3, follow last resort rules.",
+        "usage_in_fsm": "Called in Applying->Applying transition when apply request fails but retries remain"
+      },
+      {
+        "name": "reset_to_idle_for_retry",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resets state to Idle while preserving partial download for future resume",
+        "algorithm_detail": "Clear download_in_progress flag. Save bytes_downloaded and partial image data. Clear active timers. Transition to Idle. Schedule next query which may resume download if same version offered.",
+        "usage_in_fsm": "Called in Downloading->Idle transition on idle timeout to preserve progress"
+      },
+      {
+        "name": "reset_to_idle_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resets all temporary state and returns to Idle with clean slate",
+        "algorithm_detail": "Clear all active flags (query_in_flight, download_in_progress, etc). Clear temporary variables (update_token, image_uri, etc). Reset timers. Keep persistent config (default_providers_list, current_software_version). Prepare for next query cycle.",
+        "usage_in_fsm": "Called in various error recovery transitions to reset to known good state"
+      },
+      {
+        "name": "reset_apply_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resets apply-specific state variables after apply failure",
+        "algorithm_detail": "Clear apply_in_progress flag. Clear apply failure flags. Keep downloaded verified image if available. Reset retry counters for apply phase. Prepare to re-attempt query or apply.",
+        "usage_in_fsm": "Called in ApplyFailed->Querying transition to reset before retry"
+      },
+      {
+        "name": "consent_denied_reset",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resets state after user denies consent for update",
+        "algorithm_detail": "Clear user consent variables. Clear update availability indicators. Return to normal query scheduling. Do not force updates against user preference.",
+        "usage_in_fsm": "Called in DelayedOnUserConsent->Idle transition when consent denied"
+      },
+      {
+        "name": "generate_event",
+        "parameters": [
+          {"name": "event_name", "type": "string", "description": "name of event to generate (state_transition, version_applied, download_error, etc)"}
+        ],
+        "return_type": "void",
+        "description": "Generates specified event on OTA Requestor cluster for monitoring and diagnostics",
+        "algorithm_detail": "Based on event_name, construct appropriate event data structure. For StateTransition: include PreviousState, NewState, Reason, TargetSoftwareVersion. For VersionApplied: include SoftwareVersion, ProductID. For DownloadError: include SoftwareVersion, BytesDownloaded, ProgressPercent, PlatformCode. Send event to cluster event queue.",
+        "usage_in_fsm": "Called in various transitions to generate diagnostic events per specification"
+      },
+      {
+        "name": "transition_to_idle",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Performs clean transition to Idle state after successful update without reboot",
+        "algorithm_detail": "Clear all active operation flags. Update current_software_version to new value. Clear update_token and temporary variables. Schedule next query cycle. Generate state transition event.",
+        "usage_in_fsm": "Called in Applying->Idle transition when apply succeeds without reboot"
+      },
+      {
+        "name": "reboot_device",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Initiates device reboot to activate newly applied software image",
+        "algorithm_detail": "Flush all pending operations. Save critical state to persistent storage. Set boot_reason attribute to SoftwareUpdateCompleted in General Diagnostics cluster. Initiate system reboot through platform-specific mechanism.",
+        "usage_in_fsm": "Called in Applying->Idle transition when reboot required to activate update"
+      },
+      {
+        "name": "cache_provider_location",
+        "parameters": [
+          {"name": "provider", "type": "ProviderLocation", "description": "provider node ID and endpoint to cache"}
+        ],
+        "return_type": "void",
+        "description": "Caches announced provider location for future query attempts without overwriting DefaultOTAProviders",
+        "algorithm_detail": "Add provider to cached_providers_list if not already present and space available. Do NOT modify default_providers_list per spec requirement. Announcements augment but do not replace configured providers.",
+        "usage_in_fsm": "Called when processing UpdateAvailable and SimpleAnnouncement"
+      },
+      {
+        "name": "schedule_query_at_next_opportunity",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Schedules query to cached provider at next regular query time without immediate action",
+        "algorithm_detail": "Update next_query_time to consider cached providers. For UpdateAvailable announcement, query at next upcoming scheduled time (not immediate unless urgent). Respect 120 second minimum delay.",
+        "usage_in_fsm": "Called when UpdateAvailable announcement received"
+      },
+      {
+        "name": "update_provider_list_if_space_available",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Updates internal provider list with announced provider if space permits",
+        "algorithm_detail": "Check if cached_providers_list has space. If yes, add new provider. If no, may ignore announcement or replace oldest entry based on implementation policy. SimpleAnnouncement has no implication of immediate availability.",
+        "usage_in_fsm": "Called when SimpleAnnouncement received"
+      },
+      {
+        "name": "send_notify_update_applied_if_provider_known",
+        "parameters": [
+          {"name": "update_token", "type": "octstr 8-32 bytes or node_id", "description": "token or node ID"},
+          {"name": "software_version", "type": "uint32", "description": "newly applied version"}
+        ],
+        "return_type": "void",
+        "description": "Sends NotifyUpdateApplied for out-of-band updates if provider is known",
+        "algorithm_detail": "If a known provider exists (from DefaultOTAProviders or previous interaction), send NotifyUpdateApplied command with current software version. Use node ID if update_token unknown. SHALL NOT retry on failure. This is optional informational notification.",
+        "usage_in_fsm": "Called in out-of-band update transition to notify provider of external update"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "OTA Requestor",
+        "definition": "Node implementing OTA Requestor Device Type (0x0012), fulfilling client role for OTA Software Update Provider cluster and server role for OTA Software Update Requestor cluster. Queries providers for updates and downloads/applies software images.",
+        "security_relevance": "Requestor must verify image signatures and enforce version monotonicity to prevent malicious firmware installation"
+      },
+      {
+        "term": "OTA Provider",
+        "definition": "Node implementing OTA Provider Device Type (0x0014), fulfilling server role for OTA Software Update Provider cluster and client role for OTA Software Update Requestor cluster. Serves software images to requestors, potentially proxying from external sources.",
+        "security_relevance": "Provider must not mutate images to preserve signatures, but cannot validate signatures itself. Must enforce access control via ACL."
+      },
+      {
+        "term": "Software Image",
+        "definition": "Binary file containing firmware update for OTA Requestor, including header with metadata (version, checksum, signature) and payload with executable code and data.",
+        "security_relevance": "Must be signed by vendor to prove authenticity and integrity. Signature verification is critical security property."
+      },
+      {
+        "term": "UpdateToken",
+        "definition": "8-32 byte value generated by provider to track update flow from specific requestor across QueryImage, ApplyUpdateRequest, and NotifyUpdateApplied commands. If lost, requestor uses node ID as fallback.",
+        "security_relevance": "Provider SHALL NOT deny updates due to invalid token to prevent DoS. Token is for tracking only, not authentication."
+      },
+      {
+        "term": "Version Monotonicity",
+        "definition": "Security property requiring requestors to only upgrade to numerically higher versions. Providers SHALL only offer higher versions. Functional rollback requires vendor to release new higher version number with old functionality.",
+        "security_relevance": "Critical security property preventing downgrade attacks to vulnerable older versions"
+      },
+      {
+        "term": "DelayedActionTime",
+        "definition": "Optional field in QueryImageResponse and ApplyUpdateResponse indicating minimum seconds requestor must wait before proceeding with next action (download or apply).",
+        "security_relevance": "Enables provider to schedule updates at appropriate times. Requestor SHOULD respect delays but may treat >86400 as 86400 to prevent excessive patch delays."
+      },
+      {
+        "term": "QueryImage Command",
+        "definition": "Command sent by requestor to provider containing current version, vendor/product ID, supported protocols, and capabilities. Provider responds with availability and URI if update exists.",
+        "security_relevance": "Requires ACL entry granting Operate privilege. Requestor SHALL NOT query more frequently than 120 seconds to prevent DoS."
+      },
+      {
+        "term": "ApplyUpdateRequest Command",
+        "definition": "Command sent by requestor to provider after downloading image, requesting authorization to apply. Provider responds with Proceed, AwaitNextAction, or Discontinue action.",
+        "security_relevance": "Enables provider to control timing of updates. Last resort mechanism allows apply after 3 attempts or 24 hours to prevent permanent vulnerable state."
+      },
+      {
+        "term": "BDX Protocol",
+        "definition": "Bulk Data Exchange protocol for transferring images locally within fabric. All providers SHALL support BDX. Supports receiver-drive mode for non-TCP and optional asynchronous mode for TCP. Allows range-based transfer for resume.",
+        "security_relevance": "Enables constrained devices to update without internet access. Must use secure channel (CASE) for confidentiality and integrity."
+      },
+      {
+        "term": "Distributed Compliance Ledger (DCL)",
+        "definition": "Canonical database indexed by VendorID/ProductID/SoftwareVersion containing certified software image metadata including URIs, checksums, version ranges, and validity flags.",
+        "security_relevance": "Trusted source for image location. Provider SHOULD use DCL for interoperability. Compromised DCL would allow attacker to advertise malicious images."
+      },
+      {
+        "term": "User Consent",
+        "definition": "Signal from administratively authorized user permitting update to proceed. Provider SHOULD obtain consent before offering image. Can be obtained out-of-band, from stored preference, or delegated to capable requestor node.",
+        "security_relevance": "Prevents unwanted updates during critical operations. Consent delegation SHALL NOT be used if LocalConfigDisabled is true."
+      },
+      {
+        "term": "Status Field",
+        "definition": "Primary indication in QueryImageResponse: UpdateAvailable (image ready), Busy (check back later), NotAvailable (no update), or DownloadProtocolNotSupported (protocol incompatibility).",
+        "security_relevance": "Requestor SHALL respect Busy delays to prevent DoS. Timeout treated as NotAvailable per specification."
+      },
+      {
+        "term": "Action Field",
+        "definition": "Response in ApplyUpdateResponse: Proceed (apply now/after delay), AwaitNextAction (wait and re-request), or Discontinue (clear downloaded image due to critical defect).",
+        "security_relevance": "Discontinue used only for significant negative effects. Provider SHALL NOT continuously deny on invalid token."
+      },
+      {
+        "term": "Image Verification",
+        "definition": "Two-step process: integrity check via checksum comparison and authenticity check via signature verification using vendor public key. Both must pass before apply.",
+        "security_relevance": "Critical security requirement. Failed verification SHALL cause image rejection. Prevents corrupted or malicious firmware installation."
+      },
+      {
+        "term": "DefaultOTAProviders",
+        "definition": "Fabric-scoped list attribute storing one ProviderLocation per fabric containing node ID and endpoint of default provider configured by commissioner.",
+        "security_relevance": "Announcement cannot overwrite defaults to prevent takeover. Requestor SHALL NOT rely solely on announcements for discovery."
+      },
+      {
+        "term": "Idempotent Operations",
+        "definition": "OTA Provider requests are idempotent - repeated requests SHALL NOT behave differently unless new image becomes available. Critical for retry reliability.",
+        "security_relevance": "Enables requestors to retry after errors without adverse effects. Prevents race conditions and state confusion attacks."
+      },
+      {
+        "term": "AnnounceOTAProvider Command",
+        "definition": "Optional command provider may send to requestors announcing availability. Includes provider node ID, endpoint, vendor ID, announcement reason (Simple, UpdateAvailable, UrgentUpdateAvailable), and optional metadata.",
+        "security_relevance": "Fabric-scoped, requires ACL. Requestors SHALL NOT rely solely on announcements. Rate limited to max once per 24 hours per node except urgent."
+      },
+      {
+        "term": "StateTransition Event",
+        "definition": "Event generated when UpdateState attribute changes, including PreviousState, NewState, Reason, and TargetSoftwareVersion fields. Enables monitoring of update progress.",
+        "security_relevance": "Provides audit trail of update activity. Missing events could hide malicious update activity."
+      },
+      {
+        "term": "VersionApplied Event",
+        "definition": "Event generated when new version starts executing after being applied, including SoftwareVersion and ProductID. SHOULD be generated even for out-of-band updates.",
+        "security_relevance": "Records successful update completion. Helps detect unauthorized firmware changes."
+      },
+      {
+        "term": "DownloadError Event",
+        "definition": "Event generated on download errors, including SoftwareVersion, BytesDownloaded, ProgressPercent, and optional PlatformCode. Aids troubleshooting and attack detection.",
+        "security_relevance": "Helps identify systematic attack patterns causing download failures"
+      },
+      {
+        "term": "LocalConfigDisabled Attribute",
+        "definition": "Attribute in Basic Information Cluster indicating local configuration is disabled. When true, user consent delegation to requestor SHALL NOT be used.",
+        "security_relevance": "Enforces centralized policy control. Prevents local consent bypass of administrator mandates."
+      },
+      {
+        "term": "SoftwareUpdateCompleted Boot Reason",
+        "definition": "Value of BootReason attribute in General Diagnostics cluster indicating device rebooted to activate software update. SHALL be set when reboot occurs for update application.",
+        "security_relevance": "Indicates update-related reboot. Helps detect unexpected reboots that may indicate update failure or malicious activity."
+      },
+      {
+        "term": "Operational Discovery",
+        "definition": "Mechanism to discover node endpoints and services on fabric. Used to find port for BDX transfer since BDX URI only contains node ID.",
+        "security_relevance": "Assumed to work correctly. If compromised, requestor could be redirected to wrong endpoint."
+      },
+      {
+        "term": "CASE Secure Channel",
+        "definition": "Certificate Authenticated Session Establishment - secure channel protocol providing confidentiality, integrity, and mutual authentication between nodes using operational certificates.",
+        "security_relevance": "All update communication occurs over CASE. If CASE compromised, attacker can perform MITM to serve malicious images."
+      },
+      {
+        "term": "ACL Entry",
+        "definition": "Access Control List entry granting privilege (Operate) to subject (node) for target (endpoint/cluster). Commissioners SHOULD install ACL for AnnounceOTAProvider and QueryImage commands.",
+        "security_relevance": "Without proper ACL, unauthorized nodes can announce fake providers or legitimate operations fail. Critical for access control."
+      },
+      {
+        "term": "ProviderLocation",
+        "definition": "Fabric-scoped structure containing ProviderNodeID (node-id) and Endpoint (endpoint-no) identifying OTA Provider location on fabric. Used in DefaultOTAProviders and AnnounceOTAProvider.",
+        "security_relevance": "Fabric scoping prevents cross-fabric provider access. Announcements SHALL NOT overwrite DefaultOTAProviders to prevent takeover."
+      },
+      {
+        "term": "StatusEnum",
+        "definition": "Response status in QueryImageResponse: UpdateAvailable (0) indicates image ready, Busy (1) indicates check back later, NotAvailable (2) indicates no update, DownloadProtocolNotSupported (3) indicates protocol incompatibility.",
+        "security_relevance": "Status values control requestor behavior. Busy prevents DoS via rate limiting. NotAvailable prevents unnecessary queries."
+      },
+      {
+        "term": "ApplyUpdateActionEnum",
+        "definition": "Action in ApplyUpdateResponse: Proceed (0) apply update with optional delay, AwaitNextAction (1) wait and re-request with delay, Discontinue (2) clear downloaded image due to critical defect.",
+        "security_relevance": "Discontinue only for significant negative effects. Provider SHALL NOT continuously deny on invalid token to prevent DoS."
+      },
+      {
+        "term": "DownloadProtocolEnum",
+        "definition": "Supported protocols: BDXSynchronous (0) mandatory for all, BDXAsynchronous (1) optional for TCP, HTTPS (2) optional for internet access, VendorSpecific (3) optional vendor protocol. HTTP without TLS SHALL NOT be supported.",
+        "security_relevance": "HTTPS-only requirement prevents MITM. BDX over CASE provides authenticated encryption. No HTTP to prevent unencrypted transfers."
+      },
+      {
+        "term": "AnnouncementReasonEnum",
+        "definition": "Reason for provider announcement: SimpleAnnouncement (0) presence only no immediate availability, UpdateAvailable (1) new image MAY be available query at next opportunity, UrgentUpdateAvailable (2) urgent update query after 1-600 second jitter.",
+        "security_relevance": "Rate limiting prevents DoS. SimpleAnnouncement max once per 24 hours per node. UrgentUpdateAvailable only for critical security updates or post-commissioning."
+      },
+      {
+        "term": "ChangeReasonEnum",
+        "definition": "Reason for UpdateState change in StateTransition event: Unknown (0) reason unknown, Success (1) prior operation succeeded, Failure (2) prior operation failed, TimeOut (3) timeout occurred, DelayByProvider (4) provider requested wait.",
+        "security_relevance": "Provides audit trail for state changes. Helps identify attack patterns causing failures or unusual delays."
+      },
+      {
+        "term": "UpdatePossible Attribute",
+        "definition": "Boolean attribute indicating if requestor is currently able to be updated (true) or prevented by conditions like insufficient battery (false). Informational only for diagnostics.",
+        "security_relevance": "Does not affect provider responses. Informational field preventing false expectations during updates."
+      },
+      {
+        "term": "UpdateStateProgress Attribute",
+        "definition": "Percentage 0-100 of progress relative to current UpdateState, or null if progress not applicable. 0 indicates beginning, 100 indicates completion. Updated infrequently to avoid subscription burden.",
+        "security_relevance": "Provides visibility into update progress. Absence of progress may indicate stuck state or attack causing download stall."
+      },
+      {
+        "term": "BDX URI Format",
+        "definition": "Strict format: bdx://NODEID/filedesignator where NODEID is exactly 16 uppercase hex chars (network byte order), filedesignator used verbatim without URL decoding. Port determined via Operational Discovery. NodeID must match provider.",
+        "security_relevance": "Verbatim filedesignator prevents path traversal via URL encoding (%2e%2e%2f). Strict parsing prevents injection attacks. NodeID match reduces CASE session overhead."
+      },
+      {
+        "term": "Image At-Rest Encryption",
+        "definition": "Optional vendor-specific encryption of Software Image body (excluding header) using any algorithm vendor chooses. Not mandated by specification. Independent of secure channel encryption.",
+        "security_relevance": "Protects confidentiality of image contents at rest and in transit beyond CASE/TLS. Security depends on key storage and access control on all requestors with key."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "VERSION_MONOTONICITY",
+        "type": "authenticity",
+        "description": "Requestors SHALL only upgrade to numerically higher versions and providers SHALL only offer higher versions. Prevents downgrade attacks to vulnerable firmware.",
+        "fsm_states_involved": ["Querying", "Downloading", "Applying"],
+        "critical_transitions": [
+          "Querying->Idle when version <= current",
+          "Querying->Downloading guard requires version > current",
+          "Applying guard verifies version > current"
+        ]
+      },
+      {
+        "property_name": "MANDATORY_SIGNATURE_VERIFICATION",
+        "type": "authenticity",
+        "description": "Software images SHALL be signed by vendor and signature SHALL be verified before installation. Any tampering detected SHALL cause rejection.",
+        "fsm_states_involved": ["Downloading", "Applying"],
+        "critical_transitions": [
+          "Downloading->Applying guard requires verify_image_signature == true",
+          "Downloading->DownloadFailed if signature invalid"
+        ]
+      },
+      {
+        "property_name": "QUERY_RATE_LIMITING",
+        "type": "availability",
+        "description": "Requestor SHALL NOT query any provider more frequently than once every 120 seconds to prevent DoS attacks on providers and network infrastructure.",
+        "fsm_states_involved": ["Idle", "Querying", "DelayedOnQuery"],
+        "critical_transitions": [
+          "Idle->Querying guard requires time_now - last_query_time >= 120",
+          "DelayedOnQuery enforces minimum 120 second delay"
+        ]
+      },
+      {
+        "property_name": "IMAGE_INTEGRITY_VERIFICATION",
+        "type": "integrity",
+        "description": "Downloaded images must pass checksum verification before application. Corrupted images SHALL be rejected.",
+        "fsm_states_involved": ["Downloading", "Applying"],
+        "critical_transitions": [
+          "Downloading->Applying guard requires verify_image_integrity == true",
+          "Downloading->DownloadFailed if checksum fails"
+        ]
+      },
+      {
+        "property_name": "NO_IMAGE_MUTATION",
+        "type": "integrity",
+        "description": "OTA Provider SHALL NOT modify contents of software images to ensure signatures remain valid. Provider cannot re-sign images.",
+        "fsm_states_involved": ["Downloading"],
+        "critical_transitions": [
+          "Downloading transition assumes provider serves unmodified image"
+        ]
+      },
+      {
+        "property_name": "IDEMPOTENT_OPERATIONS",
+        "type": "consistency",
+        "description": "Provider requests are idempotent - repeated queries SHALL NOT behave differently unless new image available. Critical for retry reliability.",
+        "fsm_states_involved": ["Querying", "Applying"],
+        "critical_transitions": [
+          "All Querying and Applying transitions can be retried safely"
+        ]
+      },
+      {
+        "property_name": "ACCESS_CONTROL_ENFORCEMENT",
+        "type": "access_control",
+        "description": "ACL entries SHOULD be installed for AnnounceOTAProvider and QueryImage commands. Without ACL, operations fail or unauthorized access occurs.",
+        "fsm_states_involved": ["Idle", "Querying"],
+        "critical_transitions": [
+          "Idle->Querying assumes ACL grants Operate privilege",
+          "AnnounceOTAProvider reception assumes ACL allows access"
+        ]
+      },
+      {
+        "property_name": "PROVIDER_TOKEN_TOLERANCE",
+        "type": "availability",
+        "description": "Provider SHALL NOT continuously deny or delay requestor due to invalid UpdateToken. Token is for tracking, not authentication.",
+        "fsm_states_involved": ["Applying"],
+        "critical_transitions": [
+          "Applying->Applying retries use update_token or fallback to node_id",
+          "Provider response SHALL NOT deny based on token alone"
+        ]
+      },
+      {
+        "property_name": "LAST_RESORT_UPDATE_MECHANISM",
+        "type": "availability",
+        "description": "After 3 attempts or 24 hours of failure to get apply authorization, requestor with verified image MAY apply as last resort to prevent permanent vulnerable state.",
+        "fsm_states_involved": ["Applying", "DelayedOnApply"],
+        "critical_transitions": [
+          "Applying->Idle when retry_count >= 3 or time >= 24 hours triggers last resort apply"
+        ]
+      },
+      {
+        "property_name": "CONSENT_ENFORCEMENT",
+        "type": "access_control",
+        "description": "User consent SHOULD be obtained before offering updates. Consent delegation SHALL NOT be used if LocalConfigDisabled is true.",
+        "fsm_states_involved": ["DelayedOnUserConsent"],
+        "critical_transitions": [
+          "Querying->DelayedOnUserConsent when user_consent_needed && requestor_can_consent",
+          "DelayedOnUserConsent->Idle if LocalConfigDisabled violation detected"
+        ]
+      },
+      {
+        "property_name": "DELAY_ENFORCEMENT",
+        "type": "timing",
+        "description": "Requestor SHALL respect DelayedActionTime from provider responses. Busy delays minimum 120 seconds, AwaitNextAction minimum 120 seconds, total apply delay maximum 24 hours.",
+        "fsm_states_involved": ["DelayedOnQuery", "DelayedOnApply"],
+        "critical_transitions": [
+          "DelayedOnQuery->Querying waits required duration",
+          "DelayedOnApply->Applying waits required duration",
+          "DelayedOnApply->Idle enforces 24 hour maximum"
+        ]
+      },
+      {
+        "property_name": "FABRIC_ISOLATION",
+        "type": "scope_isolation",
+        "description": "DefaultOTAProviders is fabric-scoped. AnnounceOTAProvider SHALL be fabric-scoped and fail with UNSUPPORTED_ACCESS if fabric_index is 0.",
+        "fsm_states_involved": ["Idle"],
+        "critical_transitions": [
+          "Idle maintains separate provider list per fabric",
+          "AnnounceOTAProvider reception validates fabric_index != 0"
+        ]
+      },
+      {
+        "property_name": "ANNOUNCEMENT_NON_RELIANCE",
+        "type": "security",
+        "description": "Nodes SHALL NOT rely solely on unsolicited announcements for provider discovery. Must use commissioned providers or other discovery means.",
+        "fsm_states_involved": ["Idle"],
+        "critical_transitions": [
+          "Idle->Querying can use default_providers_list or cached_providers_list",
+          "Announcements augment but cannot replace configured providers"
+        ]
+      },
+      {
+        "property_name": "BDX_URI_VALIDATION",
+        "type": "integrity",
+        "description": "BDX URI must have exact format: scheme=bdx, host=16 uppercase hex chars (node ID), path=file designator verbatim. Node ID must match provider.",
+        "fsm_states_involved": ["Downloading"],
+        "critical_transitions": [
+          "Querying->Downloading validates BDX URI format and node ID match"
+        ]
+      },
+      {
+        "property_name": "HTTPS_ONLY_NO_HTTP",
+        "type": "confidentiality",
+        "description": "Only HTTPS is supported for internet downloads. HTTP without TLS SHALL NOT be supported to prevent MITM attacks.",
+        "fsm_states_involved": ["Downloading"],
+        "critical_transitions": [
+          "Downloading with HTTPS protocol uses TLS",
+          "HTTP scheme is rejected in protocol validation"
+        ]
+      },
+      {
+        "property_name": "BDX_TRANSFER_CONSTRAINTS",
+        "type": "correctness",
+        "description": "BDX transfer mode SHALL be receiver-drive for non-TCP. Idle timeout >= 5 minutes. Block sizes power-of-two if >128 bytes. Max 1024 bytes for non-TCP, 8192 for TCP.",
+        "fsm_states_involved": ["Downloading"],
+        "critical_transitions": [
+          "Downloading enforces BDX protocol constraints",
+          "Transfer idle timeout triggers Downloading->Idle after 300 seconds"
+        ]
+      },
+      {
+        "property_name": "RETRY_EXHAUSTION_LIMIT",
+        "type": "availability",
+        "description": "Requestor SHALL abort download after 3 attempts with no forward progress. Prevents infinite retry loops.",
+        "fsm_states_involved": ["Downloading"],
+        "critical_transitions": [
+          "Downloading->DownloadFailed when retry_count >= 3 and forward_progress_count == 0"
+        ]
+      },
+      {
+        "property_name": "DISCONTINUE_IMAGE_CLEARING",
+        "type": "security",
+        "description": "On Discontinue action, requestor SHOULD clear downloaded image if from same provider. Discontinue only for significant negative effects.",
+        "fsm_states_involved": ["ImageDiscontinued"],
+        "critical_transitions": [
+          "Applying->ImageDiscontinued clears image when Discontinue received"
+        ]
+      },
+      {
+        "property_name": "EVENT_GENERATION_AUDIT_TRAIL",
+        "type": "auditing",
+        "description": "StateTransition, VersionApplied, and DownloadError events SHALL be generated for monitoring and diagnostics. Provides audit trail.",
+        "fsm_states_involved": ["All states"],
+        "critical_transitions": [
+          "All state transitions generate StateTransition event",
+          "Applying->Idle generates VersionApplied",
+          "Downloading->DownloadFailed generates DownloadError"
+        ]
+      },
+      {
+        "property_name": "ANNOUNCEMENT_RATE_LIMITING",
+        "type": "availability",
+        "description": "Announcements SHOULD be max once per 24 hours per node unless UrgentUpdateAvailable. Minimum 1 second between announcements from provider.",
+        "fsm_states_involved": ["Idle"],
+        "critical_transitions": [
+          "Idle receives announcements with rate limiting enforcement",
+          "UrgentUpdateAvailable triggers query after 1-600 second jitter"
+        ]
+      }
+    ],
+    "initial_state": "Unknown",
+    "all_states": [
+      "Unknown",
+      "Idle",
+      "Querying",
+      "DelayedOnQuery",
+      "DelayedOnUserConsent",
+      "Downloading",
+      "Applying",
+      "DelayedOnApply",
+      "RollingBack",
+      "DownloadFailed",
+      "ApplyFailed",
+      "ImageDiscontinued"
+    ],
+    "all_triggers": [
+      "initialization_complete",
+      "query_timer_expired",
+      "announce_ota_provider_received",
+      "error_on_query_but_image_cached",
+      "query_image_response_received",
+      "query_timeout_or_error",
+      "delay_timer_expired",
+      "timekeeping_lost",
+      "user_consent_obtained",
+      "user_consent_denied",
+      "consent_delegation_violation",
+      "out_of_band_update_applied",
+      "download_complete",
+      "download_error",
+      "download_error_with_retry",
+      "transfer_idle_timeout",
+      "reset_state_after_failure",
+      "apply_update_response_received",
+      "apply_success_reboot",
+      "apply_success_no_reboot",
+      "apply_error",
+      "apply_request_timeout_or_error",
+      "retry_query_after_apply_failure",
+      "discontinue_handled",
+      "new_version_failure_detected_on_boot",
+      "rollback_complete",
+      "rollback_failed",
+      "delay_limit_exceeded"
+    ],
+    "all_functions_used": [
+      "send_query_image",
+      "extract_protocol",
+      "is_protocol_supported",
+      "is_uri_unusable",
+      "initiate_download",
+      "resume_download",
+      "verify_image_integrity",
+      "verify_image_signature",
+      "send_apply_update_request",
+      "apply_immediately",
+      "wait_then_apply",
+      "apply_as_last_resort",
+      "send_notify_update_applied",
+      "clear_downloaded_image",
+      "schedule_next_query",
+      "try_different_provider_or_schedule_next",
+      "determine_verification_failure_reason",
+      "determine_download_error_reason",
+      "determine_apply_failure_reason",
+      "determine_rollback_reason",
+      "evaluate_retry_possibility",
+      "initiate_rollback_to_previous_version",
+      "reset_software_update_state",
+      "request_user_consent_locally",
+      "wait_for_delayed_action_time_if_present",
+      "skip_download_proceed_to_apply",
+      "skip_query_and_apply_cached",
+      "reject_same_or_older_version",
+      "reject_unusable_uri",
+      "handle_protocol_not_supported",
+      "treat_as_not_available",
+      "retry_apply_update_request",
+      "reset_to_idle_for_retry",
+      "reset_to_idle_state",
+      "reset_apply_state",
+      "consent_denied_reset",
+      "generate_event",
+      "transition_to_idle",
+      "reboot_device",
+      "cache_provider_location",
+      "schedule_query_at_next_opportunity",
+      "update_provider_list_if_space_available",
+      "send_notify_update_applied_if_provider_known"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "image_integrity_verification",
+        "algorithm": "SHA-256 or SHA-384 (from OTA image header checksum type)",
+        "inputs": [
+          "downloaded image body",
+          "expected checksum from OTA image header",
+          "checksum type identifier"
+        ],
+        "output": "boolean (true if computed checksum matches expected, false otherwise)",
+        "assumptions": [
+          "Checksum algorithm is cryptographically secure against collision attacks",
+          "OTA image header is trusted source for expected checksum",
+          "Checksum covers entire image body without gaps"
+        ]
+      },
+      {
+        "operation": "image_signature_verification",
+        "algorithm": "ECDSA or RSA (vendor-specific, typically ECDSA P-256 or P-384)",
+        "inputs": [
+          "downloaded image body",
+          "signature from OTA image",
+          "vendor public key (pre-installed or securely downloaded)"
+        ],
+        "output": "boolean (true if signature valid, false if invalid or verification error)",
+        "assumptions": [
+          "Vendor private signing key is secure and not compromised",
+          "Public key is authentic and from legitimate vendor",
+          "Signature covers entire image and cannot be separated/reused",
+          "Asymmetric algorithm provides computational infeasibility of forgery"
+        ]
+      },
+      {
+        "operation": "case_secure_channel",
+        "algorithm": "Certificate Authenticated Session Establishment with AES-128-CCM for encryption",
+        "inputs": [
+          "local operational certificate and private key",
+          "remote peer operational certificate",
+          "fabric root CA certificate"
+        ],
+        "output": "established secure session with session ID and encryption keys",
+        "assumptions": [
+          "CASE protocol provides mutual authentication",
+          "Session keys provide confidentiality and integrity",
+          "Certificates are valid and not revoked",
+          "No MITM attack on session establishment"
+        ]
+      },
+      {
+        "operation": "bdx_transfer_integrity",
+        "algorithm": "Implicit integrity from CASE secure channel (AES-128-CCM authenticated encryption)",
+        "inputs": [
+          "BDX blocks encrypted over CASE session",
+          "session encryption key",
+          "message authentication code"
+        ],
+        "output": "authenticated and decrypted image blocks",
+        "assumptions": [
+          "CASE session provides authenticated encryption",
+          "BDX protocol correctly uses secure channel",
+          "No attack on BDX protocol itself independent of channel security"
+        ]
+      },
+      {
+        "operation": "https_tls_transfer",
+        "algorithm": "TLS 1.2 or 1.3 with server authentication",
+        "inputs": [
+          "server TLS certificate",
+          "negotiated cipher suite (typically ECDHE with AES-GCM)",
+          "CA root certificates for validation"
+        ],
+        "output": "authenticated and encrypted HTTPS connection",
+        "assumptions": [
+          "TLS provides server authentication and channel security",
+          "CA certificates are trustworthy",
+          "No compromise of TLS implementation",
+          "Certificate validation properly enforced"
+        ]
+      },
+      {
+        "operation": "update_token_generation",
+        "algorithm": "Provider-chosen, typically random bytes from DRBG",
+        "inputs": [
+          "random seed",
+          "requestor context (node ID, fabric)"
+        ],
+        "output": "8-32 byte UpdateToken value",
+        "assumptions": [
+          "Token is for tracking only, not authentication",
+          "Provider SHALL NOT deny updates based on invalid token",
+          "Token collision probability is acceptably low",
+          "Token does not leak sensitive information"
+        ]
+      },
+      {
+        "operation": "image_at_rest_encryption",
+        "algorithm": "Vendor-specific (AES-256-GCM, ChaCha20-Poly1305, or other)",
+        "inputs": [
+          "software image body (excluding header)",
+          "vendor symmetric encryption key",
+          "initialization vector or nonce"
+        ],
+        "output": "encrypted image body, authentication tag",
+        "assumptions": [
+          "Optional feature not mandated by specification",
+          "Encryption key securely stored on all authorized requestors",
+          "Encryption independent of secure channel (CASE/TLS)",
+          "Header remains unencrypted for metadata access",
+          "Security depends on key distribution mechanism",
+          "All requestors with key can decrypt - access control critical"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "CASE secure channels provide confidentiality, integrity, and mutual authentication",
+        "type": "explicit",
+        "if_violated": "All security properties collapse. Attacker can perform MITM to serve malicious firmware, intercept communications, impersonate nodes."
+      },
+      {
+        "assumption": "Vendor private signing keys are secure and not compromised",
+        "type": "implicit",
+        "if_violated": "Signature verification becomes worthless. Attacker can sign malicious firmware that passes all validation checks."
+      },
+      {
+        "assumption": "Public keys for signature verification are authentic and from legitimate vendor",
+        "type": "implicit",
+        "if_violated": "Attacker can inject their own signing key to sign malicious firmware that appears legitimate."
+      },
+      {
+        "assumption": "Basic Information Cluster accurately reports device identity (VendorID, ProductID, SoftwareVersion)",
+        "type": "explicit",
+        "if_violated": "Wrong firmware may be served, causing incompatibility, bricking, or security vulnerabilities. Version monotonicity enforcement fails."
+      },
+      {
+        "assumption": "Distributed Compliance Ledger is trustworthy and not compromised",
+        "type": "explicit",
+        "if_violated": "Attacker can advertise malicious images as legitimate certified versions. DCL is trusted source for image locations."
+      },
+      {
+        "assumption": "ACL enforcement is properly implemented and cannot be bypassed",
+        "type": "explicit",
+        "if_violated": "Unauthorized nodes can inject malicious updates, announce fake providers, or block legitimate operations."
+      },
+      {
+        "assumption": "Fabric isolation is properly enforced at network and protocol layers",
+        "type": "implicit",
+        "if_violated": "Attacker on one fabric can manipulate or observe updates on other fabrics, enabling cross-fabric attacks."
+      },
+      {
+        "assumption": "OTA Requestor has accurate timekeeping capability for enforcing timing constraints",
+        "type": "implicit",
+        "if_violated": "Query rate limiting fails, delay enforcement fails, timing-based DoS attacks become possible. Spec allows timing loss exception but requires 120 second minimum."
+      },
+      {
+        "assumption": "Node has sufficient storage to download and store complete OTA image before applying",
+        "type": "implicit",
+        "if_violated": "Download failures, incomplete transfers, inability to cache images. Update mechanism may fail entirely."
+      },
+      {
+        "assumption": "Updates can be applied atomically - either fully applied or fully rolled back",
+        "type": "implicit",
+        "if_violated": "Non-atomic updates leave device in inconsistent state if interrupted, potentially bricking device."
+      },
+      {
+        "assumption": "Version numbers are assigned monotonically and meaningfully by vendors",
+        "type": "explicit",
+        "if_violated": "Version-based protections fail. If vendor reuses version numbers or assigns randomly, version monotonicity becomes meaningless."
+      },
+      {
+        "assumption": "User consent mechanism is secure and cannot be spoofed",
+        "type": "implicit",
+        "if_violated": "Spoofed consent allows unauthorized updates or blocks legitimate ones. Consent-based access control fails."
+      },
+      {
+        "assumption": "Provider has sufficient resources to serve multiple requestors concurrently",
+        "type": "implicit",
+        "if_violated": "Resource exhaustion prevents provider from serving legitimate updates. DoS attacks become easier."
+      },
+      {
+        "assumption": "Operational Discovery mechanism works correctly to find node endpoints",
+        "type": "explicit",
+        "if_violated": "Requestor cannot locate provider or connects to wrong endpoint. BDX transfers fail since URI only contains node ID."
+      },
+      {
+        "assumption": "Image checksums are cryptographically secure (SHA-256 or similar)",
+        "type": "implicit",
+        "if_violated": "Weak checksums allow collision attacks where malicious image has same checksum as legitimate one."
+      },
+      {
+        "assumption": "LocalConfigDisabled attribute is properly enforced and cannot be manipulated",
+        "type": "explicit",
+        "if_violated": "Centralized policy enforcement fails. Devices can bypass administrator mandates through local consent."
+      },
+      {
+        "assumption": "Events (StateTransition, VersionApplied, DownloadError) are reliably delivered to subscribers",
+        "type": "implicit",
+        "if_violated": "Lost events prevent monitoring and create incomplete audit trail. Malicious activity may go undetected."
+      },
+      {
+        "assumption": "UpdateToken is stored securely and cannot be easily guessed or stolen",
+        "type": "implicit",
+        "if_violated": "Token theft allows session hijacking. However, spec requires provider to not deny based on invalid token, limiting impact."
+      },
+      {
+        "assumption": "Commissioner/Administrator installing ACL entries is trusted and authorized",
+        "type": "explicit",
+        "if_violated": "Compromised commissioner can install malicious ACL entries allowing unauthorized updates or blocking legitimate ones."
+      },
+      {
+        "assumption": "Software Image headers contain accurate metadata (version, size, checksum)",
+        "type": "explicit",
+        "if_violated": "Incorrect metadata causes mismatched expectations, buffer overflows, or wrong cache hits. Image validation may fail or pass incorrectly."
+      },
+      {
+        "assumption": "Node can detect and recover from corrupted or failed updates",
+        "type": "implicit",
+        "if_violated": "Failed update permanently bricks device. Rollback capability is essential safety mechanism."
+      },
+      {
+        "assumption": "BDX file designator is used verbatim without URL decoding",
+        "type": "explicit",
+        "if_violated": "Decoding escape sequences enables path traversal attacks (%2e%2e%2f for ../). Spec requires verbatim use to prevent this."
+      },
+      {
+        "assumption": "Provider cannot validate image signatures and should not attempt to",
+        "type": "explicit",
+        "if_violated": "If provider attempts validation with wrong keys or compromised validation, false sense of security. Provider's job is to serve unmodified images."
+      },
+      {
+        "assumption": "Network connectivity is generally available but may be intermittent",
+        "type": "explicit",
+        "if_violated": "Protocol design assumes network may fail. Handles retries, resumption, and timeouts. If network never available, updates impossible."
+      },
+      {
+        "assumption": "Range-based and partial transfers are correctly implemented without vulnerabilities",
+        "type": "implicit",
+        "if_violated": "Buggy range transfer implementation allows reading arbitrary file portions or memory disclosure. BDX STARTOFS or HTTPS Range attacks become possible."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

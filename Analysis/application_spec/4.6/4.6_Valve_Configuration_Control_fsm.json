@@ -1,0 +1,1083 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Valve Configuration and Control",
+    "cluster_id": "0x0081",
+    "pics_code": "VALCC",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 4.6, Pages 387-395",
+    "revision": 1,
+
+    "classification": {
+      "hierarchy": "Base",
+      "role": "Application",
+      "scope": "Endpoint"
+    },
+
+    "features": [
+      {
+        "bit": 0,
+        "code": "TS",
+        "name": "TimeSync",
+        "conformance": "desc",
+        "description": "UTC time is used for time indications. SHALL NOT be supported unless device supports Time Synchronization cluster.",
+        "affects_states": [],
+        "affects_transitions": ["T001", "T002", "T003", "T004", "T007", "T008"],
+        "affects_attributes": ["AutoCloseTime"]
+      },
+      {
+        "bit": 1,
+        "code": "LVL",
+        "name": "Level",
+        "conformance": "O",
+        "description": "Device supports setting the specific position of the valve as a percentage (0-100%).",
+        "affects_states": ["Open_PartialLevel"],
+        "affects_transitions": ["T001", "T002", "T003", "T004"],
+        "affects_attributes": [
+          "CurrentLevel",
+          "TargetLevel",
+          "DefaultOpenLevel",
+          "LevelStep"
+        ]
+      }
+    ],
+
+    "dependencies": [
+      {
+        "cluster": "Time Synchronization",
+        "cluster_id": "0x0038",
+        "relationship": "REQUIRED_IF_FEATURE",
+        "condition": "Feature_TS == true",
+        "description": "TimeSync feature requires Time Synchronization cluster for UTC time access"
+      }
+    ],
+
+    "data_types": [
+      {
+        "name": "ValveStateEnum",
+        "base_type": "enum8",
+        "values": [
+          {
+            "value": 0,
+            "name": "Closed",
+            "description": "Valve is in closed position",
+            "conformance": "M"
+          },
+          {
+            "value": 1,
+            "name": "Open",
+            "description": "Valve is in open position",
+            "conformance": "M"
+          },
+          {
+            "value": 2,
+            "name": "Transitioning",
+            "description": "Valve is transitioning between closed and open positions or between levels",
+            "conformance": "M"
+          }
+        ]
+      },
+      {
+        "name": "ValveFaultBitmap",
+        "base_type": "map16",
+        "bits": [
+          {
+            "bit": 0,
+            "name": "GeneralFault",
+            "description": "Unspecified fault detected",
+            "conformance": "M"
+          },
+          {
+            "bit": 1,
+            "name": "Blocked",
+            "description": "Valve is blocked",
+            "conformance": "M"
+          },
+          {
+            "bit": 2,
+            "name": "Leaking",
+            "description": "Valve has detected a leak",
+            "conformance": "M"
+          },
+          {
+            "bit": 3,
+            "name": "NotConnected",
+            "description": "No valve is connected to controller",
+            "conformance": "M"
+          },
+          {
+            "bit": 4,
+            "name": "ShortCircuit",
+            "description": "Short circuit is detected",
+            "conformance": "M"
+          },
+          {
+            "bit": 5,
+            "name": "CurrentExceeded",
+            "description": "The available current has been exceeded",
+            "conformance": "M"
+          }
+        ]
+      },
+      {
+        "name": "StatusCodeEnum",
+        "base_type": "enum8",
+        "values": [
+          {
+            "value": 2,
+            "name": "FailureDueToFault",
+            "description": "The requested action could not be performed due to a fault on the valve",
+            "conformance": "M"
+          }
+        ]
+      }
+    ],
+
+    "attributes": [
+      {
+        "id": "0x0000",
+        "name": "OpenDuration",
+        "type": "elapsed-s",
+        "constraint": "min 1",
+        "quality": "X",
+        "access": "R V",
+        "conformance": "M",
+        "nullable": true,
+        "description": "Total duration (seconds) valve will remain open for current opening. Null = indefinite."
+      },
+      {
+        "id": "0x0001",
+        "name": "DefaultOpenDuration",
+        "type": "elapsed-s",
+        "constraint": "min 1",
+        "quality": "N X",
+        "access": "RW VO",
+        "conformance": "M",
+        "nullable": true,
+        "description": "Default duration (seconds) if OpenDuration field not present in Open command. Null = indefinite."
+      },
+      {
+        "id": "0x0002",
+        "name": "AutoCloseTime",
+        "type": "epoch-us",
+        "constraint": "all",
+        "quality": "X",
+        "access": "R V",
+        "conformance": "TS",
+        "nullable": true,
+        "description": "UTC time when valve will close. Null when OpenDuration is null, no UTC sync, or valve closed."
+      },
+      {
+        "id": "0x0003",
+        "name": "RemainingDuration",
+        "type": "elapsed-s",
+        "constraint": "all",
+        "quality": "Q X",
+        "access": "R V",
+        "conformance": "M",
+        "nullable": true,
+        "description": "Remaining seconds until valve closes. Null when OpenDuration is null or valve closed."
+      },
+      {
+        "id": "0x0004",
+        "name": "CurrentState",
+        "type": "ValveStateEnum",
+        "constraint": "all",
+        "quality": "X",
+        "access": "R V",
+        "conformance": "M",
+        "nullable": true,
+        "description": "Current state of the valve. Null if current state is not known."
+      },
+      {
+        "id": "0x0005",
+        "name": "TargetState",
+        "type": "ValveStateEnum",
+        "constraint": "all",
+        "quality": "X",
+        "access": "R V",
+        "conformance": "M",
+        "nullable": true,
+        "description": "Target state while changing. Null if no target set (change done or failed)."
+      },
+      {
+        "id": "0x0006",
+        "name": "CurrentLevel",
+        "type": "percent",
+        "constraint": "all",
+        "quality": "X",
+        "access": "R V",
+        "conformance": "LVL",
+        "nullable": true,
+        "description": "Current level (0-100%). 100% = fully open, 0% = fully closed, null = unknown."
+      },
+      {
+        "id": "0x0007",
+        "name": "TargetLevel",
+        "type": "percent",
+        "constraint": "all",
+        "quality": "X",
+        "access": "R V",
+        "conformance": "LVL",
+        "nullable": true,
+        "description": "Target level (0-100%). Null if no target set (change done or failed)."
+      },
+      {
+        "id": "0x0008",
+        "name": "DefaultOpenLevel",
+        "type": "percent",
+        "constraint": "1 to 100",
+        "quality": "N",
+        "fallback": 100,
+        "access": "RW VO",
+        "conformance": "[LVL]",
+        "nullable": false,
+        "description": "Default TargetLevel when transitioning from closed to open via Open command without TargetLevel field."
+      },
+      {
+        "id": "0x0009",
+        "name": "ValveFault",
+        "type": "ValveFaultBitmap",
+        "constraint": "all",
+        "quality": "",
+        "fallback": 0,
+        "access": "R V",
+        "conformance": "O",
+        "nullable": false,
+        "description": "Indicates any faults registered by the valve."
+      },
+      {
+        "id": "0x000A",
+        "name": "LevelStep",
+        "type": "uint8",
+        "constraint": "1 to 50",
+        "quality": "F",
+        "fallback": 1,
+        "access": "R V",
+        "conformance": "[LVL]",
+        "nullable": false,
+        "description": "Step size for valve level. Values 0 and 100 always supported. E.g., LevelStep=15 supports: 0, 15, 30, 45, 60, 75, 90, 100."
+      }
+    ],
+
+    "states": [
+      {
+        "name": "Closed",
+        "description": "Valve is in fully closed position. No flow permitted. CurrentLevel is 0% if Level feature supported.",
+        "is_initial": true,
+        "invariants": [
+          "CurrentState == Closed",
+          "(Feature_LVL == false) || (CurrentLevel == 0)"
+        ],
+        "state_attributes": {
+          "CurrentState": "Closed",
+          "TargetState": "null",
+          "CurrentLevel": "0 (if LVL)",
+          "TargetLevel": "null (if LVL)",
+          "OpenDuration": "null",
+          "RemainingDuration": "null",
+          "AutoCloseTime": "null (if TS)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Safe state - no fluid/gas flow. Physical entry/flow denied.",
+        "entry_conditions": [
+          "Movement complete after Close command",
+          "Timer expiry (auto-close)",
+          "Initial startup (typical)"
+        ]
+      },
+      {
+        "name": "Closed_Faulted",
+        "description": "Valve is closed but has registered a fault. Commands will be rejected.",
+        "is_initial": false,
+        "invariants": ["CurrentState == Closed", "ValveFault != 0"],
+        "state_attributes": {
+          "CurrentState": "Closed",
+          "ValveFault": "non-zero"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Valve remains closed due to fault. Commands blocked. May indicate physical damage."
+      },
+      {
+        "name": "Open_FullLevel",
+        "description": "Valve is fully open (100% level or no Level feature). Maximum flow permitted.",
+        "is_initial": false,
+        "invariants": [
+          "CurrentState == Open",
+          "(Feature_LVL == false) || (CurrentLevel == 100)"
+        ],
+        "state_attributes": {
+          "CurrentState": "Open",
+          "TargetState": "null",
+          "CurrentLevel": "100 (if LVL)",
+          "TargetLevel": "null (if LVL)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Maximum flow rate. Risk of flooding if water valve, or gas leak if gas valve. Timer-based auto-close provides mitigation."
+      },
+      {
+        "name": "Open_PartialLevel",
+        "description": "Valve is open at a partial level (1-99%). Requires Level feature.",
+        "is_initial": false,
+        "invariants": [
+          "CurrentState == Open",
+          "Feature_LVL == true",
+          "CurrentLevel > 0 && CurrentLevel < 100"
+        ],
+        "state_attributes": {
+          "CurrentState": "Open",
+          "TargetState": "null",
+          "CurrentLevel": "1-99",
+          "TargetLevel": "null"
+        },
+        "feature_requirements": ["Feature_LVL == true"],
+        "safety_implications": "Partial flow rate. Timer-based auto-close still applies if duration set."
+      },
+      {
+        "name": "Open_Faulted",
+        "description": "Valve is open but has registered a fault. Further commands will be rejected.",
+        "is_initial": false,
+        "invariants": ["CurrentState == Open", "ValveFault != 0"],
+        "state_attributes": {
+          "CurrentState": "Open",
+          "ValveFault": "non-zero"
+        },
+        "feature_requirements": [],
+        "safety_implications": "CRITICAL: Valve stuck open with fault. Cannot be commanded closed. Manual intervention required."
+      },
+      {
+        "name": "Transitioning_ToOpen",
+        "description": "Valve is moving from closed to open position or between levels toward open.",
+        "is_initial": false,
+        "invariants": ["CurrentState == Transitioning", "TargetState == Open"],
+        "state_attributes": {
+          "CurrentState": "Transitioning",
+          "TargetState": "Open",
+          "TargetLevel": "target_value (if LVL)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Transient state - flow increasing. Duration typically short but depends on physical valve actuator."
+      },
+      {
+        "name": "Transitioning_ToClosed",
+        "description": "Valve is moving from open to closed position.",
+        "is_initial": false,
+        "invariants": [
+          "CurrentState == Transitioning",
+          "TargetState == Closed"
+        ],
+        "state_attributes": {
+          "CurrentState": "Transitioning",
+          "TargetState": "Closed",
+          "TargetLevel": "0 (if LVL)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Transient state - flow decreasing. System moving to safe state."
+      },
+      {
+        "name": "Unknown",
+        "description": "Valve state is not known (CurrentState is null).",
+        "is_initial": false,
+        "invariants": ["CurrentState == null"],
+        "state_attributes": {
+          "CurrentState": "null"
+        },
+        "feature_requirements": [],
+        "safety_implications": "CRITICAL: Unknown valve position. Physical state unknown. Cannot verify safety."
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T001",
+        "from_state": "Closed",
+        "to_state": "Transitioning_ToOpen",
+        "trigger": {
+          "type": "command",
+          "name": "Open",
+          "command_id": "0x00"
+        },
+        "guard_condition": "ValveFault == 0",
+        "actions": [
+          "TargetState := Open",
+          "CurrentState := Transitioning",
+          "OpenDuration := (OpenDuration_field != null) ? OpenDuration_field : DefaultOpenDuration",
+          "RemainingDuration := (OpenDuration != null) ? OpenDuration : null",
+          "IF (Feature_TS && OpenDuration != null) THEN AutoCloseTime := UTC_now + OpenDuration ELSE AutoCloseTime := null",
+          "IF (Feature_LVL) THEN TargetLevel := (TargetLevel_field != null) ? TargetLevel_field : ((DefaultOpenLevel != null) ? DefaultOpenLevel : 100)",
+          "start_movement_to_target()"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "ValveFault != 0",
+            "status_code": "FailureDueToFault",
+            "status_value": "0x02",
+            "description": "Fault registered prevents valve operation"
+          },
+          {
+            "condition": "Feature_LVL && LevelStep present && TargetLevel_field != 100 && (TargetLevel_field % LevelStep != 0)",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "TargetLevel not aligned with LevelStep"
+          }
+        ],
+        "spec_reference": "Section 4.6.8.1.3 Effect on Receipt"
+      },
+      {
+        "id": "T002",
+        "from_state": "Closed",
+        "to_state": "Closed",
+        "trigger": {
+          "type": "command",
+          "name": "Open",
+          "command_id": "0x00"
+        },
+        "guard_condition": "ValveFault != 0",
+        "actions": ["return_status(FailureDueToFault)"],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "ValveFault != 0",
+            "status_code": "FailureDueToFault",
+            "status_value": "0x02",
+            "description": "Command ignored due to registered fault"
+          }
+        ],
+        "spec_reference": "Section 4.6.8.1.3 Effect on Receipt"
+      },
+      {
+        "id": "T003",
+        "from_state": "Open_FullLevel",
+        "to_state": "Transitioning_ToClosed",
+        "trigger": {
+          "type": "command",
+          "name": "Close",
+          "command_id": "0x01"
+        },
+        "guard_condition": "ValveFault == 0",
+        "actions": [
+          "OpenDuration := null",
+          "RemainingDuration := null",
+          "IF (Feature_TS) THEN AutoCloseTime := null",
+          "TargetState := Closed",
+          "CurrentState := Transitioning",
+          "IF (Feature_LVL) THEN TargetLevel := 0",
+          "start_movement_to_target()"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "ValveFault != 0",
+            "status_code": "FailureDueToFault",
+            "status_value": "0x02",
+            "description": "Fault registered prevents valve operation"
+          }
+        ],
+        "spec_reference": "Section 4.6.8.2.1 Effect on Receipt"
+      },
+      {
+        "id": "T004",
+        "from_state": "Open_PartialLevel",
+        "to_state": "Transitioning_ToClosed",
+        "trigger": {
+          "type": "command",
+          "name": "Close",
+          "command_id": "0x01"
+        },
+        "guard_condition": "ValveFault == 0 && Feature_LVL == true",
+        "actions": [
+          "OpenDuration := null",
+          "RemainingDuration := null",
+          "IF (Feature_TS) THEN AutoCloseTime := null",
+          "TargetState := Closed",
+          "CurrentState := Transitioning",
+          "TargetLevel := 0",
+          "start_movement_to_target()"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "ValveFault != 0",
+            "status_code": "FailureDueToFault",
+            "status_value": "0x02",
+            "description": "Fault registered prevents valve operation"
+          }
+        ],
+        "spec_reference": "Section 4.6.8.2.1 Effect on Receipt"
+      },
+      {
+        "id": "T005",
+        "from_state": "Transitioning_ToOpen",
+        "to_state": "Open_FullLevel",
+        "trigger": {
+          "type": "internal",
+          "name": "movement_complete",
+          "command_id": null
+        },
+        "guard_condition": "(Feature_LVL == false) || (TargetLevel == 100)",
+        "actions": [
+          "CurrentState := Open",
+          "TargetState := null",
+          "IF (Feature_LVL) THEN CurrentLevel := 100",
+          "IF (Feature_LVL) THEN TargetLevel := null",
+          "generate_event(ValveStateChanged, {ValveState: Open, ValveLevel: 100})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Depends on physical actuator speed",
+        "error_responses": [],
+        "spec_reference": "Section 4.6.8.1.3 'When the movement is complete, the device SHALL set the CurrentState attribute to the Open value.'"
+      },
+      {
+        "id": "T006",
+        "from_state": "Transitioning_ToOpen",
+        "to_state": "Open_PartialLevel",
+        "trigger": {
+          "type": "internal",
+          "name": "movement_complete",
+          "command_id": null
+        },
+        "guard_condition": "Feature_LVL == true && TargetLevel > 0 && TargetLevel < 100",
+        "actions": [
+          "CurrentState := Open",
+          "TargetState := null",
+          "CurrentLevel := TargetLevel",
+          "TargetLevel := null",
+          "generate_event(ValveStateChanged, {ValveState: Open, ValveLevel: CurrentLevel})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Depends on physical actuator speed",
+        "error_responses": [],
+        "spec_reference": "Section 4.6.8.1.3"
+      },
+      {
+        "id": "T007",
+        "from_state": "Transitioning_ToClosed",
+        "to_state": "Closed",
+        "trigger": {
+          "type": "internal",
+          "name": "movement_complete",
+          "command_id": null
+        },
+        "guard_condition": "true",
+        "actions": [
+          "CurrentState := Closed",
+          "TargetState := null",
+          "IF (Feature_LVL) THEN CurrentLevel := 0",
+          "IF (Feature_LVL) THEN TargetLevel := null",
+          "generate_event(ValveStateChanged, {ValveState: Closed, ValveLevel: 0})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Depends on physical actuator speed",
+        "error_responses": [],
+        "spec_reference": "Section 4.6.8.2.1 'When the movement is complete, the device SHALL set the CurrentState attribute to the Closed value.'"
+      },
+      {
+        "id": "T008",
+        "from_state": "Open_FullLevel",
+        "to_state": "Transitioning_ToClosed",
+        "trigger": {
+          "type": "timer",
+          "name": "auto_close_timer_expiry",
+          "command_id": null
+        },
+        "guard_condition": "(RemainingDuration == 0) || (Feature_TS && AutoCloseTime <= UTC_now)",
+        "actions": [
+          "OpenDuration := null",
+          "RemainingDuration := null",
+          "IF (Feature_TS) THEN AutoCloseTime := null",
+          "TargetState := Closed",
+          "CurrentState := Transitioning",
+          "IF (Feature_LVL) THEN TargetLevel := 0",
+          "start_movement_to_target()"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Triggered when RemainingDuration counts down to 0",
+        "error_responses": [],
+        "spec_reference": "Section 4.6.7.4 'When the value of this attribute counts down to 0, the valve SHALL automatically transition to its closed position. The behavior of transitioning to the closed position SHALL match the behavior described in the Close command.'"
+      },
+      {
+        "id": "T009",
+        "from_state": "Open_PartialLevel",
+        "to_state": "Transitioning_ToClosed",
+        "trigger": {
+          "type": "timer",
+          "name": "auto_close_timer_expiry",
+          "command_id": null
+        },
+        "guard_condition": "Feature_LVL == true && ((RemainingDuration == 0) || (Feature_TS && AutoCloseTime <= UTC_now))",
+        "actions": [
+          "OpenDuration := null",
+          "RemainingDuration := null",
+          "IF (Feature_TS) THEN AutoCloseTime := null",
+          "TargetState := Closed",
+          "CurrentState := Transitioning",
+          "TargetLevel := 0",
+          "start_movement_to_target()"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Triggered when RemainingDuration counts down to 0",
+        "error_responses": [],
+        "spec_reference": "Section 4.6.7.4"
+      },
+      {
+        "id": "T010",
+        "from_state": "Open_FullLevel",
+        "to_state": "Transitioning_ToOpen",
+        "trigger": {
+          "type": "command",
+          "name": "Open",
+          "command_id": "0x00"
+        },
+        "guard_condition": "ValveFault == 0 && (OpenDuration_changed || TargetLevel_changed)",
+        "actions": [
+          "TargetState := Open",
+          "CurrentState := Transitioning",
+          "OpenDuration := (OpenDuration_field != null) ? OpenDuration_field : DefaultOpenDuration",
+          "RemainingDuration := (OpenDuration != null) ? OpenDuration : null",
+          "IF (Feature_TS && OpenDuration != null) THEN AutoCloseTime := UTC_now + OpenDuration ELSE AutoCloseTime := null",
+          "IF (Feature_LVL && TargetLevel_field != null) THEN TargetLevel := TargetLevel_field",
+          "start_movement_to_target()"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "ValveFault != 0",
+            "status_code": "FailureDueToFault",
+            "status_value": "0x02",
+            "description": "Fault registered prevents valve operation"
+          }
+        ],
+        "spec_reference": "Section 4.6.8.1.3 (Open command while already open - resets timer/changes level)"
+      },
+      {
+        "id": "T011",
+        "from_state": "Open_PartialLevel",
+        "to_state": "Transitioning_ToOpen",
+        "trigger": {
+          "type": "command",
+          "name": "Open",
+          "command_id": "0x00"
+        },
+        "guard_condition": "ValveFault == 0 && Feature_LVL == true",
+        "actions": [
+          "TargetState := Open",
+          "CurrentState := Transitioning",
+          "OpenDuration := (OpenDuration_field != null) ? OpenDuration_field : DefaultOpenDuration",
+          "RemainingDuration := (OpenDuration != null) ? OpenDuration : null",
+          "IF (Feature_TS && OpenDuration != null) THEN AutoCloseTime := UTC_now + OpenDuration ELSE AutoCloseTime := null",
+          "TargetLevel := (TargetLevel_field != null) ? TargetLevel_field : DefaultOpenLevel",
+          "start_movement_to_target()"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "ValveFault != 0",
+            "status_code": "FailureDueToFault",
+            "status_value": "0x02",
+            "description": "Fault registered prevents valve operation"
+          }
+        ],
+        "spec_reference": "Section 4.6.8.1.3"
+      },
+      {
+        "id": "T012",
+        "from_state": "Closed",
+        "to_state": "Closed",
+        "trigger": {
+          "type": "command",
+          "name": "Close",
+          "command_id": "0x01"
+        },
+        "guard_condition": "true",
+        "actions": [
+          "OpenDuration := null",
+          "RemainingDuration := null",
+          "IF (Feature_TS) THEN AutoCloseTime := null"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.6.8.2.1 (Idempotent - Close when already closed)"
+      },
+      {
+        "id": "T013",
+        "from_state": "Transitioning_ToOpen",
+        "to_state": "Transitioning_ToClosed",
+        "trigger": {
+          "type": "command",
+          "name": "Close",
+          "command_id": "0x01"
+        },
+        "guard_condition": "ValveFault == 0",
+        "actions": [
+          "OpenDuration := null",
+          "RemainingDuration := null",
+          "IF (Feature_TS) THEN AutoCloseTime := null",
+          "TargetState := Closed",
+          "IF (Feature_LVL) THEN TargetLevel := 0"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "ValveFault != 0",
+            "status_code": "FailureDueToFault",
+            "status_value": "0x02",
+            "description": "Fault registered prevents valve operation"
+          }
+        ],
+        "spec_reference": "Section 4.6.8.2.1 (Close during opening transition)"
+      },
+      {
+        "id": "T014",
+        "from_state": "*",
+        "to_state": "*_Faulted",
+        "trigger": {
+          "type": "internal",
+          "name": "fault_detected",
+          "command_id": null
+        },
+        "guard_condition": "ValveFault transitions from 0 to non-zero",
+        "actions": [
+          "ValveFault := fault_bitmap",
+          "generate_event(ValveFault, {ValveFault: fault_bitmap})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.6.9.2 'This event SHALL be generated when the valve registers or clears a fault'"
+      },
+      {
+        "id": "T015",
+        "from_state": "*_Faulted",
+        "to_state": "*",
+        "trigger": {
+          "type": "internal",
+          "name": "fault_cleared",
+          "command_id": null
+        },
+        "guard_condition": "ValveFault transitions from non-zero to 0",
+        "actions": [
+          "ValveFault := 0",
+          "generate_event(ValveFault, {ValveFault: 0})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.6.9.2"
+      },
+      {
+        "id": "T016",
+        "from_state": "Open_FullLevel",
+        "to_state": "Open_FullLevel",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "SetUTCTime_received",
+          "command_id": null
+        },
+        "guard_condition": "Feature_TS == true && AutoCloseTime != null",
+        "actions": ["AutoCloseTime := new_UTC_time + RemainingDuration"],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.6.7.3 'If this attribute is not null and the Time Synchronization cluster receives a SetUTCTime command, modifying the current UTC time of the device, the value of this attribute SHALL be adjusted to match the new UTC time plus the value of the RemainingDuration attribute.'"
+      }
+    ],
+
+    "events": [
+      {
+        "id": "0x00",
+        "name": "ValveStateChanged",
+        "priority": "INFO",
+        "access": "V",
+        "conformance": "O",
+        "generated_by": ["T005", "T006", "T007"],
+        "fields": [
+          {
+            "id": 0,
+            "name": "ValveState",
+            "type": "ValveStateEnum",
+            "conformance": "M",
+            "description": "New state of the valve"
+          },
+          {
+            "id": 1,
+            "name": "ValveLevel",
+            "type": "percent",
+            "conformance": "LVL",
+            "description": "New level of the valve (0-100%)"
+          }
+        ],
+        "description": "Generated when valve state changed. For level changes, generated after end of movement. For state changes, generated when new state reached."
+      },
+      {
+        "id": "0x01",
+        "name": "ValveFault",
+        "priority": "INFO",
+        "access": "V",
+        "conformance": "O",
+        "generated_by": ["T014", "T015"],
+        "fields": [
+          {
+            "id": 0,
+            "name": "ValveFault",
+            "type": "ValveFaultBitmap",
+            "conformance": "M",
+            "description": "Value of ValveFault attribute at time of event generation"
+          }
+        ],
+        "description": "Generated when valve registers or clears a fault, e.g., not being able to transition to requested target level or state."
+      }
+    ],
+
+    "timers": [
+      {
+        "name": "auto_close_timer",
+        "source_attribute": "RemainingDuration",
+        "related_attribute": "AutoCloseTime (if TS feature)",
+        "trigger": "Open command with non-null OpenDuration",
+        "expiry_transition": "T008, T009",
+        "resolution": "seconds",
+        "description": "Countdown timer that triggers automatic valve closure when it reaches 0. RemainingDuration attribute decrements each second."
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "start_movement_to_target",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Initiates physical valve movement toward TargetState/TargetLevel. Updates CurrentLevel during movement if Level feature supported. Generates movement_complete when target reached.",
+        "usage_in_fsm": "T001, T003, T004, T008, T009, T010, T011"
+      },
+      {
+        "name": "validate_target_level",
+        "parameters": [
+          {
+            "name": "target_level",
+            "type": "percent",
+            "description": "Requested target level (0-100)"
+          },
+          {
+            "name": "level_step",
+            "type": "uint8",
+            "description": "LevelStep attribute value"
+          }
+        ],
+        "return_type": "bool",
+        "description": "Validates that target_level is a supported value based on LevelStep. Returns true if (target_level == 100) OR (target_level % level_step == 0). Returns false and triggers CONSTRAINT_ERROR if invalid.",
+        "usage_in_fsm": "T001, T010, T011 (during Open command processing)"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": ["Open", "Close"],
+      "manage_commands": [],
+      "administer_commands": [],
+      "timed_commands": [],
+      "view_attributes": [
+        "OpenDuration",
+        "AutoCloseTime",
+        "RemainingDuration",
+        "CurrentState",
+        "TargetState",
+        "CurrentLevel",
+        "TargetLevel",
+        "ValveFault",
+        "LevelStep"
+      ],
+      "operate_write_attributes": ["DefaultOpenDuration", "DefaultOpenLevel"]
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "state",
+        "element_id": "Open_Faulted",
+        "safety_concern": "Valve stuck open with fault - cannot be commanded closed. Continuous fluid/gas flow causing flooding, leaks, or resource waste.",
+        "mitigation_in_spec": "NONE - Spec does not define fail-safe behavior for faulted open valve. Manual intervention required."
+      },
+      {
+        "element_type": "state",
+        "element_id": "Unknown",
+        "safety_concern": "Valve position unknown - cannot verify if safe. Physical state of fluid/gas flow indeterminate.",
+        "mitigation_in_spec": "NONE - Spec allows CurrentState to be null. No defined recovery procedure."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T001",
+        "safety_concern": "Remote valve opening allows water/gas flow. If DefaultOpenDuration is null, valve remains open indefinitely.",
+        "mitigation_in_spec": "OpenDuration can limit exposure time. Auto-close timer provides safety net. But DefaultOpenDuration can be set to null by Operate-level user."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "DefaultOpenDuration",
+        "safety_concern": "Setting to null allows indefinite valve opening. Configured with only Operate privilege (not Administer).",
+        "mitigation_in_spec": "WEAK - Only access control. No spec-mandated maximum value. Null is explicitly allowed."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "ValveFault",
+        "safety_concern": "Fault detection depends entirely on device implementation. No mandatory fault types ensure detection.",
+        "mitigation_in_spec": "PARTIAL - ValveFaultBitmap defines fault types but ValveFault attribute conformance is only 'O' (Optional)."
+      },
+      {
+        "element_type": "event",
+        "element_id": "ValveStateChanged",
+        "safety_concern": "State change notifications are optional (conformance 'O'). Clients may not receive critical state updates.",
+        "mitigation_in_spec": "NONE - Event is optional. Clients must poll CurrentState for reliable monitoring."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "location": "Section 4.6.7.1 OpenDuration",
+        "gap_type": "missing_constraint",
+        "description": "No maximum value constraint for OpenDuration. A valve could theoretically remain open for 2^32 seconds (~136 years).",
+        "security_impact": "Attacker with Operate privilege can set extremely long open durations, effectively bypassing auto-close safety feature."
+      },
+      {
+        "location": "Section 4.6.8 Commands",
+        "gap_type": "missing_constraint",
+        "description": "No Timed Interaction requirement for Open/Close commands. Commands execute immediately without additional verification.",
+        "security_impact": "Replay attacks possible. An attacker could replay captured Open commands without time-bound protection."
+      },
+      {
+        "location": "Section 4.6.7.10 ValveFault",
+        "gap_type": "weak_normative",
+        "description": "ValveFault attribute conformance is 'O' (Optional). Devices may not implement fault detection at all.",
+        "security_impact": "No guaranteed fault reporting. Blocked, leaking, or damaged valves may not be detected, leading to undetected safety hazards."
+      },
+      {
+        "location": "Section 4.6.9 Events",
+        "gap_type": "weak_normative",
+        "description": "Both ValveStateChanged and ValveFault events have conformance 'O' (Optional). No mandatory event generation.",
+        "security_impact": "Clients cannot rely on event-based monitoring. Must poll attributes, which may miss rapid state changes or transient faults."
+      },
+      {
+        "location": "Section 4.6.8.1.3 / 4.6.8.2.1",
+        "gap_type": "undefined_behavior",
+        "description": "No defined behavior for what happens if valve physically fails during transition (e.g., motor burns out mid-movement).",
+        "security_impact": "Valve could remain in Transitioning state indefinitely. CurrentState never reaches target, leaving system in undefined state."
+      },
+      {
+        "location": "Section 4.6.7.3 AutoCloseTime",
+        "gap_type": "ambiguous",
+        "description": "Spec says AutoCloseTime adjustment on SetUTCTime, but doesn't specify behavior if RemainingDuration is also null.",
+        "security_impact": "Edge case: If time sync changes while RemainingDuration is null, undefined whether AutoCloseTime should be set."
+      },
+      {
+        "location": "Section 4.6.8",
+        "gap_type": "missing_constraint",
+        "description": "No rate limiting on Open/Close commands. Device could be commanded repeatedly without restriction.",
+        "security_impact": "DoS attack possible: rapid Open/Close cycling could damage physical valve actuator or waste resources."
+      },
+      {
+        "location": "Section 4.6",
+        "gap_type": "missing_constraint",
+        "description": "No fail-safe default state defined. Spec doesn't mandate what state valve should be in after power loss or reboot.",
+        "security_impact": "Implementation-dependent. Water/gas valves could remain open after power restoration, causing flooding or leaks."
+      },
+      {
+        "location": "Section 4.6.8.1.3",
+        "gap_type": "ambiguous",
+        "description": "Spec says fault 'prevents it from performing the requested action' but doesn't define which fault types prevent which actions.",
+        "security_impact": "Implementation varies. Some faults (e.g., Leaking) might not prevent Open, leading to exacerbated leaks."
+      },
+      {
+        "location": "Section 4.6.7.5 CurrentState",
+        "gap_type": "undefined_behavior",
+        "description": "CurrentState can be null (unknown state), but no recovery procedure defined to determine actual state.",
+        "security_impact": "System may need to physically inspect valve. Remote management impossible when state unknown."
+      }
+    ],
+
+    "initial_state": "Closed",
+    "all_states": [
+      "Closed",
+      "Closed_Faulted",
+      "Open_FullLevel",
+      "Open_PartialLevel",
+      "Open_Faulted",
+      "Transitioning_ToOpen",
+      "Transitioning_ToClosed",
+      "Unknown"
+    ],
+    "all_triggers": [
+      "Open command",
+      "Close command",
+      "movement_complete (internal)",
+      "auto_close_timer_expiry (timer)",
+      "fault_detected (internal)",
+      "fault_cleared (internal)",
+      "SetUTCTime_received (attribute_change)"
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": false,
+      "conditionals_explanation": "Some action lists contain IF/THEN for feature-conditional behavior. These could be split into separate transitions for pure FSM.",
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true,
+      "spec_sections_covered": [
+        "4.6.1",
+        "4.6.2",
+        "4.6.3",
+        "4.6.4",
+        "4.6.5",
+        "4.6.6",
+        "4.6.7",
+        "4.6.8",
+        "4.6.9"
+      ]
+    },
+
+    "proverif_compatibility": {
+      "state_encoding": "Each state maps to a distinct constructor or fact pattern",
+      "transition_encoding": "Each transition maps to a rule with guard as condition and actions as conclusion",
+      "timer_encoding": "RemainingDuration modeled as decreasing counter, expiry as phase change",
+      "access_control_encoding": "Privilege levels modeled as predicates: has_privilege(principal, Operate)",
+      "suggested_security_queries": [
+        "query p:principal; event(open_success(p)) ==> event(has_privilege(p, Operate))",
+        "query p:principal; event(close_success(p)) ==> event(has_privilege(p, Operate))",
+        "query t:time; event(valve_open(t)) && event(timer_set(duration, t)) ==> event(valve_closed_before(t + duration))",
+        "query fault:bitmap; fault != 0 ==> not(event(open_success_after_fault))"
+      ]
+    },
+
+    "tamarin_compatibility": {
+      "state_encoding": "State facts: State(valve_id, 'Closed') / State(valve_id, 'Open') etc.",
+      "transition_encoding": "Rules with left-hand consuming old state, right-hand producing new state",
+      "timer_encoding": "Timepoint variables with temporal ordering constraints",
+      "suggested_lemmas": [
+        "lemma open_requires_operate: All invoker valve #t. OpenSuccess(invoker, valve) @ t ==> Ex #t2. HasPrivilege(invoker, 'Operate') @ t2 & t2 < t",
+        "lemma fault_blocks_open: All valve fault #t1 #t2. Fault(valve, fault) @ t1 & OpenCommand(valve) @ t2 & t1 < t2 ==> not(Ex #t3. StateChange(valve, 'Open') @ t3 & t2 < t3)",
+        "lemma auto_close: All valve duration #t1. OpenWithDuration(valve, duration) @ t1 ==> Ex #t2. StateClosed(valve) @ t2 & t2 = t1 + duration"
+      ]
+    }
+  }
+}

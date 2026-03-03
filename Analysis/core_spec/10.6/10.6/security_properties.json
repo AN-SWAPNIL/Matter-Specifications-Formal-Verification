@@ -1,0 +1,738 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Context_Tag_Ordering_Enforcement",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "All context tags SHALL be emitted in the order as defined in the specification to reduce receiver complexity",
+      "formal": "∀msg ∈ Messages, ∀tags ∈ msg.context_tags: order(tags) = spec_order(tags)",
+      "violation": "If tags are emitted out of order, receivers may misparse messages, leading to incorrect state updates, access control bypasses, or data corruption. The specification explicitly requires this ordering to reduce receiver side complexity in dealing with arbitrary order tags.",
+      "attack_vector": "Attacker crafts messages with reordered tags to exploit parsers that assume ordered processing, potentially causing confusion between tag meanings, buffer overflows in fixed-offset parsers, or enabling injection of unexpected tag values that bypass validation."
+    },
+    {
+      "id": "PROP_002",
+      "name": "Node_Tag_Omission_Security",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "The Node tag MAY be omitted if and only if the target node matches the NodeID of the server involved in the interaction",
+      "formal": "∀path: (path.Node == ∅) ⟹ (target_node == server.NodeID)",
+      "violation": "If the node tag is omitted when the target does not match the server NodeID, routing confusion occurs. Messages could be processed by unintended nodes, breaking isolation boundaries and potentially exposing data to unauthorized nodes.",
+      "attack_vector": "Attacker omits Node tag to force local processing of commands intended for remote nodes, bypassing proxy authentication or accessing local-only resources. Or attacker exploits ambiguity in multi-node scenarios to redirect operations to wrong node."
+    },
+    {
+      "id": "PROP_003",
+      "name": "Wildcard_Path_Disambiguation",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "Omission of Endpoint, Cluster, or Attribute tags SHALL be interpreted as wildcard when EnableTagCompression is false/absent, and as tag compression when EnableTagCompression is true",
+      "formal": "∀path: (tag ∉ path) ⟹ ((¬path.EnableTagCompression ∨ path.EnableTagCompression == false) ⟹ wildcard(tag)) ∧ (path.EnableTagCompression == true ⟹ compressed(tag))",
+      "violation": "Misinterpreting tag omission breaks access control scope. An attacker could exploit confusion between wildcard (broad scope) and compressed (specific scope from previous context) to either access more resources than intended or bypass compression validation.",
+      "attack_vector": "Attacker manipulates EnableTagCompression state or exploits implementations that don't properly track the flag, causing wildcard expansion where compression was intended (unauthorized broad access) or compression reuse where wildcard was intended (bypassing explicit path specification)."
+    },
+    {
+      "id": "PROP_004",
+      "name": "Tag_Compression_State_Consistency",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "When EnableTagCompression is true, omitted tags SHALL inherit values from the last AttributePathIB/AttributeDataIB with compression disabled in the same interaction model Action",
+      "formal": "∀path_i where path_i.EnableTagCompression == true: ∀tag ∉ path_i: path_i.tag = (last path_j where j < i ∧ (¬path_j.EnableTagCompression ∨ path_j.EnableTagCompression == false)).tag",
+      "violation": "State tracking failures cause tag values to be inherited from wrong contexts, leading to operations being applied to incorrect endpoints/clusters/attributes. This breaks isolation and can cause unintended modifications or information disclosure.",
+      "attack_vector": "Attacker inserts compressed paths in a sequence where prior uncompressed path targeted sensitive resources, causing subsequent operations to inherit those sensitive targets. Or attacker fragments messages across interactions to break state tracking and force default/stale compression state."
+    },
+    {
+      "id": "PROP_005",
+      "name": "Tag_Compression_Cross_Message_Scope",
+      "category": "StateLifecycle",
+      "importance": "CRITICAL",
+      "claim": "Tag compression state SHALL be maintained within a single interaction model Action, and compression values MAY come from the same message (but earlier in it)",
+      "formal": "compression_state.scope = single_action ∧ compression_source ∈ {same_message_earlier | prior_message_in_action}",
+      "violation": "If compression state bleeds across action boundaries or messages are processed out of order, wrong attribute paths are constructed, breaking isolation between parallel operations and enabling race conditions where compressed paths resolve to unexpected targets.",
+      "attack_vector": "Attacker sends concurrent requests to establish favorable compression state in one action, then exploits state confusion to make compressed paths in second action resolve to unauthorized targets. Timing attacks on message ordering could cause earlier messages with compression to reference not-yet-received base paths."
+    },
+    {
+      "id": "PROP_006",
+      "name": "Group_ID_Header_Encoding",
+      "category": "ScopeIsolation",
+      "importance": "CRITICAL",
+      "claim": "If the Group field is present in IM representation, the Group ID SHALL be encoded in the DST field in message header and SHALL be elided from path encoding",
+      "formal": "∀msg: (msg.IM.Group ≠ ∅) ⟹ (msg.header.DST = msg.IM.Group ∧ msg.path.Group = ∅)",
+      "violation": "If group ID appears in both header and path, or only in path without header encoding, routing layer may use wrong group, multicasting messages to incorrect fabric groups and breaking group isolation. Data could leak to wrong group members or commands affect unintended groups.",
+      "attack_vector": "Attacker crafts messages with conflicting group IDs in header vs payload to exploit inconsistent validation, routing messages to one group while payload claims another. This enables cross-group attacks where access is checked against header group but operations execute on payload group."
+    },
+    {
+      "id": "PROP_007",
+      "name": "AttributePathIB_Attribute_Cluster_Presence",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "In AttributeDataIB, the Attribute and Cluster fields within the Path SHALL always be present",
+      "formal": "∀attrData ∈ AttributeDataIB: (attrData.Path.Attribute ≠ ∅) ∧ (attrData.Path.Cluster ≠ ∅)",
+      "violation": "Without explicit Attribute and Cluster specification in data updates, receivers cannot determine what attribute is being modified. This could lead to default/wrong attribute modifications, data corruption, or exploitation of parser assumptions about implicit targets.",
+      "attack_vector": "Attacker sends AttributeDataIB with missing Attribute/Cluster to exploit implementations that use default or cached values, causing writes to unintended attributes. Combined with tag compression attacks, this amplifies scope confusion."
+    },
+    {
+      "id": "PROP_008",
+      "name": "ListIndex_Restricted_Values",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "ListIndex SHALL only be omitted (for list-level operations) or null (for append operations), any other value SHALL be interpreted as an error",
+      "formal": "∀path.ListIndex: (ListIndex = ∅) ∨ (ListIndex = null) ∨ error",
+      "violation": "Allowing arbitrary ListIndex values (e.g., specific indices for update/delete) creates undefined behavior in current spec. Implementations may interpret these inconsistently, leading to wrong list items being modified, data corruption, or abandoned writes leaving lists in inconsistent states.",
+      "attack_vector": "Attacker sends ListIndex with specific numeric values to probe implementation behavior, potentially triggering out-of-bounds access, exploiting different interpretations (some treat as index for modification, others reject), or causing partial updates that leave lists corrupted."
+    },
+    {
+      "id": "PROP_009",
+      "name": "List_Mutation_Semantic_Clarity",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "List REPLACE requires Path with ListIndex omitted and Data containing new list; ADD requires Path with ListIndex=null and Data containing single new item",
+      "formal": "REPLACE: (path.ListIndex = ∅ ∧ data = full_list) ∧ ADD: (path.ListIndex = null ∧ data = single_item)",
+      "violation": "Ambiguity or incorrect encoding of list operations causes misinterpretation: REPLACE interpreted as ADD keeps old items (incomplete update), ADD interpreted as REPLACE loses existing items (data loss). Both break consistency expectations.",
+      "attack_vector": "Attacker exploits implementations that don't strictly validate ListIndex null vs omitted, sending malformed list operations to either preserve items that should be removed (e.g., old ACL entries remain) or delete items that should be appended (denial of service on list-based configs)."
+    },
+    {
+      "id": "PROP_010",
+      "name": "ACL_Extension_List_Write_Special_Handling",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "ACL and Extension attributes of Access Control Cluster MAY use single AttributeDataIB (full list in one message) or multi-IB pattern (empty array followed by appends), but other list attributes SHALL NOT use single IB pattern in WriteRequestMessage",
+      "formal": "∀write ∈ WriteRequestMessage: (write.attr = ACL ∨ write.attr = Extension) ⟹ (single_IB_pattern ∨ multi_IB_pattern) ∧ (write.attr ∉ {ACL, Extension} ∧ is_list(write.attr)) ⟹ ¬single_IB_pattern",
+      "violation": "If non-ACL lists use single IB pattern in WriteRequest, or if ACL lists don't follow special rules, access control updates may fail or behave unexpectedly. Non-ACL single-IB writes might bypass chunking validation or cause atomicity failures. ACL violations could leave access control in inconsistent state.",
+      "attack_vector": "Attacker sends WriteRequest with full list replacement for non-ACL attributes to bypass per-item validation that would occur in multi-IB pattern, or sends malformed ACL updates that trigger different atomicity guarantees, potentially leaving half-updated ACL that grants unintended access."
+    },
+    {
+      "id": "PROP_011",
+      "name": "List_Write_Error_State_Uncertainty",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "Clients receiving error status for write to list attribute SHOULD NOT assume list contents are unchanged, due to chunked/item-by-item processing",
+      "formal": "∀write_response: (write_response.status = error ∧ write_response.target = list_attr) ⟹ list_state = uncertain",
+      "violation": "If clients assume failed list writes leave lists unchanged (full rollback), they may not re-read list state and proceed with stale assumptions, leading to security vulnerabilities where partially-updated lists (e.g., ACL with some entries added) are not accounted for.",
+      "attack_vector": "Attacker triggers write errors at specific points (e.g., resource exhaustion after N items) to cause partial ACL updates, then exploits victim's assumption of rollback. Victim doesn't recheck ACL, attacker exploits partially-granted access rights that were added before the error."
+    },
+    {
+      "id": "PROP_012",
+      "name": "List_Replacement_Pattern_Message_Boundary",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Multi-IB list replacement SHOULD be used when full list doesn't fit in single message, with first IB containing empty/partial array (signaling replacement) followed by append IBs",
+      "formal": "∀list_update: (sizeof(full_list) > message_limit) ⟹ use_multi_IB_pattern ∧ first_IB.data ∈ {[], partial_array} ∧ subsequent_IBs.listIndex = null",
+      "violation": "If large list updates don't follow proper chunking pattern, receivers may misinterpret fragmented updates as additions to existing list rather than replacements, causing unbounded list growth, duplicate entries, or failure to remove old items.",
+      "attack_vector": "Attacker sends large list updates without proper replacement signal (empty first array) to cause accumulation of old and new items, leading to resource exhaustion, denial of service, or confusion in access control where old revoked entries remain active alongside new entries."
+    },
+    {
+      "id": "PROP_013",
+      "name": "Data_Version_Tag_Compression_Inheritance",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "DataVersion tag MAY be omitted when EnableTagCompression is true in Path, inheriting from last AttributeDataIB with compression disabled; if that IB also lacked DataVersion, subsequent IBs also lack it",
+      "formal": "∀attrData_i where path_i.EnableTagCompression == true: attrData_i.DataVersion = (last attrData_j where j < i ∧ ¬path_j.EnableTagCompression).DataVersion ∨ ∅",
+      "violation": "Incorrect DataVersion inheritance causes version mismatch errors or stale data overwrites. Receiver may reject valid updates (availability) or accept stale updates that should be rejected (consistency), enabling race conditions or lost updates.",
+      "attack_vector": "Attacker exploits compressed DataVersion inheritance by injecting updates with carefully timed Base IB to establish favorable DataVersion in compression state, then sends compressed updates that appear to have current version but actually carry stale data, bypassing optimistic concurrency control."
+    },
+    {
+      "id": "PROP_014",
+      "name": "Path_Expansion_Hierarchy_Validation",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Upon path expansion of AttributeDataIB.Path, the hierarchy and structure SHALL match the schema of the specified attribute within the specified cluster",
+      "formal": "∀expanded_path: structure(expanded_path.data) ⊧ schema(expanded_path.cluster, expanded_path.attribute)",
+      "violation": "If data structure doesn't match attribute schema after path expansion, type confusion occurs. Wrong data types may be written to attributes, causing memory corruption, logic errors, or type-based security assumptions to break (e.g., integer treated as pointer).",
+      "attack_vector": "Attacker sends data with structure mismatched to declared attribute type to exploit weak validation, causing type confusion that enables: buffer overflows (oversized data), control flow hijacking (function pointer attributes), or logic bugs (boolean treated as bitmask)."
+    },
+    {
+      "id": "PROP_015",
+      "name": "Node_Tag_Omission_In_Multiple_Contexts",
+      "category": "IdentityBinding",
+      "importance": "HIGH",
+      "claim": "Node tag MAY be omitted in EventFilterIB, ClusterPathIB, EventPathIB, and CommandPathIB if target node matches NodeID of server in interaction, consistent across all path types",
+      "formal": "∀pathType ∈ {EventFilterIB, ClusterPathIB, EventPathIB, CommandPathIB}: (pathType.Node = ∅) ⟹ (target = server.NodeID)",
+      "violation": "Inconsistent Node omission interpretation across path types causes routing confusion. Commands might route to wrong node while events route correctly, breaking state consistency between command effects and event reports, enabling security monitor bypasses.",
+      "attack_vector": "Attacker exploits implementations with inconsistent Node omission handling, sending commands that route to local node (Node omitted) while event subscriptions with same path pattern route to remote node, causing event-based security monitors to miss malicious commands."
+    },
+    {
+      "id": "PROP_016",
+      "name": "Event_Path_Wildcard_Context_Dependent_Semantics",
+      "category": "AccessControl",
+      "importance": "MEDIUM",
+      "claim": "Omission of Endpoint, Cluster, Event tags in EventPathIB SHALL have different interpretations depending on usage context (Read/Subscribe requests vs EventReports)",
+      "formal": "∀eventPath: interpretation(eventPath.omitted_tags) = f(context) where context ∈ {Read, Subscribe, EventReport}",
+      "violation": "Context-dependent interpretation of omitted tags creates ambiguity risk. If sender and receiver use different contexts, wildcard scope may differ, causing event filtering failures (missed security events) or over-disclosure (events sent to unauthorized subscribers).",
+      "attack_vector": "Attacker exploits context confusion by sending event subscription requests that exploit different wildcard interpretations, subscribing with narrow path but receiving broad event stream due to context mismatch, or vice versa, bypassing event access control."
+    },
+    {
+      "id": "PROP_017",
+      "name": "IsUrgent_Flag_Filter_Semantics",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "IsUrgent flag in EventPathIB filters events by urgency in Read/Subscribe requests, selecting only urgent events when present and true",
+      "formal": "∀subscription: (subscription.path.IsUrgent = true) ⟹ (∀event ∈ result: event.priority = urgent)",
+      "violation": "If IsUrgent filtering is not enforced, subscribers receive non-urgent events when subscribing to urgent-only, causing resource exhaustion or missing critical urgent events in flood of normal events. Also enables bypassing rate limits meant for urgent path.",
+      "attack_vector": "Attacker subscribes to urgent events to bypass rate limiting or get priority processing, but doesn't properly filter, receiving all events at urgent priority level. Or attacker floods non-urgent events when victim expects only urgent, causing urgent event detection to fail (DoS on security monitoring)."
+    },
+    {
+      "id": "PROP_018",
+      "name": "Event_Number_Monotonicity",
+      "category": "ReplayProtection",
+      "importance": "HIGH",
+      "claim": "EventNumber in EventDataIB SHALL be a monotonically increasing counter per event stream to enable replay detection and ordering",
+      "formal": "∀event_i, event_j in stream: (i < j) ⟹ (event_i.EventNumber < event_j.EventNumber)",
+      "violation": "Non-monotonic event numbers break replay detection and event ordering. Receivers cannot detect replayed events or reconstruct correct event sequence, enabling replay attacks and state reconstruction failures.",
+      "attack_vector": "Attacker replays old events with valid EventNumbers to trigger stale state transitions or resend security-relevant events (e.g., access granted events) to confuse audit logs. Non-monotonic numbers hide replay, as receivers can't distinguish replay from legitimate out-of-order delivery."
+    },
+    {
+      "id": "PROP_019",
+      "name": "Event_Timestamp_Delta_Encoding_Integrity",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "When DeltaEpochTimestamp or DeltaSystemTimestamp is present in EventDataIB, all other timestamp tags SHALL be omitted and delta has same units as base timestamp",
+      "formal": "∀event: (event.DeltaEpochTimestamp ≠ ∅ ∨ event.DeltaSystemTimestamp ≠ ∅) ⟹ (event.EpochTimestamp = ∅ ∧ event.SystemTimestamp = ∅ ∧ units(delta) = units(base))",
+      "violation": "If absolute timestamps coexist with deltas, or delta units mismatch base units, timestamp reconstruction fails. Events get misordered, temporal access control breaks, and timing-based security (freshness checks, expiration) fails.",
+      "attack_vector": "Attacker sends events with both absolute and delta timestamps to exploit inconsistent implementations (some use absolute, some compute from delta), causing temporal confusion that bypasses freshness requirements or makes old events appear recent."
+    },
+    {
+      "id": "PROP_020",
+      "name": "Event_Data_Schema_Conformance",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "EventDataIB.Data SHALL contain cluster-specific payload encoded as TLV Structure following data type encoding rules; if event defines no payload, Data SHALL be empty struct",
+      "formal": "∀event: event.Data ⊧ cluster_event_schema(event.path.cluster, event.path.event) ∧ (no_payload_defined ⟹ event.Data = {})",
+      "violation": "Schema violations cause type confusion, memory corruption, or logic errors when processing event data. Empty payload events with data, or payload events without data, break event handler assumptions and may trigger unhandled states.",
+      "attack_vector": "Attacker sends events with malformed payloads to exploit weak validation: oversized structures for buffer overflow, wrong types for type confusion, unexpected payloads for no-payload events to trigger uninitialized memory access."
+    },
+    {
+      "id": "PROP_021",
+      "name": "Command_Path_Wildcard_Omission_Semantics",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "In CommandPathIB, wildcarding is achieved by omission of Endpoint, Cluster, or Command tags, enabling broadcast commands when omitted",
+      "formal": "∀cmdPath: (tag ∉ cmdPath) ⟹ wildcard(tag) ⟹ ∀target matching wildcard: execute(command)",
+      "violation": "Wildcard command paths enable unintended broad execution. If access control doesn't properly restrict wildcards, attacker can execute commands across multiple endpoints/clusters with single request, amplifying impact.",
+      "attack_vector": "Attacker sends commands with omitted Endpoint/Cluster to broadcast commands to all matching targets, bypassing per-endpoint access control that would individually deny access. Single malicious command affects entire system (DoS, mass reconfiguration)."
+    },
+    {
+      "id": "PROP_022",
+      "name": "Command_Group_Addressing_Header_Encoding",
+      "category": "ScopeIsolation",
+      "importance": "CRITICAL",
+      "claim": "Group field in CommandPathIB IM representation SHALL be encoded in DST message header field, maintaining consistent with other path types",
+      "formal": "∀command: (command.path.Group ≠ ∅) ⟹ (msg.header.DST = command.path.Group ∧ command.path_encoding.Group = ∅)",
+      "violation": "Inconsistent group encoding between command paths and other paths breaks group isolation uniformly. Commands could route to wrong groups while reports/attributes route correctly, causing state inconsistency and group boundary violations.",
+      "attack_vector": "Attacker exploits group encoding differences to send commands to one group while making them appear to originate from another group's context, bypassing group-based access control or causing cross-group state corruption."
+    },
+    {
+      "id": "PROP_023",
+      "name": "CommandRef_Request_Response_Correlation",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "CommandRef SHALL be an unsigned integer used to correlate responses with requests, with matching CommandRef values between request CommandDataIB and response InvokeResponseIB/CommandStatusIB",
+      "formal": "∀request, response: (response.CommandRef = request.CommandRef) ⟹ response.correlates_to(request)",
+      "violation": "If CommandRef is not properly validated for uniqueness and correlation, responses can be mismatched to requests, causing command results to be applied to wrong contexts. Security-critical command results (e.g., challenge responses) could be misassociated.",
+      "attack_vector": "Attacker floods commands with duplicate CommandRefs or exploits weak correlation to cause response confusion: victim's command gets attacker's error response (DoS), or attacker's unauthorized command gets victim's success response (privilege escalation via result confusion)."
+    },
+    {
+      "id": "PROP_024",
+      "name": "CommandFields_Argument_Completeness",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "CommandDataIB.CommandFields SHALL contain full set of arguments as specified in command schema, or MAY be omitted entirely if command has no arguments",
+      "formal": "∀command: (command_schema.args ≠ ∅) ⟹ (command.CommandFields ⊧ command_schema.args) ∧ (command_schema.args = ∅) ⟹ (command.CommandFields ∈ {∅, {}})",
+      "violation": "Missing required command arguments or present arguments for no-arg commands breaks command semantics. Implementations may use default values, fail silently, or process partially-specified commands, leading to unintended operations.",
+      "attack_vector": "Attacker omits security-critical arguments (e.g., password verification) to exploit implementations that use empty/default values, bypassing authentication. Or attacker adds unexpected arguments to no-arg commands to exploit parsers that process extra data as buffer overflow vectors."
+    },
+    {
+      "id": "PROP_025",
+      "name": "CommandRef_Omission_Single_Command_Context",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "CommandRef MAY be omitted when InvokeRequest contains only a single CommandDataIB, as correlation is unambiguous",
+      "formal": "∀invokeRequest: (|invokeRequest.commands| = 1) ⟹ (command.CommandRef optional) ∧ (|invokeRequest.commands| > 1) ⟹ (∀cmd: cmd.CommandRef required)",
+      "violation": "If CommandRef is omitted in multi-command requests, or required when present in single-command requests, correlation fails. Multi-command omission causes all responses to be ambiguous; unnecessary single-command requirements complicate implementations.",
+      "attack_vector": "Attacker sends multi-command InvokeRequest with omitted CommandRefs to exploit implementations that use implicit ordering, then triggers out-of-order responses (via timing or resource contention) causing response misassociation and state corruption."
+    },
+    {
+      "id": "PROP_026",
+      "name": "StatusIB_Two_Level_Status_Encoding",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "StatusIB SHALL contain Status field (8-bit general status) and optional ClusterStatus field (8-bit cluster-specific status) for two-level error reporting",
+      "formal": "∀statusIB: statusIB.Status ∈ general_status_codes ∧ (statusIB.ClusterStatus ≠ ∅) ⟹ statusIB.ClusterStatus ∈ cluster_specific_codes",
+      "violation": "If ClusterStatus is used without proper Status context, or Status is omitted, error interpretation becomes ambiguous. Security-relevant errors (access denied vs malformed) could be confused, breaking audit logs or error recovery.",
+      "attack_vector": "Attacker triggers errors with ambiguous status codes to evade detection: crafting inputs that generate cluster errors (logged as application issues) instead of general access denied errors (logged as security events), hiding reconnaissance attempts."
+    },
+    {
+      "id": "PROP_027",
+      "name": "Tag_Compression_Wildcard_State_Inheritance",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "When EnableTagCompression is true and inherited values from uncompressed path are still missing (wildcards), they SHALL indicate wildcard semantics (except Node)",
+      "formal": "∀compressed_path: (compressed_path.EnableTagCompression = true) ∧ (inherited_base_path.tag = ∅) ∧ (tag ≠ Node) ⟹ wildcard(compressed_path.tag)",
+      "violation": "If compressed paths inheriting wildcards don't preserve wildcard semantics, scope narrows unexpectedly, breaking access patterns. Or if wildcards expand beyond intended scope, access control boundaries are violated.",
+      "attack_vector": "Attacker establishes base path with wildcard Endpoint, then sends compressed paths expecting wildcard inheritance but implementations treat missing inherited tag as error/default, causing operations to silently fail or target wrong endpoint. Or reverse: wildcard incorrectly narrows, bypassing intended broad access revocation."
+    },
+    {
+      "id": "PROP_028",
+      "name": "Path_Expansion_Prior_To_Authorization",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Wildcard paths SHALL be fully expanded before authorization checks to ensure access control is applied to each concrete path individually",
+      "formal": "∀wildcard_path: authorized(wildcard_path) ⟹ ∀concrete_path ∈ expand(wildcard_path): authorized(concrete_path)",
+      "violation": "If authorization is checked only on unexpanded wildcard paths, a single coarse-grained check replaces multiple fine-grained checks. Attacker gains access to endpoints/clusters that would individually fail authorization.",
+      "attack_vector": "Attacker uses wildcard path (e.g., all endpoints on cluster) when having access to only some endpoints. If ACL checks wildcard path as whole, attacker bypasses per-endpoint ACL and gains broad access. This enables privilege escalation from partial to full cluster access."
+    },
+    {
+      "id": "PROP_029",
+      "name": "ListIndex_Null_Append_Only_Semantic",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "ListIndex with null value SHALL only be used in AttributeDataIB and SHALL indicate a list append operation, never in read paths or other contexts",
+      "formal": "∀path: (path.ListIndex = null) ⟹ (path ∈ AttributeDataIB ∧ operation = append)",
+      "violation": "If null ListIndex appears in read paths, filters, or status reports, semantic confusion occurs. Reads could be misinterpreted as append requests, or append responses misread as referencing null items, breaking CRUD consistency.",
+      "attack_vector": "Attacker sends read requests with ListIndex=null to probe implementation behavior, potentially triggering unintended append operations if read/write paths share validation code. Or attacker exploits null index in status reports to obscure which list item had errors."
+    },
+    {
+      "id": "PROP_030",
+      "name": "Maximum_List_Nesting_Restriction",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Maximum nesting is restricted to referencing a list element in an attribute, enforced by replacing NestedPath field with single ListIndex field",
+      "formal": "∀path: nesting_depth(path) ≤ 1 ∧ path.NestedPath = ∅ ∧ path.ListIndex ∈ {∅, null, error_value}",
+      "violation": "If implementations allow or attempt deeper nesting (lists within list elements), undefined behavior occurs. The protocol doesn't support nested list paths, so parsers may fail, corrupt data, or process wrong paths.",
+      "attack_vector": "Attacker sends paths attempting to reference nested structures (list within list item) to exploit implementations that don't enforce nesting limits, causing stack overflow in recursive parsers, or targeting unintended nested data if parser incorrectly handles unsupported nesting."
+    },
+    {
+      "id": "PROP_031",
+      "name": "Event_Priority_Encoding_Validation",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "EventDataIB.Priority SHALL be 8-bit unsigned integer representing event priority level as defined in event schema",
+      "formal": "∀event: event.Priority ∈ valid_priority_levels ∧ sizeof(event.Priority) = 8_bits",
+      "violation": "Invalid priority values break event prioritization, routing, and filtering. High-priority security events could be demoted, or low-priority spam elevated, disrupting event-based security monitoring.",
+      "attack_vector": "Attacker sets invalid or maximum priority on spam events to flood high-priority event queues, causing DoS on critical event processing. Or attacker modifies security event priority to minimum to hide events from priority-filtered monitors."
+    },
+    {
+      "id": "PROP_032",
+      "name": "Tag_Compression_Action_Boundary_Isolation",
+      "category": "ScopeIsolation",
+      "importance": "CRITICAL",
+      "claim": "Tag compression state MUST NOT leak across interaction model Action boundaries, each Action has independent compression context",
+      "formal": "∀action_i, action_j: (i ≠ j) ⟹ compression_state(action_i) ∩ compression_state(action_j) = ∅",
+      "violation": "If compression state leaks between actions, concurrent or sequential operations inherit wrong contexts, breaking isolation. Read operations could inherit write paths, or operations from different clients inherit each other's paths.",
+      "attack_vector": "Attacker initiates multiple concurrent actions to pollute shared compression state, causing victim's compressed paths to resolve to attacker-controlled targets. Timing attacks exploit action boundaries to establish favorable compression state before victim's action executes."
+    },
+    {
+      "id": "PROP_033",
+      "name": "Empty_Array_List_Clear_Semantic",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "In multi-IB list replacement pattern, first AttributeDataIB with empty array Data signals clearing the list before subsequent appends",
+      "formal": "∀list_update: (IB_1.path.ListIndex = ∅ ∧ IB_1.data = []) ⟹ (list.clear() before processing subsequent IBs)",
+      "violation": "If empty array doesn't trigger list clear, subsequent appends accumulate with old items instead of replacing, breaking replacement semantics. List grows unbounded with duplicates, causing resource exhaustion and stale data persistence.",
+      "attack_vector": "Attacker sends list updates with empty array expecting clear, but implementations that don't clear leave old items. Attacker exploits this to accumulate revoked ACL entries (they remain active) or exhaust memory with unbounded list growth."
+    },
+    {
+      "id": "PROP_034",
+      "name": "WildcardPathFlags_Filter_Consistency",
+      "category": "AccessControl",
+      "importance": "MEDIUM",
+      "claim": "WildcardPathFlags in AttributePathIB provides 32-bit flags for wildcard filtering configuration, SHALL be interpreted consistently with wildcard semantics",
+      "formal": "∀path: (path contains wildcards) ⟹ (wildcard_expansion(path) respects path.WildcardPathFlags)",
+      "violation": "If WildcardPathFlags are ignored or inconsistently interpreted, wildcard expansion doesn't match client expectations. Client filters expecting specific wildcard behavior receive wrong result set, breaking access control or data visibility assumptions.",
+      "attack_vector": "Attacker exploits implementations that ignore WildcardPathFlags to receive broader data set than filtered wildcard should provide, bypassing fine-grained access control. Or attacker triggers flag misinterpretation to cause DoS via unexpected expansion overhead."
+    },
+    {
+      "id": "PROP_035",
+      "name": "WildcardFilterConfigurationVersion_Consistency",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "WildcardFilterConfigurationVersion in AttributePathIB provides 32-bit version for wildcard filter configuration consistency",
+      "formal": "∀subscription: (subscription.path.WildcardFilterConfigurationVersion = V) ⟹ wildcard_filter_config.version = V during evaluation",
+      "violation": "If version mismatch between client's wildcard filter expectations and server's filter configuration, expansion produces different results than client expects. Subscriptions miss updates or receive unexpected ones, breaking eventual consistency.",
+      "attack_vector": "Attacker exploits stale WildcardFilterConfigurationVersion to receive data from old filter configuration that granted broader access, or triggers version skew to cause subscription result inconsistency that hides malicious changes."
+    },
+    {
+      "id": "PROP_036",
+      "name": "DataVersionFilterIB_Consistency_Enforcement",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "DataVersionFilterIB SHALL contain ClusterPathIB and DataVersion to enable conditional reads based on data version, preventing stale data processing",
+      "formal": "∀read_request with filter: process(read) only if current_version ≠ filter.DataVersion",
+      "violation": "If DataVersionFilterIB is ignored or incorrectly evaluated, clients receive redundant data or process stale updates, wasting bandwidth and breaking optimistic concurrency. Clients may overwrite newer data with older cached versions.",
+      "attack_vector": "Attacker manipulates DataVersion in filters to force server to resend data (DoS via bandwidth exhaustion) or suppress updates (client uses stale data with security vulnerabilities that were patched in newer version)."
+    },
+    {
+      "id": "PROP_037",
+      "name": "AttributeReportIB_XOR_Semantics",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "AttributeReportIB SHALL contain either AttributeStatus (for errors) XOR AttributeData (for success), never both or neither",
+      "formal": "∀report: (report.AttributeStatus ≠ ∅) ⊕ (report.AttributeData ≠ ∅)",
+      "violation": "If both Status and Data are present, semantic confusion occurs - is it error or success? If neither present, report is meaningless. Both cases break client state machines expecting unambiguous success/error indication.",
+      "attack_vector": "Attacker crafts reports with both Status and Data to exploit inconsistent implementations: some check Status first (see error, ignore valid Data), others check Data first (process Data, ignore error Status), causing state divergence between implementations."
+    },
+    {
+      "id": "PROP_038",
+      "name": "EventReportIB_XOR_Semantics",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "EventReportIB SHALL contain either EventStatus (for errors) XOR EventData (for success), never both or neither",
+      "formal": "∀report: (report.EventStatus ≠ ∅) ⊕ (report.EventData ≠ ∅)",
+      "violation": "Similar to AttributeReportIB, both or neither present breaks event processing. Security event monitors may miss events (neither) or process errors as events (both), breaking audit trails.",
+      "attack_vector": "Attacker sends event reports with both Status and Data to cause divergence: security monitors that check Status ignore events (thinking they errored), while audit logs that check Data first log events (ignoring errors), hiding malicious activity from one system but not other."
+    },
+    {
+      "id": "PROP_039",
+      "name": "InvokeResponseIB_XOR_Semantics",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "InvokeResponseIB SHALL contain either Command (CommandDataIB for success) XOR Status (CommandStatusIB for errors), never both or neither",
+      "formal": "∀response: (response.Command ≠ ∅) ⊕ (response.Status ≠ ∅)",
+      "violation": "Ambiguous or missing response indication breaks command completion semantics. Clients can't determine if command succeeded, leading to retry storms (think it failed when succeeded) or failure to handle errors (think succeeded when failed).",
+      "attack_vector": "Attacker sends responses with both Command and Status to cause client confusion: some clients process command response (think success), others process error status (think failure), leading to state divergence where some clients retry and others don't, causing inconsistent system state."
+    },
+    {
+      "id": "PROP_040",
+      "name": "TLV_Encoding_Conformance",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "All data structures SHALL be encoded as TLV following defined type rules, with correct Tag Type, Tag Number, TLV Type, and Range for each field",
+      "formal": "∀field in structure: encoding(field) ⊧ TLV_rules(field.TagType, field.TagNumber, field.TLVType, field.Range)",
+      "violation": "TLV encoding violations cause parsing failures, memory corruption, or type confusion. Wrong tag numbers cause field misidentification, wrong TLV types enable buffer overflows, wrong ranges bypass validation.",
+      "attack_vector": "Attacker crafts messages with invalid TLV encoding: wrong tag numbers to trigger parser confusion (reading wrong field), wrong TLV types to exploit type assumptions (integer as pointer), out-of-range values to bypass bounds checks or trigger integer overflows."
+    },
+    {
+      "id": "PROP_041",
+      "name": "Context_Tag_Uniqueness_Within_Structure",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Within each TLV Structure, Context Tag numbers SHALL be unique to unambiguously identify fields",
+      "formal": "∀structure: ∀tag_i, tag_j ∈ structure.context_tags: (i ≠ j) ⟹ (tag_i.number ≠ tag_j.number)",
+      "violation": "Duplicate context tags within structure create ambiguity - which field does tag refer to? Parsers may use first occurrence, last occurrence, or fail, causing field misidentification and data corruption.",
+      "attack_vector": "Attacker sends structures with duplicate context tags to exploit parser implementation differences: some parsers use first value (attacker controls initialization), others use last (attacker controls override), enabling different behaviors in different implementations and breaking interoperability-based security assumptions."
+    },
+    {
+      "id": "PROP_042",
+      "name": "Optional_Field_Validation",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Fields marked as Optional MAY be omitted; unmarked fields are required and SHALL be present",
+      "formal": "∀field: (field.optional = false) ⟹ (field ∈ encoded_structure) ∧ (field.optional = true) ⟹ (field ∈ encoded_structure ∨ field ∉ encoded_structure)",
+      "violation": "Missing required fields break protocol semantics - receivers can't process incomplete structures. Present optional fields when not supported cause parser errors or undefined behavior.",
+      "attack_vector": "Attacker omits required fields to trigger error paths or default value assumptions that bypass validation. Or attacker includes unsupported optional fields with malicious payloads to exploit parsers that don't properly skip unknown optional fields."
+    },
+    {
+      "id": "PROP_043",
+      "name": "Nullable_Field_Semantics",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Fields explicitly marked as nullable (e.g., ListIndex) support null value with defined semantics; non-nullable fields SHALL NOT contain null",
+      "formal": "∀field: (field.nullable = true) ⟹ (field.value ∈ {valid_values ∪ null}) ∧ (field.nullable = false) ⟹ (field.value ≠ null)",
+      "violation": "Null in non-nullable fields triggers undefined behavior - parsers may crash, use sentinel values, or interpret null as zero. Conversely, rejecting null in nullable fields breaks intended null semantics (e.g., ListIndex=null for append).",
+      "attack_vector": "Attacker sends null in non-nullable fields to trigger crashes or exploit null pointer dereferences in implementations that don't validate nullability. Or attacker exploits nullable field handling to inject null in security-critical fields (e.g., null NodeID interpreted as local admin node)."
+    },
+    {
+      "id": "PROP_044",
+      "name": "Anonymous_Structure_Handling",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "Structures marked as Anonymous in TLV encoding do not require explicit structure tag wrapping",
+      "formal": "∀structure where structure.type = anonymous: encoding(structure) = concatenate(encoding(structure.fields)) without structure_tag_wrapper",
+      "violation": "If anonymous structures are wrapped or non-anonymous structures omit wrapper, parsing fails. Receivers expect specific nesting depth; mismatch causes field misalignment and parsing errors.",
+      "attack_vector": "Low severity: primarily a protocol compliance issue. Could enable DoS via malformed messages, but unlikely to enable sophisticated attacks. More likely to break functionality than compromise security."
+    },
+    {
+      "id": "PROP_045",
+      "name": "Tag_Compression_Provisional_Status",
+      "category": "StateLifecycle",
+      "importance": "MEDIUM",
+      "claim": "Support for EnableTagCompression is marked as provisional, indicating potential future changes or removal",
+      "formal": "provisional(EnableTagCompression) ⟹ future_compatibility_not_guaranteed",
+      "violation": "Implementations relying heavily on tag compression may break with future spec changes. Provisional features have weaker compatibility guarantees, risking security assumptions built on compression behavior.",
+      "attack_vector": "Attacker exploits uncertainty in provisional feature support to trigger implementation differences: clients/servers with different compression support levels misinterpret messages, enabling version-skew attacks where compressed messages are misinterpreted by implementations that don't support or partially support compression."
+    },
+    {
+      "id": "PROP_046",
+      "name": "Message_Size_Limit_Path_Encoding_Consistency",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "When encoding cannot fit in single message, multi-message patterns (tag compression, list chunking) SHALL maintain consistency across message boundaries",
+      "formal": "∀operation spanning messages: ∀msg_i, msg_j in operation: consistency(msg_i) ⊧ consistency(msg_j)",
+      "violation": "If multi-message operations don't maintain consistency (compression state, list semantics), receivers may misparse, duplicate data, or lose data. Ordering assumptions break, causing state corruption.",
+      "attack_vector": "Attacker exploits message fragmentation by reordering fragments, delaying fragments to break compression state windows, or injecting fragments from different operations to cause state mixing. This enables path confusion (compressed paths resolve to wrong targets) or partial operation processing."
+    },
+    {
+      "id": "PROP_047",
+      "name": "EventFilterIB_EventMin_Monotonicity_Filter",
+      "category": "ReplayProtection",
+      "importance": "HIGH",
+      "claim": "EventMin in EventFilterIB specifies minimum EventNumber for filtering, enabling clients to request only events after a known point",
+      "formal": "∀event in filtered_result: event.EventNumber ≥ filter.EventMin",
+      "violation": "If EventMin filtering is not enforced, clients receive stale events including already-processed ones, causing replay of old state transitions, duplicate processing, and potential replay attacks if events have side effects.",
+      "attack_vector": "Attacker manipulates EventMin filtering to force server to resend old events (DoS bandwidth exhaustion) or exploits missing filter to hide new events among flood of old replayed events, masking malicious activity."
+    },
+    {
+      "id": "PROP_048",
+      "name": "Cluster_Specific_Status_Domain_Isolation",
+      "category": "ScopeIsolation",
+      "importance": "MEDIUM",
+      "claim": "ClusterStatus in StatusIB provides cluster-specific error codes in separate namespace from general Status codes, preventing collision",
+      "formal": "∀cluster: cluster_status_codes(cluster) ∩ general_status_codes = ∅",
+      "violation": "If cluster status codes overlap with general status codes, error interpretation becomes ambiguous. A cluster-specific error could be misinterpreted as general protocol error with different severity/handling.",
+      "attack_vector": "Attacker triggers cluster errors that collide with general status codes to evade detection: cluster error code matches general \"success\" code causing error to be logged as success, or critical cluster errors appear as mundane general errors, hiding security violations."
+    },
+    {
+      "id": "PROP_049",
+      "name": "EventNumber_Stream_Scope",
+      "category": "ReplayProtection",
+      "importance": "HIGH",
+      "claim": "EventNumber monotonicity SHALL be maintained per event stream, with stream scope defined by Node and potentially endpoint/cluster boundaries",
+      "formal": "∀stream: ∀event_i, event_j ∈ stream: (timestamp(i) < timestamp(j)) ⟹ (event_i.EventNumber < event_j.EventNumber)",
+      "violation": "If EventNumber scope is unclear or inconsistent (global vs per-node vs per-endpoint), replay detection fails. Numbers may appear to regress when switching streams, or duplicate numbers appear across streams, breaking replay detection.",
+      "attack_vector": "Attacker exploits ambiguous stream boundaries to replay events from one stream as part of another (different endpoint/cluster), bypassing EventNumber replay detection. Or attacker causes stream confusion to reset EventNumber, enabling replay of old events with seemingly-valid new numbers."
+    },
+    {
+      "id": "PROP_050",
+      "name": "Path_Component_Bit_Width_Enforcement",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Path components SHALL respect defined bit widths: Node(64-bit), Endpoint(16-bit), Cluster(32-bit), Attribute(32-bit), Event(32-bit), Command(32-bit)",
+      "formal": "∀path: sizeof(path.Node)≤64 ∧ sizeof(path.Endpoint)≤16 ∧ sizeof(path.Cluster)≤32 ∧ sizeof(path.Attribute)≤32 ∧ sizeof(path.Event)≤32 ∧ sizeof(path.Command)≤32",
+      "violation": "Oversized path components cause encoding errors, truncation, or buffer overflows. Truncation causes wrong targets (e.g., 64-bit endpoint truncated to 16-bit matches different endpoint), buffer overflows compromise memory safety.",
+      "attack_vector": "Attacker sends oversized path components to trigger truncation that maps to different target (unauthorized access via collision), or exploits lack of bounds checking to cause buffer overflow when oversized value is copied to fixed-size buffer."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "Receivers correctly track tag compression state within a single interaction model Action and reset state between Actions",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_004, PROP_005, PROP_032, PROP_046 fail - compression state leaks or becomes inconsistent causing path confusion"
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "NodeID of the server involved in interaction is reliably available to both sender and receiver for Node tag omission semantics",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_002, PROP_015 fail - Node tag omission interpreted incorrectly causing routing errors"
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "Message layer correctly encodes Group ID in DST header field when group addressing is used",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_006, PROP_022 fail - group addressing breaks, messages route to wrong groups"
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Implementations enforce mandatory field presence and optional field omission according to schema",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_007, PROP_042 fail - missing required fields or unexpected optional fields break parsing"
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Access control checks are performed after wildcard path expansion on each concrete path individually",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_028 fails - coarse-grained ACL checks on wildcards enable privilege escalation"
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "List operations maintain transactional semantics within a single AttributeDataIB (single-IB pattern) but not across multiple IBs (multi-IB pattern)",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_011, PROP_012, PROP_033 fail - atomicity expectations mismatch causing partial updates"
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Command responses are delivered in same order as requests when using CommandRef correlation",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_023, PROP_025 fail - response misassociation causes command result confusion"
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "Event stream boundaries and EventNumber scope are consistently understood by all nodes",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_018, PROP_049 fail - replay detection breaks due to stream confusion"
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "Timestamp encoding (absolute vs delta) context is preserved across message fragments in event streams",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_019 fails - timestamp reconstruction errors cause temporal ordering violations"
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "TLV parsers strictly validate structure schemas and reject malformed encodings",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_014, PROP_020, PROP_040 fail - type confusion and memory corruption from schema violations"
+    },
+    {
+      "id": "ASSUM_011",
+      "statement": "DataVersion is consistently incremented on attribute modifications and used for optimistic concurrency control",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_013, PROP_036 fail - stale data overwrites or redundant data processing"
+    },
+    {
+      "id": "ASSUM_012",
+      "statement": "Multi-message operations maintain consistent interpretation of EnableTagCompression across all messages in the operation",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_005, PROP_046 fail - compression state inconsistency across message boundaries"
+    },
+    {
+      "id": "ASSUM_013",
+      "statement": "ACL and Extension attribute updates to Access Control Cluster are properly atomic and affect subsequent access checks immediately",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_010 fails - time-of-check-time-of-use vulnerabilities in ACL updates"
+    },
+    {
+      "id": "ASSUM_014",
+      "statement": "Context tag ordering is enforced by sender and verified by receiver at parse time",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_001 fails - out-of-order tags cause parsing errors and potential security bypasses"
+    },
+    {
+      "id": "ASSUM_015",
+      "statement": "The server maintains accurate schema information for all clusters/attributes/events/commands and validates data conformance",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_014, PROP_020, PROP_024 fail - schema violations enable type confusion and injection attacks"
+    },
+    {
+      "id": "ASSUM_016",
+      "statement": "ListIndex values other than omitted or null are universally rejected as errors",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_008 fails - undefined behavior with numeric ListIndex enables exploitation"
+    },
+    {
+      "id": "ASSUM_017",
+      "statement": "Empty array in first AttributeDataIB of multi-IB list pattern always signals list clear before appends",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_033 fails - list replacement doesn't clear old items causing accumulation"
+    },
+    {
+      "id": "ASSUM_018",
+      "statement": "CommandRef values are unique within a single InvokeRequest and properly correlated in responses",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_023 fails - response correlation breaks causing command result confusion"
+    },
+    {
+      "id": "ASSUM_019",
+      "statement": "Status reporting uses XOR semantics (either success data OR error status) consistently across all report types",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_037, PROP_038, PROP_039 fail - ambiguous success/error indication"
+    },
+    {
+      "id": "ASSUM_020",
+      "statement": "Message fragmentation and reassembly preserve original structure and semantics without loss or reordering",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_046 fails - multi-message operations become inconsistent"
+    },
+    {
+      "id": "ASSUM_021",
+      "statement": "WildcardPathFlags and WildcardFilterConfigurationVersion are consistently interpreted by all implementations",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_034, PROP_035 fail - wildcard expansion inconsistencies break access control"
+    },
+    {
+      "id": "ASSUM_022",
+      "statement": "Provisional features (EnableTagCompression) have well-defined fallback behavior when not supported",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_045 fails - version skew attacks exploit inconsistent compression support"
+    },
+    {
+      "id": "ASSUM_023",
+      "statement": "Event priority and urgency filtering are correctly enforced at subscription and delivery time",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_017, PROP_031 fail - priority-based security monitoring bypasses"
+    },
+    {
+      "id": "ASSUM_024",
+      "statement": "Cluster-specific status codes do not collide with general protocol status codes",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_048 fails - error misinterpretation hides security violations"
+    },
+    {
+      "id": "ASSUM_025",
+      "statement": "Path component bit widths are enforced at encoding time and validated at decoding time",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_050 fails - oversized components cause truncation or buffer overflows"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "Uncompressed_Path_State",
+      "properties_enforcing_transitions": ["PROP_003", "PROP_004", "PROP_005"],
+      "critical_property": "When EnableTagCompression is false or absent, omitted tags SHALL be interpreted as wildcards and compression tracking SHALL NOT be active"
+    },
+    {
+      "state_name": "Compressed_Path_State",
+      "properties_enforcing_transitions": ["PROP_003", "PROP_004", "PROP_005", "PROP_032"],
+      "critical_property": "When EnableTagCompression is true, compression state SHALL track last uncompressed path within same Action and inherit values for omitted tags"
+    },
+    {
+      "state_name": "List_Empty_State",
+      "properties_enforcing_transitions": ["PROP_033"],
+      "critical_property": "After processing first AttributeDataIB with empty array in multi-IB list pattern, list SHALL be cleared before appends"
+    },
+    {
+      "state_name": "List_Replace_State",
+      "properties_enforcing_transitions": ["PROP_009", "PROP_012"],
+      "critical_property": "During single-IB list replacement or after empty array signal, list contents SHALL be fully replaced not incrementally modified"
+    },
+    {
+      "state_name": "List_Append_State",
+      "properties_enforcing_transitions": ["PROP_009", "PROP_029"],
+      "critical_property": "When ListIndex is null, operation SHALL append new item to list, not modify existing items"
+    },
+    {
+      "state_name": "Command_Pending_State",
+      "properties_enforcing_transitions": ["PROP_023", "PROP_025"],
+      "critical_property": "After sending command with CommandRef, client SHALL await response with matching CommandRef before considering command complete"
+    },
+    {
+      "state_name": "Event_Stream_Active_State",
+      "properties_enforcing_transitions": ["PROP_018", "PROP_047", "PROP_049"],
+      "critical_property": "EventNumber SHALL monotonically increase within stream and EventMin filtering SHALL prevent replay of old events"
+    },
+    {
+      "state_name": "Action_Boundary_State",
+      "properties_enforcing_transitions": ["PROP_005", "PROP_032"],
+      "critical_property": "Compression state SHALL be reset when transitioning between interaction model Actions, preventing state leakage"
+    },
+    {
+      "state_name": "Wildcard_Expansion_State",
+      "properties_enforcing_transitions": ["PROP_028"],
+      "critical_property": "Before authorization check, wildcard paths SHALL be fully expanded and each concrete path authorized individually"
+    },
+    {
+      "state_name": "ACL_Update_State",
+      "properties_enforcing_transitions": ["PROP_010", "PROP_011"],
+      "critical_property": "ACL list updates SHALL follow special rules allowing both single-IB and multi-IB patterns, with uncertain state on errors"
+    },
+    {
+      "state_name": "Multi_Message_Operation_State",
+      "properties_enforcing_transitions": ["PROP_012", "PROP_046"],
+      "critical_property": "When operation spans multiple messages, consistency SHALL be maintained across message boundaries for compression and list semantics"
+    }
+  ],
+  "additionalInsights": "This specification section defines critical encoding and path semantics with several subtle security implications:\n\n1. **Tag Compression Complexity**: The provisional tag compression feature (PROP_003-005, PROP_032) introduces significant state management complexity. The requirement to track state within Actions but reset between Actions creates potential for confusion attacks if Action boundaries are ambiguous or if implementations have bugs in state management. The provisional status suggests this feature may be unstable.\n\n2. **List Mutation Ambiguity**: The list modification semantics (PROP_008-012, PROP_029, PROP_033) are complex with multiple patterns (single-IB, multi-IB, ACL-specific) and uncertain error behavior (PROP_011). This complexity invites implementation bugs, particularly around the \"empty array signals clear\" semantic which is easy to misimplement.\n\n3. **Wildcard Explosion Risk**: The wildcard path semantics (PROP_003, PROP_021, PROP_028) enable powerful pattern matching but require careful authorization. The requirement to expand before authorization (PROP_028) is critical but unstated in this section - it must be inferred. Implementations that check wildcards without expansion enable major privilege escalation.\n\n4. **Context-Dependent Interpretation**: Multiple elements have context-dependent semantics (EventPathIB wildcard interpretation differs by context, ListIndex null only valid in AttributeDataIB). This context-dependence creates confusion risk, especially when messages are forwarded through proxies that may change context.\n\n5. **Atomicity Gaps**: The explicit warning that list write errors leave uncertain state (PROP_011) is unusual - it admits lack of transactional semantics. This creates a window for partial-update exploitation, particularly concerning for ACL updates where partial application could grant unintended access.\n\n6. **Group Addressing Split**: Encoding Group ID in message header while omitting from payload (PROP_006, PROP_022) splits addressing across layers. This creates risk if layers validate independently - payload validation might pass while header differs, or vice versa.\n\n7. **EventNumber Scope Ambiguity**: While EventNumber monotonicity is specified, the exact scope (per-node? per-endpoint? global?) is unclear (PROP_049). This ambiguity breaks replay detection if implementations assume different scopes.\n\n8. **Limited Nesting**: The restriction to single-level list nesting (PROP_030) is security-positive (reduces parser complexity) but the removed NestedPath field suggests prior support. Legacy implementations might still accept nested paths, creating divergence.\n\n9. **XOR Semantics Enforcement**: The requirement for exactly one of Status/Data in reports (PROP_037-039) is critical for unambiguous error handling but requires strict validation. Lenient parsers that process \"first found\" enable confusion attacks.\n\n10. **Bit Width Enforcement**: The specific bit widths for path components (PROP_050) are easy to violate with oversized inputs. Truncation on oversized Endpoint (64-bit to 16-bit) creates collision risk enabling unauthorized access.\n\nOverall, this section has high security impact due to its fundamental role in addressing and data encoding. The complexity of tag compression and list mutations creates significant attack surface for confusion attacks, while the wildcard and group addressing features enable privilege escalation if implemented incorrectly.",
+  "summary": {
+    "total_properties": 50,
+    "by_importance": {
+      "CRITICAL": 13,
+      "HIGH": 23,
+      "MEDIUM": 13,
+      "LOW": 1
+    },
+    "by_category": {
+      "Correctness": 15,
+      "IdentityBinding": 3,
+      "AccessControl": 7,
+      "Consistency": 8,
+      "StateLifecycle": 3,
+      "ScopeIsolation": 5,
+      "ReplayProtection": 4,
+      "Atomicity": 1,
+      "Timing": 1,
+      "Security": 0,
+      "Cryptography": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 25
+  }
+}

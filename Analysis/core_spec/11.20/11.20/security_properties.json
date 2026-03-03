@@ -1,0 +1,1353 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Query_Rate_Limiting_120_Seconds",
+      "category": "Timing",
+      "importance": "CRITICAL",
+      "claim": "OTA Requestor SHALL NOT query any single OTA Provider more frequently than once every 120 seconds",
+      "formal": "∀ requestor, provider, t1, t2: QueryImage(requestor, provider, t1) ∧ QueryImage(requestor, provider, t2) ⇒ (t2 - t1) ≥ 120 seconds",
+      "violation": "If an OTA Requestor queries more frequently than 120 seconds, it creates excessive burden on OTA Providers and networking infrastructure, potentially causing denial of service through resource exhaustion",
+      "attack_vector": "Malicious OTA Requestor floods OTA Provider with rapid queries, exhausting Provider resources and preventing legitimate updates"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Version_Monotonicity_Upgrade_Only",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "OTA Requestors SHALL only upgrade to numerically newer versions and OTA Providers SHALL only provide numerically newer Software Images",
+      "formal": "∀ currentVersion, newVersion: ApplyUpdate(newVersion) ⇒ newVersion > currentVersion",
+      "violation": "If downgrade is allowed, attacker can force device to install older versions with known vulnerabilities, bypassing security patches",
+      "attack_vector": "Attacker compromises OTA Provider or performs MITM attack to serve older vulnerable firmware versions, exploiting known CVEs"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Mandatory_Image_Signature_Verification",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "Software Images SHALL be signed by vendor private key and signature SHALL be verified using matching public key before installation",
+      "formal": "∀ image: ApplyUpdate(image) ⇒ VerifySignature(image, vendor_public_key) = TRUE",
+      "violation": "Without signature verification, attacker can inject malicious firmware that executes with full device privileges, compromising confidentiality, integrity, and availability",
+      "attack_vector": "Attacker crafts malicious firmware image and serves it to OTA Requestor, gaining complete device control and potentially creating botnet or stealing credentials"
+    },
+    {
+      "id": "PROP_004",
+      "name": "Image_Verification_Rejection_On_Failure",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Any attempt to tamper with signature or data SHALL be detected and SHALL cause Software Image to be rejected",
+      "formal": "∀ image: (Tampered(image) ∨ InvalidSignature(image)) ⇒ Reject(image)",
+      "violation": "If tampered images are accepted, attacker bypasses cryptographic protections and installs malicious code",
+      "attack_vector": "Attacker modifies legitimate firmware to include backdoor, device fails to detect tampering and installs compromised firmware"
+    },
+    {
+      "id": "PROP_005",
+      "name": "No_Reliance_On_Unsolicited_Announcements",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Nodes SHALL NOT rely solely on unsolicited OTA Provider announcements and SHALL employ other discovery means",
+      "formal": "∀ node: Discovery(node) ⇒ ∃ method ∈ {commissioned_providers, dynamic_discovery} used_by(node, method)",
+      "violation": "If node relies only on announcements, attacker can perform announcement-spoofing attack to redirect updates to malicious provider",
+      "attack_vector": "Attacker floods fabric with fake AnnounceOTAProvider commands pointing to malicious server, devices query attacker instead of legitimate provider"
+    },
+    {
+      "id": "PROP_006",
+      "name": "ACL_Required_For_AnnounceOTAProvider",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Commissioners or Administrators SHOULD install ACL entries to enable handling of AnnounceOTAProvider commands by OTA Requestors",
+      "formal": "∀ requestor: HandleCommand(requestor, AnnounceOTAProvider) ⇒ ACLEntry(fabric, Operate, CASE, provider_nodeID, requestor_endpoint)",
+      "violation": "Without proper ACL, unauthorized nodes can announce fake OTA Providers or legitimate providers cannot announce, disrupting update mechanism",
+      "attack_vector": "Attacker node announces itself as OTA Provider without proper authorization, redirecting update queries to malicious endpoint"
+    },
+    {
+      "id": "PROP_007",
+      "name": "ACL_Required_For_QueryImage",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Commissioner or Administrator SHOULD install ACL entries to enable processing of QueryImage commands from OTA Requestors",
+      "formal": "∀ provider: ProcessCommand(provider, QueryImage) ⇒ ACLEntry(fabric, Operate, CASE, [], provider_endpoint)",
+      "violation": "Without proper ACL, OTA Provider cannot service legitimate requestors, causing update failures and leaving vulnerable devices unpatched",
+      "attack_vector": "Misconfigured ACL prevents security patches from being deployed, devices remain vulnerable to known exploits"
+    },
+    {
+      "id": "PROP_008",
+      "name": "UpdateToken_Length_Constraint",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "UpdateToken valid length SHALL be between 8 and 32 bytes inclusively",
+      "formal": "∀ token: ValidUpdateToken(token) ⇒ 8 ≤ Length(token) ≤ 32",
+      "violation": "Tokens shorter than 8 bytes are vulnerable to brute force attacks; tokens longer than 32 bytes waste resources and may indicate buffer overflow attempts",
+      "attack_vector": "Attacker brute-forces short UpdateTokens to hijack update sessions or sends oversized tokens to trigger buffer overflow vulnerabilities"
+    },
+    {
+      "id": "PROP_009",
+      "name": "UpdateToken_Recorded_Until_Applied_Or_Discarded",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "UpdateToken SHALL be recorded by OTA Requestor until OTA Software Update Image is either applied or discarded",
+      "formal": "∀ requestor, token: Receive(requestor, token) ⇒ Store(requestor, token) Until (Apply(image) ∨ Discard(image))",
+      "violation": "If token is not properly maintained, provider cannot correlate update flow, enabling session confusion attacks or update tracking failures",
+      "attack_vector": "Attacker exploits lost token state to cause provider to serve wrong image version or block legitimate update completion"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Idempotent_QueryImage_Requests",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "OTA Provider requests are idempotent - repeated requests SHALL NOT behave differently unless new Software Image became available",
+      "formal": "∀ request, t1, t2: (QueryImage(request, t1) = response) ∧ ¬NewImageAvailable(t1, t2) ⇒ QueryImage(request, t2) = response",
+      "violation": "Non-idempotent behavior allows race conditions where repeated queries yield different results, potentially causing update inconsistencies or enabling timing attacks",
+      "attack_vector": "Attacker repeatedly queries to exploit non-idempotent behavior, inducing provider to serve inconsistent image versions across fabric nodes"
+    },
+    {
+      "id": "PROP_011",
+      "name": "SoftwareVersion_Matching_Basic_Information_Cluster",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "SoftwareVersion in QueryImage SHALL match value reported by Basic Information Cluster SoftwareVersion attribute",
+      "formal": "∀ requestor: QueryImage.SoftwareVersion = BasicInformation.SoftwareVersion",
+      "violation": "Mismatched version reporting enables version confusion attacks where provider serves wrong updates based on incorrect version info",
+      "attack_vector": "Attacker manipulates version field to trick provider into serving incompatible image, causing device brick or downgrade to vulnerable version"
+    },
+    {
+      "id": "PROP_012",
+      "name": "VendorID_Matching_Basic_Information_Cluster",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "VendorID in QueryImage SHALL match value reported by Basic Information Cluster VendorID attribute",
+      "formal": "∀ requestor: QueryImage.VendorID = BasicInformation.VendorID",
+      "violation": "VendorID mismatch allows cross-vendor image confusion, potentially installing incompatible firmware that bricks device or creates security vulnerabilities",
+      "attack_vector": "Attacker spoofs VendorID to receive firmware intended for different vendor's hardware, causing device malfunction or exploiting vendor-specific vulnerabilities"
+    },
+    {
+      "id": "PROP_013",
+      "name": "ProductID_Matching_Basic_Information_Cluster",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "ProductID in QueryImage SHALL match value reported by Basic Information Cluster ProductID attribute",
+      "formal": "∀ requestor: QueryImage.ProductID = BasicInformation.ProductID",
+      "violation": "ProductID mismatch causes wrong firmware to be installed on incompatible hardware, leading to device brick or security failures",
+      "attack_vector": "Attacker modifies ProductID to receive firmware for different product model, exploiting hardware differences to bypass security controls"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Delay_Respect_After_Busy_Status",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "After Busy status, OTA Requestor SHALL NOT re-query sooner than longest of 120 seconds or DelayedActionTime",
+      "formal": "∀ requestor, provider, t_busy: Receive(Busy, DelayedActionTime, t_busy) ⇒ NextQuery(t_busy + max(120, DelayedActionTime))",
+      "violation": "Ignoring delay causes requestor to overwhelm busy provider, creating denial of service and preventing provider from preparing image",
+      "attack_vector": "Malicious requestor ignores Busy delays and floods provider with queries, exhausting resources and blocking legitimate update operations"
+    },
+    {
+      "id": "PROP_015",
+      "name": "Delay_Respect_After_NotAvailable_Status",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "After NotAvailable status, OTA Requestor SHALL NOT re-query sooner than longest of 120 seconds or DelayedActionTime if present",
+      "formal": "∀ requestor, provider, t_notavail: Receive(NotAvailable, t_notavail) ⇒ (no_other_providers ⇒ NextQuery(t_notavail + max(120, DelayedActionTime)))",
+      "violation": "Premature re-query wastes network resources and provider capacity when no update exists, enabling resource exhaustion attacks",
+      "attack_vector": "Attacker causes multiple requestors to ignore NotAvailable delays, overwhelming provider with redundant queries"
+    },
+    {
+      "id": "PROP_016",
+      "name": "BDX_Synchronous_Mandatory_Provider_Support",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "BDX Synchronous transfer mode SHALL always be supported by OTA Provider",
+      "formal": "∀ provider: Supports(provider, BDXSynchronous) = TRUE",
+      "violation": "Without BDX support, sleepy end devices and constrained nodes cannot receive updates, leaving vulnerable devices unpatched",
+      "attack_vector": "Attacker targets devices that only support BDX; if provider doesn't support BDX, devices cannot update and remain vulnerable"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Only_HTTPS_Not_HTTP_Allowed",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Only HTTP over TLS (HTTPS) is supported; HTTP without TLS SHALL NOT be supported",
+      "formal": "∀ uri: TransferProtocol(uri) = HTTP ⇒ TLS_Enabled(uri) = TRUE",
+      "violation": "Unencrypted HTTP exposes firmware images to interception and tampering during transit, enabling MITM attacks",
+      "attack_vector": "Attacker intercepts HTTP download and replaces legitimate firmware with malicious version, compromising device integrity"
+    },
+    {
+      "id": "PROP_018",
+      "name": "ImageURI_Must_Match_Supported_Protocol",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "ImageURI SHALL be for a protocol within the list of supported protocols provided in ProtocolsSupported field",
+      "formal": "∀ response: ImageURI in response ⇒ Protocol(ImageURI) ∈ ProtocolsSupported",
+      "violation": "Providing URI for unsupported protocol causes transfer failure, blocking updates and leaving device in vulnerable state",
+      "attack_vector": "Attacker manipulates provider to serve URIs with protocols requestor cannot use, preventing security patch installation"
+    },
+    {
+      "id": "PROP_019",
+      "name": "No_Software_Image_Mutation_By_Provider",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "OTA Provider SHALL NOT modify contents of any Software Images to ensure signatures remain valid",
+      "formal": "∀ image, provider: Serve(provider, image) ⇒ Content(image) = Original_Content(image)",
+      "violation": "If provider mutates image, signature verification fails OR if provider re-signs, it violates vendor trust model and enables man-in-middle attacks",
+      "attack_vector": "Compromised provider modifies image content while serving, injecting malicious code that still passes provider's modified signature check"
+    },
+    {
+      "id": "PROP_020",
+      "name": "No_Image_Content_Hiding_Or_Masking",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "OTA Provider SHALL NOT hide or otherwise mask contents of Software Image available for transfer",
+      "formal": "∀ image, requestor: Transfer(provider, requestor, image) ⇒ Received(requestor, image) = Complete(image)",
+      "violation": "Content masking could enable selective disclosure attacks where different requestors receive different partial images, causing inconsistent states",
+      "attack_vector": "Compromised provider hides malicious payload portions from analysis tools but delivers them to target devices"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Version_Range_Applicability_Check",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Candidate image is applicable only if requestor version is between MinApplicableSoftwareVersion and MaxApplicableSoftwareVersion",
+      "formal": "∀ requestor, candidate: Applicable(candidate) ⇒ (candidate.MinApplicableVersion ≤ requestor.version ≤ candidate.MaxApplicableVersion)",
+      "violation": "Installing image outside valid version range causes incompatibility, potentially bricking device or creating security vulnerabilities from missing prerequisites",
+      "attack_vector": "Attacker bypasses version range check to install image requiring features not present in current version, exploiting undefined behavior"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Numerically_Higher_Version_Selection",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "From positive matches in DCL, select the newest (numerically highest) softwareVersion",
+      "formal": "∀ candidates: Selected(version) ⇒ (version = max({c.version | c ∈ Valid_Candidates}))",
+      "violation": "Selecting non-newest version leaves device without latest security patches when higher version is available",
+      "attack_vector": "Attacker exploits algorithm flaw to force installation of older version within valid range, avoiding recent security fixes"
+    },
+    {
+      "id": "PROP_023",
+      "name": "User_Consent_Should_Be_Obtained",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "OTA Provider SHOULD obtain User Consent prior to responding with Software Image URI or letting requestor proceed with applying update",
+      "formal": "∀ provider, update: RespondAvailable(provider, update) ⇒ UserConsentObtained(update) SHOULD_BE_TRUE",
+      "violation": "Without user consent, unwanted updates can disrupt critical operations, cause availability issues, or modify device behavior against user preference",
+      "attack_vector": "Attacker leveraging compromised provider forces updates without consent, disrupting operations at critical times (e.g., security system during break-in)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "User_Consent_Information_Requirements",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "User Consent mechanism SHALL convey consent from User administratively allowed to give informed consent",
+      "formal": "∀ consent: Valid(consent) ⇒ (Authorized(user) ∧ Informed(user))",
+      "violation": "Accepting consent from unauthorized or uninformed users enables unauthorized modifications and potential privilege escalation",
+      "attack_vector": "Attacker obtains consent from low-privilege user who doesn't understand implications, installing malicious update with admin approval trail"
+    },
+    {
+      "id": "PROP_025",
+      "name": "LocalConfigDisabled_Blocks_Requestor_Consent",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "User Consent delegation to OTA Requestor SHALL NOT be used if LocalConfigDisabled attribute is True",
+      "formal": "∀ requestor: BasicInformation.LocalConfigDisabled = TRUE ⇒ ¬DelegateConsent(requestor)",
+      "violation": "If local config is disabled but consent is delegated locally, it bypasses centralized policy enforcement, enabling unauthorized updates",
+      "attack_vector": "Attacker exploits locally-disabled device to obtain consent through local means, bypassing administrator-mandated central approval process"
+    },
+    {
+      "id": "PROP_026",
+      "name": "BDX_Receiver_Drive_Mode_Non_TCP",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Receiver-Drive mode SHALL be used by OTA Provider for transfers initiated from secure channel on non-TCP transport",
+      "formal": "∀ transfer: (SecureChannel(transfer) ∧ ¬TCP(transfer)) ⇒ Mode(transfer) = ReceiverDrive",
+      "violation": "Wrong transfer mode on constrained transports causes incomplete transfers, resource exhaustion, or update failures",
+      "attack_vector": "Attacker forces sender-drive mode on non-TCP constrained network, overwhelming receiver resources and causing denial of service"
+    },
+    {
+      "id": "PROP_027",
+      "name": "BDX_Idle_Timeout_Minimum_5_Minutes",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "Idle timeout SHALL be no less than 5 minutes before aborting transfer",
+      "formal": "∀ transfer: IdleTimeout(transfer) ≥ 300 seconds",
+      "violation": "Shorter timeout causes legitimate sleepy devices to fail transfers mid-download, leaving them in inconsistent state without updates",
+      "attack_vector": "Attacker induces network delays to trigger premature timeout, preventing security patch installation through denial of completion"
+    },
+    {
+      "id": "PROP_028",
+      "name": "BDX_Block_Size_Power_Of_Two_Above_128",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Maximum Block Size SHALL be power of two if OTA Requestor requests value larger than 128 bytes",
+      "formal": "∀ requestor, size: (RequestedBlockSize(requestor) > 128) ⇒ (∃ n: NegotiatedBlockSize = 2^n)",
+      "violation": "Non-power-of-two block sizes above 128 bytes cause memory alignment issues and inefficient buffer utilization",
+      "attack_vector": "Attacker requests unusual block sizes to cause buffer misalignment and potential memory corruption vulnerabilities"
+    },
+    {
+      "id": "PROP_029",
+      "name": "BDX_Block_Size_Limit_Non_TCP_1024",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Maximum Block Size requested by OTA Requestors over non-TCP SHALL be no larger than 1024 bytes and Provider SHALL support at least 1024",
+      "formal": "∀ requestor, transfer: ¬TCP(transfer) ⇒ (RequestedBlockSize ≤ 1024 ∧ ProviderSupports(1024))",
+      "violation": "Oversized blocks on constrained transports cause fragmentation, packet loss, and transfer failures, blocking critical updates",
+      "attack_vector": "Attacker requests maximum blocks on lossy network to induce failures and prevent security patch installation"
+    },
+    {
+      "id": "PROP_030",
+      "name": "BDX_Block_Size_Limit_TCP_8192",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Maximum Block Size over TCP SHALL be no larger than 8192 bytes; Provider SHALL support at least 4096 bytes",
+      "formal": "∀ requestor, transfer: TCP(transfer) ⇒ (RequestedBlockSize ≤ 8192 ∧ ProviderSupports(4096))",
+      "violation": "Inconsistent block size handling causes negotiation failures and incompatible transfers",
+      "attack_vector": "Attacker exploits block size mismatch to cause transfer hangs or memory allocation failures"
+    },
+    {
+      "id": "PROP_031",
+      "name": "No_Reliance_On_DEFLLEN_Bit",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "OTA Requestor SHALL NOT rely on RC[DEFLLEN] bit and SHALL rely on OTA Image metadata for expected size",
+      "formal": "∀ requestor: ExpectedSize(download) = ImageMetadata.size ∧ ¬Relies_On(RC_DEFLLEN)",
+      "violation": "Relying on provider-controlled length allows provider to lie about size, causing buffer overflows or truncation attacks",
+      "attack_vector": "Compromised provider sets incorrect DEFLLEN causing requestor to allocate insufficient buffer, leading to memory corruption"
+    },
+    {
+      "id": "PROP_032",
+      "name": "Transfer_Abort_After_Three_No_Progress_Attempts",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "OTA Requestor SHALL abort retrying transfer after three attempts in a row where each yielded no forward progress",
+      "formal": "∀ requestor, transfer: (∀ i ∈ {1,2,3}: Progress(attempt_i) = 0) ⇒ Abort(transfer)",
+      "violation": "Infinite retry loops waste resources and prevent requestor from trying alternative providers or resetting state",
+      "attack_vector": "Attacker induces zero-progress condition to trap requestor in retry loop, preventing legitimate updates via other providers"
+    },
+    {
+      "id": "PROP_033",
+      "name": "Provider_Should_Validate_Image_Length_Digest",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "OTA Provider SHOULD validate length and digest of proxied images to avoid continuing transfer if data is corrupted",
+      "formal": "∀ provider, image: Proxy(provider, image) ⇒ (Validate(Length(image)) ∧ Validate(Digest(image))) SHOULD_BE_TRUE",
+      "violation": "Serving corrupted images wastes bandwidth and requestor resources, and may indicate compromise of image source",
+      "attack_vector": "Attacker compromises image source, provider serves corrupted image without detecting corruption, wasting network resources across fabric"
+    },
+    {
+      "id": "PROP_034",
+      "name": "Reset_State_On_Terminal_Transfer_Failure",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "On terminal transfer failure after exhausting all retries and alternate providers, requestor SHALL reset entire software updating state",
+      "formal": "∀ requestor: TerminalFailure(transfer) ⇒ ResetState(requestor)",
+      "violation": "Stale state after terminal failure prevents requestor from making fresh attempts, leaving device permanently unable to update",
+      "attack_vector": "Attacker induces terminal failure to lock requestor in unrecoverable state, preventing future security patches"
+    },
+    {
+      "id": "PROP_035",
+      "name": "UpdateToken_Must_Be_Provided_Or_NodeID_Used",
+      "category": "StateLifecycle",
+      "importance": "MEDIUM",
+      "claim": "OTA Requestor SHALL provide UpdateToken from last QueryImageResponse; if lost, SHALL use Operational Node ID encoded as 64-bit network byte order",
+      "formal": "∀ requestor, apply: ApplyUpdateRequest(requestor) ⇒ (UpdateToken = Saved_Token ∨ UpdateToken = Encode(NodeID))",
+      "violation": "Invalid token prevents provider from tracking update state, potentially causing provider to block legitimate update attempts",
+      "attack_vector": "Attacker exploits token confusion to hijack update session or prevent victim requestor from completing legitimate update"
+    },
+    {
+      "id": "PROP_036",
+      "name": "Provider_Must_Not_Deny_Update_For_Invalid_Token",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "OTA Provider SHALL NOT consider invalid UpdateToken as reason to continuously deny or delay OTA Requestor's request to apply Software Image",
+      "formal": "∀ provider, requestor, token: ¬Valid(token) ⇒ ¬(ContinuouslyDeny(requestor) ∨ ContinuouslyDelay(requestor))",
+      "violation": "Denying updates due to token issues creates denial-of-service where legitimate requestors with ready-to-apply images cannot proceed",
+      "attack_vector": "Attacker causes token corruption to prevent victim from applying already-downloaded security patch, keeping device vulnerable"
+    },
+    {
+      "id": "PROP_037",
+      "name": "Apply_Without_Additional_Delay_When_Zero",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "If DelayedActionTime is zero in ApplyUpdateResponse with Proceed action, OTA Requestor SHALL apply update without additional delay",
+      "formal": "∀ requestor, response: (Action = Proceed ∧ DelayedActionTime = 0) ⇒ ApplyImmediately(requestor)",
+      "violation": "Adding delay when zero is specified violates timing expectations and may leave device vulnerable longer than necessary",
+      "attack_vector": "Attacker exploits timing violation to extend window for exploiting known vulnerabilities in current version"
+    },
+    {
+      "id": "PROP_038",
+      "name": "Apply_After_Delay_When_Non_Zero",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "If DelayedActionTime is non-zero, OTA Requestor SHALL await at least DelayedActionTime seconds before applying update",
+      "formal": "∀ requestor, response, t_response: (DelayedActionTime > 0) ⇒ ApplyAt(t_response + DelayedActionTime)",
+      "violation": "Ignoring delay time causes updates to apply at wrong times, potentially disrupting critical operations or violating user preferences",
+      "attack_vector": "Malicious requestor ignores delay and applies update during critical operation window, causing system failure or safety hazard"
+    },
+    {
+      "id": "PROP_039",
+      "name": "No_Retry_ApplyUpdateRequest_After_Proceed",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "When Proceed action is given, OTA Requestor SHALL NOT invoke ApplyUpdateRequest again unless error occurs while applying",
+      "formal": "∀ requestor, response: (Action = Proceed ∧ ¬Error(apply)) ⇒ ¬InvokeAgain(ApplyUpdateRequest)",
+      "violation": "Redundant invocations waste resources and may cause provider to issue conflicting directives",
+      "attack_vector": "Attacker floods provider with redundant ApplyUpdateRequest calls to exhaust resources or induce race conditions"
+    },
+    {
+      "id": "PROP_040",
+      "name": "AwaitNextAction_Minimum_120_Seconds",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "For AwaitNextAction, if DelayedActionTime < 120 seconds, OTA Requestor SHALL assume value of 120 seconds",
+      "formal": "∀ requestor, response: (Action = AwaitNextAction ∧ DelayedActionTime < 120) ⇒ ActualDelay = 120",
+      "violation": "Shorter delays allow excessive query frequency, overwhelming provider resources",
+      "attack_vector": "Compromised provider sets minimal delays to cause requestor to query excessively, creating denial of service"
+    },
+    {
+      "id": "PROP_041",
+      "name": "AwaitNextAction_Maximum_24_Hours_Total",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "AwaitNextAction SHALL NOT be emitted to cause more than 24 hours total delay in applying available Software Image",
+      "formal": "∀ provider, requestor: Σ(AwaitNextAction_delays) ≤ 86400 seconds",
+      "violation": "Excessive delays leave devices vulnerable to known exploits for extended periods, increasing exploit window",
+      "attack_vector": "Compromised provider issues repeated AwaitNextAction with long delays, preventing security patch installation indefinitely"
+    },
+    {
+      "id": "PROP_042",
+      "name": "Discontinue_Action_Clears_Downloaded_Image",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "On Discontinue action, OTA Requestor SHOULD clear previously downloaded and verified Software Image if from same provider",
+      "formal": "∀ requestor, provider, image: (Action = Discontinue ∧ Source(image) = provider) ⇒ Clear(image)",
+      "violation": "Retaining discontinued image allows installation of image that provider has rescinded due to critical defect or security issue",
+      "attack_vector": "Provider discovers critical vulnerability in released image and issues Discontinue, but requestor ignores it and applies flawed image"
+    },
+    {
+      "id": "PROP_043",
+      "name": "Unknown_Token_Assumes_Ready_To_Apply",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "For OTA Requestor with unknown UpdateToken, Provider SHOULD assume requestor has image ready and respond with Proceed or Await",
+      "formal": "∀ provider, requestor, token: ¬Known(token) ⇒ (Response = Proceed ∨ Response = Await) SHOULD_BE_TRUE",
+      "violation": "Denying or discontinuing on unknown token prevents legitimate requestors from applying already-downloaded updates",
+      "attack_vector": "Attacker exploits token invalidation to prevent victims from applying security patches they already possess"
+    },
+    {
+      "id": "PROP_044",
+      "name": "Last_Resort_Apply_After_24_Hours_Failures",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "After 3 attempts or 24 hours of failure, requestor having successfully downloaded and verified image MAY apply update as last resort",
+      "formal": "∀ requestor, image: ((Attempts ≥ 3 ∨ Duration > 86400) ∧ Downloaded(image) ∧ Verified(image)) ⇒ MayApply(image)",
+      "violation": "Without last resort mechanism, critical bugs preventing proper update flow leave devices permanently vulnerable",
+      "attack_vector": "Attacker exploits provider vulnerabilities to prevent proper ApplyUpdate flow; without last resort, devices cannot escape vulnerable state"
+    },
+    {
+      "id": "PROP_045",
+      "name": "NotifyUpdateApplied_Should_Be_Sent",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "After completion of update, OTA Requestor SHOULD invoke NotifyUpdateApplied to provider",
+      "formal": "∀ requestor, update: Applied(update) ⇒ SendNotification(requestor, provider) SHOULD_BE_TRUE",
+      "violation": "Missing notification prevents provider from tracking update status across fabric, degrading operational visibility",
+      "attack_vector": "Attacker blocks notifications to hide failed/compromised updates from administrator monitoring"
+    },
+    {
+      "id": "PROP_046",
+      "name": "NotifyUpdateApplied_No_Retry_On_No_Response",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "OTA Requestor SHALL NOT retry at application level to invoke NotifyUpdateApplied if no response received",
+      "formal": "∀ requestor: ¬Response(NotifyUpdateApplied) ⇒ ¬Retry(NotifyUpdateApplied)",
+      "violation": "Retrying notification wastes resources; notification is informational and failure should not block progress",
+      "attack_vector": "Attacker exploits retry logic to cause notification flood after blocking responses"
+    },
+    {
+      "id": "PROP_047",
+      "name": "BootReason_Set_After_Update_Reboot",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If device reboots to apply update, BootReason attribute SHALL be set to SoftwareUpdateCompleted",
+      "formal": "∀ device: (Reboot(device) ∧ Reason = ApplyUpdate) ⇒ BootReason = SoftwareUpdateCompleted",
+      "violation": "Incorrect boot reason prevents proper diagnostics and may mask update-related issues or failures",
+      "attack_vector": "Attacker causes update-related crashes but manipulates boot reason to hide evidence of malicious update"
+    },
+    {
+      "id": "PROP_048",
+      "name": "Image_Encryption_Vendor_Optional",
+      "category": "Cryptography",
+      "importance": "MEDIUM",
+      "claim": "Vendor MAY apply at-rest encryption to Software Image bodies (excluding header) using any algorithm",
+      "formal": "∀ vendor, image: MayEncrypt(vendor, image.body) ∧ ¬Encrypt(image.header)",
+      "violation": "Unencrypted images expose proprietary code and security-sensitive logic to analysis and reverse engineering",
+      "attack_vector": "Attacker intercepts unencrypted image to reverse engineer security mechanisms, cryptographic keys, or backdoor insertion points"
+    },
+    {
+      "id": "PROP_049",
+      "name": "Certificate_Secure_Transfer_When_OTA",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When signer certificates sent over-the-air, they SHALL be securely transferred from trusted source",
+      "formal": "∀ certificate, transfer: OTA(transfer, certificate) ⇒ (Secure(transfer) ∧ Trusted(source))",
+      "violation": "Insecure certificate transfer allows attacker to inject their own signing certificates, completely subverting code signing",
+      "attack_vector": "Attacker intercepts certificate transfer and injects malicious signing certificate, enabling installation of malicious firmware"
+    },
+    {
+      "id": "PROP_050",
+      "name": "Overall_Image_Authenticity_For_Multi_Component",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "Software Images with multiple sub-components SHOULD provide at least overall authenticity and integrity validation for entire image",
+      "formal": "∀ image: HasMultipleComponents(image) ⇒ OverallAuthenticityCheck(image) SHOULD_EXIST",
+      "violation": "Without overall validation, attacker can mix legitimate and malicious components to create partially compromised image",
+      "attack_vector": "Attacker replaces one component with malicious version while keeping others legitimate, bypassing per-component checks if overall check missing"
+    },
+    {
+      "id": "PROP_051",
+      "name": "ProtocolsSupported_Must_Reflect_Actual_Capability",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "OTA Requestor SHALL only report support for protocols requiring public Internet if it has determined it has access to necessary network domains",
+      "formal": "∀ requestor, protocol: (RequiresInternet(protocol) ∧ protocol ∈ ProtocolsSupported) ⇒ HasInternetAccess(requestor)",
+      "violation": "Falsely reporting protocol support causes provider to serve unreachable URIs, blocking update completion",
+      "attack_vector": "Attacker manipulates network detection to cause requestor to report false capabilities, forcing provider to serve inaccessible URIs"
+    },
+    {
+      "id": "PROP_052",
+      "name": "Cache_Software_Image_At_Least_5_Minutes",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "OTA Providers SHOULD maintain cached Software Images for at least 5 minutes after closure of last requestor transfer",
+      "formal": "∀ provider, image, t_close: CacheUntil(image, t_close + 300 seconds)",
+      "violation": "Premature cache expungement forces requestors reading image in parts to fail, blocking update completion",
+      "attack_vector": "Attacker triggers rapid cache expungement to cause partial-read requestors to fail, preventing security patch installation"
+    },
+    {
+      "id": "PROP_053",
+      "name": "DefaultOTAProviders_One_Entry_Per_Fabric",
+      "category": "ScopeIsolation",
+      "importance": "HIGH",
+      "claim": "There SHALL NOT be more than one DefaultOTAProvider entry per Fabric; writes introducing duplicates SHALL fail with CONSTRAINT_ERROR",
+      "formal": "∀ fabric: |{entry ∈ DefaultOTAProviders | entry.Fabric = fabric}| ≤ 1",
+      "violation": "Multiple entries per fabric create ambiguity in provider selection and potential race conditions",
+      "attack_vector": "Attacker adds multiple conflicting provider entries to cause requestor confusion or selection of malicious provider"
+    },
+    {
+      "id": "PROP_054",
+      "name": "AnnounceOTAProvider_Cannot_Overwrite_Default",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "Provider Locations from AnnounceOTAProvider SHALL NOT overwrite values set in DefaultOTAProviders attribute",
+      "formal": "∀ announcement, default_entry: AnnounceOTAProvider(announcement) ⇒ ¬Overwrite(default_entry)",
+      "violation": "Allowing announcements to overwrite defaults enables attacker to permanently redirect updates via single announcement",
+      "attack_vector": "Attacker announces malicious provider, overwriting administrator-configured default, causing all future updates to go to attacker"
+    },
+    {
+      "id": "PROP_055",
+      "name": "AnnounceOTAProvider_Fabric_Scoped",
+      "category": "ScopeIsolation",
+      "importance": "CRITICAL",
+      "claim": "AnnounceOTAProvider command SHALL be scoped to accessing fabric and SHALL fail with UNSUPPORTED_ACCESS if fabric index is 0",
+      "formal": "∀ command: (AnnounceOTAProvider(command) ∧ FabricIndex = 0) ⇒ Fail(UNSUPPORTED_ACCESS)",
+      "violation": "Cross-fabric announcements allow attacker on one fabric to compromise devices on other fabrics",
+      "attack_vector": "Attacker on compromised fabric announces malicious provider to devices on secure fabric, redirecting their updates"
+    },
+    {
+      "id": "PROP_056",
+      "name": "AnnounceOTAProvider_Max_Once_Per_24_Hours_Per_Node",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "Announcements SHOULD be made at most once every 24 hours for any given target Node unless reason is UrgentUpdateAvailable",
+      "formal": "∀ provider, target: (Announce(provider, target, t1) ∧ Announce(provider, target, t2) ∧ reason ≠ Urgent) ⇒ (t2 - t1) ≥ 86400",
+      "violation": "Excessive announcements create network congestion and waste requestor resources processing redundant announcements",
+      "attack_vector": "Attacker floods fabric with announcements to create denial of service and mask legitimate provider announcements"
+    },
+    {
+      "id": "PROP_057",
+      "name": "AnnounceOTAProvider_Minimum_1_Second_Between",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "Invocation SHALL have delay of at least 1 second between invocations from given provider to reduce networking burden",
+      "formal": "∀ provider, t1, t2: (Announce(provider, t1) ∧ Announce(provider, t2)) ⇒ (t2 - t1) ≥ 1 second",
+      "violation": "Rapid-fire announcements overwhelm network infrastructure and receiver processing capacity",
+      "attack_vector": "Compromised provider sends burst of announcements to congest network and prevent other critical communications"
+    },
+    {
+      "id": "PROP_058",
+      "name": "AnnounceOTAProvider_Random_Jitter_60_Seconds",
+      "category": "Timing",
+      "importance": "LOW",
+      "claim": "First announcement of round RECOMMENDED to be offset by random delay with distribution span ≥60 seconds",
+      "formal": "∀ provider, round: FirstAnnounce(round) ⇒ Delay(random(0, 60+))",
+      "violation": "Synchronized announcements from multiple providers create network congestion spikes",
+      "attack_vector": "Attacker synchronizes multiple fake providers to announce simultaneously, creating denial of service spike"
+    },
+    {
+      "id": "PROP_059",
+      "name": "UrgentUpdate_Random_Jitter_1_To_600_Seconds",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "Requestor receiving UrgentUpdateAvailable SHOULD query provider after random jitter delay between 1 and 600 seconds",
+      "formal": "∀ requestor: Receive(UrgentUpdateAvailable) ⇒ QueryDelay(random(1, 600))",
+      "violation": "Immediate queries from all requestors simultaneously overwhelm provider when urgent update is announced",
+      "attack_vector": "Attacker announces urgent update to large group; without jitter, creates query storm that crashes provider"
+    },
+    {
+      "id": "PROP_060",
+      "name": "BDX_URI_Scheme_Exactly_Lowercase_bdx",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "BDX URI scheme field SHALL be exactly 'bdx' in lowercase characters",
+      "formal": "∀ uri: BDX(uri) ⇒ uri.scheme = 'bdx'",
+      "violation": "Case variations or typos cause URI parsing failures, blocking image downloads",
+      "attack_vector": "Attacker provides malformed URI to cause download failure and prevent security patch installation"
+    },
+    {
+      "id": "PROP_061",
+      "name": "BDX_URI_NodeID_16_Uppercase_Hex_Chars",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "BDX URI host field SHALL use uppercase hexadecimal format with exactly 16 characters encoding NodeID",
+      "formal": "∀ uri: BDX(uri) ⇒ (Length(uri.host) = 16 ∧ Format(uri.host) = UPPERCASE_HEX)",
+      "violation": "Incorrect NodeID encoding causes requestor to contact wrong node or fail parsing, blocking downloads",
+      "attack_vector": "Attacker provides URI with wrong NodeID to redirect requestor to malicious server or cause download failure"
+    },
+    {
+      "id": "PROP_062",
+      "name": "BDX_URI_NodeID_Must_Match_Provider",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Operational Node ID in BDX URI host SHALL match NodeID of OTA Provider responding with QueryImageResponse",
+      "formal": "∀ response, uri: (BDX(uri) ∧ uri in response) ⇒ uri.host = response.ProviderNodeID",
+      "violation": "Mismatched NodeID allows malicious provider to redirect requestor to attacker-controlled node for download",
+      "attack_vector": "Compromised provider serves URI pointing to attacker's node, requestor downloads malicious firmware from attacker"
+    },
+    {
+      "id": "PROP_063",
+      "name": "BDX_URI_No_User_Section",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "User section of BDX URI authority field SHALL be absent",
+      "formal": "∀ uri: BDX(uri) ⇒ uri.authority.user = null",
+      "violation": "User section presence indicates malformed URI that may cause parsing errors",
+      "attack_vector": "Attacker includes user section to exploit URI parsing vulnerabilities"
+    },
+    {
+      "id": "PROP_064",
+      "name": "BDX_URI_No_Port_Section",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "Port section of BDX URI authority SHALL be absent as port determined through Operational Discovery",
+      "formal": "∀ uri: BDX(uri) ⇒ uri.authority.port = null",
+      "violation": "Port section violates discovery protocol and may cause connection to wrong service",
+      "attack_vector": "Attacker specifies malicious port to redirect connection to attacker-controlled service"
+    },
+    {
+      "id": "PROP_065",
+      "name": "BDX_URI_No_Query_Field",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "BDX URI SHALL NOT contain query field",
+      "formal": "∀ uri: BDX(uri) ⇒ uri.query = null",
+      "violation": "Query field indicates malformed URI that may cause parsing confusion",
+      "attack_vector": "Attacker uses query parameters to inject malicious instructions or exploit parser vulnerabilities"
+    },
+    {
+      "id": "PROP_066",
+      "name": "BDX_URI_No_Fragment_Field",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "BDX URI SHALL NOT contain fragment field",
+      "formal": "∀ uri: BDX(uri) ⇒ uri.fragment = null",
+      "violation": "Fragment field indicates malformed URI that may cause parsing issues",
+      "attack_vector": "Attacker uses fragment to cause parser confusion or exploit vulnerabilities"
+    },
+    {
+      "id": "PROP_067",
+      "name": "BDX_File_Designator_Verbatim_Use",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "BDX file designator SHALL be used verbatim without processing URL-encoded escape sequences",
+      "formal": "∀ uri, designator: Extract(uri.path) ⇒ Use(designator_raw) ∧ ¬Decode(designator)",
+      "violation": "Processing escape sequences enables path traversal attacks or file name confusion",
+      "attack_vector": "Attacker uses %2e%2e%2f encoding to perform directory traversal and access unauthorized files on BDX server"
+    },
+    {
+      "id": "PROP_068",
+      "name": "BDX_Path_Only_Valid_URI_Characters",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "BDX URI path SHALL only contain valid URI characters",
+      "formal": "∀ uri: BDX(uri) ⇒ ValidURIChars(uri.path)",
+      "violation": "Invalid characters cause parsing failures or enable injection attacks",
+      "attack_vector": "Attacker injects special characters to exploit URI parser vulnerabilities or cause denial of service"
+    },
+    {
+      "id": "PROP_069",
+      "name": "Daily_QueryImage_Recommended",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "It is RECOMMENDED for OTA Requestors to attempt daily QueryImage if capable to ensure timely access to updates including security-critical",
+      "formal": "∀ requestor: Capable(requestor) ⇒ QueryFrequency(requestor) ≈ 86400 seconds RECOMMENDED",
+      "violation": "Infrequent queries delay security patch installation, extending vulnerability window",
+      "attack_vector": "Attacker exploits known vulnerability during extended window before infrequent query discovers available patch"
+    },
+    {
+      "id": "PROP_070",
+      "name": "DownloadProtocolNotSupported_On_Incompatible_Proxy",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Provider SHALL respond DownloadProtocolNotSupported if new image available but remote server doesn't support range transfers, requestor only supports BDX, and provider doesn't support async proxy",
+      "formal": "∀ provider, requestor: (ImageAvailable ∧ ¬RangeSupport(source) ∧ OnlyBDX(requestor) ∧ ¬AsyncProxy(provider)) ⇒ Response = DownloadProtocolNotSupported",
+      "violation": "Attempting unsupported proxy mode causes transfer to hang or fail, wasting resources",
+      "attack_vector": "Attacker exploits incompatible proxy attempt to cause denial of service through resource exhaustion"
+    },
+    {
+      "id": "PROP_071",
+      "name": "MetadataForProvider_Not_Used_To_Deny_Updates",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Contents of MetadataForProvider SHALL NOT be used to deny software update to requestor unless externally agreed-upon policy exists",
+      "formal": "∀ provider, metadata: (Invalid(metadata) ∧ ¬ExternalPolicy) ⇒ ¬Deny(update)",
+      "violation": "Using metadata to gate updates creates vendor lock-in and prevents interoperable update distribution",
+      "attack_vector": "Attacker injects invalid metadata causing provider to deny legitimate updates, keeping devices vulnerable"
+    },
+    {
+      "id": "PROP_072",
+      "name": "Skip_Transfer_If_Same_Version_Fully_Downloaded",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If SoftwareVersion matches previously downloaded and verified image header, requestor SHOULD skip transfer and move to apply step",
+      "formal": "∀ requestor, version: (ResponseVersion = DownloadedVersion ∧ Verified(downloaded)) ⇒ SkipTransfer SHOULD_BE_TRUE",
+      "violation": "Re-downloading identical verified image wastes bandwidth and time, delaying update application",
+      "attack_vector": "Attacker forces repeated downloads to waste bandwidth and delay security patch installation"
+    },
+    {
+      "id": "PROP_073",
+      "name": "Resume_Or_Restart_Partially_Downloaded",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If version matches partially downloaded image, requestor SHOULD attempt to continue from where it left off if capable, otherwise start anew",
+      "formal": "∀ requestor, version: (ResponseVersion = PartialVersion) ⇒ (Resume(if_capable) ∨ Restart)",
+      "violation": "Always restarting wastes bandwidth on constrained networks; never restarting risks using corrupted partial download",
+      "attack_vector": "Attacker corrupts partial download; if not restarted, corrupted data propagates to installed image"
+    },
+    {
+      "id": "PROP_074",
+      "name": "Reject_Same_Or_Older_Version",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If SoftwareVersion indicates same or older version, requestor SHALL go back to awaiting next query opportunity",
+      "formal": "∀ requestor, response: (ResponseVersion ≤ CurrentVersion) ⇒ IgnoreUpdate ∧ AwaitNextQuery",
+      "violation": "Accepting same/older versions enables downgrade attacks to vulnerable firmware",
+      "attack_vector": "Attacker serves older vulnerable version to exploit known CVEs patched in current version"
+    },
+    {
+      "id": "PROP_075",
+      "name": "Reject_Unusable_ImageURI",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If ImageURI contains information unusable by requestor, SHALL go back to awaiting next query opportunity",
+      "formal": "∀ requestor, uri: ¬Usable(requestor, uri) ⇒ IgnoreUpdate ∧ AwaitNextQuery",
+      "violation": "Processing unusable URI wastes requestor resources attempting impossible download",
+      "attack_vector": "Attacker serves intentionally malformed URI to trap requestor in failed download loop"
+    },
+    {
+      "id": "PROP_076",
+      "name": "Retry_Busy_Provider_Before_Trying_Others",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Requestor SHOULD attempt to query same provider again after Busy response rather than querying different provider",
+      "formal": "∀ requestor, provider: Receive(Busy, provider) ⇒ RetryFirst(provider) SHOULD_BE_TRUE",
+      "violation": "Immediately switching providers wastes provider's resources already invested in preparing update",
+      "attack_vector": "Attacker exploits provider-switching to cause multiple providers to simultaneously prepare same image, exhausting resources"
+    },
+    {
+      "id": "PROP_077",
+      "name": "Query_Timing_Exception_On_Timekeeping_Loss",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "If node loses timekeeping state due to power loss/restart, timing constraints MAY be ignored but 120-second minimum must be respected",
+      "formal": "∀ requestor: LostTimekeeping(requestor) ⇒ (MayIgnore(delay_constraints) ∧ MustRespect(120_second_minimum))",
+      "violation": "Completely ignoring constraints after restart enables rapid queries; keeping strict delays prevents critical updates after restart",
+      "attack_vector": "Attacker induces rapid restart cycles to cause query floods when timing constraints ignored"
+    },
+    {
+      "id": "PROP_078",
+      "name": "Prefer_BDX_URI_When_BDX_Supported",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If requestor supports BDXSynchronous or BDXAsynchronous, provider SHALL prefer responding with BDX protocol URI",
+      "formal": "∀ provider, requestor: (Supports(requestor, BDX_*) ∧ CanFulfillBDX(provider)) ⇒ Prefer(BDX_URI)",
+      "violation": "Not preferring BDX forces constrained devices to use internet downloads they may not support or have access to",
+      "attack_vector": "Attacker manipulates provider to avoid BDX, forcing requestor to attempt HTTPS download it cannot complete"
+    },
+    {
+      "id": "PROP_079",
+      "name": "Respond_HTTPS_If_Available_And_Supported",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If HTTPS supported by requestor and image available from HTTPS server, provider SHOULD respond with direct source URI",
+      "formal": "∀ provider, requestor: (Supports(requestor, HTTPS) ∧ Available(image, HTTPS)) ⇒ Respond(direct_URI) SHOULD_BE_TRUE",
+      "violation": "Forcing proxy when direct HTTPS available wastes provider resources and reduces scalability",
+      "attack_vector": "Attacker forces all traffic through provider proxy to enable MITM attacks or provider resource exhaustion"
+    },
+    {
+      "id": "PROP_080",
+      "name": "VendorSpecific_Protocol_Requires_Capability_Knowledge",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "If VendorSpecific protocol supported, provider SHOULD respond with URI known to be understood by requestor",
+      "formal": "∀ provider, requestor: Supports(requestor, VendorSpecific) ⇒ (KnowsCapability(provider) ∧ UnderstandableURI) SHOULD_BE_TRUE",
+      "violation": "Responding with unknown vendor-specific URI causes download failure",
+      "attack_vector": "Attacker provides malicious vendor-specific URI that exploits requestor's custom protocol parser"
+    },
+    {
+      "id": "PROP_081",
+      "name": "DCL_DeviceSoftwareVersionModel_Indexing",
+      "category": "IdentityBinding",
+      "importance": "HIGH",
+      "claim": "DCL Software Image information is indexed by VendorID, ProductID, and SoftwareVersion",
+      "formal": "∀ entry ∈ DCL: Key(entry) = (VendorID, ProductID, SoftwareVersion)",
+      "violation": "Wrong indexing causes provider to serve images for wrong vendors/products, creating incompatibility or security issues",
+      "attack_vector": "Attacker exploits indexing flaw to retrieve image for different product, installing incompatible firmware"
+    },
+    {
+      "id": "PROP_082",
+      "name": "Only_SoftwareVersionValid_True_Candidates",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Provider SHALL obtain candidates from DCL keeping only entries where SoftwareVersionValid is true",
+      "formal": "∀ candidate ∈ Candidates: candidate.SoftwareVersionValid = TRUE",
+      "violation": "Including invalid versions allows installation of recalled, defective, or compromised firmware",
+      "attack_vector": "Attacker exploits inclusion of recalled version to force installation of firmware with known critical vulnerability"
+    },
+    {
+      "id": "PROP_083",
+      "name": "Candidate_Version_Greater_Than_Current",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Positive match requires requestor.softwareVersion < candidate.softwareVersion",
+      "formal": "∀ match: PositiveMatch(match) ⇒ CurrentVersion < CandidateVersion",
+      "violation": "Matching same/lower versions enables downgrade attacks",
+      "attack_vector": "Attacker forces matching of older version to downgrade device to vulnerable firmware"
+    },
+    {
+      "id": "PROP_084",
+      "name": "Candidate_Min_Version_Check",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Positive match requires requestor.softwareVersion ≥ candidate.minApplicableSoftwareVersion",
+      "formal": "∀ match: PositiveMatch(match) ⇒ CurrentVersion ≥ MinApplicableVersion",
+      "violation": "Installing on too-old base causes incompatibility from missing prerequisites or incompatible data structures",
+      "attack_vector": "Attacker bypasses minimum check to install image that crashes or creates exploitable undefined behavior on old base"
+    },
+    {
+      "id": "PROP_085",
+      "name": "Candidate_Max_Version_Check",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Positive match requires requestor.softwareVersion ≤ candidate.maxApplicableSoftwareVersion",
+      "formal": "∀ match: PositiveMatch(match) ⇒ CurrentVersion ≤ MaxApplicableVersion",
+      "violation": "Installing on too-new base attempts to downgrade or apply obsolete patch, causing conflicts",
+      "attack_vector": "Attacker forces installation of old update on newer base to reintroduce vulnerabilities or create version confusion"
+    },
+    {
+      "id": "PROP_086",
+      "name": "Cache_Reuse_With_Matching_Checksum",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Provider MAY serve cached copy if OtaChecksum, OtaChecksumType, and OtaFileSize all match candidate",
+      "formal": "∀ cached, candidate: (cached.checksum = candidate.checksum ∧ cached.type = candidate.type ∧ cached.size = candidate.size) ⇒ MayServe(cached)",
+      "violation": "Wrong cache matching serves corrupted or wrong-version image; overly strict matching wastes bandwidth re-downloading identical files",
+      "attack_vector": "Attacker exploits weak cache matching to serve malicious cached image with colliding checksum"
+    },
+    {
+      "id": "PROP_087",
+      "name": "Announcement_May_Delay_At_Least_1_Sec_Random_60_Sec",
+      "category": "Timing",
+      "importance": "LOW",
+      "claim": "First announcement delay SHOULD be random with distribution span ≥60 seconds for jitter",
+      "formal": "∀ provider, round_start: FirstDelay(round_start) SHOULD BE random ∈ [0, 60+]",
+      "violation": "Synchronized announcements create network congestion spikes",
+      "attack_vector": "Attacker synchronizes announcements to create denial of service through burst traffic"
+    },
+    {
+      "id": "PROP_088",
+      "name": "Provider_May_Not_Validate_Image_Signatures",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "OTA Provider SHOULD NOT expect to be able to validate OTA Software Image signatures on its own",
+      "formal": "∀ provider: ¬Expected(ValidateSignature(provider))",
+      "violation": "Expecting provider validation creates false sense of security when provider uses wrong keys or is compromised",
+      "attack_vector": "Attacker compromises provider's signature validation to serve malicious images that appear validated"
+    },
+    {
+      "id": "PROP_089",
+      "name": "Stable_Release_Notes_URLs",
+      "category": "Security",
+      "importance": "LOW",
+      "claim": "Vendor-provided Software Update metadata URLs RECOMMENDED to be maintained long-term with stable locations",
+      "formal": "∀ vendor, url: ReleaseNotes(url) ⇒ LongTerm(url) ∧ Stable(url) RECOMMENDED",
+      "violation": "Broken URLs prevent users from making informed consent decisions about updates",
+      "attack_vector": "Attacker exploits broken URLs to host fake release notes at similar domain, misleading users about update contents"
+    },
+    {
+      "id": "PROP_090",
+      "name": "Consent_Revocation_Mechanism_Recommended",
+      "category": "AccessControl",
+      "importance": "MEDIUM",
+      "claim": "Any method storing consent signals RECOMMENDED to also provide way to revoke consent in future",
+      "formal": "∀ consent_storage: Stores(consent) ⇒ Provides(revoke_mechanism) RECOMMENDED",
+      "violation": "Inability to revoke consent locks users into automatic update policy they may want to change",
+      "attack_vector": "Attacker exploits irrevocable consent to force unwanted updates at inopportune times"
+    },
+    {
+      "id": "PROP_091",
+      "name": "Consent_Must_Allow_Update_Despite_Metadata_Errors",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "OTA Provider SHALL allow User to consent to update even if errors occur providing additional release information",
+      "formal": "∀ provider, update: Error(additional_info) ⇒ StillAllowConsent(update)",
+      "violation": "Blocking consent on metadata errors prevents critical security updates when external services fail",
+      "attack_vector": "Attacker DoS attacks release notes server to prevent users from consenting to security patches, keeping devices vulnerable"
+    },
+    {
+      "id": "PROP_092",
+      "name": "Sufficient_Storage_For_One_Provider_Per_Fabric",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "OTA Requestor SHALL have sufficient storage to maintain one OTA Provider entry per Fabric within DefaultOTAProviders list",
+      "formal": "∀ requestor: Storage(DefaultOTAProviders) ≥ NumFabrics(requestor)",
+      "violation": "Insufficient storage prevents requestor from maintaining default providers, breaking update mechanism",
+      "attack_vector": "Attacker fills provider storage with junk entries, preventing legitimate default provider storage"
+    },
+    {
+      "id": "PROP_093",
+      "name": "Commissioner_Should_Add_DefaultOTAProvider",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Commissioners SHOULD add entry to DefaultOTAProviders if OTA Provider known at commissioning time",
+      "formal": "∀ commissioner: KnownProvider(commissioning_time) ⇒ AddToDefault(provider) SHOULD_BE_TRUE",
+      "violation": "Missing default provider delays first update query and may leave devices without update mechanism",
+      "attack_vector": "Attacker prevents provider configuration during commissioning, leaving devices unable to receive security patches"
+    },
+    {
+      "id": "PROP_094",
+      "name": "Target_Interactions_Use_Given_Endpoint",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "When communicating with provider location from DefaultOTAProviders or AnnounceOTAProvider, requestor SHALL target given Endpoint on given ProviderNodeID",
+      "formal": "∀ requestor, location: Communicate(requestor, location) ⇒ Target(location.NodeID, location.Endpoint)",
+      "violation": "Wrong endpoint targeting causes communication failures or targets wrong cluster server",
+      "attack_vector": "Attacker manipulates endpoint field to cause requestor to interact with attacker-controlled cluster on provider node"
+    },
+    {
+      "id": "PROP_095",
+      "name": "May_Expunge_Stale_Provider_Entries",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "OTA Requestor MAY expunge OTA Providers from list if determined entry is stale or obsolete",
+      "formal": "∀ requestor, entry: (Stale(entry) ∨ Obsolete(entry)) ⇒ MayExpunge(entry)",
+      "violation": "Keeping stale entries wastes query attempts on unavailable providers; aggressive expungement loses valid providers",
+      "attack_vector": "Attacker manipulates staleness detection to cause expungement of legitimate providers"
+    },
+    {
+      "id": "PROP_096",
+      "name": "Provider_Should_Have_Reliable_Availability",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "OTA Provider determining insufficient availability SHOULD avoid responding with available image unless sufficient availability for long-running BDX transfer",
+      "formal": "∀ provider: ¬SufficientAvailability(provider) ⇒ ¬RespondAvailable SHOULD_BE_TRUE",
+      "violation": "Provider with poor availability advertises images it cannot serve, causing requestor transfer failures",
+      "attack_vector": "Attacker configures unstable provider as default, causing repeated transfer failures and preventing updates"
+    },
+    {
+      "id": "PROP_097",
+      "name": "Provider_Role_Needs_Reliable_Network_Power",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "OTA Provider role SHOULD be fulfilled by Node with reliable network availability and stable power",
+      "formal": "∀ node: Provider(node) ⇒ (Reliable(network) ∧ Stable(power)) SHOULD_BE_TRUE",
+      "violation": "Unreliable provider causes frequent transfer failures, extended update delays, and wasted resources",
+      "attack_vector": "Attacker designates battery-operated unstable node as provider to block update distribution across fabric"
+    },
+    {
+      "id": "PROP_098",
+      "name": "Avoid_Repeated_Image_Downloads_For_Same_Model",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "OTA Providers SHOULD avoid downloading same Software Image repeatedly for proxying if multiple requestors request same image",
+      "formal": "∀ provider, image: MultipleRequestors(image) ⇒ DownloadOnce(image) SHOULD_BE_TRUE",
+      "violation": "Repeated downloads waste bandwidth and external server resources",
+      "attack_vector": "Attacker exploits lack of deduplication to cause provider to repeatedly download, exhausting bandwidth quota"
+    },
+    {
+      "id": "PROP_099",
+      "name": "Sleepy_Devices_Should_Optimize_Sleep_During_Download",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Sleepy End Devices RECOMMENDED to make best effort optimizing sleep intervals during transfer to ensure timely completion",
+      "formal": "∀ sleepy_device: Downloading(sleepy_device) ⇒ OptimizeSleep(sleepy_device) RECOMMENDED",
+      "violation": "Not optimizing sleep causes extended download times, increasing vulnerability window and provider resource usage",
+      "attack_vector": "Attacker exploits long download times to maintain exploitation window for known vulnerabilities"
+    },
+    {
+      "id": "PROP_100",
+      "name": "StateTransition_Event_On_UpdateState_Change",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "StateTransition event SHALL be generated when UpdateState attribute changes",
+      "formal": "∀ requestor, change: UpdateState(t1) ≠ UpdateState(t2) ⇒ GenerateEvent(StateTransition)",
+      "violation": "Missing events prevent administrators from monitoring update progress and detecting stuck/failed updates",
+      "attack_vector": "Attacker blocks event generation to hide failed or malicious update activity from monitoring systems"
+    },
+    {
+      "id": "PROP_101",
+      "name": "VersionApplied_Event_After_Update_Applied",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "VersionApplied event SHALL be generated whenever new version starts executing after being applied",
+      "formal": "∀ device, version: Executing(version_new) ∧ Applied(version_new) ⇒ GenerateEvent(VersionApplied)",
+      "violation": "Missing event prevents tracking of successful updates and detecting version inconsistencies",
+      "attack_vector": "Attacker suppresses event to hide successful installation of malicious firmware from audit logs"
+    },
+    {
+      "id": "PROP_102",
+      "name": "VersionApplied_Even_For_Out_Of_Band_Updates",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "VersionApplied event SHOULD be generated even if software update done using means outside this cluster",
+      "formal": "∀ device, update: (Applied(update) ∧ OutOfBand(update)) ⇒ GenerateEvent(VersionApplied) SHOULD_BE_TRUE",
+      "violation": "Missing events for out-of-band updates create incomplete audit trail",
+      "attack_vector": "Attacker uses out-of-band mechanism to hide malicious updates from cluster-based monitoring"
+    },
+    {
+      "id": "PROP_103",
+      "name": "DownloadError_Event_On_Download_Error",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "DownloadError event SHALL be generated whenever error occurs during OTA Requestor download operation",
+      "formal": "∀ requestor: Error(download) ⇒ GenerateEvent(DownloadError)",
+      "violation": "Missing error events prevent troubleshooting and detecting systematic attack patterns",
+      "attack_vector": "Attacker suppresses error events to hide ongoing attacks causing download failures"
+    },
+    {
+      "id": "PROP_104",
+      "name": "Fabric_Scoped_DefaultOTAProviders",
+      "category": "ScopeIsolation",
+      "importance": "CRITICAL",
+      "claim": "DefaultOTAProviders entries are fabric-scoped with FabricIndex",
+      "formal": "∀ entry ∈ DefaultOTAProviders: HasFabricScope(entry)",
+      "violation": "Lack of fabric scoping allows cross-fabric provider confusion and security breaches",
+      "attack_vector": "Attacker on one fabric manipulates provider entries visible to other fabrics, redirecting their updates"
+    },
+    {
+      "id": "PROP_105",
+      "name": "UpdatePossible_Reflects_Current_Capability",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "UpdatePossible SHALL be set to True if requestor currently able to be updated, False if any condition prevents update",
+      "formal": "∀ requestor: CanUpdate(requestor) ⇔ UpdatePossible(requestor) = TRUE",
+      "violation": "Incorrect status misleads provider and administrators about update readiness",
+      "attack_vector": "Attacker manipulates status to hide inability to update or falsely claim inability to avoid updates"
+    },
+    {
+      "id": "PROP_106",
+      "name": "UpdateState_Timely_Update",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "UpdateState SHOULD be updated in timely manner whenever OTA Requestor internal state updates",
+      "formal": "∀ requestor, state_change: InternalState(t) ≠ InternalState(t+δ) ⇒ UpdateAttribute(UpdateState) with_minimal_delay",
+      "violation": "Stale state prevents accurate monitoring of update progress",
+      "attack_vector": "Attacker exploits stale state to hide stuck or malicious update processes"
+    },
+    {
+      "id": "PROP_107",
+      "name": "UpdateStateProgress_Null_When_Not_Applicable",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "UpdateStateProgress SHALL be null if progress indication does not apply to current state",
+      "formal": "∀ requestor, state: ¬ProgressApplicable(state) ⇒ UpdateStateProgress = null",
+      "violation": "Non-null values in non-applicable states cause confusion in monitoring systems",
+      "attack_vector": "Attacker uses invalid progress values to create false progress indicators hiding stuck updates"
+    },
+    {
+      "id": "PROP_108",
+      "name": "UpdateStateProgress_0_Beginning_100_Complete",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "Value of 0 SHALL indicate beginning has occurred; value of 100 SHALL indicate completion",
+      "formal": "∀ requestor: (UpdateStateProgress = 0 ⇒ Beginning) ∧ (UpdateStateProgress = 100 ⇒ Complete)",
+      "violation": "Incorrect progress values mislead monitoring and troubleshooting efforts",
+      "attack_vector": "Attacker manipulates progress to show false completion or hide actual progress"
+    },
+    {
+      "id": "PROP_109",
+      "name": "UpdateStateProgress_Avoid_Over_Reporting",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "Node SHOULD take care to avoid over-reporting progress when attribute is part of subscription",
+      "formal": "∀ node: Subscribed(UpdateStateProgress) ⇒ LimitUpdates(progress_changes) SHOULD_BE_TRUE",
+      "violation": "Excessive progress updates waste network bandwidth and processing resources",
+      "attack_vector": "Attacker causes rapid progress updates to create denial of service through report flooding"
+    },
+    {
+      "id": "PROP_110",
+      "name": "DelayedActionTime_Max_86400_Seconds_Assumption",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "If DelayedActionTime higher than 86400 seconds, requestor MAY assume value of 86400 to reduce undue delays",
+      "formal": "∀ requestor, response: DelayedActionTime > 86400 ⇒ MayUse(86400)",
+      "violation": "Excessive delays keep vulnerable devices unpatched for extended periods",
+      "attack_vector": "Compromised provider sets extremely long delays to prevent security patch installation"
+    },
+    {
+      "id": "PROP_111",
+      "name": "NotifyUpdateApplied_Optional_Never_Required",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "NotifyUpdateApplied SHALL be considered optional and SHALL NOT result in reduced OTA Provider functionality if never invoked",
+      "formal": "∀ provider: ¬Receive(NotifyUpdateApplied) ⇒ ¬ReducedFunctionality(provider)",
+      "violation": "Requiring notification breaks tolerant design and causes provider failures when requestors don't notify",
+      "attack_vector": "Attacker blocks notifications to cause provider to malfunction if improperly dependent on them"
+    },
+    {
+      "id": "PROP_112",
+      "name": "NotifyUpdateApplied_For_Out_Of_Band_Updates",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "NotifyUpdateApplied SHOULD be invoked when requestor successfully applied image obtained through means different than this cluster",
+      "formal": "∀ requestor, update: (Applied(update) ∧ OutOfBand(update)) ⇒ Notify(provider) SHOULD_BE_TRUE",
+      "violation": "Missing notifications for out-of-band updates create incomplete provider tracking",
+      "attack_vector": "Attacker uses out-of-band mechanism to hide update activity from provider's awareness"
+    },
+    {
+      "id": "PROP_113",
+      "name": "Discontinue_Only_For_Significant_Negative_Effects",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Discontinue action SHALL only be used when image may cause significant negative effects like unrecoverable functionality loss or damage",
+      "formal": "∀ provider, image: IssueDiscontinue(image) ⇒ SignificantNegativeEffects(image)",
+      "violation": "Frivolous use of Discontinue disrupts legitimate updates; not using when needed allows harmful images to be installed",
+      "attack_vector": "Attacker issues Discontinue for legitimate images to block security patches or fails to discontinue malicious image"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "Secure channels (CASE) between OTA Requestor and OTA Provider are properly established and maintained",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_003, PROP_004, PROP_017, PROP_019, PROP_049 - Without secure channels, attacker can perform MITM attacks to serve malicious firmware regardless of signature requirements"
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "Vendor private signing keys are properly secured and not compromised",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_003, PROP_004, PROP_088 - If vendor keys compromised, attacker can sign malicious firmware that passes all verification checks"
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "OTA Requestor has accurate timekeeping capability for enforcing timing constraints",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_001, PROP_014, PROP_015, PROP_027, PROP_038, PROP_041, PROP_056, PROP_057, PROP_069, PROP_077 - Without accurate time, query rate limiting and delay enforcement fail"
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Basic Information Cluster accurately reports device identity (VendorID, ProductID, SoftwareVersion)",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_011, PROP_012, PROP_013, PROP_081 - Incorrect identity reporting causes wrong firmware to be served, leading to bricking or security vulnerabilities"
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Fabric isolation is properly enforced at network and protocol layers",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_053, PROP_055, PROP_104 - Without fabric isolation, attacker on one fabric can manipulate or observe updates on other fabrics"
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "ACL enforcement is properly implemented and cannot be bypassed",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_006, PROP_007, PROP_023, PROP_025, PROP_054, PROP_090 - If ACL can be bypassed, unauthorized nodes can inject malicious updates or block legitimate ones"
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Distributed Compliance Ledger (DCL) is trustworthy and not compromised",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_021, PROP_022, PROP_081, PROP_082, PROP_083, PROP_084, PROP_085, PROP_086 - Compromised DCL allows attacker to advertise malicious firmware as legitimate"
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "BDX Protocol implementation is secure and free from vulnerabilities",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_016, PROP_026, PROP_027, PROP_028, PROP_029, PROP_030, PROP_031, PROP_067 - Vulnerable BDX allows buffer overflows, path traversal, or other exploits during download"
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "Node has sufficient storage to download and store complete OTA image before applying",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_032, PROP_034, PROP_072, PROP_073, PROP_092 - Insufficient storage causes download failures, incomplete transfers, or inability to cache images"
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "Updates can be applied atomically - either fully applied or fully rolled back",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_042, PROP_044, PROP_047 - Non-atomic updates leave device in inconsistent state if interrupted, potentially bricking device"
+    },
+    {
+      "id": "ASSUM_011",
+      "statement": "Version numbers are assigned monotonically and meaningfully by vendors",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_002, PROP_022, PROP_074, PROP_083 - If vendor reuses version numbers or assigns them randomly, version-based protections fail"
+    },
+    {
+      "id": "ASSUM_012",
+      "statement": "User consent mechanism is secure and cannot be spoofed",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_023, PROP_024, PROP_025, PROP_090, PROP_091 - Spoofed consent allows unauthorized updates or blocks legitimate ones"
+    },
+    {
+      "id": "ASSUM_013",
+      "statement": "Network connectivity is generally available but may be intermittent",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_027, PROP_032, PROP_034, PROP_051, PROP_096, PROP_097, PROP_099 - Poor network assumptions cause protocol to fail on real-world constrained networks"
+    },
+    {
+      "id": "ASSUM_014",
+      "statement": "OTA Provider has sufficient resources (bandwidth, storage, compute) to serve multiple requestors",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_010, PROP_033, PROP_052, PROP_096, PROP_097, PROP_098 - Resource exhaustion prevents provider from serving legitimate updates"
+    },
+    {
+      "id": "ASSUM_015",
+      "statement": "Operational Discovery mechanism works correctly to find node endpoints",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_062, PROP_064, PROP_094 - Without proper discovery, requestor cannot locate provider or connect to wrong endpoint"
+    },
+    {
+      "id": "ASSUM_016",
+      "statement": "Image integrity checks (checksums) are cryptographically secure",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_033, PROP_086 - Weak checksums allow collision attacks where malicious image has same checksum as legitimate one"
+    },
+    {
+      "id": "ASSUM_017",
+      "statement": "LocalConfigDisabled attribute is properly enforced and cannot be manipulated",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_025 - If LocalConfigDisabled can be bypassed, centralized policy enforcement fails"
+    },
+    {
+      "id": "ASSUM_018",
+      "statement": "Events (StateTransition, VersionApplied, DownloadError) are reliably delivered to subscribers",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_100, PROP_101, PROP_102, PROP_103 - Lost events prevent monitoring and create incomplete audit trail"
+    },
+    {
+      "id": "ASSUM_019",
+      "statement": "UpdateToken is stored securely and cannot be easily guessed or stolen",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_008, PROP_009, PROP_035, PROP_036 - Stolen/guessed tokens allow session hijacking and update manipulation"
+    },
+    {
+      "id": "ASSUM_020",
+      "statement": "Commissioner/Administrator installing ACL entries is trusted and authorized",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_006, PROP_007, PROP_093 - Compromised commissioner can install malicious ACL entries allowing unauthorized updates"
+    },
+    {
+      "id": "ASSUM_021",
+      "statement": "Software Image headers contain accurate metadata (version, size, checksum)",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_031, PROP_072, PROP_073, PROP_086 - Incorrect metadata causes mismatched expectations, buffer overflows, or wrong cache hits"
+    },
+    {
+      "id": "ASSUM_022",
+      "statement": "Node can detect and recover from corrupted or failed updates",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_032, PROP_034, PROP_044, PROP_047 - Without recovery, failed update permanently bricks device"
+    },
+    {
+      "id": "ASSUM_023",
+      "statement": "Range-based and partial transfers are correctly implemented without introducing vulnerabilities",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_070, PROP_073 - Buggy range transfer implementation allows reading arbitrary file portions or memory disclosure"
+    },
+    {
+      "id": "ASSUM_024",
+      "statement": "Provider can determine if remote source supports range-based transfers",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_070 - If provider cannot detect range support, may attempt impossible proxy configurations"
+    },
+    {
+      "id": "ASSUM_025",
+      "statement": "Deletion/clearing of downloaded images is secure and complete",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_042 - Incomplete deletion leaves image fragments that could be partially applied or leaked"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "Idle",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_069", "PROP_077"],
+      "critical_property": "PROP_005 - Node must not rely solely on announcements to transition from Idle to Querying"
+    },
+    {
+      "state_name": "Querying",
+      "properties_enforcing_transitions": ["PROP_010", "PROP_011", "PROP_012", "PROP_013", "PROP_018"],
+      "critical_property": "PROP_001 - Cannot query same provider more frequently than 120 seconds"
+    },
+    {
+      "state_name": "DelayedOnQuery",
+      "properties_enforcing_transitions": ["PROP_014", "PROP_015", "PROP_077"],
+      "critical_property": "PROP_014 - Must respect delay after Busy before returning to Querying"
+    },
+    {
+      "state_name": "Downloading",
+      "properties_enforcing_transitions": ["PROP_016", "PROP_017", "PROP_026", "PROP_027", "PROP_032"],
+      "critical_property": "PROP_003 - Image being downloaded must have valid signature to transition to Applying"
+    },
+    {
+      "state_name": "Applying",
+      "properties_enforcing_transitions": ["PROP_037", "PROP_038", "PROP_039", "PROP_044"],
+      "critical_property": "PROP_004 - Must detect tampering and reject image before completing apply transition"
+    },
+    {
+      "state_name": "DelayedOnApply",
+      "properties_enforcing_transitions": ["PROP_040", "PROP_041"],
+      "critical_property": "PROP_041 - Total delay cannot exceed 24 hours before forcing transition to Applying"
+    },
+    {
+      "state_name": "DelayedOnUserConsent",
+      "properties_enforcing_transitions": ["PROP_023", "PROP_024", "PROP_025"],
+      "critical_property": "PROP_025 - Cannot delegate consent if LocalConfigDisabled is true"
+    },
+    {
+      "state_name": "RollingBack",
+      "properties_enforcing_transitions": ["PROP_047", "ASSUM_010", "ASSUM_022"],
+      "critical_property": "ASSUM_010 - Rollback capability requires atomic update assumptions"
+    }
+  ],
+  "additionalInsights": "This OTA specification reveals several sophisticated attack surfaces: (1) Timing-based DoS through query flooding if PROP_001 not enforced; (2) Version confusion attacks exploiting non-monotonic versions or bypassed version checks; (3) Cache poisoning if PROP_086 matching is weak; (4) Update denial through notification blocking if PROP_036 not followed; (5) Consent spoofing if user consent mechanisms not cryptographically protected; (6) Cross-fabric attacks if fabric isolation (PROP_055, PROP_104) fails; (7) UpdateToken session hijacking if PROP_008 length constraint violated; (8) BDX URI manipulation attacks (PROP_062, PROP_067) enabling MITM or path traversal; (9) Delayed patch window exploitation if PROP_041 violated with excessive delays; (10) Terminal state lockout preventing recovery if PROP_034 not implemented. The specification has explicit tension between reliability (allowing updates as last resort after failures) and security (strict validation), resolved through PROP_044's 24-hour/3-attempt escape clause. The idempotency requirement (PROP_010) is critical security property preventing race conditions and replay attacks. Provider trust assumptions are asymmetric - provider cannot validate signatures (PROP_088) but must serve untampered images (PROP_019), creating single point of failure if provider compromised. Fabric scoping (PROP_055, PROP_104) is critical isolation boundary that if violated enables cross-fabric image serving attacks.",
+  "summary": {
+    "total_properties": 113,
+    "by_importance": {
+      "CRITICAL": 28,
+      "HIGH": 38,
+      "MEDIUM": 33,
+      "LOW": 14
+    },
+    "by_category": {
+      "Security": 20,
+      "Timing": 16,
+      "Correctness": 30,
+      "Cryptography": 4,
+      "Consistency": 3,
+      "StateLifecycle": 6,
+      "AccessControl": 7,
+      "IdentityBinding": 4,
+      "ScopeIsolation": 4,
+      "Atomicity": 0,
+      "Revocation": 0,
+      "ReplayProtection": 0
+    },
+    "total_assumptions": 25
+  }
+}

@@ -1,0 +1,556 @@
+{
+  "fsm_model": {
+    "protocol_name": "Message Counter Synchronization Protocol (MCSP)",
+    "protocol_id": "4.18",
+    "category": "Security Protocol",
+    "description": "Secure synchronization of message counters for group encrypted messages to prevent replay attacks",
+    "roles": [
+      {
+        "role_name": "Initiator",
+        "description": "Node that receives unsynchronized message and initiates counter synchronization"
+      },
+      {
+        "role_name": "Responder",
+        "description": "Node that responds to synchronization requests with current counter value"
+      }
+    ],
+    "states": [
+      {
+        "state_name": "Idle",
+        "description": "Node is idle, no active synchronization exchange",
+        "invariants": [
+          "No active MCSP exchange for this peer and group key pair",
+          "RemainingTime == 0 or undefined",
+          "No cached messages waiting for synchronization"
+        ],
+        "role": "Both"
+      },
+      {
+        "state_name": "UnsynchronizedMessageReceived",
+        "description": "Receiver has received a message from peer whose counter is unknown",
+        "invariants": [
+          "Message is cryptographically verified",
+          "Message is of Group Session Type",
+          "No Message Reception State exists for this peer and group key",
+          "C Flag determines trust-first vs cache-and-sync handling"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "MessageCached",
+        "description": "Message stored awaiting synchronization (cache-and-sync policy)",
+        "invariants": [
+          "GroupKeySecurityPolicy == cache-and-sync",
+          "Unsynchronized message is stored for later processing",
+          "No other MCSP exchange active for this peer and group key",
+          "Random jitter delay may be applied before sending request"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "WaitingForSyncResponse",
+        "description": "Initiator has sent MsgCounterSyncReq and awaits MsgCounterSyncRsp",
+        "invariants": [
+          "Active synchronization exchange exists",
+          "Challenge value stored for response verification",
+          "Timer armed with MSG_COUNTER_SYNC_TIMEOUT",
+          "Exchange ID, Source and Destination Node IDs recorded",
+          "Session context maintained (Fabric Index, Peer Node ID, Role, etc.)"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "ProcessingSyncRequest",
+        "description": "Responder received MsgCounterSyncReq and is preparing response",
+        "invariants": [
+          "Destination Node ID matches receiver's Node ID",
+          "MsgCounterSyncReq is authenticated and decrypted",
+          "Challenge value extracted from request",
+          "Session context created for response (maintained only during response generation)"
+        ],
+        "role": "Responder"
+      },
+      {
+        "state_name": "Synchronized",
+        "description": "Counter synchronization completed successfully",
+        "invariants": [
+          "Peer's group key data message counter set to Synchronized Counter",
+          "Message Reception State bitmap cleared for the peer",
+          "Peer's counter marked as synchronized",
+          "Cached message(s) processed in order received",
+          "Synchronization exchange closed"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "SyncTimeout",
+        "description": "Synchronization response not received before timeout",
+        "invariants": [
+          "MSG_COUNTER_SYNC_TIMEOUT expired",
+          "Synchronization exchange closed",
+          "Any cached message waiting on this exchange discarded",
+          "Peer remains unsynchronized"
+        ],
+        "role": "Initiator"
+      },
+      {
+        "state_name": "VerificationFailed",
+        "description": "MsgCounterSyncRsp verification failed",
+        "invariants": [
+          "Response silently ignored",
+          "One or more verification checks failed (Exchange ID, Challenge/Response, Node IDs)",
+          "Peer remains unsynchronized",
+          "Exchange remains active until timeout"
+        ],
+        "role": "Initiator"
+      }
+    ],
+    "transitions": [
+      {
+        "transition_id": "T1",
+        "from_state": "Idle",
+        "to_state": "UnsynchronizedMessageReceived",
+        "trigger": "ReceiveGroupMessage",
+        "role": "Initiator",
+        "guard": [
+          "message.SessionType == Group",
+          "message is cryptographically verified",
+          "MessageReceptionState does not exist for message.SourceNodeID and GroupKey"
+        ],
+        "actions": [
+          "Extract SourceNodeID from message",
+          "Verify message authentication",
+          "Determine if control (C Flag = 1) or data (C Flag = 0) message"
+        ],
+        "timing_requirements": "Immediate upon message receipt and authentication"
+      },
+      {
+        "transition_id": "T2",
+        "from_state": "UnsynchronizedMessageReceived",
+        "to_state": "Idle",
+        "trigger": "ApplyTrustFirst",
+        "role": "Initiator",
+        "guard": [
+          "C Flag == 1 (control message)",
+          "OR (C Flag == 0 AND GroupKeySecurityPolicy == trust-first)"
+        ],
+        "actions": [
+          "Create Message Reception State",
+          "Set max_message_counter := message.MessageCounter",
+          "Clear Message Reception State bitmap",
+          "Mark peer's counter as synchronized",
+          "Process the message immediately"
+        ],
+        "timing_requirements": "Immediate trust-first synchronization without MCSP exchange"
+      },
+      {
+        "transition_id": "T3",
+        "from_state": "UnsynchronizedMessageReceived",
+        "to_state": "MessageCached",
+        "trigger": "CacheForSync",
+        "role": "Initiator",
+        "guard": [
+          "C Flag == 0 (data message)",
+          "GroupKeySecurityPolicy == cache-and-sync",
+          "No active MCSP exchange for this peer Node ID and group key"
+        ],
+        "actions": [
+          "Store message for later processing",
+          "Record Peer Node ID from message.SourceNodeID",
+          "Record Group Session ID and operational group key",
+          "Initiate random jitter delay between 0 and MSG_COUNTER_SYNC_REQ_JITTER"
+        ],
+        "timing_requirements": "Message cached immediately; jitter delay before sending request"
+      },
+      {
+        "transition_id": "T4",
+        "from_state": "UnsynchronizedMessageReceived",
+        "to_state": "Idle",
+        "trigger": "DiscardDuringActiveSync",
+        "role": "Initiator",
+        "guard": [
+          "C Flag == 0",
+          "GroupKeySecurityPolicy == cache-and-sync",
+          "MCSP already in progress for this peer Node ID and group key"
+        ],
+        "actions": [
+          "Do not process the message",
+          "Implementation MAY queue message if resources allow"
+        ],
+        "timing_requirements": "At most one synchronization exchange per peer-key pair at a time"
+      },
+      {
+        "transition_id": "T5",
+        "from_state": "MessageCached",
+        "to_state": "WaitingForSyncResponse",
+        "trigger": "SendMsgCounterSyncReq",
+        "role": "Initiator",
+        "guard": [
+          "Jitter delay expired (if applicable)",
+          "No active MCSP exchange for this peer and group key"
+        ],
+        "actions": [
+          "Create new synchronization Exchange",
+          "Set Message Header: S Flag := 1, DSIZ := 1, P Flag := 1, C Flag := 1, Session Type := 1",
+          "Set Session ID := Group Session Id for the operational group key",
+          "Set Source Node ID := sender's Node ID",
+          "Set Destination Node ID := peer's Node ID (from cached message)",
+          "Set Exchange ID to new exchange, I Flag := 1, A Flag := 0, R Flag := 1",
+          "Challenge := Crypto_DRBG(len = 64 bits)",
+          "Store Challenge for response verification",
+          "Arm timer := MSG_COUNTER_SYNC_TIMEOUT",
+          "Create session context (Fabric Index, Peer Node ID, Role := Initiator, Message Reception State, Peer IP/Port, Operational Group Key, Group Session ID)",
+          "Encrypt and send MsgCounterSyncReq via Section 4.7.1 to peer's unicast IPv6 address"
+        ],
+        "timing_requirements": "Request sent after jitter delay via unicast UDP"
+      },
+      {
+        "transition_id": "T6",
+        "from_state": "Idle",
+        "to_state": "ProcessingSyncRequest",
+        "trigger": "ReceiveMsgCounterSyncReq",
+        "role": "Responder",
+        "guard": [
+          "message.DestinationNodeID == receiver's Node ID",
+          "Message is authenticated and decrypted with group key",
+          "message.CFlag == 1",
+          "message.SessionType == 1 (Group)"
+        ],
+        "actions": [
+          "Extract Challenge from payload",
+          "Record Source Node ID (initiator)",
+          "Record Exchange ID, Session ID, Group Key",
+          "Create temporary session context for response (Fabric Index, Peer Node ID, Role := Responder, Message Reception State, Peer IP/Port, Operational Group Key, Group Session ID)"
+        ],
+        "timing_requirements": "Immediate upon authenticated request receipt"
+      },
+      {
+        "transition_id": "T7",
+        "from_state": "ProcessingSyncRequest",
+        "to_state": "Idle",
+        "trigger": "SendMsgCounterSyncRsp",
+        "role": "Responder",
+        "guard": ["Request verification passed"],
+        "actions": [
+          "Set Message Header: S Flag := 1, DSIZ := 1, P Flag := 1, C Flag := 1, Session Type := 1",
+          "Set Session ID := Group Session Id from request",
+          "Set Source Node ID := responder's Node ID",
+          "Set Destination Node ID := initiator's Node ID (from request)",
+          "Set Exchange ID := request.ExchangeID, I Flag := 0, A Flag := 1, R Flag := 1",
+          "Set Response := Challenge (from request)",
+          "Set Synchronized Counter := current Global Group Encrypted Data Message Counter",
+          "Encrypt and send MsgCounterSyncRsp via Section 4.7.1 to initiator's unicast IPv6 address",
+          "Discard session context after successful transmission"
+        ],
+        "timing_requirements": "Response sent immediately via unicast UDP; session context released after transmission"
+      },
+      {
+        "transition_id": "T8",
+        "from_state": "WaitingForSyncResponse",
+        "to_state": "Synchronized",
+        "trigger": "ReceiveMsgCounterSyncRsp_Valid",
+        "role": "Initiator",
+        "guard": [
+          "Active synchronization exchange exists with source node",
+          "message.ExchangeID == stored Exchange ID",
+          "message.Response == stored Challenge",
+          "message.DestinationNodeID == initiator's Source Node ID",
+          "message.SourceNodeID == peer's Node ID (Destination of request)"
+        ],
+        "actions": [
+          "Stop MSG_COUNTER_SYNC_TIMEOUT timer",
+          "Set peer's group key data message counter := message.SynchronizedCounter",
+          "Clear Message Reception State bitmap for the peer (Section 4.6.5.1)",
+          "Mark peer's group key data message counter as synchronized",
+          "Process cached message(s) according to Section 4.6.7",
+          "If multiple messages queued from same peer with same key, process in order received",
+          "Close synchronization exchange"
+        ],
+        "timing_requirements": "Counter updated and cached messages processed upon successful verification"
+      },
+      {
+        "transition_id": "T9",
+        "from_state": "WaitingForSyncResponse",
+        "to_state": "VerificationFailed",
+        "trigger": "ReceiveMsgCounterSyncRsp_Invalid",
+        "role": "Initiator",
+        "guard": [
+          "One or more verification checks fail:",
+          "No active exchange with source node",
+          "OR message.ExchangeID != stored Exchange ID",
+          "OR message.Response != stored Challenge",
+          "OR message.DestinationNodeID != initiator's Node ID",
+          "OR message.SourceNodeID != peer's Node ID"
+        ],
+        "actions": [
+          "Silently ignore the MsgCounterSyncRsp message",
+          "Do not update any peer state",
+          "Timer remains armed"
+        ],
+        "timing_requirements": "Invalid response discarded; no state change"
+      },
+      {
+        "transition_id": "T10",
+        "from_state": "WaitingForSyncResponse",
+        "to_state": "SyncTimeout",
+        "trigger": "TimeoutExpired",
+        "role": "Initiator",
+        "guard": [
+          "MSG_COUNTER_SYNC_TIMEOUT timer fired",
+          "No valid MsgCounterSyncRsp received"
+        ],
+        "actions": [
+          "Close synchronization exchange",
+          "Discard any cached message waiting on this exchange",
+          "Peer remains unsynchronized",
+          "Clear session context"
+        ],
+        "timing_requirements": "Timeout enforces bounded wait for response"
+      },
+      {
+        "transition_id": "T11",
+        "from_state": "VerificationFailed",
+        "to_state": "SyncTimeout",
+        "trigger": "TimeoutAfterVerificationFailure",
+        "role": "Initiator",
+        "guard": [
+          "MSG_COUNTER_SYNC_TIMEOUT timer fired after verification failure"
+        ],
+        "actions": [
+          "Close synchronization exchange",
+          "Discard any cached message",
+          "Clear session context"
+        ],
+        "timing_requirements": "Exchange terminates on timeout even after failed verification"
+      },
+      {
+        "transition_id": "T12",
+        "from_state": "Synchronized",
+        "to_state": "Idle",
+        "trigger": "CompleteSynchronization",
+        "role": "Initiator",
+        "guard": ["All cached messages processed", "Exchange closed"],
+        "actions": [
+          "Return to idle state",
+          "Peer is now synchronized for future messages"
+        ],
+        "timing_requirements": "Immediate transition after message processing completes"
+      },
+      {
+        "transition_id": "T13",
+        "from_state": "SyncTimeout",
+        "to_state": "Idle",
+        "trigger": "ResetAfterTimeout",
+        "role": "Initiator",
+        "guard": ["Timeout handled, resources cleaned"],
+        "actions": [
+          "Return to idle state",
+          "Ready for new synchronization attempts"
+        ],
+        "timing_requirements": "Immediate return to idle after timeout cleanup"
+      }
+    ],
+    "initial_state": "Idle",
+    "messages": [
+      {
+        "message_name": "MsgCounterSyncReq",
+        "description": "Message Counter Synchronization Request",
+        "fields": [
+          {
+            "field_name": "Challenge",
+            "type": "64-bit random number",
+            "size": "8 bytes",
+            "description": "Generated using DRBG to uniquely identify synchronization request cryptographically"
+          }
+        ],
+        "header_requirements": [
+          "C Flag := 1 (control message)",
+          "Session Type := 1 (group session)",
+          "Control message counter used for protection",
+          "Secured with group key for which synchronization is requested",
+          "S Flag := 1, DSIZ := 1, P Flag := 1",
+          "I Flag := 1, A Flag := 0, R Flag := 1"
+        ]
+      },
+      {
+        "message_name": "MsgCounterSyncRsp",
+        "description": "Message Counter Synchronization Response",
+        "fields": [
+          {
+            "field_name": "Synchronized Counter",
+            "type": "uint32",
+            "size": "4 bytes",
+            "description": "Current data message counter for the node sending response"
+          },
+          {
+            "field_name": "Response",
+            "type": "64-bit value",
+            "size": "8 bytes",
+            "description": "Echo of Challenge from corresponding MsgCounterSyncReq"
+          }
+        ],
+        "header_requirements": [
+          "C Flag := 1 (control message)",
+          "Session Type := 1 (group session)",
+          "Control message counter used for protection",
+          "S Flag := 1, DSIZ := 1, P Flag := 1",
+          "I Flag := 0, A Flag := 1, R Flag := 1",
+          "Exchange ID matches request"
+        ]
+      }
+    ],
+    "attributes_used": [
+      "GroupKeySecurityPolicy",
+      "MessageCounter",
+      "SourceNodeID",
+      "DestinationNodeID",
+      "SessionID",
+      "SessionType",
+      "ExchangeID",
+      "Challenge",
+      "SynchronizedCounter",
+      "Response",
+      "CFlag",
+      "SFlag",
+      "DSIZ",
+      "PFlag",
+      "IFlag",
+      "AFlag",
+      "RFlag",
+      "max_message_counter",
+      "MessageReceptionState_bitmap",
+      "FabricIndex",
+      "PeerNodeID",
+      "Role",
+      "PeerIPAddress",
+      "PeerPort",
+      "OperationalGroupKey",
+      "GroupSessionID",
+      "GlobalGroupEncryptedDataMessageCounter"
+    ],
+    "constants": [
+      {
+        "constant_name": "MSG_COUNTER_SYNC_REQ_JITTER",
+        "description": "Maximum random delay before sending sync request (uniformly random 0 to this value)",
+        "usage": "Prevents thundering herd when multiple receivers get same multicast message"
+      },
+      {
+        "constant_name": "MSG_COUNTER_SYNC_TIMEOUT",
+        "description": "Maximum time to wait for MsgCounterSyncRsp before giving up",
+        "usage": "Enforces bounded synchronization attempt duration"
+      },
+      {
+        "constant_name": "MSG_COUNTER_WINDOW_SIZE",
+        "description": "Size of bitmap tracking recent message counter window",
+        "usage": "Used in Message Reception State for duplicate detection"
+      }
+    ],
+    "security_properties": [
+      {
+        "property_id": "SP1",
+        "property_type": "Replay Protection",
+        "description": "MCSP prevents replay attacks by ensuring receiver knows sender's current message counter",
+        "formal_statement": "After successful synchronization, any message with counter <= max_message_counter (outside acceptance window) SHALL be rejected as duplicate",
+        "mitigation": "Cache-and-sync policy ensures counter synchronization before processing first message, even after reboot"
+      },
+      {
+        "property_id": "SP2",
+        "property_type": "Authentication",
+        "description": "MsgCounterSyncReq and MsgCounterSyncRsp are authenticated using group key",
+        "formal_statement": "Only nodes possessing valid operational group key can successfully send or verify synchronization messages",
+        "mitigation": "Both request and response use C Flag = 1 with group key encryption and control message counter"
+      },
+      {
+        "property_id": "SP3",
+        "property_type": "Freshness",
+        "description": "Challenge-response mechanism ensures response freshness",
+        "formal_statement": "Response.Challenge == Request.Challenge AND Response.ExchangeID == Request.ExchangeID ensures response corresponds to current request",
+        "mitigation": "64-bit random Challenge from DRBG makes replay of old responses infeasible"
+      },
+      {
+        "property_id": "SP4",
+        "property_type": "Confidentiality",
+        "description": "Counter values transmitted in encrypted messages",
+        "formal_statement": "Synchronized Counter is transmitted in encrypted MsgCounterSyncRsp, preventing passive eavesdropper from learning counter state",
+        "mitigation": "Group key encryption of both request and response messages"
+      },
+      {
+        "property_id": "SP5",
+        "property_type": "Integrity",
+        "description": "Message integrity ensured by encryption and authentication",
+        "formal_statement": "Any modification to MsgCounterSyncReq or MsgCounterSyncRsp results in authentication failure",
+        "mitigation": "Group key provides both encryption and message integrity check"
+      },
+      {
+        "property_id": "SP6",
+        "property_type": "Denial of Service Resistance",
+        "description": "At most one synchronization exchange per peer-key pair at a time",
+        "formal_statement": "While MCSP in progress for peer P and key K, additional unsynchronized messages from P with K are either queued or discarded",
+        "mitigation": "Prevents resource exhaustion from synchronization flood; timeout ensures bounded resource commitment"
+      },
+      {
+        "property_id": "SP7",
+        "property_type": "Trust-First Vulnerability",
+        "description": "Trust-first policy susceptible to replay after reboot",
+        "formal_statement": "WARNING: Trust-first synchronization may accept replayed message after node reboot if Message Reception State not persisted",
+        "mitigation": "Cache-and-sync policy recommended for security-sensitive applications; control messages always use trust-first with higher risk acceptance"
+      },
+      {
+        "property_id": "SP8",
+        "property_type": "Source Binding",
+        "description": "Response bound to specific request initiator",
+        "formal_statement": "MsgCounterSyncRsp.DestinationNodeID must match initiator's Node ID; response only accepted by original requester",
+        "mitigation": "Node ID verification in response processing prevents misdirection attacks"
+      },
+      {
+        "property_id": "SP9",
+        "property_type": "Exchange Isolation",
+        "description": "Each MCSP exchange isolated by Exchange ID",
+        "formal_statement": "Exchange ID uniquely identifies request-response pair; responses with mismatched Exchange ID silently discarded",
+        "mitigation": "Prevents cross-exchange confusion and response injection"
+      },
+      {
+        "property_id": "SP10",
+        "property_type": "Fabric Isolation",
+        "description": "Synchronization scoped to specific fabric",
+        "formal_statement": "Session context includes Fabric Index; synchronization only valid within identified fabric",
+        "mitigation": "Operational group key tied to fabric; encryption ensures fabric isolation"
+      }
+    ],
+    "references": [
+      {
+        "section": "4.6.5.1",
+        "title": "Message Reception State",
+        "description": "Defines bitmap-based tracking of received message counters for duplicate detection"
+      },
+      {
+        "section": "4.6.7",
+        "title": "Counter Processing of Incoming Messages",
+        "description": "Specifies how to determine Message Reception State and handle unsynchronized messages"
+      },
+      {
+        "section": "4.7.1",
+        "title": "Message Transmission",
+        "description": "Defines encryption and transmission procedure used for both MsgCounterSyncReq and MsgCounterSyncRsp"
+      },
+      {
+        "section": "11.2",
+        "title": "Group Key Management Cluster",
+        "description": "Defines GroupKeySecurityPolicy (trust-first vs cache-and-sync) and FeatureMap indicating MCSP support"
+      },
+      {
+        "section": "4.18.2",
+        "title": "Group Peer State",
+        "description": "Defines Group Peer State Table storing synchronized counters and message reception state per peer"
+      }
+    ],
+    "metadata": {
+      "generation_timestamp": "2026-01-19T19:30:00.000000",
+      "protocol_version": "Matter 1.4",
+      "source_section": "4.18",
+      "source_pages": "206-214",
+      "formal_verification_target": true,
+      "proverif_model_available": true
+    }
+  }
+}

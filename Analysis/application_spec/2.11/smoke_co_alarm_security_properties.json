@@ -1,0 +1,713 @@
+{
+  "cluster_metadata": {
+    "cluster_name": "Smoke CO Alarm Cluster",
+    "cluster_id": "0x005C",
+    "pics_code": "SMOKECO",
+    "section": "2.11",
+    "pages": "208-220",
+    "revision": 1,
+    "features": {
+      "SMOKE": {
+        "description": "Supports Smoke alarm",
+        "conformance": "O.a+",
+        "required_attributes": ["SmokeState", "ContaminationState", "SmokeSensitivityLevel"]
+      },
+      "CO": {
+        "description": "Supports CO alarm",
+        "conformance": "O.a+",
+        "required_attributes": ["COState"]
+      }
+    },
+    "safety_classification": "CRITICAL - Life Safety Device",
+    "extraction_date": "2025-01-15",
+    "spec_source": "Matter 1.5 Application Cluster Specification"
+  },
+
+  "access_control_summary": {
+    "attributes": {
+      "read_only_RV": [
+        "ExpressedState", "SmokeState", "COState", "BatteryAlert", "DeviceMuted",
+        "TestInProgress", "HardwareFaultAlert", "EndOfServiceAlert",
+        "InterconnectSmokeAlarm", "InterconnectCOAlarm", "ContaminationState", "ExpiryDate"
+      ],
+      "read_write_VM": ["SmokeSensitivityLevel"]
+    },
+    "commands": {
+      "SelfTestRequest": {
+        "access": "O (Operate)",
+        "conformance": "O (Optional)"
+      }
+    },
+    "events_access": "V (View) - All events"
+  },
+
+  "security_properties": {
+    "AccessControl": [
+      {
+        "id": "AC-001",
+        "name": "SelfTestRequest Requires Operate Privilege",
+        "description": "The SelfTestRequest command SHALL require Operate (O) privilege for execution",
+        "spec_reference": "Section 2.11.7, Page 217",
+        "spec_quote": "SelfTestRequest | client ⇒ server | Y | O | O",
+        "formal_property": "∀c:Client, cmd:SelfTestRequest → hasPrivilege(c, Operate) ⇒ executeAllowed(c, cmd)",
+        "proverif_query": "query attacker_without_operate_cannot_selftest.",
+        "attack_vector": "Attacker without Operate privilege attempts to trigger SelfTestRequest to disrupt alarm availability",
+        "physical_safety_impact": "MEDIUM - Repeated self-tests could drain battery or mask real alarms during testing phase",
+        "testable": true,
+        "verification_method": "Access control verification - attempt SelfTestRequest without Operate privilege"
+      },
+      {
+        "id": "AC-002",
+        "name": "SmokeSensitivityLevel Requires Manage Privilege for Write",
+        "description": "The SmokeSensitivityLevel attribute SHALL require Manage privilege to modify",
+        "spec_reference": "Section 2.11.6, Page 215",
+        "spec_quote": "Smoke-SensitivityLevel | SensitivityEnum | all | | | RW VM | [SMOKE]",
+        "formal_property": "∀c:Client, v:SensitivityEnum → writeAttribute(c, SmokeSensitivityLevel, v) ⇒ hasPrivilege(c, Manage)",
+        "proverif_query": "query attacker_without_manage_cannot_modify_sensitivity.",
+        "attack_vector": "Malicious actor with View privilege attempts to reduce smoke sensitivity to Low",
+        "physical_safety_impact": "CRITICAL - Reducing sensitivity could prevent fire detection",
+        "testable": true,
+        "verification_method": "Attempt to write SmokeSensitivityLevel with View-only privilege"
+      },
+      {
+        "id": "AC-003",
+        "name": "DeviceMuted Not Remotely Writable",
+        "description": "The DeviceMuted attribute has RV (Read/View) access only - it cannot be remotely written via Matter commands",
+        "spec_reference": "Section 2.11.6, Page 214",
+        "spec_quote": "Device-Muted | MuteStateEnum | all | N | | RV | O",
+        "formal_property": "∀c:Client, v:MuteStateEnum → ¬writeAllowed(c, DeviceMuted, v)",
+        "proverif_query": "query cannot_remote_mute_device.",
+        "attack_vector": "Attacker attempts to remotely mute alarm to disable audible warnings",
+        "physical_safety_impact": "CRITICAL - Remote muting would allow silent alarm suppression",
+        "testable": true,
+        "verification_method": "Confirm DeviceMuted does not accept write commands",
+        "security_note": "This is a safety-by-design feature - muting requires physical interaction"
+      },
+      {
+        "id": "AC-004",
+        "name": "All Alarm State Attributes Read-Only",
+        "description": "SmokeState, COState, BatteryAlert, and all other alarm-related attributes are read-only",
+        "spec_reference": "Section 2.11.6, Page 214-215",
+        "spec_quote": "Smoke-State | AlarmStateEnum | all | N | | RV | SMOKE",
+        "formal_property": "∀c:Client, attr:AlarmStateAttribute → ¬writeAllowed(c, attr)",
+        "proverif_query": "query attacker_cannot_manipulate_alarm_state.",
+        "attack_vector": "Attacker attempts to set SmokeState=Normal during actual fire",
+        "physical_safety_impact": "CRITICAL - Falsifying alarm state is prevented by read-only design",
+        "testable": true,
+        "verification_method": "Confirm alarm state attributes reject write operations"
+      }
+    ],
+
+    "StateIntegrity": [
+      {
+        "id": "SI-001",
+        "name": "ExpressedState Consistency with Underlying Alarms",
+        "description": "When ExpressedState is not Normal, the corresponding underlying attribute SHALL NOT be Normal",
+        "spec_reference": "Section 2.11.6.1, Page 215",
+        "spec_quote": "If the value of ExpressedState is not Normal, the attribute corresponding to the value SHALL NOT be Normal. For example, if the ExpressedState is set to SmokeAlarm, the value of the SmokeState will indicate the severity of the alarm (Warning or Critical).",
+        "formal_property": "∀s:State → (ExpressedState(s) = SmokeAlarm) ⇒ (SmokeState(s) ∈ {Warning, Critical})",
+        "proverif_query": "query expressedstate_consistency_with_smokestate.",
+        "attack_vector": "State corruption could cause ExpressedState=SmokeAlarm while SmokeState=Normal",
+        "physical_safety_impact": "HIGH - Inconsistent state could confuse users or automation systems",
+        "testable": true,
+        "verification_method": "Model check: ExpressedState=X implies corresponding attribute is Warning or Critical"
+      },
+      {
+        "id": "SI-002",
+        "name": "ExpressedState Priority Ordering",
+        "description": "When multiple alarm conditions exist, ExpressedState SHALL indicate highest priority condition",
+        "spec_reference": "Section 2.11.6.1, Page 215",
+        "spec_quote": "When multiple alarm conditions are being reflected in the server, this attribute SHALL indicate the condition with the highest priority. Priority order of conditions is determined by the manufacturer and SHALL be supplied as a part of certification procedure.",
+        "formal_property": "∀s:State → multipleAlarms(s) ⇒ ExpressedState(s) = highestPriority(activeAlarms(s))",
+        "proverif_query": "query expressedstate_shows_highest_priority.",
+        "attack_vector": "Lower priority condition displayed while higher priority exists",
+        "physical_safety_impact": "HIGH - User might address wrong alarm condition first",
+        "testable": true,
+        "verification_method": "Trigger multiple alarm conditions, verify ExpressedState reflects highest priority",
+        "spec_gap": "Priority ordering is manufacturer-defined, not standardized"
+      },
+      {
+        "id": "SI-003",
+        "name": "TestInProgress State Machine",
+        "description": "TestInProgress=True only during active self-test, ExpressedState=Testing",
+        "spec_reference": "Section 2.11.7.1, Page 217",
+        "spec_quote": "Upon successful acceptance of SelfTestRequest, the TestInProgress attribute SHALL be set to True and ExpressedState attribute SHALL be set to Testing.",
+        "formal_property": "∀s:State → (TestInProgress(s) = True) ⇔ (ExpressedState(s) = Testing)",
+        "proverif_query": "query testinprogress_implies_testing_state.",
+        "attack_vector": "TestInProgress=True without Testing state could mask real alarms",
+        "physical_safety_impact": "MEDIUM - Inconsistent test state could confuse alarm handling",
+        "testable": true,
+        "verification_method": "State machine verification: TestInProgress ↔ Testing correlation"
+      },
+      {
+        "id": "SI-004",
+        "name": "EndOfServiceAlert Triggered After ExpiryDate",
+        "description": "EndOfServiceAlert SHALL be set to Expired after ExpiryDate is reached",
+        "spec_reference": "Section 2.11.6.13, Page 216",
+        "spec_quote": "After the ExpiryDate has been reached, the EndOfServiceAlert SHALL start to be triggered.",
+        "formal_property": "∀s:State, t:Time → (t > ExpiryDate) ⇒ (EndOfServiceAlert(s) = Expired)",
+        "proverif_query": "query expirydate_triggers_endofservice.",
+        "attack_vector": "Device continues operating past expiry without alerting users",
+        "physical_safety_impact": "HIGH - Expired sensors may have degraded detection capability",
+        "testable": true,
+        "verification_method": "Set ExpiryDate in past, verify EndOfServiceAlert transitions to Expired"
+      },
+      {
+        "id": "SI-005",
+        "name": "Critical Contamination Reflects as HardwareFault",
+        "description": "Critical contamination state SHALL also be reflected as a HardwareFault",
+        "spec_reference": "Section 2.11.5.6.4, Page 214",
+        "spec_quote": "Critical contamination of the sensor SHALL also be reflected as a HardwareFault.",
+        "formal_property": "∀s:State → (ContaminationState(s) = Critical) ⇒ (HardwareFaultAlert(s) = True)",
+        "proverif_query": "query critical_contamination_implies_hardware_fault.",
+        "attack_vector": "Sensor critically contaminated but no HardwareFault raised",
+        "physical_safety_impact": "HIGH - Users unaware sensor is unreliable due to contamination",
+        "testable": true,
+        "verification_method": "Simulate critical contamination, verify HardwareFaultAlert=True"
+      }
+    ],
+
+    "PhysicalSafety": [
+      {
+        "id": "PS-001",
+        "name": "Critical Alarms Cannot Be Muted via Physical Interaction",
+        "description": "Alarms in Critical state SHALL NOT be subject to being muted via physical interaction",
+        "spec_reference": "Section 2.11.5.1.3, Page 211",
+        "spec_quote": "This value SHALL indicate that this alarm is in a critical state. Alarms in this state SHALL NOT be subject to being muted via physical interaction.",
+        "formal_property": "∀s:State, a:Alarm → (severity(a) = Critical) ⇒ ¬canMutePhysical(a)",
+        "proverif_query": "query critical_alarm_not_mutable_physical.",
+        "attack_vector": "User attempts to silence critical fire/CO alarm inappropriately",
+        "physical_safety_impact": "CRITICAL - Ensures users cannot ignore life-threatening alarms",
+        "testable": true,
+        "verification_method": "Trigger Critical alarm, attempt physical mute, verify rejection",
+        "safety_rationale": "Critical alarms indicate immediate life safety threat requiring evacuation"
+      },
+      {
+        "id": "PS-002",
+        "name": "Warning Alarms May Be Muted via Physical Interaction",
+        "description": "Alarms in Warning state SHOULD be subject to being muted via physical interaction",
+        "spec_reference": "Section 2.11.5.1.2, Page 211",
+        "spec_quote": "This value SHALL indicate that this alarm is in a warning state. Alarms in this state SHOULD be subject to being muted via physical interaction.",
+        "formal_property": "∀s:State, a:Alarm → (severity(a) = Warning) ⇒ canMutePhysical(a)",
+        "proverif_query": "query warning_alarm_mutable_physical.",
+        "attack_vector": "N/A - This is intended behavior",
+        "physical_safety_impact": "MEDIUM - Allows user to acknowledge and address situation",
+        "testable": true,
+        "verification_method": "Trigger Warning alarm, verify physical mute is accepted",
+        "note": "SHOULD indicates recommended but not mandatory behavior"
+      },
+      {
+        "id": "PS-003",
+        "name": "DeviceMuted Suppresses Audible But Not Visual",
+        "description": "When DeviceMuted=Muted, audible expression is suppressed but visual indication remains",
+        "spec_reference": "Section 2.11.6.1, Page 215",
+        "spec_quote": "Audible expression SHALL BE suppressed if the DeviceMuted attribute is supported and set to Muted.",
+        "formal_property": "∀s:State → (DeviceMuted(s) = Muted) ⇒ (¬audibleExpression(s) ∧ visualExpression(s))",
+        "proverif_query": "query muted_suppresses_audio_not_visual.",
+        "attack_vector": "Complete alarm indication suppressed when muted",
+        "physical_safety_impact": "MEDIUM - Visual remains for safety even when audible muted",
+        "testable": true,
+        "verification_method": "Set DeviceMuted=Muted during alarm, verify LED continues but sound stops"
+      },
+      {
+        "id": "PS-004",
+        "name": "No Remote Muting Capability",
+        "description": "The cluster does not provide a remote command to mute the device - DeviceMuted is read-only",
+        "spec_reference": "Section 2.11.6, Section 2.11.7, Pages 214-217",
+        "spec_quote": "Access: RV (Read/View only for DeviceMuted), Only command is SelfTestRequest",
+        "formal_property": "¬∃cmd:Command → mutes(cmd, device)",
+        "proverif_query": "query no_remote_mute_command_exists.",
+        "attack_vector": "Remote attacker silences alarms without physical access",
+        "physical_safety_impact": "CRITICAL - Safety-by-design prevents remote muting attacks",
+        "testable": true,
+        "verification_method": "Confirm no write operation exists for DeviceMuted, no mute command in cluster",
+        "security_note": "This is intentional safety design - only physical interaction can mute"
+      },
+      {
+        "id": "PS-005",
+        "name": "Self-Test Blocked During Active Alarms",
+        "description": "SelfTestRequest SHALL NOT execute during active alarm conditions",
+        "spec_reference": "Section 2.11.7.1, Page 217",
+        "spec_quote": "When the value of the ExpressedState attribute is any of SmokeAlarm, COAlarm, Testing, InterconnectSmoke, InterconnectCO, the device SHALL NOT execute the self-test, and SHALL return status code BUSY.",
+        "formal_property": "∀s:State → ExpressedState(s) ∈ {SmokeAlarm, COAlarm, Testing, InterconnectSmoke, InterconnectCO} ⇒ rejectSelfTest(s)",
+        "proverif_query": "query selftest_blocked_during_alarm.",
+        "attack_vector": "Attacker triggers self-test to distract from real alarm handling",
+        "physical_safety_impact": "HIGH - Prevents test mode from interfering with active alarms",
+        "testable": true,
+        "verification_method": "Trigger alarm, send SelfTestRequest, verify BUSY response"
+      }
+    ],
+
+    "Authentication": [
+      {
+        "id": "AU-001",
+        "name": "No Cluster-Specific Authentication",
+        "description": "Smoke CO Alarm cluster relies on Matter fabric-level authentication only",
+        "spec_reference": "Section 2.11, Pages 208-220",
+        "spec_quote": "No PIN or credential fields defined in cluster",
+        "formal_property": "∀cmd:Command → success(cmd) ⇔ fabricAuthenticated(sender(cmd))",
+        "proverif_query": "query fabric_authentication_required_all_commands.",
+        "attack_vector": "N/A - Authentication handled at fabric level",
+        "physical_safety_impact": "LOW - Appropriate for this cluster type",
+        "testable": true,
+        "verification_method": "Confirm all commands require valid fabric session"
+      }
+    ],
+
+    "SecretProtection": [
+      {
+        "id": "SP-001",
+        "name": "No Sensitive Secrets in Cluster",
+        "description": "This cluster does not store or transmit sensitive secrets like PINs or credentials",
+        "spec_reference": "Section 2.11, Pages 208-220",
+        "spec_quote": "All data types are alarm states, enums, and timestamps - no secrets",
+        "formal_property": "∀attr:Attribute → ¬isSecret(attr)",
+        "proverif_query": "query no_secrets_in_cluster.",
+        "attack_vector": "N/A - No secrets to protect",
+        "physical_safety_impact": "NONE",
+        "testable": true,
+        "verification_method": "Review all attributes for sensitive data types"
+      }
+    ],
+
+    "Availability": [
+      {
+        "id": "AV-001",
+        "name": "Single SelfTestRequest at a Time",
+        "description": "Only one SelfTestRequest may be processed at a time",
+        "spec_reference": "Section 2.11.7.1, Page 217",
+        "spec_quote": "Only one SelfTestRequest may be processed at a time.",
+        "formal_property": "∀t:Time → count(activeSelfTests, t) ≤ 1",
+        "proverif_query": "query single_selftest_concurrent.",
+        "attack_vector": "Attacker floods device with SelfTestRequest to drain battery or DOS",
+        "physical_safety_impact": "MEDIUM - Prevents test flooding attacks",
+        "testable": true,
+        "verification_method": "Send concurrent SelfTestRequest commands, verify only one executes"
+      },
+      {
+        "id": "AV-002",
+        "name": "SelfTest Completion Restores Normal State",
+        "description": "After self-test completion, ExpressedState is updated to reflect current state",
+        "spec_reference": "Section 2.11.7.1, Page 217",
+        "spec_quote": "Upon completion of the self test procedure, the SelfTestComplete event SHALL be generated, the TestInProgress attribute SHALL be set to False and ExpressedState attribute SHALL be updated to reflect the current state of the server.",
+        "formal_property": "∀s:State → selfTestCompletes(s) ⇒ (TestInProgress(s') = False ∧ ExpressedState(s') = currentAlarmState)",
+        "proverif_query": "query selftest_restores_normal_state.",
+        "attack_vector": "Device stuck in Testing state after test completion",
+        "physical_safety_impact": "HIGH - Stuck test state could mask real alarms",
+        "testable": true,
+        "verification_method": "Execute self-test, verify state restoration on completion"
+      },
+      {
+        "id": "AV-003",
+        "name": "No Rate Limiting on SelfTestRequest",
+        "description": "Specification does not define rate limiting on SelfTestRequest commands",
+        "spec_reference": "Section 2.11.7.1, Page 217",
+        "spec_quote": "No rate limiting specified",
+        "formal_property": "SPEC_GAP: No rate limit defined",
+        "proverif_query": "query selftest_rate_limiting. (* Not specified *)",
+        "attack_vector": "Attacker repeatedly triggers self-tests to drain battery",
+        "physical_safety_impact": "MEDIUM - Battery drain could disable alarm",
+        "testable": false,
+        "verification_method": "N/A - Specification gap",
+        "spec_gap": {
+          "gap_id": "GAP-AV-001",
+          "description": "No rate limiting specified for SelfTestRequest",
+          "recommendation": "Implement manufacturer-specific rate limiting (e.g., max 1 test per hour)"
+        }
+      }
+    ],
+
+    "Authorization": [
+      {
+        "id": "AZ-001",
+        "name": "Manage Privilege Required for Sensitivity Changes",
+        "description": "SmokeSensitivityLevel modification requires Manage (M) privilege",
+        "spec_reference": "Section 2.11.6, Page 215",
+        "spec_quote": "Access: RW VM for SmokeSensitivityLevel",
+        "formal_property": "∀c:Client → canWrite(c, SmokeSensitivityLevel) ⇔ hasPrivilege(c, Manage)",
+        "proverif_query": "query manage_privilege_for_sensitivity.",
+        "attack_vector": "Operator-level user attempts to reduce sensitivity",
+        "physical_safety_impact": "HIGH - Sensitivity changes affect detection capability",
+        "testable": true,
+        "verification_method": "Test write access with View, Operate, Manage privileges"
+      },
+      {
+        "id": "AZ-002",
+        "name": "No User Type Definitions",
+        "description": "Cluster does not define user types or user-specific permissions",
+        "spec_reference": "Section 2.11, Pages 208-220",
+        "spec_quote": "No UserTypeEnum or credential-based users defined",
+        "formal_property": "¬∃u:UserType → clusterDefined(u)",
+        "proverif_query": "query no_user_types_defined.",
+        "attack_vector": "N/A - User types not applicable",
+        "physical_safety_impact": "NONE",
+        "testable": true,
+        "verification_method": "Confirm no user type data structures in cluster"
+      }
+    ],
+
+    "Timing": [
+      {
+        "id": "TM-001",
+        "name": "EndOfServiceAlert 24-Hour Grace Period",
+        "description": "EndOfServiceAlert MAY be delayed by up to 24 hours after ExpiryDate for timezone alignment",
+        "spec_reference": "Section 2.11.6.13, Page 216",
+        "spec_quote": "To account for better customer experience across time zones, the EndOfServiceAlert MAY be delayed by up to 24 hours after the ExpiryDate. Similarly, clients MAY delay any actions based on the ExpiryDate by up to 24 hours to best align with the local time zone.",
+        "formal_property": "∀t:Time → (t = ExpiryDate) ⇒ (EndOfServiceAlert triggers within [t, t+24h])",
+        "proverif_query": "query endofservice_24h_grace_period.",
+        "attack_vector": "Device operates 24h past expiry without warning",
+        "physical_safety_impact": "LOW - 24-hour grace period acceptable for UX",
+        "testable": true,
+        "verification_method": "Verify EndOfServiceAlert triggers within 24h of ExpiryDate"
+      },
+      {
+        "id": "TM-002",
+        "name": "No Mute Duration Specification",
+        "description": "Specification does not define maximum mute duration or auto-unmute behavior",
+        "spec_reference": "Section 2.11.6.5, Page 216",
+        "spec_quote": "DeviceMuted indicates whether audible expression is muted - no duration specified",
+        "formal_property": "SPEC_GAP: No mute duration constraint",
+        "proverif_query": "query mute_duration_constraint. (* Not specified *)",
+        "attack_vector": "Device remains muted indefinitely after physical mute action",
+        "physical_safety_impact": "HIGH - Indefinite mute is dangerous for safety",
+        "testable": false,
+        "verification_method": "N/A - Specification gap",
+        "spec_gap": {
+          "gap_id": "GAP-TM-001",
+          "description": "No maximum mute duration or auto-unmute defined",
+          "recommendation": "Implement time-limited mute (e.g., 15 minutes) with auto-unmute"
+        }
+      },
+      {
+        "id": "TM-003",
+        "name": "No Self-Test Duration Limits",
+        "description": "Specification does not define maximum self-test duration",
+        "spec_reference": "Section 2.11.7.1, Page 217",
+        "spec_quote": "Upon completion of the self test procedure... but no timeout specified",
+        "formal_property": "SPEC_GAP: No self-test timeout defined",
+        "proverif_query": "query selftest_timeout. (* Not specified *)",
+        "attack_vector": "Self-test hangs, leaving device in Testing state indefinitely",
+        "physical_safety_impact": "MEDIUM - Stuck test state masks real alarms",
+        "testable": false,
+        "verification_method": "N/A - Specification gap",
+        "spec_gap": {
+          "gap_id": "GAP-TM-002",
+          "description": "No maximum self-test duration or timeout defined",
+          "recommendation": "Implement self-test timeout (e.g., 60 seconds) with automatic completion"
+        }
+      }
+    ],
+
+    "EventIntegrity": [
+      {
+        "id": "EI-001",
+        "name": "SmokeAlarm Event on State Change",
+        "description": "SmokeAlarm event SHALL be generated when SmokeState changes to Warning or Critical",
+        "spec_reference": "Section 2.11.8.1, Page 217",
+        "spec_quote": "This event SHALL be generated when SmokeState attribute changes to either Warning or Critical state.",
+        "formal_property": "∀s,s':State → (SmokeState(s) = Normal ∧ SmokeState(s') ∈ {Warning, Critical}) ⇒ generateEvent(SmokeAlarm)",
+        "proverif_query": "query smokealarm_event_generated.",
+        "attack_vector": "Smoke detected but no SmokeAlarm event generated",
+        "physical_safety_impact": "CRITICAL - Event suppression prevents notification",
+        "testable": true,
+        "verification_method": "Trigger smoke detection, verify SmokeAlarm event with correct severity"
+      },
+      {
+        "id": "EI-002",
+        "name": "COAlarm Event on State Change",
+        "description": "COAlarm event SHALL be generated when COState changes to Warning or Critical",
+        "spec_reference": "Section 2.11.8.2, Page 218",
+        "spec_quote": "This event SHALL be generated when COState attribute changes to either Warning or Critical state.",
+        "formal_property": "∀s,s':State → (COState(s) = Normal ∧ COState(s') ∈ {Warning, Critical}) ⇒ generateEvent(COAlarm)",
+        "proverif_query": "query coalarm_event_generated.",
+        "attack_vector": "CO detected but no COAlarm event generated",
+        "physical_safety_impact": "CRITICAL - CO is silent killer, event suppression deadly",
+        "testable": true,
+        "verification_method": "Trigger CO detection, verify COAlarm event with correct severity"
+      },
+      {
+        "id": "EI-003",
+        "name": "LowBattery Event on State Change",
+        "description": "LowBattery event SHALL be generated when BatteryAlert changes to Warning or Critical",
+        "spec_reference": "Section 2.11.8.3, Page 218",
+        "spec_quote": "This event SHALL be generated when BatteryAlert attribute changes to either Warning or Critical state.",
+        "formal_property": "∀s,s':State → (BatteryAlert(s) = Normal ∧ BatteryAlert(s') ∈ {Warning, Critical}) ⇒ generateEvent(LowBattery)",
+        "proverif_query": "query lowbattery_event_generated.",
+        "attack_vector": "Battery low but no LowBattery event, device dies without warning",
+        "physical_safety_impact": "HIGH - Dead device cannot detect hazards",
+        "testable": true,
+        "verification_method": "Simulate low battery, verify LowBattery event generated"
+      },
+      {
+        "id": "EI-004",
+        "name": "HardwareFault Event on Fault Detection",
+        "description": "HardwareFault event SHALL be generated when hardware fault is detected",
+        "spec_reference": "Section 2.11.8.4, Page 218",
+        "spec_quote": "This event SHALL be generated when the device detects a hardware fault that leads to setting HardwareFaultAlert to True.",
+        "formal_property": "∀s,s':State → (HardwareFaultAlert(s) = False ∧ HardwareFaultAlert(s') = True) ⇒ generateEvent(HardwareFault)",
+        "proverif_query": "query hardwarefault_event_generated.",
+        "attack_vector": "Sensor malfunction but no event, device appears functional",
+        "physical_safety_impact": "HIGH - Malfunctioning sensor unreliable for detection",
+        "testable": true,
+        "verification_method": "Simulate hardware fault, verify HardwareFault event generated"
+      },
+      {
+        "id": "EI-005",
+        "name": "EndOfService Event on Expiry",
+        "description": "EndOfService event SHALL be generated when EndOfServiceAlert is set to Expired",
+        "spec_reference": "Section 2.11.8.5, Page 219",
+        "spec_quote": "This event SHALL be generated when the EndOfServiceAlert is set to Expired.",
+        "formal_property": "∀s,s':State → (EndOfServiceAlert(s) = Normal ∧ EndOfServiceAlert(s') = Expired) ⇒ generateEvent(EndOfService)",
+        "proverif_query": "query endofservice_event_generated.",
+        "attack_vector": "Device expires but no notification, continues unreliable operation",
+        "physical_safety_impact": "MEDIUM - Users unaware device needs replacement",
+        "testable": true,
+        "verification_method": "Set ExpiryDate in past, verify EndOfService event generated"
+      },
+      {
+        "id": "EI-006",
+        "name": "SelfTestComplete Event on Test Completion",
+        "description": "SelfTestComplete event SHALL be generated when self-test completes",
+        "spec_reference": "Section 2.11.8.6, Page 219",
+        "spec_quote": "This event SHALL be generated when the SelfTest completes, and the attribute TestInProgress changes to False.",
+        "formal_property": "∀s,s':State → (TestInProgress(s) = True ∧ TestInProgress(s') = False) ⇒ generateEvent(SelfTestComplete)",
+        "proverif_query": "query selftestcomplete_event_generated.",
+        "attack_vector": "Test completes silently, no confirmation of successful test",
+        "physical_safety_impact": "LOW - Missing event is informational concern only",
+        "testable": true,
+        "verification_method": "Execute self-test, verify SelfTestComplete event generated"
+      },
+      {
+        "id": "EI-007",
+        "name": "AlarmMuted Event on Mute",
+        "description": "AlarmMuted event SHALL be generated when DeviceMuted changes to Muted",
+        "spec_reference": "Section 2.11.8.7, Page 219",
+        "spec_quote": "This event SHALL be generated when the DeviceMuted attribute changes to Muted.",
+        "formal_property": "∀s,s':State → (DeviceMuted(s) = NotMuted ∧ DeviceMuted(s') = Muted) ⇒ generateEvent(AlarmMuted)",
+        "proverif_query": "query alarmmuted_event_generated.",
+        "attack_vector": "Alarm muted without logging, no audit trail",
+        "physical_safety_impact": "MEDIUM - Audit capability for mute actions",
+        "testable": true,
+        "verification_method": "Physically mute device, verify AlarmMuted event generated"
+      },
+      {
+        "id": "EI-008",
+        "name": "MuteEnded Event on Unmute",
+        "description": "MuteEnded event SHALL be generated when DeviceMuted changes to NotMuted",
+        "spec_reference": "Section 2.11.8.8, Page 219",
+        "spec_quote": "This event SHALL be generated when DeviceMuted attribute changes to NotMuted.",
+        "formal_property": "∀s,s':State → (DeviceMuted(s) = Muted ∧ DeviceMuted(s') = NotMuted) ⇒ generateEvent(MuteEnded)",
+        "proverif_query": "query muteended_event_generated.",
+        "attack_vector": "Mute state restored without notification",
+        "physical_safety_impact": "LOW - Informational event for state tracking",
+        "testable": true,
+        "verification_method": "Trigger unmute, verify MuteEnded event generated"
+      },
+      {
+        "id": "EI-009",
+        "name": "InterconnectSmokeAlarm Event on Interconnect Signal",
+        "description": "InterconnectSmokeAlarm event SHALL be generated when interconnected smoke alarm received",
+        "spec_reference": "Section 2.11.8.9, Page 219",
+        "spec_quote": "This event SHALL be generated when the device hosting the server receives a smoke alarm from an interconnected sensor.",
+        "formal_property": "∀s:State → receiveInterconnectSmoke(s) ⇒ generateEvent(InterconnectSmokeAlarm, severity(s))",
+        "proverif_query": "query interconnectsmokealarm_event_generated.",
+        "attack_vector": "Interconnect alarm received but not propagated to event log",
+        "physical_safety_impact": "CRITICAL - Interconnect enables whole-home alerting",
+        "testable": true,
+        "verification_method": "Trigger interconnected device, verify InterconnectSmokeAlarm event"
+      },
+      {
+        "id": "EI-010",
+        "name": "InterconnectCOAlarm Event on Interconnect Signal",
+        "description": "InterconnectCOAlarm event SHALL be generated when interconnected CO alarm received",
+        "spec_reference": "Section 2.11.8.10, Page 219",
+        "spec_quote": "This event SHALL be generated when the device hosting the server receives a CO alarm from an interconnected sensor.",
+        "formal_property": "∀s:State → receiveInterconnectCO(s) ⇒ generateEvent(InterconnectCOAlarm, severity(s))",
+        "proverif_query": "query interconnectcoalarm_event_generated.",
+        "attack_vector": "Interconnect CO alarm not propagated",
+        "physical_safety_impact": "CRITICAL - CO detection in one room should alert all",
+        "testable": true,
+        "verification_method": "Trigger interconnected CO device, verify InterconnectCOAlarm event"
+      },
+      {
+        "id": "EI-011",
+        "name": "AllClear Event on Return to Normal",
+        "description": "AllClear event SHALL be generated when ExpressedState returns to Normal",
+        "spec_reference": "Section 2.11.8.11, Page 220",
+        "spec_quote": "This event SHALL be generated when ExpressedState attribute returns to Normal state.",
+        "formal_property": "∀s,s':State → (ExpressedState(s) ≠ Normal ∧ ExpressedState(s') = Normal) ⇒ generateEvent(AllClear)",
+        "proverif_query": "query allclear_event_generated.",
+        "attack_vector": "Alarm condition clears but users not notified",
+        "physical_safety_impact": "MEDIUM - Users may remain evacuated unnecessarily",
+        "testable": true,
+        "verification_method": "Clear alarm condition, verify AllClear event generated"
+      },
+      {
+        "id": "EI-012",
+        "name": "Event Severity Field Accuracy",
+        "description": "AlarmSeverityLevel field in events SHALL match corresponding attribute value",
+        "spec_reference": "Section 2.11.8.1.1, Page 218",
+        "spec_quote": "This field SHALL indicate the current value of the SmokeState attribute.",
+        "formal_property": "∀e:SmokeAlarmEvent → e.AlarmSeverityLevel = SmokeState",
+        "proverif_query": "query event_severity_matches_attribute.",
+        "attack_vector": "Event reports Warning but attribute shows Critical",
+        "physical_safety_impact": "HIGH - Severity mismatch could cause inadequate response",
+        "testable": true,
+        "verification_method": "Compare event severity field with attribute value on each event"
+      }
+    ],
+
+    "CrossCluster": [
+      {
+        "id": "CC-001",
+        "name": "BatteryAlert Reflects in Power Source Cluster",
+        "description": "Battery state SHALL be reflected in Power Source cluster",
+        "spec_reference": "Section 2.11.6.4, Page 215",
+        "spec_quote": "The battery state SHALL also be reflected in the Power Source cluster representing the device's battery using the appropriate supported attributes and events.",
+        "formal_property": "∀s:State → (BatteryAlert(s) ∈ {Warning, Critical}) ⇒ (PowerSource.BatChargeLevel = Critical ∨ PowerSource.BatChargeLevel = Warning)",
+        "proverif_query": "query batteryalert_synced_powersource.",
+        "attack_vector": "BatteryAlert shows Warning but Power Source shows OK",
+        "physical_safety_impact": "MEDIUM - Inconsistent battery state confuses monitoring",
+        "testable": true,
+        "verification_method": "Trigger low battery, verify both clusters reflect same state",
+        "related_cluster": "Power Source Cluster"
+      },
+      {
+        "id": "CC-002",
+        "name": "Interconnect Alarm Source Not Authenticated",
+        "description": "Specification does not define authentication mechanism for interconnected alarm signals",
+        "spec_reference": "Section 2.11.6.9-10, Section 2.11.8.9-10, Pages 216, 219",
+        "spec_quote": "receives a smoke alarm from an interconnected sensor - no authentication specified",
+        "formal_property": "SPEC_GAP: No authentication of interconnect source",
+        "proverif_query": "query interconnect_source_authenticated. (* Not specified *)",
+        "attack_vector": "Attacker injects false interconnect alarm signals",
+        "physical_safety_impact": "MEDIUM - False alarms cause panic, alarm fatigue",
+        "testable": false,
+        "verification_method": "N/A - Specification gap",
+        "spec_gap": {
+          "gap_id": "GAP-CC-001",
+          "description": "No authentication mechanism defined for interconnect alarm signals",
+          "recommendation": "Require cryptographic authentication of interconnect signals at device pairing"
+        }
+      }
+    ]
+  },
+
+  "specification_gaps": {
+    "summary": "4 specification gaps identified in Smoke CO Alarm cluster",
+    "gaps": [
+      {
+        "gap_id": "GAP-AV-001",
+        "category": "Availability",
+        "title": "No Rate Limiting on SelfTestRequest",
+        "severity": "MEDIUM",
+        "description": "Specification does not define rate limiting for self-test commands",
+        "security_impact": "Attacker could repeatedly trigger self-tests to drain battery",
+        "recommendation": "Implement manufacturer rate limiting (e.g., max 1 test per hour)"
+      },
+      {
+        "gap_id": "GAP-TM-001",
+        "category": "Timing",
+        "title": "No Maximum Mute Duration",
+        "severity": "HIGH",
+        "description": "Specification does not define how long DeviceMuted can remain in Muted state",
+        "security_impact": "Device could remain muted indefinitely, missing real alarms",
+        "recommendation": "Implement auto-unmute timer (e.g., 15-minute maximum)"
+      },
+      {
+        "gap_id": "GAP-TM-002",
+        "category": "Timing",
+        "title": "No Self-Test Timeout",
+        "severity": "MEDIUM",
+        "description": "Specification does not define maximum duration for self-test execution",
+        "security_impact": "Device could get stuck in Testing state, masking real alarms",
+        "recommendation": "Implement self-test timeout (e.g., 60 seconds) with forced completion"
+      },
+      {
+        "gap_id": "GAP-CC-001",
+        "category": "CrossCluster",
+        "title": "No Interconnect Signal Authentication",
+        "severity": "MEDIUM",
+        "description": "No cryptographic authentication defined for interconnected alarm signals",
+        "security_impact": "Attacker could inject false interconnect alarms",
+        "recommendation": "Require authenticated pairing for interconnect capability"
+      }
+    ]
+  },
+
+  "safety_critical_properties_summary": {
+    "description": "Properties with CRITICAL physical safety impact",
+    "critical_properties": [
+      {
+        "id": "AC-002",
+        "name": "SmokeSensitivityLevel requires Manage privilege",
+        "risk": "Unauthorized sensitivity reduction prevents fire detection"
+      },
+      {
+        "id": "AC-003",
+        "name": "DeviceMuted not remotely writable",
+        "risk": "Remote muting would allow silent alarm suppression"
+      },
+      {
+        "id": "AC-004",
+        "name": "Alarm states read-only",
+        "risk": "Falsifying alarm states hidden by design"
+      },
+      {
+        "id": "PS-001",
+        "name": "Critical alarms cannot be physically muted",
+        "risk": "Users cannot ignore life-threatening alarms"
+      },
+      {
+        "id": "PS-004",
+        "name": "No remote muting capability",
+        "risk": "Remote attacker cannot silence alarms"
+      },
+      {
+        "id": "EI-001",
+        "name": "SmokeAlarm event mandatory",
+        "risk": "Smoke detection must generate notification"
+      },
+      {
+        "id": "EI-002",
+        "name": "COAlarm event mandatory",
+        "risk": "CO detection must generate notification"
+      },
+      {
+        "id": "EI-009",
+        "name": "InterconnectSmokeAlarm event mandatory",
+        "risk": "Whole-home smoke alerting"
+      },
+      {
+        "id": "EI-010",
+        "name": "InterconnectCOAlarm event mandatory",
+        "risk": "Whole-home CO alerting"
+      }
+    ]
+  },
+
+  "property_statistics": {
+    "total_properties": 39,
+    "by_category": {
+      "AccessControl": 4,
+      "StateIntegrity": 5,
+      "PhysicalSafety": 5,
+      "Authentication": 1,
+      "SecretProtection": 1,
+      "Availability": 3,
+      "Authorization": 2,
+      "Timing": 3,
+      "EventIntegrity": 12,
+      "CrossCluster": 2
+    },
+    "by_physical_safety_impact": {
+      "CRITICAL": 9,
+      "HIGH": 10,
+      "MEDIUM": 11,
+      "LOW": 5,
+      "NONE": 4
+    },
+    "testable_properties": 33,
+    "spec_gap_properties": 4
+  }
+}

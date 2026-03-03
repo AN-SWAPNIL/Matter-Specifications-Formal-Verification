@@ -1,0 +1,1054 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Account Login",
+    "cluster_id": "0x050E",
+    "pics_code": "ALOGIN",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 6.2, Pages 533-537",
+    "revision": 2,
+    "analysis_date": "2025-03-03",
+    "mcp_verification": "Completed via Graph-RAG (application_spec + core_spec)",
+
+    "features": [],
+
+    "dependencies": [
+      {
+        "cluster": "Application Basic",
+        "cluster_id": "0x050D",
+        "relationship": "SHOULD_COEXIST",
+        "description": "Content App endpoints should have Application Basic cluster to identify the Content App"
+      }
+    ],
+
+    "states": [
+      {
+        "name": "NotLoggedIn",
+        "description": "No user account is active on the Content App for the invoking fabric/node. Default state for new nodes on the fabric.",
+        "is_initial": true,
+        "invariants": ["user_account_active == false"],
+        "state_attributes": {
+          "UserAccountActive": false,
+          "ActiveNode": null
+        },
+        "feature_requirements": [],
+        "safety_implications": "Limited Content App functionality - user cannot access personalized content or services"
+      },
+      {
+        "name": "LoggedIn",
+        "description": "User account is active on the Content App. The node has been authenticated via successful Login command.",
+        "is_initial": false,
+        "invariants": [
+          "user_account_active == true",
+          "active_node != null || multiple_nodes_active == true"
+        ],
+        "state_attributes": {
+          "UserAccountActive": true,
+          "ActiveNode": "node_id"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Privacy exposure - user's account, preferences, viewing history accessible to authorized nodes"
+      },
+      {
+        "name": "RateLimited",
+        "description": "The 10-request per 10-minute rate limit has been reached. This is a transient state affecting command processing.",
+        "is_initial": false,
+        "invariants": [
+          "rate_limit_count >= 10",
+          "rate_limit_window_active == true"
+        ],
+        "state_attributes": {
+          "RateLimitCount": ">=10",
+          "RateLimitWindowStart": "timestamp"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Denial of service for legitimate users if attacker exhausts rate limit"
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T001",
+        "name": "GetSetupPIN_Success_AccountsMatch",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "GetSetupPIN",
+          "command_id": "0x00"
+        },
+        "guard_condition": "rate_limit_count < 10 && TempAccountIdentifier_valid && accounts_match(TempAccountIdentifier, ContentApp_active_account)",
+        "actions": [
+          "rate_limit_count := rate_limit_count + 1",
+          "return GetSetupPINResponse(SetupPIN=<valid_setup_pin>)"
+        ],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": "TempAccountIdentifier must be valid (max 10 minutes from issuance)",
+        "error_responses": [],
+        "spec_reference": "Section 6.2.4.1 'GetSetupPIN Command' Effect on Receipt",
+        "formal_description": "Upon receipt, Content App checks if account associated with TempAccountIdentifier matches active account. If match, returns Setup PIN."
+      },
+      {
+        "id": "T002",
+        "name": "GetSetupPIN_Failure_AccountsMismatch",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "GetSetupPIN",
+          "command_id": "0x00"
+        },
+        "guard_condition": "rate_limit_count < 10 && TempAccountIdentifier_valid && !accounts_match(TempAccountIdentifier, ContentApp_active_account)",
+        "actions": [
+          "rate_limit_count := rate_limit_count + 1",
+          "return GetSetupPINResponse(SetupPIN='')"
+        ],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Accounts do not match",
+            "status_code": "SUCCESS with empty SetupPIN",
+            "description": "Empty string indicates accounts do not match; not an error status"
+          }
+        ],
+        "spec_reference": "Section 6.2.4.2.1 'SetupPIN Field'",
+        "formal_description": "Returns empty string to indicate that accounts do not match"
+      },
+      {
+        "id": "T003",
+        "name": "GetSetupPIN_RateLimited",
+        "from_state": "*",
+        "to_state": "RateLimited",
+        "trigger": {
+          "type": "command",
+          "name": "GetSetupPIN",
+          "command_id": "0x00"
+        },
+        "guard_condition": "rate_limit_count >= 10",
+        "actions": ["return FAILURE"],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": "Rate limit window is 10 minutes",
+        "error_responses": [
+          {
+            "condition": "More than 10 requests in 10 minute window",
+            "status_code": "FAILURE",
+            "description": "Rate limiting to prevent brute force attacks"
+          }
+        ],
+        "spec_reference": "Section 6.2.4.1 'The server SHALL implement rate limiting'",
+        "formal_description": "No more than 10 unique requests in a 10 minute period SHALL be allowed"
+      },
+      {
+        "id": "T004",
+        "name": "GetSetupPIN_TempIdExpired",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "GetSetupPIN",
+          "command_id": "0x00"
+        },
+        "guard_condition": "rate_limit_count < 10 && !TempAccountIdentifier_valid",
+        "actions": [
+          "rate_limit_count := rate_limit_count + 1",
+          "return GetSetupPINResponse(SetupPIN='')"
+        ],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": "TempAccountIdentifier expired (>10 minutes)",
+        "error_responses": [
+          {
+            "condition": "TempAccountIdentifier is no longer valid",
+            "status_code": "SUCCESS with empty SetupPIN",
+            "description": "Expired identifier treated as non-matching account"
+          }
+        ],
+        "spec_reference": "Section 6.2.4.1 'Temporary Account Identifier... is not valid for more than 10 minutes'",
+        "formal_description": "Content App ensures TempAccountIdentifier is not valid for more than 10 minutes"
+      },
+      {
+        "id": "T005",
+        "name": "Login_Success",
+        "from_state": "NotLoggedIn",
+        "to_state": "LoggedIn",
+        "trigger": {
+          "type": "command",
+          "name": "Login",
+          "command_id": "0x02"
+        },
+        "guard_condition": "rate_limit_count < 10 && TempAccountIdentifier_valid && PIN_valid(TempAccountIdentifier, SetupPIN)",
+        "actions": [
+          "rate_limit_count := rate_limit_count + 1",
+          "activate_user_account(TempAccountIdentifier)",
+          "track_node(Node) if Node provided",
+          "return SUCCESS"
+        ],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": "TempAccountIdentifier must be valid; aggressive timeout on TempAccountIdentifier-to-PIN mapping recommended",
+        "error_responses": [],
+        "spec_reference": "Section 6.2.4.3 'Login Command' Effect on Receipt",
+        "formal_description": "If Setup PIN is valid for user account associated with TempAccountIdentifier, Content App MAY make that user account active"
+      },
+      {
+        "id": "T006",
+        "name": "Login_Failure_InvalidPIN",
+        "from_state": "NotLoggedIn",
+        "to_state": "NotLoggedIn",
+        "trigger": {
+          "type": "command",
+          "name": "Login",
+          "command_id": "0x02"
+        },
+        "guard_condition": "rate_limit_count < 10 && TempAccountIdentifier_valid && !PIN_valid(TempAccountIdentifier, SetupPIN)",
+        "actions": [
+          "rate_limit_count := rate_limit_count + 1",
+          "return FAILURE"
+        ],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "SetupPIN does not match the one associated with TempAccountIdentifier",
+            "status_code": "FAILURE",
+            "description": "Invalid credentials"
+          }
+        ],
+        "spec_reference": "Section 6.2.4.3 'Login Command'",
+        "formal_description": "Content App checks if TempAccountIdentifier has current active Setup PIN with given value"
+      },
+      {
+        "id": "T007",
+        "name": "Login_RateLimited",
+        "from_state": "*",
+        "to_state": "RateLimited",
+        "trigger": {
+          "type": "command",
+          "name": "Login",
+          "command_id": "0x02"
+        },
+        "guard_condition": "rate_limit_count >= 10",
+        "actions": ["return FAILURE"],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": "Rate limit window is 10 minutes",
+        "error_responses": [
+          {
+            "condition": "More than 10 requests in 10 minute window",
+            "status_code": "FAILURE",
+            "description": "Rate limiting to prevent brute force attacks"
+          }
+        ],
+        "spec_reference": "Section 6.2.4.3 'The server SHALL implement rate limiting'",
+        "formal_description": "No more than 10 unique requests in a 10 minute period SHALL be allowed"
+      },
+      {
+        "id": "T008",
+        "name": "Login_TempIdExpired",
+        "from_state": "NotLoggedIn",
+        "to_state": "NotLoggedIn",
+        "trigger": {
+          "type": "command",
+          "name": "Login",
+          "command_id": "0x02"
+        },
+        "guard_condition": "rate_limit_count < 10 && !TempAccountIdentifier_valid",
+        "actions": [
+          "rate_limit_count := rate_limit_count + 1",
+          "return FAILURE"
+        ],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": "TempAccountIdentifier expired (>10 minutes)",
+        "error_responses": [
+          {
+            "condition": "TempAccountIdentifier is no longer valid",
+            "status_code": "FAILURE",
+            "description": "Cannot login with expired identifier"
+          }
+        ],
+        "spec_reference": "Section 6.2.4.3 'Temporary Account Identifier... is not valid for more than 10 minutes'",
+        "formal_description": "Content App ensures TempAccountIdentifier is not valid for more than 10 minutes"
+      },
+      {
+        "id": "T009",
+        "name": "Login_AlreadyLoggedIn",
+        "from_state": "LoggedIn",
+        "to_state": "LoggedIn",
+        "trigger": {
+          "type": "command",
+          "name": "Login",
+          "command_id": "0x02"
+        },
+        "guard_condition": "rate_limit_count < 10 && TempAccountIdentifier_valid && PIN_valid(TempAccountIdentifier, SetupPIN)",
+        "actions": [
+          "rate_limit_count := rate_limit_count + 1",
+          "track_node(Node) if Node provided",
+          "return SUCCESS"
+        ],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.2.4.3 'Login Command'",
+        "formal_description": "Allows additional nodes to be tracked for an already active account"
+      },
+      {
+        "id": "T010",
+        "name": "Logout_WithNode",
+        "from_state": "LoggedIn",
+        "to_state": "NotLoggedIn",
+        "trigger": {
+          "type": "command",
+          "name": "Logout",
+          "command_id": "0x03"
+        },
+        "guard_condition": "Node field is present && node_logged_in(Node)",
+        "actions": [
+          "clear_user_account_for_node(Node)",
+          "generate_event(LoggedOut, {Node: Node})",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.2.4.4 'Logout Command'",
+        "formal_description": "Instruct Content App to clear current user account for specified Node"
+      },
+      {
+        "id": "T011",
+        "name": "Logout_WithoutNode_AllNonAdmin",
+        "from_state": "LoggedIn",
+        "to_state": "NotLoggedIn",
+        "trigger": {
+          "type": "command",
+          "name": "Logout",
+          "command_id": "0x03"
+        },
+        "guard_condition": "Node field is NOT present",
+        "actions": [
+          "clear_all_non_admin_accounts()",
+          "generate_event(LoggedOut, {Node: null})",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.2.5.1 'LoggedOut Event'",
+        "formal_description": "If no Node provided, Fabric Admin SHALL remove access to all non-Admin Nodes"
+      },
+      {
+        "id": "T012",
+        "name": "Logout_NotLoggedIn",
+        "from_state": "NotLoggedIn",
+        "to_state": "NotLoggedIn",
+        "trigger": {
+          "type": "command",
+          "name": "Logout",
+          "command_id": "0x03"
+        },
+        "guard_condition": "true",
+        "actions": ["return SUCCESS"],
+        "access_required": "O",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.2.4.4 'Logout Command'",
+        "formal_description": "Logout when already logged out is a no-op success"
+      },
+      {
+        "id": "T013",
+        "name": "LoggedOut_Event_Received",
+        "from_state": "LoggedIn",
+        "to_state": "NotLoggedIn",
+        "trigger": {
+          "type": "event",
+          "name": "LoggedOut",
+          "event_id": "0x00"
+        },
+        "guard_condition": "event.Node == current_node || event.Node == null",
+        "actions": [
+          "remove_access_for_node(event.Node)",
+          "if event.Node == null: remove_access_all_non_admin()"
+        ],
+        "access_required": "A",
+        "timed_required": false,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.2.5.1 'LoggedOut Event'",
+        "formal_description": "In response to LoggedOut event, Fabric Admin SHALL remove access to Content App by specified Node"
+      },
+      {
+        "id": "T014",
+        "name": "RateLimit_Reset",
+        "from_state": "RateLimited",
+        "to_state": "NotLoggedIn",
+        "trigger": {
+          "type": "timer",
+          "name": "RateLimitWindowTimer",
+          "timer_id": "rate_limit_window"
+        },
+        "guard_condition": "rate_limit_window_elapsed(10_minutes)",
+        "actions": [
+          "rate_limit_count := 0",
+          "rate_limit_window_active := false"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "fabric_scoped": false,
+        "timing_constraint": "10 minutes from first request in window",
+        "error_responses": [],
+        "spec_reference": "Section 6.2.4.1 '10 minute period'",
+        "formal_description": "Rate limit counter resets after 10 minute window expires"
+      },
+      {
+        "id": "T015",
+        "name": "TempAccountIdentifier_Expiry",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "timer",
+          "name": "TempAccountIdentifierTimer",
+          "timer_id": "temp_id_validity"
+        },
+        "guard_condition": "temp_id_validity_elapsed(10_minutes)",
+        "actions": [
+          "invalidate_temp_account_identifier(TempAccountIdentifier)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "fabric_scoped": false,
+        "timing_constraint": "10 minutes from TempAccountIdentifier issuance",
+        "error_responses": [],
+        "spec_reference": "Section 6.2.4.1 'not valid for more than 10 minutes'",
+        "formal_description": "TempAccountIdentifier automatically invalidated after 10 minutes"
+      },
+      {
+        "id": "T016",
+        "name": "Timed_Interaction_Timeout",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "timer",
+          "name": "TimedInteractionTimeout",
+          "timer_id": "timed_invoke_timeout"
+        },
+        "guard_condition": "timed_invoke_timeout_expired",
+        "actions": ["reject_pending_command()", "return TIMEOUT"],
+        "access_required": null,
+        "timed_required": false,
+        "fabric_scoped": false,
+        "timing_constraint": "Defined by Timed Request action",
+        "error_responses": [
+          {
+            "condition": "Invoke Request arrives after Timed Request timeout",
+            "status_code": "TIMEOUT",
+            "description": "Timed invoke transaction expired before command received"
+          }
+        ],
+        "spec_reference": "Core Spec Section 8.8.2.3 'Incoming Invoke Request Action'",
+        "formal_description": "Commands requiring timed interaction must arrive within the timeout window defined by preceding Timed Request action"
+      },
+      {
+        "id": "T017",
+        "name": "Access_Denied_NotAdmin_GetSetupPIN",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "GetSetupPIN",
+          "command_id": "0x00"
+        },
+        "guard_condition": "!has_privilege(invoker, Admin)",
+        "actions": ["return UNSUPPORTED_ACCESS"],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Invoker does not have Administrator privilege",
+            "status_code": "UNSUPPORTED_ACCESS",
+            "description": "GetSetupPIN requires Admin privilege"
+          }
+        ],
+        "spec_reference": "Section 6.2.4 Commands Table, Access: A F T",
+        "formal_description": "GetSetupPIN command requires Administrator privilege level"
+      },
+      {
+        "id": "T018",
+        "name": "Access_Denied_NotAdmin_Login",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "Login",
+          "command_id": "0x02"
+        },
+        "guard_condition": "!has_privilege(invoker, Admin)",
+        "actions": ["return UNSUPPORTED_ACCESS"],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Invoker does not have Administrator privilege",
+            "status_code": "UNSUPPORTED_ACCESS",
+            "description": "Login requires Admin privilege"
+          }
+        ],
+        "spec_reference": "Section 6.2.4 Commands Table, Access: A F T",
+        "formal_description": "Login command requires Administrator privilege level"
+      },
+      {
+        "id": "T019",
+        "name": "Access_Denied_NotOperate_Logout",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "Logout",
+          "command_id": "0x03"
+        },
+        "guard_condition": "!has_privilege(invoker, Operate)",
+        "actions": ["return UNSUPPORTED_ACCESS"],
+        "access_required": "O",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Invoker does not have at least Operate privilege",
+            "status_code": "UNSUPPORTED_ACCESS",
+            "description": "Logout requires at least Operate privilege"
+          }
+        ],
+        "spec_reference": "Section 6.2.4 Commands Table, Access: O F T",
+        "formal_description": "Logout command requires at least Operate privilege level"
+      },
+      {
+        "id": "T020",
+        "name": "NotTimedInvoke_GetSetupPIN",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "GetSetupPIN",
+          "command_id": "0x00"
+        },
+        "guard_condition": "!is_timed_invoke_transaction",
+        "actions": ["return NEEDS_TIMED_INTERACTION"],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Command invoked without preceding Timed Request action",
+            "status_code": "NEEDS_TIMED_INTERACTION",
+            "description": "GetSetupPIN requires Timed Invoke transaction"
+          }
+        ],
+        "spec_reference": "Section 6.2.4 Commands Table, Access: ... T",
+        "formal_description": "GetSetupPIN command requires Timed Invoke transaction (T modifier)"
+      },
+      {
+        "id": "T021",
+        "name": "NotTimedInvoke_Login",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "Login",
+          "command_id": "0x02"
+        },
+        "guard_condition": "!is_timed_invoke_transaction",
+        "actions": ["return NEEDS_TIMED_INTERACTION"],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Command invoked without preceding Timed Request action",
+            "status_code": "NEEDS_TIMED_INTERACTION",
+            "description": "Login requires Timed Invoke transaction"
+          }
+        ],
+        "spec_reference": "Section 6.2.4 Commands Table, Access: ... T",
+        "formal_description": "Login command requires Timed Invoke transaction (T modifier)"
+      },
+      {
+        "id": "T022",
+        "name": "NotTimedInvoke_Logout",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "Logout",
+          "command_id": "0x03"
+        },
+        "guard_condition": "!is_timed_invoke_transaction",
+        "actions": ["return NEEDS_TIMED_INTERACTION"],
+        "access_required": "O",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Command invoked without preceding Timed Request action",
+            "status_code": "NEEDS_TIMED_INTERACTION",
+            "description": "Logout requires Timed Invoke transaction"
+          }
+        ],
+        "spec_reference": "Section 6.2.4 Commands Table, Access: ... T",
+        "formal_description": "Logout command requires Timed Invoke transaction (T modifier)"
+      },
+      {
+        "id": "T023",
+        "name": "NotFabricScoped_AnyCommand",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "*",
+          "command_id": "*"
+        },
+        "guard_condition": "!has_accessing_fabric",
+        "actions": ["return UNSUPPORTED_ACCESS"],
+        "access_required": "*",
+        "timed_required": false,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Command invoked without valid fabric association",
+            "status_code": "UNSUPPORTED_ACCESS",
+            "description": "All Account Login commands are fabric-scoped"
+          }
+        ],
+        "spec_reference": "Section 6.2.4 Commands Table, Access: ... F ...",
+        "formal_description": "All commands require valid accessing fabric"
+      },
+      {
+        "id": "T024",
+        "name": "TempAccountIdentifier_TooShort",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "GetSetupPIN|Login",
+          "command_id": "0x00|0x02"
+        },
+        "guard_condition": "length(TempAccountIdentifier) < 16",
+        "actions": ["return CONSTRAINT_ERROR"],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "TempAccountIdentifier field is less than 16 characters",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "TempAccountIdentifier must be at least 16 characters"
+          }
+        ],
+        "spec_reference": "Section 6.2.4.1.1 'length of this field SHALL be at least 16 characters'",
+        "formal_description": "TempAccountIdentifier constraint validation"
+      },
+      {
+        "id": "T025",
+        "name": "SetupPIN_TooShort",
+        "from_state": "*",
+        "to_state": "(no state change)",
+        "trigger": {
+          "type": "command",
+          "name": "Login",
+          "command_id": "0x02"
+        },
+        "guard_condition": "length(SetupPIN) < 8",
+        "actions": ["return CONSTRAINT_ERROR"],
+        "access_required": "A",
+        "timed_required": true,
+        "fabric_scoped": true,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "SetupPIN field is less than 8 characters",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "SetupPIN must be at least 8 characters"
+          }
+        ],
+        "spec_reference": "Section 6.2.4.3.2 'text string at least 8 characters in length'",
+        "formal_description": "SetupPIN constraint validation"
+      }
+    ],
+
+    "events": [
+      {
+        "id": "0x00",
+        "name": "LoggedOut",
+        "priority": "CRITICAL",
+        "access": "A S",
+        "conformance": "O",
+        "generated_by": ["T010", "T011"],
+        "fields": [
+          {
+            "name": "Node",
+            "type": "node-id",
+            "constraint": "all",
+            "conformance": "O",
+            "description": "Node ID corresponding to the user account that has logged out, if available"
+          }
+        ],
+        "description": "Generated when current user has logged out. Fabric Admin SHALL remove access to Content App by specified Node. If no Node provided, Fabric Admin SHALL remove access to all non-Admin Nodes.",
+        "spec_reference": "Section 6.2.5.1 'LoggedOut Event'"
+      }
+    ],
+
+    "timers": [
+      {
+        "name": "RateLimitWindowTimer",
+        "source_attribute": "Internal rate limit counter",
+        "trigger": "First GetSetupPIN or Login request received",
+        "duration": "10 minutes",
+        "expiry_transition": "T014",
+        "resolution": "minutes",
+        "description": "Tracks the 10-minute rate limiting window. No more than 10 unique requests allowed per window."
+      },
+      {
+        "name": "TempAccountIdentifierTimer",
+        "source_attribute": "TempAccountIdentifier issuance timestamp",
+        "trigger": "TempAccountIdentifier issued by central account service",
+        "duration": "10 minutes maximum",
+        "expiry_transition": "T015",
+        "resolution": "minutes",
+        "description": "TempAccountIdentifier SHALL NOT be valid for more than 10 minutes"
+      },
+      {
+        "name": "TempIdToPinMappingTimer",
+        "source_attribute": "Internal mapping table",
+        "trigger": "GetSetupPINResponse generated with valid PIN",
+        "duration": "Aggressive timeout (implementation-defined, SHOULD be short)",
+        "expiry_transition": "mapping invalidation",
+        "resolution": "seconds to minutes",
+        "description": "Implementations SHOULD impose aggressive timeouts for TempAccountIdentifier to Setup PIN mappings to prevent delayed login"
+      },
+      {
+        "name": "TimedInvokeTimer",
+        "source_attribute": "Timed Request action Timeout field",
+        "trigger": "Timed Request action received",
+        "duration": "As specified in Timed Request action",
+        "expiry_transition": "T016",
+        "resolution": "milliseconds",
+        "description": "Commands with T access modifier must be received within the Timed Request timeout window"
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "accounts_match",
+        "parameters": [
+          {
+            "name": "TempAccountIdentifier",
+            "type": "string",
+            "description": "Client's temporary account identifier"
+          },
+          {
+            "name": "ContentAppAccount",
+            "type": "account",
+            "description": "Currently active account on Content App"
+          }
+        ],
+        "return_type": "bool",
+        "description": "Determines if the account associated with TempAccountIdentifier is the same as the active account on the Content App. Method is outside the scope of Matter specification and typically involves a central service.",
+        "usage_in_fsm": "T001, T002"
+      },
+      {
+        "name": "PIN_valid",
+        "parameters": [
+          {
+            "name": "TempAccountIdentifier",
+            "type": "string",
+            "description": "Client's temporary account identifier"
+          },
+          {
+            "name": "SetupPIN",
+            "type": "string",
+            "description": "Setup PIN provided by client"
+          }
+        ],
+        "return_type": "bool",
+        "description": "Verifies if the account associated with TempAccountIdentifier has a current active Setup PIN matching the provided value. Method is outside the scope of Matter specification.",
+        "usage_in_fsm": "T005, T006, T009"
+      },
+      {
+        "name": "activate_user_account",
+        "parameters": [
+          {
+            "name": "TempAccountIdentifier",
+            "type": "string",
+            "description": "Client's temporary account identifier"
+          }
+        ],
+        "return_type": "void",
+        "description": "Makes the user account associated with TempAccountIdentifier active on the Content App. Uses MAY language in spec - not guaranteed.",
+        "usage_in_fsm": "T005"
+      },
+      {
+        "name": "track_node",
+        "parameters": [
+          {
+            "name": "Node",
+            "type": "node-id",
+            "description": "Node ID to track"
+          }
+        ],
+        "return_type": "void",
+        "description": "Tracks the Node ID for access management. Used to identify which nodes have access to the Content App.",
+        "usage_in_fsm": "T005, T009"
+      },
+      {
+        "name": "clear_user_account_for_node",
+        "parameters": [
+          {
+            "name": "Node",
+            "type": "node-id",
+            "description": "Node ID to clear"
+          }
+        ],
+        "return_type": "void",
+        "description": "Clears the user account session for the specified node.",
+        "usage_in_fsm": "T010"
+      },
+      {
+        "name": "clear_all_non_admin_accounts",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clears access for all non-Admin nodes. Triggered when Logout is invoked without Node field.",
+        "usage_in_fsm": "T011"
+      },
+      {
+        "name": "has_privilege",
+        "parameters": [
+          {
+            "name": "invoker",
+            "type": "node",
+            "description": "The invoking node"
+          },
+          {
+            "name": "level",
+            "type": "privilege",
+            "description": "Required privilege level (View/Operate/Manage/Admin)"
+          }
+        ],
+        "return_type": "bool",
+        "description": "Checks if the invoking node has the required privilege level per the ACL. Defined in Core Spec Section 7.6.",
+        "usage_in_fsm": "T017, T018, T019"
+      },
+      {
+        "name": "invalidate_temp_account_identifier",
+        "parameters": [
+          {
+            "name": "TempAccountIdentifier",
+            "type": "string",
+            "description": "The identifier to invalidate"
+          }
+        ],
+        "return_type": "void",
+        "description": "Marks a TempAccountIdentifier as no longer valid. Called when 10-minute validity expires.",
+        "usage_in_fsm": "T015"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": ["Logout"],
+      "manage_commands": [],
+      "administer_commands": ["GetSetupPIN", "Login"],
+      "timed_commands": ["GetSetupPIN", "Login", "Logout"],
+      "fabric_scoped_commands": [
+        "GetSetupPIN",
+        "GetSetupPINResponse",
+        "Login",
+        "Logout"
+      ],
+      "event_access": {
+        "LoggedOut": "A S (Admin + Sensitive)"
+      }
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "transition",
+        "element_id": "T005",
+        "safety_concern": "Successful Login grants access to user's Content App account, exposing personal content and preferences",
+        "mitigation_in_spec": "Multiple mitigations: Admin privilege required, Timed interaction required, rate limiting (10 req/10 min), TempAccountIdentifier validity limit (10 min), PIN validation"
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T001",
+        "safety_concern": "GetSetupPIN returns sensitive credential that can be used for PASE commissioning",
+        "mitigation_in_spec": "Admin privilege required, Timed interaction required, rate limiting, account match verification, user consent prompt prior to commissioning"
+      },
+      {
+        "element_type": "event",
+        "element_id": "LoggedOut",
+        "safety_concern": "If Fabric Admin fails to process LoggedOut event, stale access grants remain in place",
+        "mitigation_in_spec": "CRITICAL priority ensures timely delivery; SHALL language for admin action. However, actual removal is implementation-dependent."
+      },
+      {
+        "element_type": "state",
+        "element_id": "LoggedIn",
+        "safety_concern": "User privacy - logged in state exposes account to all authorized nodes on fabric",
+        "mitigation_in_spec": "Fabric scoping limits exposure to single fabric; Admin privilege required to Login; explicit Logout mechanism"
+      },
+      {
+        "element_type": "state",
+        "element_id": "RateLimited",
+        "safety_concern": "Legitimate users denied service if attacker exhausts rate limit quota",
+        "mitigation_in_spec": "Admin privilege required limits who can trigger rate limiting; 10-minute reset window"
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 6.2.4.1",
+        "gap_type": "weak_normative",
+        "description": "Rate limiting of 10 requests per 10 minutes allows 1,440 attempts per day. No exponential backoff or permanent lockout specified.",
+        "security_impact": "Low-rate sustained brute force attacks possible. Weak PINs (birthdays, patterns) vulnerable within days."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 6.2.4.2.1, 6.2.4.3.2",
+        "gap_type": "missing_constraint",
+        "description": "No PIN complexity requirements beyond minimum 8 characters. No requirement for mixed case, numbers, special characters.",
+        "security_impact": "Weak PINs like '00000000' or '12345678' are permitted, drastically reducing effective entropy."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 6.2.4.1",
+        "gap_type": "undefined_behavior",
+        "description": "Account verification method is 'outside the scope of this specification'. Security depends entirely on external service implementation.",
+        "security_impact": "Matter spec cannot guarantee account security. Vulnerabilities in external account service propagate to Matter ecosystem."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 6.2.4.3",
+        "gap_type": "weak_normative",
+        "description": "'Content App MAY make that user account active' uses MAY, not SHALL. Successful Login does not guarantee account activation.",
+        "security_impact": "Inconsistent implementations possible. Users may retry Login unnecessarily, increasing attack surface exposure."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 6.2.5.1",
+        "gap_type": "undefined_behavior",
+        "description": "Access removal mechanism and timing not specified. 'Fabric Admin SHALL remove access' but how and when is implementation-dependent.",
+        "security_impact": "Window between LoggedOut event and actual access removal creates opportunity for continued unauthorized access."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 6.2",
+        "gap_type": "missing_constraint",
+        "description": "No session timeout or automatic logout specified after Login success. Access persistence is undefined.",
+        "security_impact": "Once logged in, access may persist indefinitely without explicit Logout, creating long-lived session risk."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 6.2.4.3",
+        "gap_type": "weak_normative",
+        "description": "'Implementations... should impose aggressive time outs' uses SHOULD (lowercase), not SHALL, for TempAccountIdentifier to PIN mapping.",
+        "security_impact": "Long-lived mappings enable delayed Login attacks after legitimate user's session expectation ends."
+      },
+      {
+        "id": "GAP_008",
+        "location": "Section 6.2.4",
+        "gap_type": "missing_constraint",
+        "description": "No specification of how rate limit counter is managed per-fabric vs. globally, or how multiple concurrent sessions are handled.",
+        "security_impact": "Implementation variations could allow rate limit bypass through fabric manipulation."
+      },
+      {
+        "id": "GAP_009",
+        "location": "Section 6.2.4.1",
+        "gap_type": "ambiguous",
+        "description": "'No more than 10 unique requests in a 10 minute period' - unclear if 'unique' means unique TempAccountIdentifiers or unique request instances.",
+        "security_impact": "If unique means unique identifiers, attacker could submit multiple requests with same identifier without hitting limit."
+      }
+    ],
+
+    "initial_state": "NotLoggedIn",
+    "all_states": ["NotLoggedIn", "LoggedIn", "RateLimited"],
+    "all_triggers": [
+      "GetSetupPIN",
+      "GetSetupPINResponse",
+      "Login",
+      "Logout",
+      "LoggedOut",
+      "RateLimitWindowTimer",
+      "TempAccountIdentifierTimer",
+      "TimedInvokeTimer"
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true,
+      "constraint_validation_included": true,
+      "timed_interaction_modeled": true,
+      "fabric_scoping_documented": true
+    },
+
+    "proverif_query_suggestions": [
+      {
+        "property": "Authentication",
+        "query": "query tempId:string, pin:string, invoker:node; event(login_success(tempId, invoker)) ==> event(pin_validated(tempId, pin))",
+        "description": "Login success implies valid PIN was verified"
+      },
+      {
+        "property": "Access Control",
+        "query": "query invoker:node, cmd:command; event(command_executed(cmd, invoker)) ==> event(privilege_verified(invoker, cmd.required_privilege))",
+        "description": "All commands execute only after privilege verification"
+      },
+      {
+        "property": "Rate Limiting",
+        "query": "query t:time; count(getsetuppin_requests, window(t, t+600)) <= 10",
+        "description": "No more than 10 GetSetupPIN requests in any 10-minute window"
+      },
+      {
+        "property": "Timed Interaction",
+        "query": "query cmd:command; event(command_executed(cmd)) ==> event(timed_request_valid(cmd)) || !requires_timed(cmd)",
+        "description": "Commands requiring timed interaction only execute within valid timed transaction"
+      },
+      {
+        "property": "Logout Triggers Access Removal",
+        "query": "query nodeId:node_id; event(loggedout_received(nodeId)) ==> event(access_removed(nodeId))",
+        "description": "LoggedOut event causes access removal for specified node"
+      }
+    ]
+  }
+}

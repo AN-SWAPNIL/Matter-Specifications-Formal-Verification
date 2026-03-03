@@ -1,0 +1,614 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Account Login",
+    "cluster_id": "0x050E",
+    "pics_code": "ALOGIN",
+    "spec_reference": "Matter 1.5, Section 6.2, Pages 533-537",
+    "analysis_date": "2025-03-03",
+    "mcp_verification": "Completed via Graph-RAG (application_spec + core_spec)",
+
+    "properties": [
+      {
+        "id": "PROP_AC_001",
+        "name": "GetSetupPIN_Requires_Admin_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "GetSetupPIN command SHALL only be invoked by nodes with Administrator privilege.",
+        "formal": "∀invoker, cmd. invoke(GetSetupPIN, invoker) ⟹ has_privilege(invoker, Admin)",
+        "spec_source": {
+          "section": "6.2.4",
+          "page": 533,
+          "quote": "| 0x00 | GetSetupPIN | client → server | GetSetupPINResponse | A F T | M |"
+        },
+        "violation": {
+          "description": "Non-Admin nodes could invoke GetSetupPIN to obtain Setup PINs for user accounts, enabling unauthorized commissioning or account takeover.",
+          "attack_vector": "Compromised Operate-level device on fabric attempts to invoke GetSetupPIN to retrieve account credentials",
+          "physical_impact": "Privacy breach - user account credentials exposed to unauthorized parties"
+        },
+        "proverifQuery": "query invoker:node, tempId:string ⊢ event getsetuppin_invoked(invoker, tempId) ==> has_privilege(invoker, Admin)"
+      },
+      {
+        "id": "PROP_AC_002",
+        "name": "GetSetupPIN_Requires_Timed_Interaction",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "GetSetupPIN command SHALL use Timed Interaction to prevent replay attacks.",
+        "formal": "∀cmd. invoke(GetSetupPIN, cmd) ⟹ is_timed_invoke(cmd)",
+        "spec_source": {
+          "section": "6.2.4",
+          "page": 533,
+          "quote": "Access: A F T (T indicates Timed Interaction required)"
+        },
+        "violation": {
+          "description": "Without timed interaction, captured GetSetupPIN commands could be replayed to retrieve Setup PINs at attacker's convenience.",
+          "attack_vector": "Network-level attacker captures GetSetupPIN request and replays after session timeout",
+          "physical_impact": "None directly - credential exposure risk"
+        },
+        "proverifQuery": "query cmd:command ⊢ event getsetuppin_executed(cmd) ==> event timed_request_valid(cmd)"
+      },
+      {
+        "id": "PROP_AC_003",
+        "name": "Login_Requires_Admin_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "Login command SHALL only be invoked by nodes with Administrator privilege.",
+        "formal": "∀invoker, tempId, pin. invoke(Login, invoker, tempId, pin) ⟹ has_privilege(invoker, Admin)",
+        "spec_source": {
+          "section": "6.2.4",
+          "page": 533,
+          "quote": "| 0x02 | Login | client → server | Y | A F T | M |"
+        },
+        "violation": {
+          "description": "Non-Admin nodes could attempt Login to hijack user sessions or establish unauthorized access to Content Apps.",
+          "attack_vector": "Compromised device attempts Login with brute-forced PINs to gain account access",
+          "physical_impact": "Privacy breach - unauthorized access to user content and account"
+        },
+        "proverifQuery": "query invoker:node, tempId:string, pin:string ⊢ event login_invoked(invoker, tempId, pin) ==> has_privilege(invoker, Admin)"
+      },
+      {
+        "id": "PROP_AC_004",
+        "name": "Login_Requires_Timed_Interaction",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "Login command SHALL use Timed Interaction to prevent replay attacks.",
+        "formal": "∀cmd. invoke(Login, cmd) ⟹ is_timed_invoke(cmd)",
+        "spec_source": {
+          "section": "6.2.4",
+          "page": 533,
+          "quote": "Access: A F T"
+        },
+        "violation": {
+          "description": "Captured Login commands with valid PINs could be replayed to re-establish sessions.",
+          "attack_vector": "Replay captured Login command to assume user account",
+          "physical_impact": "None directly - unauthorized account access"
+        },
+        "proverifQuery": "query cmd:command ⊢ event login_executed(cmd) ==> event timed_request_valid(cmd)"
+      },
+      {
+        "id": "PROP_AC_005",
+        "name": "Logout_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "MEDIUM",
+        "claim": "Logout command SHALL only be invoked by nodes with at least Operate privilege.",
+        "formal": "∀invoker. invoke(Logout, invoker) ⟹ has_privilege(invoker, Operate)",
+        "spec_source": {
+          "section": "6.2.4",
+          "page": 533,
+          "quote": "| 0x03 | Logout | client → server | Y | O F T | M |"
+        },
+        "violation": {
+          "description": "Nodes without Operate privilege could invoke Logout to disrupt user sessions.",
+          "attack_vector": "View-only compromised device attempts to log out legitimate users",
+          "physical_impact": "None - service disruption only"
+        },
+        "proverifQuery": "query invoker:node ⊢ event logout_invoked(invoker) ==> has_privilege(invoker, Operate)"
+      },
+      {
+        "id": "PROP_AC_006",
+        "name": "Logout_Requires_Timed_Interaction",
+        "category": "AccessControl",
+        "importance": "MEDIUM",
+        "claim": "Logout command SHALL use Timed Interaction to prevent replay attacks.",
+        "formal": "∀cmd. invoke(Logout, cmd) ⟹ is_timed_invoke(cmd)",
+        "spec_source": {
+          "section": "6.2.4",
+          "page": 533,
+          "quote": "Access: O F T"
+        },
+        "violation": {
+          "description": "Captured Logout commands could be replayed to terminate user sessions at attacker's convenience.",
+          "attack_vector": "Replay Logout command to cause denial of service for user",
+          "physical_impact": "None - service disruption"
+        },
+        "proverifQuery": "query cmd:command ⊢ event logout_executed(cmd) ==> event timed_request_valid(cmd)"
+      },
+      {
+        "id": "PROP_AC_007",
+        "name": "LoggedOut_Event_Admin_Access",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "LoggedOut event SHALL only be readable by nodes with Administrator privilege and is marked Sensitive.",
+        "formal": "∀reader. read_event(LoggedOut, reader) ⟹ has_privilege(reader, Admin)",
+        "spec_source": {
+          "section": "6.2.5",
+          "page": 537,
+          "quote": "| 0 | LoggedOut | CRITICAL | A S | O |"
+        },
+        "violation": {
+          "description": "Non-Admin nodes reading LoggedOut events could learn about user activity patterns and session terminations.",
+          "attack_vector": "Compromised device monitors LoggedOut events to track user behavior",
+          "physical_impact": "Privacy breach - user activity tracking"
+        },
+        "proverifQuery": "query reader:node, nodeId:node_id ⊢ event read_loggedout(reader, nodeId) ==> has_privilege(reader, Admin)"
+      },
+      {
+        "id": "PROP_AC_008",
+        "name": "Commands_Fabric_Scoped",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "All Account Login commands SHALL be fabric-scoped, preventing cross-fabric invocation.",
+        "formal": "∀cmd, fabric. invoke(cmd, fabric) ⟹ cmd.fabric == fabric.local",
+        "spec_source": {
+          "section": "6.2.4",
+          "page": 533,
+          "quote": "Access: ... F ... (F indicates Fabric-scoped)"
+        },
+        "violation": {
+          "description": "Cross-fabric invocation could allow different fabric administrators to manipulate account sessions on other fabrics.",
+          "attack_vector": "Multi-admin scenario where one fabric attempts to access accounts on another fabric",
+          "physical_impact": "None directly - unauthorized access across trust domains"
+        },
+        "proverifQuery": "query cmd:command, fabric:fabric_id ⊢ event command_executed(cmd, fabric) ==> authorized_fabric(cmd.invoker, fabric)"
+      },
+      {
+        "id": "PROP_AU_001",
+        "name": "SetupPIN_Validation_Required",
+        "category": "Authentication",
+        "importance": "CRITICAL",
+        "claim": "Login command SHALL only succeed if the provided SetupPIN matches the PIN associated with the TempAccountIdentifier.",
+        "formal": "∀tempId, pin. login_success(tempId, pin) ⟹ pin_matches(tempId, pin)",
+        "spec_source": {
+          "section": "6.2.4.3",
+          "page": 535,
+          "quote": "the Content App checks if the account associated with the client's Temp Account Identifier has a current active Setup PIN with the given value"
+        },
+        "violation": {
+          "description": "Login succeeding without valid PIN would allow unauthorized account access without proper authentication.",
+          "attack_vector": "Submit Login with arbitrary PIN if validation is bypassed",
+          "physical_impact": "Privacy breach - full account access without credentials"
+        },
+        "proverifQuery": "query tempId:string, pin:string ⊢ event login_success(tempId, pin) ==> event pin_validated(tempId, pin)"
+      },
+      {
+        "id": "PROP_AU_002",
+        "name": "SetupPIN_Minimum_Length",
+        "category": "Authentication",
+        "importance": "HIGH",
+        "claim": "SetupPIN SHALL be at least 8 characters in length to provide adequate brute force protection.",
+        "formal": "∀pin. valid_setuppin(pin) ⟹ length(pin) ≥ 8",
+        "spec_source": {
+          "section": "6.2.4.3.2",
+          "page": 536,
+          "quote": "This field SHALL provide the Setup PIN as a text string at least 8 characters in length."
+        },
+        "violation": {
+          "description": "PINs shorter than 8 characters have reduced entropy and are more susceptible to brute force attacks within the rate limit window.",
+          "attack_vector": "Guess shorter PINs within the 10 attempts per 10 minutes window",
+          "physical_impact": "None directly - credential compromise risk"
+        },
+        "proverifQuery": "query pin:string ⊢ event pin_accepted(pin) ==> length(pin) >= 8"
+      },
+      {
+        "id": "PROP_AU_003",
+        "name": "TempAccountIdentifier_Minimum_Length",
+        "category": "Authentication",
+        "importance": "HIGH",
+        "claim": "TempAccountIdentifier SHALL be at least 16 characters to protect against password guessing attacks.",
+        "formal": "∀tempId. valid_temp_account_id(tempId) ⟹ length(tempId) ≥ 16",
+        "spec_source": {
+          "section": "6.2.4.1.1",
+          "page": 534,
+          "quote": "The length of this field SHALL be at least 16 characters to protect the account holder against password guessing attacks."
+        },
+        "violation": {
+          "description": "Shorter identifiers reduce the guessing space, making it easier for attackers to find valid account identifiers.",
+          "attack_vector": "Enumerate short TempAccountIdentifiers to find valid accounts",
+          "physical_impact": "None - enables further attacks"
+        },
+        "proverifQuery": "query tempId:string ⊢ event temp_account_id_accepted(tempId) ==> length(tempId) >= 16"
+      },
+      {
+        "id": "PROP_AU_004",
+        "name": "Account_Match_Verification",
+        "category": "Authentication",
+        "importance": "CRITICAL",
+        "claim": "GetSetupPIN SHALL only return a Setup PIN when the account associated with the TempAccountIdentifier matches the active account on the Content App.",
+        "formal": "∀tempId, pin. getsetuppin_returns(tempId, pin) ∧ pin ≠ empty ⟹ account_match(tempId, content_app_account)",
+        "spec_source": {
+          "section": "6.2.4.1",
+          "page": 534,
+          "quote": "If the accounts are the same, then the Content App returns the GetSetupPIN Response which includes a Setup PIN"
+        },
+        "violation": {
+          "description": "Returning Setup PIN for non-matching accounts would allow unauthorized commissioning or cross-account access.",
+          "attack_vector": "Submit TempAccountIdentifier from different user to obtain their Setup PIN",
+          "physical_impact": "Privacy breach - cross-account credential leakage"
+        },
+        "proverifQuery": "query tempId:string, pin:string ⊢ event getsetuppin_response(tempId, pin) ∧ pin != '' ==> event account_verified(tempId)"
+      },
+      {
+        "id": "PROP_AV_001",
+        "name": "GetSetupPIN_Rate_Limiting",
+        "category": "Availability",
+        "importance": "CRITICAL",
+        "claim": "GetSetupPIN command SHALL be rate limited to no more than 10 unique requests per 10 minute period to prevent brute force attacks.",
+        "formal": "∀t. count(GetSetupPIN_requests, [t-10min, t]) ≤ 10",
+        "spec_source": {
+          "section": "6.2.4.1",
+          "page": 534,
+          "quote": "The server SHALL implement rate limiting to prevent brute force attacks. No more than 10 unique requests in a 10 minute period SHALL be allowed"
+        },
+        "violation": {
+          "description": "Without rate limiting, attackers could rapidly enumerate TempAccountIdentifiers or brute force Setup PINs.",
+          "attack_vector": "Send unlimited GetSetupPIN requests to enumerate valid accounts or guess PINs",
+          "physical_impact": "None - enables credential compromise"
+        },
+        "proverifQuery": "query requests:list, interval:time ⊢ count(requests, interval) > 10 ==> event rate_limit_triggered()"
+      },
+      {
+        "id": "PROP_AV_002",
+        "name": "Login_Rate_Limiting",
+        "category": "Availability",
+        "importance": "CRITICAL",
+        "claim": "Login command SHALL be rate limited to no more than 10 unique requests per 10 minute period to prevent brute force attacks.",
+        "formal": "∀t. count(Login_requests, [t-10min, t]) ≤ 10",
+        "spec_source": {
+          "section": "6.2.4.3",
+          "page": 536,
+          "quote": "The server SHALL implement rate limiting to prevent brute force attacks. No more than 10 unique requests in a 10 minute period SHALL be allowed"
+        },
+        "violation": {
+          "description": "Without rate limiting, attackers could brute force Setup PINs for known TempAccountIdentifiers.",
+          "attack_vector": "Rapid Login attempts with different PIN guesses",
+          "physical_impact": "None - enables account compromise"
+        },
+        "proverifQuery": "query requests:list, interval:time ⊢ count(requests, interval) > 10 ==> event rate_limit_triggered()"
+      },
+      {
+        "id": "PROP_TM_001",
+        "name": "TempAccountIdentifier_Max_Validity",
+        "category": "Timing",
+        "importance": "HIGH",
+        "claim": "TempAccountIdentifier SHALL NOT be valid for more than 10 minutes to limit the attack window.",
+        "formal": "∀tempId, t_issue. valid(tempId, t) ⟹ t ≤ t_issue + 10min",
+        "spec_source": {
+          "section": "6.2.4.1",
+          "page": 534,
+          "quote": "A Content App that supports this command SHALL ensure that the Temporary Account Identifier used by its clients is not valid for more than 10 minutes."
+        },
+        "violation": {
+          "description": "Long-lived TempAccountIdentifiers extend the window for brute force attacks and replay attacks.",
+          "attack_vector": "Collect TempAccountIdentifier and attempt brute force over extended period",
+          "physical_impact": "None - enables extended attack window"
+        },
+        "proverifQuery": "query tempId:string, t_issue:time, t_use:time ⊢ event tempId_used(tempId, t_use) ==> t_use <= t_issue + 600"
+      },
+      {
+        "id": "PROP_TM_002",
+        "name": "Aggressive_Timeout_Recommendation",
+        "category": "Timing",
+        "importance": "MEDIUM",
+        "claim": "Implementations SHOULD impose aggressive timeouts for TempAccountIdentifier to Setup PIN mappings to prevent delayed login.",
+        "formal": "∀tempId, pin. mapping(tempId, pin, t) ⟹ timeout(t) < aggressive_threshold",
+        "spec_source": {
+          "section": "6.2.4.3",
+          "page": 535,
+          "quote": "Implementations of such a service should impose aggressive time outs for any mapping of Temporary Account Identifier to Setup PIN in order to prevent accidental login due to delayed invocation."
+        },
+        "violation": {
+          "description": "Long-lived mappings could allow delayed Login attempts to succeed after the legitimate user's session expectation has ended.",
+          "attack_vector": "Capture TempAccountIdentifier and PIN, wait for user to leave, then Login",
+          "physical_impact": "None - unauthorized account access"
+        },
+        "proverifQuery": "query tempId:string, pin:string, t:time ⊢ event login_attempt(tempId, pin, t) ==> mapping_still_valid(tempId, pin, t)"
+      },
+      {
+        "id": "PROP_AZ_001",
+        "name": "LoggedOut_Triggers_Access_Removal",
+        "category": "Authorization",
+        "importance": "CRITICAL",
+        "claim": "When LoggedOut event is received, Fabric Admin SHALL remove access to the Content App for the specified Node.",
+        "formal": "∀nodeId. event(LoggedOut, nodeId) ⟹ remove_access(nodeId, ContentApp)",
+        "spec_source": {
+          "section": "6.2.5.1",
+          "page": 537,
+          "quote": "In response to this event, the Fabric Admin SHALL remove access to this Content App by the specified Node."
+        },
+        "violation": {
+          "description": "If Fabric Admin fails to remove access, logged-out nodes retain Content App access, violating user's logout intent.",
+          "attack_vector": "Logged-out node continues accessing Content App if admin fails to revoke access",
+          "physical_impact": "Privacy breach - continued unauthorized content access"
+        },
+        "proverifQuery": "query nodeId:node_id ⊢ event loggedout_received(nodeId) ==> event access_removed(nodeId)"
+      },
+      {
+        "id": "PROP_AZ_002",
+        "name": "LoggedOut_No_Node_Removes_All_NonAdmin",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "If LoggedOut event has no Node specified, Fabric Admin SHALL remove access to all non-Admin Nodes.",
+        "formal": "∀event. LoggedOut(event) ∧ event.Node == null ⟹ ∀n. ¬is_admin(n) → remove_access(n, ContentApp)",
+        "spec_source": {
+          "section": "6.2.5.1",
+          "page": 537,
+          "quote": "If no Node is provided, then the Fabric Admin SHALL remove access to all non-Admin Nodes."
+        },
+        "violation": {
+          "description": "Non-Admin nodes retain access even after global logout, violating user's intent to terminate all sessions.",
+          "attack_vector": "Previously authorized non-Admin device continues access after user performs global logout",
+          "physical_impact": "Privacy breach - multiple unauthorized access points remain"
+        },
+        "proverifQuery": "query ⊢ event loggedout_no_node() ==> ∀n. ¬is_admin(n) → event access_removed(n)"
+      },
+      {
+        "id": "PROP_EV_001",
+        "name": "LoggedOut_Event_Critical_Priority",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "LoggedOut event SHALL have CRITICAL priority to ensure timely delivery and processing.",
+        "formal": "∀event. event_type(event, LoggedOut) ⟹ priority(event) == CRITICAL",
+        "spec_source": {
+          "section": "6.2.5",
+          "page": 537,
+          "quote": "| 0 | LoggedOut | CRITICAL | A S | O |"
+        },
+        "violation": {
+          "description": "Lower priority could cause LoggedOut events to be delayed or dropped, leaving stale access grants in place.",
+          "attack_vector": "Flood system with lower priority events to delay LoggedOut processing",
+          "physical_impact": "None - delayed access revocation"
+        },
+        "proverifQuery": "query event:event ⊢ event_loggedout(event) ==> event.priority == CRITICAL"
+      },
+      {
+        "id": "PROP_SI_001",
+        "name": "Empty_PIN_Account_Mismatch",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "GetSetupPINResponse SHALL return empty string when accounts do not match, not null or error.",
+        "formal": "∀tempId. ¬account_match(tempId) ⟹ GetSetupPINResponse(tempId).SetupPIN == ''",
+        "spec_source": {
+          "section": "6.2.4.2.1",
+          "page": 535,
+          "quote": "This field SHALL provide the Setup PIN as a text string at least 8 characters in length or empty string to indicate that the accounts do not match."
+        },
+        "violation": {
+          "description": "Non-empty response for mismatched accounts could leak credential information or confuse client logic.",
+          "attack_vector": "Analyze varying responses to determine which TempAccountIdentifiers are valid",
+          "physical_impact": "None - information leakage for enumeration"
+        },
+        "proverifQuery": "query tempId:string, pin:string ⊢ event getsetuppin_response(tempId, pin) ∧ ¬account_match(tempId) ==> pin == ''"
+      },
+      {
+        "id": "PROP_SI_002",
+        "name": "Login_Conditional_Activation",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "Content App MAY make user account active upon successful Login verification (conditional, not guaranteed).",
+        "formal": "∀tempId, pin. pin_valid(tempId, pin) ⟹ may_activate_account(tempId) (not guaranteed)",
+        "spec_source": {
+          "section": "6.2.4.3",
+          "page": 535,
+          "quote": "If the Setup PIN is valid for the user account associated with the Temp Account Identifier, then the Content App MAY make that user account active."
+        },
+        "violation": {
+          "description": "This is a spec gap - MAY language means implementations might not activate accounts even with valid credentials, causing unpredictable behavior.",
+          "attack_vector": "N/A - implementation variation concern",
+          "physical_impact": "None - inconsistent user experience"
+        },
+        "proverifQuery": "N/A - MAY requirement not formally verifiable"
+      },
+      {
+        "id": "PROP_SP_001",
+        "name": "SetupPIN_String_Format",
+        "category": "SecretProtection",
+        "importance": "MEDIUM",
+        "claim": "Setup PIN SHALL be transmitted as a string to accommodate various formats including alpha-numeric encodings.",
+        "formal": "∀pin. typeof(pin) == string",
+        "spec_source": {
+          "section": "6.2.4.1",
+          "page": 534,
+          "quote": "The Setup PIN is a character string so that it can accommodate different future formats, including alpha-numeric encodings."
+        },
+        "violation": {
+          "description": "Non-string formats could limit PIN complexity options or cause encoding issues in transit.",
+          "attack_vector": "N/A - format specification",
+          "physical_impact": "None"
+        },
+        "proverifQuery": "query pin:string ⊢ event pin_transmitted(pin) ==> typeof(pin) == string"
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "Account verification is performed by a central service outside the scope of the Matter specification.",
+        "type": "Explicit",
+        "source": "Section 6.2.4.1, Page 534",
+        "dependencies": ["PROP_AU_001", "PROP_AU_004"],
+        "impact_if_violated": "If external service is compromised, all authentication properties fail. Matter spec cannot enforce security of external account verification."
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "User is prompted for consent prior to Commissioning before GetSetupPIN is invoked.",
+        "type": "Explicit",
+        "source": "Section 6.2.4.1, Page 534",
+        "dependencies": ["PROP_AV_001"],
+        "impact_if_violated": "Without user consent, automated brute force or enumeration attacks become more feasible."
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "Admin-level access is legitimate and properly authorized.",
+        "type": "Implicit",
+        "source": "Derived from Access Control model",
+        "dependencies": ["PROP_AC_001", "PROP_AC_003", "PROP_AC_007"],
+        "impact_if_violated": "Compromised Admin node can perform all Account Login operations legitimately."
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "Fabric Admin correctly implements LoggedOut event handling.",
+        "type": "Implicit",
+        "source": "Derived from Section 6.2.5.1",
+        "dependencies": ["PROP_AZ_001", "PROP_AZ_002"],
+        "impact_if_violated": "Logged-out nodes retain access indefinitely if Fabric Admin fails to revoke."
+      },
+      {
+        "id": "ASSUM_005",
+        "statement": "TempAccountIdentifier is derived from Rotating Device Identifier and is unique per session.",
+        "type": "Explicit",
+        "source": "Section 6.2.4.1, Page 534",
+        "dependencies": ["PROP_AU_003", "PROP_TM_001"],
+        "impact_if_violated": "Reused identifiers could enable replay attacks or session confusion."
+      },
+      {
+        "id": "ASSUM_006",
+        "statement": "Rate limit counter is not reset by implementation logic during the 10-minute window.",
+        "type": "Implicit",
+        "source": "Derived from Section 6.2.4.1 rate limiting requirement",
+        "dependencies": ["PROP_AV_001", "PROP_AV_002"],
+        "impact_if_violated": "Implementation could reset counter, allowing unlimited attempts."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 6.2.4.1",
+        "normative_weakness": "SHALL but weak protection",
+        "description": "Rate limiting of 10 requests per 10 minutes allows 1,440 attempts per day which may be sufficient for brute-forcing weak PINs.",
+        "properties_affected": ["PROP_AV_001", "PROP_AV_002"],
+        "security_impact": "With 8-character minimum PIN, 10^8 combinations exist. At 1,440/day, full enumeration takes 190 years. However, weak PINs (birthdays, patterns) are vulnerable."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 6.2.4.1",
+        "normative_weakness": "Unspecified",
+        "description": "No exponential backoff or permanent lockout after repeated failures specified. Only fixed rate limit exists.",
+        "properties_affected": ["PROP_AV_001", "PROP_AV_002"],
+        "security_impact": "Attacker can sustain low-rate brute force attacks indefinitely without escalating consequences."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 6.2.4.2.1, 6.2.4.3.2",
+        "normative_weakness": "Unspecified",
+        "description": "No PIN complexity requirements specified beyond minimum length. No requirement for mixed case, numbers, or special characters.",
+        "properties_affected": ["PROP_AU_002"],
+        "security_impact": "Weak PINs (e.g., '00000000', '12345678') are permitted, reducing effective entropy."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 6.2.4.1",
+        "normative_weakness": "Outside scope",
+        "description": "Account verification method is 'outside the scope of this specification'. Security depends entirely on external service implementation.",
+        "properties_affected": ["PROP_AU_001", "PROP_AU_004"],
+        "security_impact": "Matter spec cannot guarantee account security - vulnerabilities in external service propagate to Matter ecosystem."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 6.2.4.3",
+        "normative_weakness": "MAY",
+        "description": "'Content App MAY make that user account active' - not SHALL. Successful Login does not guarantee account activation.",
+        "properties_affected": ["PROP_SI_002"],
+        "security_impact": "Inconsistent implementations could cause user confusion or force users to retry Login, increasing attack surface exposure."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 6.2.5.1",
+        "normative_weakness": "Implementation-dependent",
+        "description": "Access removal mechanism and timing not specified. 'Fabric Admin SHALL remove access' but how and when is implementation-dependent.",
+        "properties_affected": ["PROP_AZ_001", "PROP_AZ_002"],
+        "security_impact": "Delay between LoggedOut event and actual access removal creates window for continued unauthorized access."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 6.2",
+        "normative_weakness": "Unspecified",
+        "description": "No session timeout or automatic logout specified after Login success. Access persistence is undefined.",
+        "properties_affected": ["PROP_AZ_001"],
+        "security_impact": "Once logged in, access may persist indefinitely until explicit Logout, creating long-lived session risk."
+      },
+      {
+        "id": "GAP_008",
+        "location": "Section 6.2.4.3",
+        "normative_weakness": "SHOULD",
+        "description": "'Implementations... should impose aggressive time outs' uses SHOULD, not SHALL, for TempAccountIdentifier to PIN mapping timeouts.",
+        "properties_affected": ["PROP_TM_002"],
+        "security_impact": "Long-lived mappings enable delayed Login attacks after legitimate user's session expectation ends."
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": ["Account Login (6.2)", "Application Basic (6.3)"],
+        "property": {
+          "claim": "Account Login cluster operates on Content App endpoints which are identified by Application Basic cluster.",
+          "formal": "∀endpoint. has_cluster(endpoint, AccountLogin) ⟹ has_cluster(endpoint, ApplicationBasic)"
+        },
+        "violation_scenario": "Account Login on endpoint without Application Basic could enable phantom Content App attacks where login targets undefined applications."
+      },
+      {
+        "id": "XPROP_002",
+        "clusters_involved": ["Account Login (6.2)", "Content Control (6.13)"],
+        "property": {
+          "claim": "Account Login sessions may interact with Content Control parental controls; login should respect content restrictions.",
+          "formal": "∀session, content. logged_in(session) ∧ blocked_content(content) ⟹ ¬access(session, content)"
+        },
+        "violation_scenario": "Logged-in sessions bypass Content Control restrictions if Content App doesn't enforce parental controls post-login."
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_AU_001",
+        "safety_category": "Privacy",
+        "failure_mode": "Unauthorized access to user's content streaming accounts, viewing history, and personal preferences.",
+        "spec_mitigation": "PIN validation required, rate limiting, Admin privilege required"
+      },
+      {
+        "property_id": "PROP_AZ_001",
+        "safety_category": "Privacy",
+        "failure_mode": "Stale access grants allow previously authorized nodes to continue accessing user content after logout.",
+        "spec_mitigation": "LoggedOut event with CRITICAL priority triggers access removal"
+      },
+      {
+        "property_id": "PROP_AU_004",
+        "safety_category": "Privacy",
+        "failure_mode": "Cross-account credential exposure allows unauthorized parties to learn Setup PINs for other users.",
+        "spec_mitigation": "Account matching required, empty string returned on mismatch"
+      }
+    ],
+
+    "summary": {
+      "total_properties": 21,
+      "by_importance": {
+        "CRITICAL": 7,
+        "HIGH": 10,
+        "MEDIUM": 4
+      },
+      "by_category": {
+        "AccessControl": 8,
+        "Authentication": 4,
+        "Availability": 2,
+        "Timing": 2,
+        "Authorization": 2,
+        "EventIntegrity": 1,
+        "StateIntegrity": 2,
+        "SecretProtection": 1
+      },
+      "spec_gaps_found": 8,
+      "assumptions_documented": 6,
+      "cross_cluster_dependencies": 2,
+      "safety_critical_count": 3
+    }
+  }
+}

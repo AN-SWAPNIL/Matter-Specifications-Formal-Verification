@@ -1,0 +1,1314 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Smoke CO Alarm",
+    "cluster_id": "0x005C",
+    "pics_code": "SMOKECO",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 2.11, Pages 210-220",
+    "revision": 1,
+
+    "features": [
+      {
+        "bit": 0,
+        "code": "SMOKE",
+        "name": "SmokeAlarm",
+        "conformance": "O.a+",
+        "description": "Supports Smoke alarm detection and notification",
+        "affects_states": [
+          "SmokeAlarm_Warning",
+          "SmokeAlarm_Critical",
+          "InterconnectSmoke_Warning",
+          "InterconnectSmoke_Critical"
+        ],
+        "affects_transitions": [
+          "T_SmokeDetected_Warning",
+          "T_SmokeDetected_Critical",
+          "T_SmokeClear",
+          "T_InterconnectSmoke_Warning",
+          "T_InterconnectSmoke_Critical"
+        ],
+        "required_attributes": [
+          "SmokeState",
+          "ContaminationState",
+          "SmokeSensitivityLevel"
+        ]
+      },
+      {
+        "bit": 1,
+        "code": "CO",
+        "name": "COAlarm",
+        "conformance": "O.a+",
+        "description": "Supports CO (Carbon Monoxide) alarm detection and notification",
+        "affects_states": [
+          "COAlarm_Warning",
+          "COAlarm_Critical",
+          "InterconnectCO_Warning",
+          "InterconnectCO_Critical"
+        ],
+        "affects_transitions": [
+          "T_CODetected_Warning",
+          "T_CODetected_Critical",
+          "T_COClear",
+          "T_InterconnectCO_Warning",
+          "T_InterconnectCO_Critical"
+        ],
+        "required_attributes": ["COState"]
+      }
+    ],
+
+    "dependencies": [
+      {
+        "cluster": "Power Source",
+        "relationship": "SHOULD_COEXIST",
+        "description": "BatteryAlert state SHALL be reflected in Power Source cluster using appropriate supported attributes and events"
+      },
+      {
+        "cluster": "Boolean State Configuration",
+        "relationship": "MAY_COEXIST",
+        "description": "For alarm suppress functionality on boolean sensors"
+      }
+    ],
+
+    "states": [
+      {
+        "name": "Normal",
+        "description": "Nominal state - device is not alarming, no hazards detected",
+        "is_initial": true,
+        "invariants": [
+          "ExpressedState == Normal",
+          "SmokeState == Normal OR Feature_SMOKE == false",
+          "COState == Normal OR Feature_CO == false",
+          "BatteryAlert == Normal",
+          "TestInProgress == false",
+          "HardwareFaultAlert == false",
+          "EndOfServiceAlert == Normal"
+        ],
+        "state_attributes": {
+          "ExpressedState": "Normal",
+          "TestInProgress": false
+        },
+        "feature_requirements": [],
+        "safety_implications": "Safe operational state - no immediate hazards"
+      },
+      {
+        "name": "SmokeAlarm_Warning",
+        "description": "Smoke detected at Warning level - early detection, may be muted",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == SmokeAlarm",
+          "SmokeState == Warning",
+          "Feature_SMOKE == true"
+        ],
+        "state_attributes": {
+          "ExpressedState": "SmokeAlarm",
+          "SmokeState": "Warning"
+        },
+        "feature_requirements": ["Feature_SMOKE == true"],
+        "safety_implications": "MEDIUM - Early smoke detection; user should investigate. Can be muted via physical interaction."
+      },
+      {
+        "name": "SmokeAlarm_Critical",
+        "description": "Smoke detected at Critical level - immediate evacuation required",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == SmokeAlarm",
+          "SmokeState == Critical",
+          "Feature_SMOKE == true"
+        ],
+        "state_attributes": {
+          "ExpressedState": "SmokeAlarm",
+          "SmokeState": "Critical"
+        },
+        "feature_requirements": ["Feature_SMOKE == true"],
+        "safety_implications": "CRITICAL - Immediate fire danger; evacuation required. SHALL NOT be muted via physical interaction."
+      },
+      {
+        "name": "COAlarm_Warning",
+        "description": "Carbon Monoxide detected at Warning level - ventilate area",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == COAlarm",
+          "COState == Warning",
+          "Feature_CO == true"
+        ],
+        "state_attributes": {
+          "ExpressedState": "COAlarm",
+          "COState": "Warning"
+        },
+        "feature_requirements": ["Feature_CO == true"],
+        "safety_implications": "MEDIUM - CO detected; ventilate and investigate. Can be muted via physical interaction."
+      },
+      {
+        "name": "COAlarm_Critical",
+        "description": "Carbon Monoxide detected at Critical level - immediate evacuation required",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == COAlarm",
+          "COState == Critical",
+          "Feature_CO == true"
+        ],
+        "state_attributes": {
+          "ExpressedState": "COAlarm",
+          "COState": "Critical"
+        },
+        "feature_requirements": ["Feature_CO == true"],
+        "safety_implications": "CRITICAL - Lethal CO levels; immediate evacuation required. SHALL NOT be muted via physical interaction."
+      },
+      {
+        "name": "BatteryAlert_Warning",
+        "description": "Battery low - replacement needed soon",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == BatteryAlert",
+          "BatteryAlert == Warning"
+        ],
+        "state_attributes": {
+          "ExpressedState": "BatteryAlert",
+          "BatteryAlert": "Warning"
+        },
+        "feature_requirements": [],
+        "safety_implications": "MEDIUM - Device will become non-functional if battery not replaced"
+      },
+      {
+        "name": "BatteryAlert_Critical",
+        "description": "Battery critically low - immediate replacement required",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == BatteryAlert",
+          "BatteryAlert == Critical"
+        ],
+        "state_attributes": {
+          "ExpressedState": "BatteryAlert",
+          "BatteryAlert": "Critical"
+        },
+        "feature_requirements": [],
+        "safety_implications": "HIGH - Device may fail imminently. SHALL NOT be muted (life safety). Reflects in Power Source cluster."
+      },
+      {
+        "name": "Testing",
+        "description": "Self-test in progress - device testing its sensors",
+        "is_initial": false,
+        "invariants": ["ExpressedState == Testing", "TestInProgress == true"],
+        "state_attributes": {
+          "ExpressedState": "Testing",
+          "TestInProgress": true
+        },
+        "feature_requirements": [],
+        "safety_implications": "LOW - Device temporarily not monitoring for hazards during test"
+      },
+      {
+        "name": "HardwareFault",
+        "description": "Hardware fault detected - device may be unreliable",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == HardwareFault",
+          "HardwareFaultAlert == true"
+        ],
+        "state_attributes": {
+          "ExpressedState": "HardwareFault",
+          "HardwareFaultAlert": true
+        },
+        "feature_requirements": [],
+        "safety_implications": "HIGH - Device unreliable; replace immediately. Critical contamination also reflects as HardwareFault."
+      },
+      {
+        "name": "EndOfService",
+        "description": "Device has reached end of service life - replace device",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == EndOfService",
+          "EndOfServiceAlert == Expired"
+        ],
+        "state_attributes": {
+          "ExpressedState": "EndOfService",
+          "EndOfServiceAlert": "Expired"
+        },
+        "feature_requirements": [],
+        "safety_implications": "HIGH - Device past its reliable service life; detection capability may be degraded"
+      },
+      {
+        "name": "InterconnectSmoke_Warning",
+        "description": "Smoke alarm received from interconnected device at Warning level",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == InterconnectSmoke",
+          "InterconnectSmokeAlarm == Warning",
+          "Feature_SMOKE == true"
+        ],
+        "state_attributes": {
+          "ExpressedState": "InterconnectSmoke",
+          "InterconnectSmokeAlarm": "Warning"
+        },
+        "feature_requirements": ["Feature_SMOKE == true"],
+        "safety_implications": "MEDIUM - Remote smoke detection; investigate source device location"
+      },
+      {
+        "name": "InterconnectSmoke_Critical",
+        "description": "Smoke alarm received from interconnected device at Critical level",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == InterconnectSmoke",
+          "InterconnectSmokeAlarm == Critical",
+          "Feature_SMOKE == true"
+        ],
+        "state_attributes": {
+          "ExpressedState": "InterconnectSmoke",
+          "InterconnectSmokeAlarm": "Critical"
+        },
+        "feature_requirements": ["Feature_SMOKE == true"],
+        "safety_implications": "CRITICAL - Fire at remote location; whole-home evacuation may be required"
+      },
+      {
+        "name": "InterconnectCO_Warning",
+        "description": "CO alarm received from interconnected device at Warning level",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == InterconnectCO",
+          "InterconnectCOAlarm == Warning",
+          "Feature_CO == true"
+        ],
+        "state_attributes": {
+          "ExpressedState": "InterconnectCO",
+          "InterconnectCOAlarm": "Warning"
+        },
+        "feature_requirements": ["Feature_CO == true"],
+        "safety_implications": "MEDIUM - Remote CO detection; ventilate and investigate source"
+      },
+      {
+        "name": "InterconnectCO_Critical",
+        "description": "CO alarm received from interconnected device at Critical level",
+        "is_initial": false,
+        "invariants": [
+          "ExpressedState == InterconnectCO",
+          "InterconnectCOAlarm == Critical",
+          "Feature_CO == true"
+        ],
+        "state_attributes": {
+          "ExpressedState": "InterconnectCO",
+          "InterconnectCOAlarm": "Critical"
+        },
+        "feature_requirements": ["Feature_CO == true"],
+        "safety_implications": "CRITICAL - Lethal CO at remote location; whole-home evacuation required"
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T_SmokeDetected_Warning",
+        "from_state": "Normal",
+        "to_state": "SmokeAlarm_Warning",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "SmokeWarningDetected",
+          "command_id": null
+        },
+        "guard_condition": "Feature_SMOKE == true && SmokeState_sensor == Warning",
+        "actions": [
+          "SmokeState := Warning",
+          "ExpressedState := SmokeAlarm",
+          "generate_event(SmokeAlarm, {AlarmSeverityLevel: Warning})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.1 SmokeAlarm Event"
+      },
+      {
+        "id": "T_SmokeDetected_Critical",
+        "from_state": "Normal",
+        "to_state": "SmokeAlarm_Critical",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "SmokeCriticalDetected",
+          "command_id": null
+        },
+        "guard_condition": "Feature_SMOKE == true && SmokeState_sensor == Critical",
+        "actions": [
+          "SmokeState := Critical",
+          "ExpressedState := SmokeAlarm",
+          "generate_event(SmokeAlarm, {AlarmSeverityLevel: Critical})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.1 SmokeAlarm Event"
+      },
+      {
+        "id": "T_SmokeEscalate",
+        "from_state": "SmokeAlarm_Warning",
+        "to_state": "SmokeAlarm_Critical",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "SmokeCriticalDetected",
+          "command_id": null
+        },
+        "guard_condition": "SmokeState_sensor == Critical",
+        "actions": [
+          "SmokeState := Critical",
+          "generate_event(SmokeAlarm, {AlarmSeverityLevel: Critical})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.1 SmokeAlarm Event - state change to Critical"
+      },
+      {
+        "id": "T_SmokeClear_FromWarning",
+        "from_state": "SmokeAlarm_Warning",
+        "to_state": "Normal",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "SmokeCleared",
+          "command_id": null
+        },
+        "guard_condition": "SmokeState_sensor == Normal && no_other_alarms_active",
+        "actions": [
+          "SmokeState := Normal",
+          "ExpressedState := Normal",
+          "generate_event(AllClear)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.11 AllClear Event"
+      },
+      {
+        "id": "T_SmokeClear_FromCritical",
+        "from_state": "SmokeAlarm_Critical",
+        "to_state": "Normal",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "SmokeCleared",
+          "command_id": null
+        },
+        "guard_condition": "SmokeState_sensor == Normal && no_other_alarms_active",
+        "actions": [
+          "SmokeState := Normal",
+          "ExpressedState := Normal",
+          "generate_event(AllClear)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.11 AllClear Event"
+      },
+      {
+        "id": "T_CODetected_Warning",
+        "from_state": "Normal",
+        "to_state": "COAlarm_Warning",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "COWarningDetected",
+          "command_id": null
+        },
+        "guard_condition": "Feature_CO == true && COState_sensor == Warning",
+        "actions": [
+          "COState := Warning",
+          "ExpressedState := COAlarm",
+          "generate_event(COAlarm, {AlarmSeverityLevel: Warning})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.2 COAlarm Event"
+      },
+      {
+        "id": "T_CODetected_Critical",
+        "from_state": "Normal",
+        "to_state": "COAlarm_Critical",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "COCriticalDetected",
+          "command_id": null
+        },
+        "guard_condition": "Feature_CO == true && COState_sensor == Critical",
+        "actions": [
+          "COState := Critical",
+          "ExpressedState := COAlarm",
+          "generate_event(COAlarm, {AlarmSeverityLevel: Critical})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.2 COAlarm Event"
+      },
+      {
+        "id": "T_COEscalate",
+        "from_state": "COAlarm_Warning",
+        "to_state": "COAlarm_Critical",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "COCriticalDetected",
+          "command_id": null
+        },
+        "guard_condition": "COState_sensor == Critical",
+        "actions": [
+          "COState := Critical",
+          "generate_event(COAlarm, {AlarmSeverityLevel: Critical})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.2 COAlarm Event - state change to Critical"
+      },
+      {
+        "id": "T_COClear_FromWarning",
+        "from_state": "COAlarm_Warning",
+        "to_state": "Normal",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "COCleared",
+          "command_id": null
+        },
+        "guard_condition": "COState_sensor == Normal && no_other_alarms_active",
+        "actions": [
+          "COState := Normal",
+          "ExpressedState := Normal",
+          "generate_event(AllClear)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.11 AllClear Event"
+      },
+      {
+        "id": "T_COClear_FromCritical",
+        "from_state": "COAlarm_Critical",
+        "to_state": "Normal",
+        "trigger": {
+          "type": "sensor_detection",
+          "name": "COCleared",
+          "command_id": null
+        },
+        "guard_condition": "COState_sensor == Normal && no_other_alarms_active",
+        "actions": [
+          "COState := Normal",
+          "ExpressedState := Normal",
+          "generate_event(AllClear)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.11 AllClear Event"
+      },
+      {
+        "id": "T_BatteryWarning",
+        "from_state": "Normal",
+        "to_state": "BatteryAlert_Warning",
+        "trigger": {
+          "type": "internal_detection",
+          "name": "BatteryLowDetected",
+          "command_id": null
+        },
+        "guard_condition": "BatteryAlert_sensor == Warning",
+        "actions": [
+          "BatteryAlert := Warning",
+          "ExpressedState := BatteryAlert",
+          "generate_event(LowBattery, {AlarmSeverityLevel: Warning})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.3 LowBattery Event"
+      },
+      {
+        "id": "T_BatteryCritical",
+        "from_state": "Normal",
+        "to_state": "BatteryAlert_Critical",
+        "trigger": {
+          "type": "internal_detection",
+          "name": "BatteryCriticalDetected",
+          "command_id": null
+        },
+        "guard_condition": "BatteryAlert_sensor == Critical",
+        "actions": [
+          "BatteryAlert := Critical",
+          "ExpressedState := BatteryAlert",
+          "generate_event(LowBattery, {AlarmSeverityLevel: Critical})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.3 LowBattery Event"
+      },
+      {
+        "id": "T_BatteryEscalate",
+        "from_state": "BatteryAlert_Warning",
+        "to_state": "BatteryAlert_Critical",
+        "trigger": {
+          "type": "internal_detection",
+          "name": "BatteryCriticalDetected",
+          "command_id": null
+        },
+        "guard_condition": "BatteryAlert_sensor == Critical",
+        "actions": [
+          "BatteryAlert := Critical",
+          "generate_event(LowBattery, {AlarmSeverityLevel: Critical})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.3 LowBattery Event - escalation"
+      },
+      {
+        "id": "T_SelfTestRequest_Success",
+        "from_state": "Normal",
+        "to_state": "Testing",
+        "trigger": {
+          "type": "command",
+          "name": "SelfTestRequest",
+          "command_id": "0x00"
+        },
+        "guard_condition": "ExpressedState == Normal",
+        "actions": ["TestInProgress := true", "ExpressedState := Testing"],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "ExpressedState IN [SmokeAlarm, COAlarm, Testing, InterconnectSmoke, InterconnectCO]",
+            "status_code": "BUSY",
+            "description": "Device already in alarm or testing state, self-test not allowed"
+          }
+        ],
+        "spec_reference": "Section 2.11.7.1 SelfTestRequest Command"
+      },
+      {
+        "id": "T_SelfTestRequest_Busy",
+        "from_state": "*",
+        "to_state": "*",
+        "trigger": {
+          "type": "command",
+          "name": "SelfTestRequest",
+          "command_id": "0x00"
+        },
+        "guard_condition": "ExpressedState IN [SmokeAlarm, COAlarm, Testing, InterconnectSmoke, InterconnectCO]",
+        "actions": ["return BUSY"],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Device in alarm or already testing",
+            "status_code": "BUSY",
+            "description": "SelfTestRequest rejected when ExpressedState is any of: SmokeAlarm, COAlarm, Testing, InterconnectSmoke, InterconnectCO"
+          }
+        ],
+        "spec_reference": "Section 2.11.7.1 SelfTestRequest Command - SHALL return status code BUSY"
+      },
+      {
+        "id": "T_SelfTestComplete_NoFault",
+        "from_state": "Testing",
+        "to_state": "Normal",
+        "trigger": {
+          "type": "internal_completion",
+          "name": "SelfTestCompleted",
+          "command_id": null
+        },
+        "guard_condition": "no_faults_detected && no_alarms_active",
+        "actions": [
+          "TestInProgress := false",
+          "ExpressedState := Normal",
+          "generate_event(SelfTestComplete)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.7.1/2.11.8.6 SelfTestComplete Event"
+      },
+      {
+        "id": "T_SelfTestComplete_FaultDetected",
+        "from_state": "Testing",
+        "to_state": "HardwareFault",
+        "trigger": {
+          "type": "internal_completion",
+          "name": "SelfTestCompletedWithFault",
+          "command_id": null
+        },
+        "guard_condition": "hardware_fault_detected",
+        "actions": [
+          "TestInProgress := false",
+          "HardwareFaultAlert := true",
+          "ExpressedState := HardwareFault",
+          "generate_event(SelfTestComplete)",
+          "generate_event(HardwareFault)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.7.1 - faults identified during test SHALL be reflected in appropriate attributes and events"
+      },
+      {
+        "id": "T_HardwareFaultDetected",
+        "from_state": "Normal",
+        "to_state": "HardwareFault",
+        "trigger": {
+          "type": "internal_detection",
+          "name": "HardwareFaultDetected",
+          "command_id": null
+        },
+        "guard_condition": "hardware_fault_condition == true",
+        "actions": [
+          "HardwareFaultAlert := true",
+          "ExpressedState := HardwareFault",
+          "generate_event(HardwareFault)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.4 HardwareFault Event"
+      },
+      {
+        "id": "T_CriticalContamination",
+        "from_state": "Normal",
+        "to_state": "HardwareFault",
+        "trigger": {
+          "type": "internal_detection",
+          "name": "CriticalContaminationDetected",
+          "command_id": null
+        },
+        "guard_condition": "ContaminationState_sensor == Critical && Feature_SMOKE == true",
+        "actions": [
+          "ContaminationState := Critical",
+          "HardwareFaultAlert := true",
+          "ExpressedState := HardwareFault",
+          "generate_event(HardwareFault)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.5.6.4 Critical contamination SHALL also be reflected as a HardwareFault"
+      },
+      {
+        "id": "T_ExpiryDateReached",
+        "from_state": "Normal",
+        "to_state": "EndOfService",
+        "trigger": {
+          "type": "timer",
+          "name": "ExpiryDateTimer",
+          "command_id": null
+        },
+        "guard_condition": "current_time >= ExpiryDate",
+        "actions": [
+          "EndOfServiceAlert := Expired",
+          "ExpressedState := EndOfService",
+          "generate_event(EndOfService)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "MAY be delayed by up to 24 hours for timezone alignment",
+        "error_responses": [],
+        "spec_reference": "Section 2.11.6.13/2.11.8.5 ExpiryDate and EndOfService Event"
+      },
+      {
+        "id": "T_InterconnectSmoke_Warning",
+        "from_state": "Normal",
+        "to_state": "InterconnectSmoke_Warning",
+        "trigger": {
+          "type": "interconnect_signal",
+          "name": "InterconnectSmokeAlarmReceived",
+          "command_id": null
+        },
+        "guard_condition": "Feature_SMOKE == true && interconnect_smoke_severity == Warning",
+        "actions": [
+          "InterconnectSmokeAlarm := Warning",
+          "ExpressedState := InterconnectSmoke",
+          "generate_event(InterconnectSmokeAlarm, {AlarmSeverityLevel: Warning})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.9 InterconnectSmokeAlarm Event"
+      },
+      {
+        "id": "T_InterconnectSmoke_Critical",
+        "from_state": "Normal",
+        "to_state": "InterconnectSmoke_Critical",
+        "trigger": {
+          "type": "interconnect_signal",
+          "name": "InterconnectSmokeAlarmReceived",
+          "command_id": null
+        },
+        "guard_condition": "Feature_SMOKE == true && interconnect_smoke_severity == Critical",
+        "actions": [
+          "InterconnectSmokeAlarm := Critical",
+          "ExpressedState := InterconnectSmoke",
+          "generate_event(InterconnectSmokeAlarm, {AlarmSeverityLevel: Critical})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.9 InterconnectSmokeAlarm Event"
+      },
+      {
+        "id": "T_InterconnectCO_Warning",
+        "from_state": "Normal",
+        "to_state": "InterconnectCO_Warning",
+        "trigger": {
+          "type": "interconnect_signal",
+          "name": "InterconnectCOAlarmReceived",
+          "command_id": null
+        },
+        "guard_condition": "Feature_CO == true && interconnect_co_severity == Warning",
+        "actions": [
+          "InterconnectCOAlarm := Warning",
+          "ExpressedState := InterconnectCO",
+          "generate_event(InterconnectCOAlarm, {AlarmSeverityLevel: Warning})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.10 InterconnectCOAlarm Event"
+      },
+      {
+        "id": "T_InterconnectCO_Critical",
+        "from_state": "Normal",
+        "to_state": "InterconnectCO_Critical",
+        "trigger": {
+          "type": "interconnect_signal",
+          "name": "InterconnectCOAlarmReceived",
+          "command_id": null
+        },
+        "guard_condition": "Feature_CO == true && interconnect_co_severity == Critical",
+        "actions": [
+          "InterconnectCOAlarm := Critical",
+          "ExpressedState := InterconnectCO",
+          "generate_event(InterconnectCOAlarm, {AlarmSeverityLevel: Critical})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.10 InterconnectCOAlarm Event"
+      },
+      {
+        "id": "T_InterconnectSmokeClear",
+        "from_state": "InterconnectSmoke_Warning",
+        "to_state": "Normal",
+        "trigger": {
+          "type": "interconnect_signal",
+          "name": "InterconnectSmokeClear",
+          "command_id": null
+        },
+        "guard_condition": "InterconnectSmokeAlarm_remote == Normal && no_other_alarms_active",
+        "actions": [
+          "InterconnectSmokeAlarm := Normal",
+          "ExpressedState := Normal",
+          "generate_event(AllClear)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.11 AllClear Event"
+      },
+      {
+        "id": "T_InterconnectCOClear",
+        "from_state": "InterconnectCO_Warning",
+        "to_state": "Normal",
+        "trigger": {
+          "type": "interconnect_signal",
+          "name": "InterconnectCOClear",
+          "command_id": null
+        },
+        "guard_condition": "InterconnectCOAlarm_remote == Normal && no_other_alarms_active",
+        "actions": [
+          "InterconnectCOAlarm := Normal",
+          "ExpressedState := Normal",
+          "generate_event(AllClear)"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.11 AllClear Event"
+      },
+      {
+        "id": "T_PhysicalMute_Warning",
+        "from_state": "*_Warning",
+        "to_state": "*_Warning_Muted",
+        "trigger": {
+          "type": "physical_interaction",
+          "name": "PhysicalMuteButton",
+          "command_id": null
+        },
+        "guard_condition": "AlarmSeverity == Warning",
+        "actions": ["DeviceMuted := Muted", "generate_event(AlarmMuted)"],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 2.11.5.1.2 Warning alarms SHOULD be mutable via physical interaction"
+      },
+      {
+        "id": "T_PhysicalMute_Critical_Rejected",
+        "from_state": "*_Critical",
+        "to_state": "*_Critical",
+        "trigger": {
+          "type": "physical_interaction",
+          "name": "PhysicalMuteButton",
+          "command_id": null
+        },
+        "guard_condition": "AlarmSeverity == Critical",
+        "actions": [],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Alarm severity is Critical",
+            "status_code": "REJECTED",
+            "description": "Critical alarms SHALL NOT be muted via physical interaction"
+          }
+        ],
+        "spec_reference": "Section 2.11.5.1.3 Critical alarms SHALL NOT be mutable via physical interaction"
+      },
+      {
+        "id": "T_MuteEnded",
+        "from_state": "*_Muted",
+        "to_state": "*",
+        "trigger": {
+          "type": "internal_completion",
+          "name": "MuteDurationExpired",
+          "command_id": null
+        },
+        "guard_condition": "mute_duration_expired || alarm_cleared",
+        "actions": ["DeviceMuted := NotMuted", "generate_event(MuteEnded)"],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Mute duration is manufacturer-defined (SPEC GAP)",
+        "error_responses": [],
+        "spec_reference": "Section 2.11.8.8 MuteEnded Event"
+      },
+      {
+        "id": "T_SensitivityChange",
+        "from_state": "Normal",
+        "to_state": "Normal",
+        "trigger": {
+          "type": "attribute_write",
+          "name": "SmokeSensitivityLevelWrite",
+          "command_id": null
+        },
+        "guard_condition": "Feature_SMOKE == true && value IN [High, Standard, Low]",
+        "actions": ["SmokeSensitivityLevel := new_value"],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Caller does not have Manage privilege",
+            "status_code": "UNSUPPORTED_ACCESS",
+            "description": "Manage privilege required for sensitivity changes"
+          },
+          {
+            "condition": "Value not in SensitivityEnum",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Invalid sensitivity level value"
+          }
+        ],
+        "spec_reference": "Section 2.11.6, Access: RW VM"
+      }
+    ],
+
+    "events": [
+      {
+        "id": "0x00",
+        "name": "SmokeAlarm",
+        "priority": "CRITICAL",
+        "conformance": "SMOKE",
+        "generated_by": [
+          "T_SmokeDetected_Warning",
+          "T_SmokeDetected_Critical",
+          "T_SmokeEscalate"
+        ],
+        "fields": [
+          {
+            "name": "AlarmSeverityLevel",
+            "type": "AlarmStateEnum",
+            "description": "Current value of SmokeState attribute"
+          }
+        ],
+        "description": "Generated when SmokeState attribute changes to either Warning or Critical state"
+      },
+      {
+        "id": "0x01",
+        "name": "COAlarm",
+        "priority": "CRITICAL",
+        "conformance": "CO",
+        "generated_by": [
+          "T_CODetected_Warning",
+          "T_CODetected_Critical",
+          "T_COEscalate"
+        ],
+        "fields": [
+          {
+            "name": "AlarmSeverityLevel",
+            "type": "AlarmStateEnum",
+            "description": "Current value of COState attribute"
+          }
+        ],
+        "description": "Generated when COState attribute changes to either Warning or Critical state"
+      },
+      {
+        "id": "0x02",
+        "name": "LowBattery",
+        "priority": "INFO",
+        "conformance": "M",
+        "generated_by": [
+          "T_BatteryWarning",
+          "T_BatteryCritical",
+          "T_BatteryEscalate"
+        ],
+        "fields": [
+          {
+            "name": "AlarmSeverityLevel",
+            "type": "AlarmStateEnum",
+            "description": "Current value of BatteryAlert attribute"
+          }
+        ],
+        "description": "Generated when BatteryAlert attribute changes to either Warning or Critical state"
+      },
+      {
+        "id": "0x03",
+        "name": "HardwareFault",
+        "priority": "INFO",
+        "conformance": "M",
+        "generated_by": [
+          "T_HardwareFaultDetected",
+          "T_CriticalContamination",
+          "T_SelfTestComplete_FaultDetected"
+        ],
+        "fields": [],
+        "description": "Generated when device detects a hardware fault that leads to setting HardwareFaultAlert to True"
+      },
+      {
+        "id": "0x04",
+        "name": "EndOfService",
+        "priority": "INFO",
+        "conformance": "M",
+        "generated_by": ["T_ExpiryDateReached"],
+        "fields": [],
+        "description": "Generated when EndOfServiceAlert is set to Expired"
+      },
+      {
+        "id": "0x05",
+        "name": "SelfTestComplete",
+        "priority": "INFO",
+        "conformance": "M",
+        "generated_by": [
+          "T_SelfTestComplete_NoFault",
+          "T_SelfTestComplete_FaultDetected"
+        ],
+        "fields": [],
+        "description": "Generated when SelfTest completes and TestInProgress changes to False"
+      },
+      {
+        "id": "0x06",
+        "name": "AlarmMuted",
+        "priority": "INFO",
+        "conformance": "O",
+        "generated_by": ["T_PhysicalMute_Warning"],
+        "fields": [],
+        "description": "Generated when DeviceMuted attribute changes to Muted"
+      },
+      {
+        "id": "0x07",
+        "name": "MuteEnded",
+        "priority": "INFO",
+        "conformance": "O",
+        "generated_by": ["T_MuteEnded"],
+        "fields": [],
+        "description": "Generated when DeviceMuted attribute changes to NotMuted"
+      },
+      {
+        "id": "0x08",
+        "name": "InterconnectSmokeAlarm",
+        "priority": "CRITICAL",
+        "conformance": "[SMOKE]",
+        "generated_by": [
+          "T_InterconnectSmoke_Warning",
+          "T_InterconnectSmoke_Critical"
+        ],
+        "fields": [
+          {
+            "name": "AlarmSeverityLevel",
+            "type": "AlarmStateEnum",
+            "description": "Current value of InterconnectSmokeAlarm attribute"
+          }
+        ],
+        "description": "Generated when device receives a smoke alarm from an interconnected sensor"
+      },
+      {
+        "id": "0x09",
+        "name": "InterconnectCOAlarm",
+        "priority": "CRITICAL",
+        "conformance": "[CO]",
+        "generated_by": [
+          "T_InterconnectCO_Warning",
+          "T_InterconnectCO_Critical"
+        ],
+        "fields": [
+          {
+            "name": "AlarmSeverityLevel",
+            "type": "AlarmStateEnum",
+            "description": "Current value of InterconnectCOAlarm attribute"
+          }
+        ],
+        "description": "Generated when device receives a CO alarm from an interconnected sensor"
+      },
+      {
+        "id": "0x0A",
+        "name": "AllClear",
+        "priority": "INFO",
+        "conformance": "M",
+        "generated_by": [
+          "T_SmokeClear_FromWarning",
+          "T_SmokeClear_FromCritical",
+          "T_COClear_FromWarning",
+          "T_COClear_FromCritical",
+          "T_InterconnectSmokeClear",
+          "T_InterconnectCOClear"
+        ],
+        "fields": [],
+        "description": "Generated when ExpressedState attribute returns to Normal state"
+      }
+    ],
+
+    "timers": [
+      {
+        "name": "ExpiryDateTimer",
+        "source_attribute": "ExpiryDate",
+        "trigger": "Device startup, ExpiryDate attribute value",
+        "expiry_transition": "T_ExpiryDateReached",
+        "resolution": "seconds (epoch-s)",
+        "grace_period": "Up to 24 hours for timezone alignment"
+      },
+      {
+        "name": "MuteDurationTimer",
+        "source_attribute": null,
+        "trigger": "Physical mute button press on Warning alarm",
+        "expiry_transition": "T_MuteEnded",
+        "resolution": "manufacturer-defined",
+        "spec_gap": "Specification does not define mute duration or auto-unmute behavior"
+      },
+      {
+        "name": "SelfTestTimer",
+        "source_attribute": null,
+        "trigger": "SelfTestRequest command",
+        "expiry_transition": "T_SelfTestComplete_*",
+        "resolution": "manufacturer-defined",
+        "spec_gap": "Specification does not define maximum self-test duration"
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "evaluate_priority",
+        "parameters": [
+          {
+            "name": "active_alarms",
+            "type": "list[AlarmCondition]",
+            "description": "Currently active alarm conditions"
+          }
+        ],
+        "return_type": "ExpressedStateEnum",
+        "description": "Determines which alarm condition has highest priority when multiple are active. Priority order is manufacturer-defined and SHALL be supplied as part of certification procedure.",
+        "usage_in_fsm": "Used when multiple alarms active to determine ExpressedState value"
+      },
+      {
+        "name": "sync_power_source",
+        "parameters": [
+          {
+            "name": "battery_level",
+            "type": "AlarmStateEnum",
+            "description": "BatteryAlert value"
+          }
+        ],
+        "return_type": "void",
+        "description": "Synchronizes BatteryAlert state with Power Source cluster attributes and events",
+        "usage_in_fsm": "Called on BatteryAlert state changes"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": ["SelfTestRequest"],
+      "manage_commands": [],
+      "administer_commands": [],
+      "timed_commands": [],
+      "manage_attributes": ["SmokeSensitivityLevel"],
+      "notes": "All commands require Operate (O) privilege. SmokeSensitivityLevel requires Manage (M) for write access."
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "state",
+        "element_id": "SmokeAlarm_Critical",
+        "safety_concern": "Fire danger - immediate evacuation required",
+        "mitigation_in_spec": "SHALL NOT be muted via physical interaction (Section 2.11.5.1.3)"
+      },
+      {
+        "element_type": "state",
+        "element_id": "COAlarm_Critical",
+        "safety_concern": "Lethal CO levels - immediate evacuation required",
+        "mitigation_in_spec": "SHALL NOT be muted via physical interaction (Section 2.11.5.1.3)"
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "DeviceMuted",
+        "safety_concern": "Muting could prevent users from hearing life-safety alarms",
+        "mitigation_in_spec": "Read-only (RV) - cannot be set remotely. Only physical interaction can mute."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "SmokeSensitivityLevel",
+        "safety_concern": "Reducing sensitivity could prevent fire detection",
+        "mitigation_in_spec": "Requires Manage (M) privilege to modify"
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T_SelfTestRequest_Success",
+        "safety_concern": "Self-test puts device in non-monitoring Testing state",
+        "mitigation_in_spec": "Blocked during active alarms - returns BUSY (Section 2.11.7.1)"
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T_PhysicalMute_Critical_Rejected",
+        "safety_concern": "Critical alarms must not be silenced",
+        "mitigation_in_spec": "SHALL NOT be muted via physical interaction (Section 2.11.5.1.3)"
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "EndOfServiceAlert",
+        "safety_concern": "Expired devices may have degraded detection capability",
+        "mitigation_in_spec": "Automatic transition to EndOfService state on ExpiryDate (Section 2.11.6.13)"
+      },
+      {
+        "element_type": "state",
+        "element_id": "InterconnectSmoke_Critical",
+        "safety_concern": "Remote fire requiring whole-home response",
+        "mitigation_in_spec": "Event generated with severity level (Section 2.11.8.9)"
+      },
+      {
+        "element_type": "state",
+        "element_id": "InterconnectCO_Critical",
+        "safety_concern": "Remote CO requiring whole-home evacuation",
+        "mitigation_in_spec": "Event generated with severity level (Section 2.11.8.10)"
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "location": "Section 2.11.6.5",
+        "gap_type": "missing_constraint",
+        "description": "No maximum mute duration defined - device could remain muted indefinitely",
+        "security_impact": "User could mute Warning alarm and never be alerted if condition escalates after mute"
+      },
+      {
+        "location": "Section 2.11.7.1",
+        "gap_type": "missing_constraint",
+        "description": "No maximum self-test duration or timeout defined",
+        "security_impact": "Device could remain stuck in Testing state, unable to detect hazards"
+      },
+      {
+        "location": "Section 2.11.7.1",
+        "gap_type": "missing_constraint",
+        "description": "No rate limiting on SelfTestRequest command",
+        "security_impact": "Attacker with Operate privilege could drain battery via repeated self-tests"
+      },
+      {
+        "location": "Section 2.11.8.9-10",
+        "gap_type": "undefined_behavior",
+        "description": "No authentication mechanism defined for interconnect alarm signals",
+        "security_impact": "Malicious device could inject false interconnect alarms causing panic or alarm fatigue"
+      },
+      {
+        "location": "Section 2.11.6.1",
+        "gap_type": "weak_normative",
+        "description": "Priority order of alarm conditions is manufacturer-defined, not standardized",
+        "security_impact": "Inconsistent user experience across devices; users may misunderstand severity"
+      },
+      {
+        "location": "Section 2.11.5.1.2",
+        "gap_type": "weak_normative",
+        "description": "Warning alarms SHOULD (not SHALL) be mutable via physical interaction",
+        "security_impact": "Implementation variance - some devices may allow muting Warning alarms, others may not"
+      }
+    ],
+
+    "initial_state": "Normal",
+
+    "all_states": [
+      "Normal",
+      "SmokeAlarm_Warning",
+      "SmokeAlarm_Critical",
+      "COAlarm_Warning",
+      "COAlarm_Critical",
+      "BatteryAlert_Warning",
+      "BatteryAlert_Critical",
+      "Testing",
+      "HardwareFault",
+      "EndOfService",
+      "InterconnectSmoke_Warning",
+      "InterconnectSmoke_Critical",
+      "InterconnectCO_Warning",
+      "InterconnectCO_Critical"
+    ],
+
+    "all_triggers": [
+      "SmokeWarningDetected",
+      "SmokeCriticalDetected",
+      "SmokeCleared",
+      "COWarningDetected",
+      "COCriticalDetected",
+      "COCleared",
+      "BatteryLowDetected",
+      "BatteryCriticalDetected",
+      "SelfTestRequest",
+      "SelfTestCompleted",
+      "SelfTestCompletedWithFault",
+      "HardwareFaultDetected",
+      "CriticalContaminationDetected",
+      "ExpiryDateTimer",
+      "InterconnectSmokeAlarmReceived",
+      "InterconnectCOAlarmReceived",
+      "InterconnectSmokeClear",
+      "InterconnectCOClear",
+      "PhysicalMuteButton",
+      "MuteDurationExpired",
+      "SmokeSensitivityLevelWrite"
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true,
+      "spec_gaps_documented": true,
+      "notes": "Cluster has only 1 command (SelfTestRequest) but complex sensor-driven state machine. DeviceMuted transitions are physical-only (no remote command)."
+    }
+  }
+}

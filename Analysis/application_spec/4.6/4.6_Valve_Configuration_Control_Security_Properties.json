@@ -1,0 +1,522 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Valve Configuration and Control",
+    "cluster_id": "0x0081",
+    "pics_code": "VALCC",
+    "spec_reference": "Matter 1.5, Section 4.6, Pages 387-395",
+    "revision": 1,
+    "classification": {
+      "hierarchy": "Base",
+      "role": "Application",
+      "scope": "Endpoint"
+    },
+    "features": [
+      {
+        "bit": 0,
+        "code": "TS",
+        "name": "TimeSync",
+        "conformance": "desc",
+        "description": "UTC time is used for time indications"
+      },
+      {
+        "bit": 1,
+        "code": "LVL",
+        "name": "Level",
+        "conformance": "O",
+        "description": "Device supports setting the specific position of the valve"
+      }
+    ],
+
+    "properties": [
+      {
+        "id": "PROP_VALCC_001",
+        "name": "Open_Command_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The Open command SHALL only be invokable by clients with Operate (O) or higher privilege.",
+        "formal": "∀invoker, cmd. invoke(Open, invoker) ⟹ has_privilege(invoker, Operate)",
+        "spec_source": "Section 4.6.8 Commands Table: Open command has Access 'O' (Operate)",
+        "violation": {
+          "description": "If Open command could be invoked without Operate privilege, any fabric member with View privilege could open water/gas valves remotely, causing flooding or gas leaks.",
+          "attack_vector": "Attacker with View-only fabric access attempts to invoke Open command",
+          "physical_impact": "Water flooding, gas leak, property damage, potential safety hazard"
+        },
+        "proverif_query": "query invoker:principal, cmd:command; event(invoke_success(invoker, Open)) ==> event(has_privilege(invoker, Operate))"
+      },
+      {
+        "id": "PROP_VALCC_002",
+        "name": "Close_Command_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "The Close command SHALL only be invokable by clients with Operate (O) or higher privilege.",
+        "formal": "∀invoker, cmd. invoke(Close, invoker) ⟹ has_privilege(invoker, Operate)",
+        "spec_source": "Section 4.6.8 Commands Table: Close command has Access 'O' (Operate)",
+        "violation": {
+          "description": "If Close command could be invoked without Operate privilege, unauthorized users could shut off water supply or other essential services.",
+          "attack_vector": "Attacker with View-only fabric access attempts to invoke Close command to disrupt service",
+          "physical_impact": "Denial of water/gas service, disruption of HVAC systems"
+        },
+        "proverif_query": "query invoker:principal, cmd:command; event(invoke_success(invoker, Close)) ==> event(has_privilege(invoker, Operate))"
+      },
+      {
+        "id": "PROP_VALCC_003",
+        "name": "DefaultOpenDuration_Write_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "Writing to DefaultOpenDuration attribute SHALL require Operate (O) privilege.",
+        "formal": "∀writer, val. write(DefaultOpenDuration, val, writer) ⟹ has_privilege(writer, Operate)",
+        "spec_source": "Section 4.6.7 Attributes Table: DefaultOpenDuration has Access RW VO (Write requires View+Operate)",
+        "violation": {
+          "description": "If DefaultOpenDuration could be written without Operate privilege, an attacker could set it to null, causing valves to remain open indefinitely.",
+          "attack_vector": "Attacker with View privilege writes null to DefaultOpenDuration, then triggers Open command via automation",
+          "physical_impact": "Indefinite water flow, flooding, resource waste"
+        },
+        "proverif_query": "query writer:principal, val:duration; event(write_success(DefaultOpenDuration, val, writer)) ==> event(has_privilege(writer, Operate))"
+      },
+      {
+        "id": "PROP_VALCC_004",
+        "name": "DefaultOpenLevel_Write_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "MEDIUM",
+        "claim": "Writing to DefaultOpenLevel attribute SHALL require Operate (O) privilege when Level feature is supported.",
+        "formal": "∀writer, val. Feature_LVL ∧ write(DefaultOpenLevel, val, writer) ⟹ has_privilege(writer, Operate)",
+        "spec_source": "Section 4.6.7 Attributes Table: DefaultOpenLevel has Access 'RW VO', Conformance [LVL]",
+        "violation": {
+          "description": "Unauthorized modification of default open level could cause valves to open at inappropriate flow rates.",
+          "attack_vector": "Attacker sets DefaultOpenLevel to 100% for a valve that should normally operate at partial opening",
+          "physical_impact": "Excessive water pressure, potential pipe damage, resource waste"
+        },
+        "proverif_query": "query writer:principal, val:percent; Feature_LVL == true && event(write_success(DefaultOpenLevel, val, writer)) ==> event(has_privilege(writer, Operate))"
+      },
+      {
+        "id": "PROP_VALCC_005",
+        "name": "Fault_Blocks_Open_Command",
+        "category": "StateIntegrity",
+        "importance": "CRITICAL",
+        "claim": "When the device has registered a fault, the Open command SHALL be ignored and FailureDueToFault status SHALL be returned.",
+        "formal": "∀v, t. ValveFault(v, t) ≠ 0 ∧ invoke(Open, v, t) ⟹ status(FailureDueToFault) ∧ ¬state_change(v)",
+        "spec_source": "Section 4.6.8.1.3 Effect on Receipt: 'If the device has registered a fault, that prevents it from performing the requested action, the command SHALL be ignored and a FailureDueToFault status SHALL be returned.'",
+        "violation": {
+          "description": "If Open command executed despite registered fault, a blocked or leaking valve could be forced open, exacerbating the fault condition.",
+          "attack_vector": "Attacker sends Open command to valve that has registered Leaking or Blocked fault",
+          "physical_impact": "Worsened leak, valve damage, flooding"
+        },
+        "proverif_query": "query v:device, t:time; event(open_command(v, t)) && ValveFault(v) != 0 ==> event(command_rejected(v, FailureDueToFault))"
+      },
+      {
+        "id": "PROP_VALCC_006",
+        "name": "Fault_Blocks_Close_Command",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When the device has registered a fault that prevents closure, the Close command SHALL be ignored and FailureDueToFault status SHALL be returned.",
+        "formal": "∀v, t. ValveFault(v, t) ≠ 0 ∧ prevents_close(fault) ∧ invoke(Close, v, t) ⟹ status(FailureDueToFault)",
+        "spec_source": "Section 4.6.8.2.1 Effect on Receipt: 'If the device has registered a fault that causes it to prevent the valve to perform the requested action, the command SHALL be ignored and a FailureDueToFault status SHALL be returned.'",
+        "violation": {
+          "description": "If Close command executed despite blocking fault, mechanical damage could occur to already-faulted valve.",
+          "attack_vector": "Repeated Close commands sent to valve with Blocked fault",
+          "physical_impact": "Mechanical damage, motor burnout"
+        },
+        "proverif_query": "query v:device, t:time; event(close_command(v, t)) && ValveFault(v) != 0 ==> event(command_rejected(v, FailureDueToFault))"
+      },
+      {
+        "id": "PROP_VALCC_007",
+        "name": "State_Exclusivity",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "CurrentState SHALL be exactly one of Closed, Open, or Transitioning at any time (mutually exclusive states).",
+        "formal": "∀v, t. (CurrentState(v, t) == Closed) ⊕ (CurrentState(v, t) == Open) ⊕ (CurrentState(v, t) == Transitioning)",
+        "spec_source": "Section 4.6.5.2 ValveStateEnum Type: Values are Closed (0), Open (1), Transitioning (2) - enum type implies exclusivity",
+        "violation": {
+          "description": "If valve could be in multiple states simultaneously, control logic would fail and safety interlocks could be bypassed.",
+          "attack_vector": "Invalid state injection via implementation bug",
+          "physical_impact": "Inconsistent valve behavior, safety system confusion"
+        },
+        "proverif_query": "query v:device, t:time; event(state_valid(v, t)) ==> (CurrentState(v, t) == Closed || CurrentState(v, t) == Open || CurrentState(v, t) == Transitioning)"
+      },
+      {
+        "id": "PROP_VALCC_008",
+        "name": "Open_Command_State_Transition_Sequence",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "On Open command, TargetState SHALL be set to Open and CurrentState SHALL be set to Transitioning, then CurrentState SHALL be set to Open when movement completes.",
+        "formal": "invoke(Open, v) ⟹ (TargetState(v) := Open ∧ CurrentState(v) := Transitioning) ; eventually(CurrentState(v) := Open)",
+        "spec_source": "Section 4.6.8.1.3: 'The device SHALL set the TargetState attribute to the Open value and set the CurrentState attribute to the Transitioning value... When the movement is complete, the device SHALL set the CurrentState attribute to the Open value.'",
+        "violation": {
+          "description": "If state transition sequence not followed, monitoring systems cannot properly track valve state and automations may malfunction.",
+          "attack_vector": "Implementation bug that skips Transitioning state",
+          "physical_impact": "State tracking failure, automation errors"
+        },
+        "proverif_query": "query v:device, t:time; event(open_command_accepted(v, t)) ==> event(target_state_set(v, Open, t)) && event(current_state_set(v, Transitioning, t))"
+      },
+      {
+        "id": "PROP_VALCC_009",
+        "name": "Close_Command_State_Transition_Sequence",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "On Close command, TargetState SHALL be set to Closed and CurrentState SHALL be set to Transitioning, then CurrentState SHALL be set to Closed when movement completes.",
+        "formal": "invoke(Close, v) ⟹ (TargetState(v) := Closed ∧ CurrentState(v) := Transitioning) ; eventually(CurrentState(v) := Closed)",
+        "spec_source": "Section 4.6.8.2.1: 'The device SHALL set the TargetState attribute to the Closed value and set the CurrentState attribute to the Transitioning value... When the movement is complete, the device SHALL set the CurrentState attribute to the Closed value.'",
+        "violation": {
+          "description": "If close transition sequence not followed, monitoring systems cannot determine when valve has actually closed.",
+          "attack_vector": "Implementation bug that reports Closed before physical closure completes",
+          "physical_impact": "False sense of security, continued flow despite 'closed' state"
+        },
+        "proverif_query": "query v:device, t:time; event(close_command_accepted(v, t)) ==> event(target_state_set(v, Closed, t)) && event(current_state_set(v, Transitioning, t))"
+      },
+      {
+        "id": "PROP_VALCC_010",
+        "name": "LevelStep_Validation",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When LevelStep attribute is present, TargetLevel values (except 100) SHALL be multiples of LevelStep; invalid values SHALL return CONSTRAINT_ERROR.",
+        "formal": "∀v, level. LevelStep(v) ≠ null ∧ level ≠ 100 ∧ (level % LevelStep(v)) ≠ 0 ⟹ reject(TargetLevel := level, CONSTRAINT_ERROR)",
+        "spec_source": "Section 4.6.8.1.3: 'If the LevelStep attribute and the TargetLevel field are both present and the value of the TargetLevel field is not 100, the value of the TargetLevel field SHALL be a supported value... If the resulting value is not 0, the requested TargetLevel value is considered an unsupported value and a CONSTRAINT_ERROR status SHALL be returned.'",
+        "violation": {
+          "description": "If invalid level values accepted, valve could attempt positions it cannot physically achieve, causing mechanical stress.",
+          "attack_vector": "Send Open command with TargetLevel that does not match LevelStep granularity",
+          "physical_impact": "Valve mechanical stress, inaccurate positioning"
+        },
+        "proverif_query": "query v:device, level:percent; LevelStep(v) != null && level != 100 && level mod LevelStep(v) != 0 ==> event(command_rejected(v, CONSTRAINT_ERROR))"
+      },
+      {
+        "id": "PROP_VALCC_011",
+        "name": "Auto_Close_On_Duration_Expiry",
+        "category": "Timing",
+        "importance": "CRITICAL",
+        "claim": "When RemainingDuration counts down to 0, the valve SHALL automatically transition to its closed position.",
+        "formal": "∀v, t. RemainingDuration(v, t) > 0 ∧ RemainingDuration(v, t + RemainingDuration(v, t)) == 0 ⟹ eventually(CurrentState(v) == Closed)",
+        "spec_source": "Section 4.6.7.4: 'When the value of this attribute counts down to 0, the valve SHALL automatically transition to its closed position. The behavior of transitioning to the closed position SHALL match the behavior described in the Close command.'",
+        "violation": {
+          "description": "If valve does not auto-close on timer expiry, water/gas could flow indefinitely beyond intended duration.",
+          "attack_vector": "Timer implementation bug or tampering that prevents countdown completion",
+          "physical_impact": "Water flooding, gas leak, severe property damage"
+        },
+        "proverif_query": "query v:device, t:time; RemainingDuration(v, t) == 0 && OpenDuration(v) != null ==> event(auto_close_triggered(v, t))"
+      },
+      {
+        "id": "PROP_VALCC_012",
+        "name": "AutoCloseTime_UTC_Trigger",
+        "category": "Timing",
+        "importance": "CRITICAL",
+        "claim": "When AutoCloseTime is earlier or equal to current UTC time, the valve SHALL automatically transition to its closed position.",
+        "formal": "∀v, t. Feature_TS ∧ AutoCloseTime(v) ≠ null ∧ AutoCloseTime(v) ≤ UTC_now() ⟹ eventually(CurrentState(v) == Closed)",
+        "spec_source": "Section 4.6.7.3: 'When the value of this attribute is earlier or equal to the current UTC time, the valve SHALL automatically transition to its closed position.'",
+        "violation": {
+          "description": "If UTC-based auto-close fails, valves with TimeSync feature could remain open past intended close time.",
+          "attack_vector": "Time synchronization attack that advances device time past AutoCloseTime without triggering close",
+          "physical_impact": "Extended open duration beyond schedule, flooding risk"
+        },
+        "proverif_query": "query v:device, t:time; Feature_TS == true && AutoCloseTime(v) != null && AutoCloseTime(v) <= UTC_now(t) ==> event(auto_close_triggered(v, t))"
+      },
+      {
+        "id": "PROP_VALCC_013",
+        "name": "AutoCloseTime_Adjustment_On_SetUTCTime",
+        "category": "Timing",
+        "importance": "HIGH",
+        "claim": "When SetUTCTime command modifies device time and AutoCloseTime is not null, AutoCloseTime SHALL be adjusted to new UTC time plus RemainingDuration.",
+        "formal": "∀v, t, new_utc. Feature_TS ∧ AutoCloseTime(v) ≠ null ∧ SetUTCTime(new_utc) ⟹ AutoCloseTime(v) := new_utc + RemainingDuration(v)",
+        "spec_source": "Section 4.6.7.3: 'If this attribute is not null and the Time Synchronization cluster receives a SetUTCTime command, modifying the current UTC time of the device, the value of this attribute SHALL be adjusted to match the new UTC time plus the value of the RemainingDuration attribute.'",
+        "violation": {
+          "description": "If AutoCloseTime not adjusted on time change, setting device clock backwards could cause premature closure or forward could delay closure.",
+          "attack_vector": "Manipulate SetUTCTime to extend AutoCloseTime indefinitely",
+          "physical_impact": "Extended open time beyond intended, flooding risk"
+        },
+        "proverif_query": "query v:device, old_utc:time, new_utc:time; AutoCloseTime(v) != null && event(set_utc_time(new_utc)) ==> AutoCloseTime(v) == new_utc + RemainingDuration(v)"
+      },
+      {
+        "id": "PROP_VALCC_014",
+        "name": "OpenDuration_Inheritance_From_Default",
+        "category": "Timing",
+        "importance": "MEDIUM",
+        "claim": "If OpenDuration field is not present in Open command, OpenDuration attribute SHALL be set to DefaultOpenDuration value.",
+        "formal": "∀v, cmd. invoke(Open, cmd, v) ∧ cmd.OpenDuration == null ⟹ OpenDuration(v) := DefaultOpenDuration(v)",
+        "spec_source": "Section 4.6.8.1.3: 'If the OpenDuration field is not present, the value of OpenDuration attribute SHALL be set to the value of the DefaultOpenDuration attribute.'",
+        "violation": {
+          "description": "If default duration not applied, valve could open indefinitely when no duration specified.",
+          "attack_vector": "Send Open command without OpenDuration field when DefaultOpenDuration is null",
+          "physical_impact": "Indefinite valve open state"
+        },
+        "proverif_query": "query v:device, cmd:command; cmd.OpenDuration == null && event(open_command(v, cmd)) ==> OpenDuration(v) == DefaultOpenDuration(v)"
+      },
+      {
+        "id": "PROP_VALCC_015",
+        "name": "Close_Resets_Duration_Attributes",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "On Close command, OpenDuration and RemainingDuration attributes SHALL be set to null.",
+        "formal": "∀v. invoke(Close, v) ⟹ OpenDuration(v) := null ∧ RemainingDuration(v) := null",
+        "spec_source": "Section 4.6.8.2.1: 'The OpenDuration and RemainingDuration attribute SHALL be set to null.'",
+        "violation": {
+          "description": "If duration attributes not cleared on close, subsequent opens could inherit stale timing values.",
+          "attack_vector": "Exploit stale duration values in race condition between close and open",
+          "physical_impact": "Unexpected open duration behavior"
+        },
+        "proverif_query": "query v:device, t:time; event(close_command_accepted(v, t)) ==> OpenDuration(v) == null && RemainingDuration(v) == null"
+      },
+      {
+        "id": "PROP_VALCC_016",
+        "name": "Level_Feature_TargetLevel_Set_On_Close",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When Level feature is supported and Close command is invoked, TargetLevel SHALL be set to 0.",
+        "formal": "∀v. Feature_LVL(v) ∧ invoke(Close, v) ⟹ TargetLevel(v) := 0",
+        "spec_source": "Section 4.6.8.2.1: 'If the device supports the Level feature, it SHALL set the TargetLevel attribute to 0.'",
+        "violation": {
+          "description": "If TargetLevel not set to 0 on close, level and state attributes could become inconsistent.",
+          "attack_vector": "Implementation bug causing level/state mismatch",
+          "physical_impact": "Monitoring confusion, potential partial opening"
+        },
+        "proverif_query": "query v:device, t:time; Feature_LVL(v) == true && event(close_command_accepted(v, t)) ==> TargetLevel(v) == 0"
+      },
+      {
+        "id": "PROP_VALCC_017",
+        "name": "ValveStateChanged_Event_Generation",
+        "category": "EventIntegrity",
+        "importance": "MEDIUM",
+        "claim": "ValveStateChanged event SHALL be generated when the valve state changes (when new state has been reached).",
+        "formal": "∀v, old_state, new_state. old_state ≠ new_state ∧ CurrentState(v) changes to new_state ⟹ gen_event(ValveStateChanged, v, new_state)",
+        "spec_source": "Section 4.6.9.1: 'This event SHALL be generated when the valve state changed. For level changes, after the end of movement, for state changes when the new state has been reached.'",
+        "violation": {
+          "description": "If state change events not generated, monitoring systems cannot track valve state transitions, losing audit trail.",
+          "attack_vector": "State manipulation without event generation hides malicious valve operations",
+          "physical_impact": "Loss of visibility into valve operations"
+        },
+        "proverif_query": "query v:device, old_state:state, new_state:state, t:time; old_state != new_state && event(state_change(v, old_state, new_state, t)) ==> event(valve_state_changed_event(v, new_state, t))"
+      },
+      {
+        "id": "PROP_VALCC_018",
+        "name": "ValveFault_Event_Generation",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "ValveFault event SHALL be generated when the valve registers or clears a fault.",
+        "formal": "∀v, fault. ValveFault(v) changes ⟹ gen_event(ValveFault, v, ValveFault(v))",
+        "spec_source": "Section 4.6.9.2: 'This event SHALL be generated when the valve registers or clears a fault, e.g. not being able to transition to the requested target level or state.'",
+        "violation": {
+          "description": "If fault events not generated, monitoring systems cannot detect or respond to valve failures in real-time.",
+          "attack_vector": "Fault condition registration without event generation hides equipment failure",
+          "physical_impact": "Delayed fault response, potential flooding or gas leak"
+        },
+        "proverif_query": "query v:device, fault:bitmap, t:time; event(fault_registered(v, fault, t)) ==> event(valve_fault_event(v, fault, t))"
+      },
+      {
+        "id": "PROP_VALCC_019",
+        "name": "Level_Bounds_Validation",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "CurrentLevel and TargetLevel SHALL be between 0 and 100 percent (inclusive), where 0 = fully closed and 100 = fully open.",
+        "formal": "∀v, t. Feature_LVL(v) ⟹ 0 ≤ CurrentLevel(v, t) ≤ 100 ∧ 0 ≤ TargetLevel(v, t) ≤ 100",
+        "spec_source": "Section 4.6.7.7: 'A value of 100 percent SHALL indicate the fully open position. A value of 0 percent SHALL indicate the fully closed position.'",
+        "violation": {
+          "description": "Out-of-range level values could cause undefined valve behavior or integer overflow in calculations.",
+          "attack_vector": "Attempt to set level value outside 0-100 range via implementation bug",
+          "physical_impact": "Unpredictable valve position"
+        },
+        "proverif_query": "query v:device, level:percent; Feature_LVL(v) == true ==> (CurrentLevel(v) >= 0 && CurrentLevel(v) <= 100)"
+      },
+      {
+        "id": "PROP_VALCC_020",
+        "name": "TimeSync_Feature_Dependency",
+        "category": "CrossCluster",
+        "importance": "MEDIUM",
+        "claim": "TimeSync feature SHALL NOT be supported unless the device supports the Time Synchronization cluster.",
+        "formal": "∀v. Feature_TS(v) ⟹ supports_cluster(v, TimeSynchronization)",
+        "spec_source": "Section 4.6.4.1: 'This feature SHALL NOT be supported unless the device supports the Time Synchronization cluster.'",
+        "violation": {
+          "description": "If TimeSync feature enabled without Time Synchronization cluster, AutoCloseTime could be based on invalid time values.",
+          "attack_vector": "Device claims TimeSync feature without proper time source",
+          "physical_impact": "Unpredictable auto-close timing"
+        },
+        "proverif_query": "query v:device; Feature_TS(v) == true ==> supports(v, TimeSynchronization_Cluster)"
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "Matter transport layer (CASE session) provides authenticated and encrypted communication channel.",
+        "type": "Explicit",
+        "source": "Matter Core Specification",
+        "dependencies": ["PROP_VALCC_001", "PROP_VALCC_002", "PROP_VALCC_003"],
+        "impact_if_violated": "All access control properties would fail as commands could be spoofed or replayed."
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "ACL (Access Control List) is correctly configured and enforced by the device.",
+        "type": "Explicit",
+        "source": "Matter Core Specification Section 6.6",
+        "dependencies": [
+          "PROP_VALCC_001",
+          "PROP_VALCC_002",
+          "PROP_VALCC_003",
+          "PROP_VALCC_004"
+        ],
+        "impact_if_violated": "Privilege-based access control properties would be bypassed."
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "ValveFault attribute accurately reflects the physical fault state of the valve.",
+        "type": "Implicit",
+        "source": "Derived from Section 4.6.7.10",
+        "dependencies": ["PROP_VALCC_005", "PROP_VALCC_006", "PROP_VALCC_018"],
+        "impact_if_violated": "Fault-based safety interlocks would fail if fault detection is inaccurate."
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "Device timer accurately tracks elapsed time for RemainingDuration countdown.",
+        "type": "Implicit",
+        "source": "Derived from Section 4.6.7.4",
+        "dependencies": ["PROP_VALCC_011", "PROP_VALCC_013"],
+        "impact_if_violated": "Auto-close timing would be incorrect, valves could remain open longer than intended."
+      },
+      {
+        "id": "ASSUM_005",
+        "statement": "Time Synchronization cluster provides accurate UTC time when TimeSync feature is enabled.",
+        "type": "Explicit",
+        "source": "Section 4.6.4.1",
+        "dependencies": ["PROP_VALCC_012", "PROP_VALCC_013", "PROP_VALCC_020"],
+        "impact_if_violated": "UTC-based auto-close would be unreliable."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 4.6.7.2",
+        "normative_weakness": "Unspecified",
+        "description": "DefaultOpenDuration can be null, meaning valve may remain open indefinitely. No maximum open duration limit is specified for safety-critical applications (water/gas valves).",
+        "properties_affected": ["PROP_VALCC_011", "PROP_VALCC_014"],
+        "security_impact": "Water or gas valves could be opened indefinitely, causing flooding or gas leaks. No fail-safe maximum duration."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 4.6",
+        "normative_weakness": "Unspecified",
+        "description": "No distinction between valve types (water, gas, air, etc.) in safety requirements. Gas valves have much higher safety requirements but spec treats all valves identically.",
+        "properties_affected": ["PROP_VALCC_005", "PROP_VALCC_011"],
+        "security_impact": "Gas valve implementations may have insufficient safety protections, as spec does not mandate gas-specific fail-safes."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 4.6.9 Events",
+        "normative_weakness": "MAY",
+        "description": "Both ValveStateChanged and ValveFault events have Optional (O) conformance. Critical safety events should be mandatory for valve clusters.",
+        "properties_affected": ["PROP_VALCC_017", "PROP_VALCC_018"],
+        "security_impact": "Implementations may not generate state change or fault events, making remote monitoring and audit trails impossible."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 4.6",
+        "normative_weakness": "Unspecified",
+        "description": "No fail-safe behavior specified when faults are detected. Spec does not require valve to close on fault (e.g., for gas applications where closed is the safe state).",
+        "properties_affected": ["PROP_VALCC_005", "PROP_VALCC_006"],
+        "security_impact": "Faulted valves may remain in open state, with no automatic transition to safe (closed) position."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 4.6.8",
+        "normative_weakness": "Unspecified",
+        "description": "No Timed Interaction requirement for Open/Close commands. Safety-critical actuation commands should require timed interaction to prevent replay attacks.",
+        "properties_affected": ["PROP_VALCC_001", "PROP_VALCC_002"],
+        "security_impact": "Valve commands could be vulnerable to replay attacks if captured from network traffic."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 4.6.8",
+        "normative_weakness": "Unspecified",
+        "description": "No rate limiting on Open/Close commands. Rapid toggling could damage valve mechanism or cause water hammer effect.",
+        "properties_affected": ["PROP_VALCC_001", "PROP_VALCC_002"],
+        "security_impact": "Denial of service attack via rapid command toggling could damage valve or connected plumbing."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 4.6.7.1",
+        "normative_weakness": "Unspecified",
+        "description": "OpenDuration constraint 'min 1' means minimum 1 second, but no explicit maximum. Very large values could cause integer overflow or practical indefinite open state.",
+        "properties_affected": ["PROP_VALCC_011"],
+        "security_impact": "Setting OpenDuration to maximum elapsed-s value could effectively make auto-close unreachable."
+      },
+      {
+        "id": "GAP_008",
+        "location": "Section 4.6.7.9",
+        "normative_weakness": "Unspecified",
+        "description": "DefaultOpenLevel fallback is 100 (fully open). For safety-critical applications, a lower default might be safer.",
+        "properties_affected": ["PROP_VALCC_004"],
+        "security_impact": "Unintended full opening when DefaultOpenLevel not explicitly configured."
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": [
+          "Valve Configuration and Control (0x0081)",
+          "Time Synchronization (0x0038)"
+        ],
+        "property": {
+          "claim": "When TimeSync feature is enabled, AutoCloseTime depends on accurate UTC time from Time Synchronization cluster. SetUTCTime command in Time Sync cluster affects valve auto-close behavior.",
+          "formal": "Feature_TS ∧ SetUTCTime(new_utc) ⟹ AutoCloseTime adjusted to maintain RemainingDuration"
+        },
+        "violation_scenario": "Attacker manipulates Time Synchronization cluster to set UTC time far in the future, causing immediate triggering of AutoCloseTime-based closure, or sets time far in the past, delaying auto-close indefinitely."
+      },
+      {
+        "id": "XPROP_002",
+        "clusters_involved": [
+          "Valve Configuration and Control (0x0081)",
+          "Access Control (0x001F)"
+        ],
+        "property": {
+          "claim": "Operate privilege for valve commands is granted via ACL entries in Access Control cluster.",
+          "formal": "invoke(Open, invoker) ⟹ ∃entry ∈ ACL. grants(entry, invoker, Operate)"
+        },
+        "violation_scenario": "ACL manipulation (CVE-2025-56557 style) could grant Operate privilege to unauthorized nodes, allowing remote valve control."
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_VALCC_011",
+        "safety_category": "FloodPrevention",
+        "failure_mode": "If auto-close fails on timer expiry, water valve remains open indefinitely causing flooding, property damage, and potential structural damage.",
+        "spec_mitigation": "RemainingDuration countdown to 0 SHALL trigger auto-close. However, no physical interlock or watchdog timer specified."
+      },
+      {
+        "property_id": "PROP_VALCC_005",
+        "safety_category": "MechanicalSafety",
+        "failure_mode": "Opening a blocked valve under fault condition could cause mechanical damage, pipe burst, or motor burnout.",
+        "spec_mitigation": "Commands rejected with FailureDueToFault when fault registered. However, no fail-safe position specified."
+      },
+      {
+        "property_id": "PROP_VALCC_001",
+        "safety_category": "UnauthorizedAccess",
+        "failure_mode": "If unauthorized users can open water/gas valves, they could cause flooding, gas leaks, or other physical damage.",
+        "spec_mitigation": "Operate privilege required for Open command. However, no additional authentication (e.g., PIN) required."
+      },
+      {
+        "property_id": "PROP_VALCC_012",
+        "safety_category": "FloodPrevention",
+        "failure_mode": "If UTC-based auto-close fails or can be manipulated via time attacks, valves remain open beyond intended schedule.",
+        "spec_mitigation": "AutoCloseTime adjusted on SetUTCTime. However, time manipulation attacks not explicitly addressed."
+      }
+    ],
+
+    "summary": {
+      "total_properties": 20,
+      "by_importance": {
+        "CRITICAL": 4,
+        "HIGH": 9,
+        "MEDIUM": 7
+      },
+      "by_category": {
+        "AccessControl": 4,
+        "StateIntegrity": 8,
+        "Timing": 4,
+        "EventIntegrity": 2,
+        "CrossCluster": 2
+      },
+      "assumptions_count": 5,
+      "spec_gaps_found": 8,
+      "cross_cluster_properties_count": 2,
+      "safety_critical_count": 4
+    }
+  }
+}

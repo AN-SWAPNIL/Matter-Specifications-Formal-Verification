@@ -1,0 +1,1704 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Thermostat",
+    "cluster_id": "0x0201",
+    "pics_code": "TSTAT",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 4.3, Pages 327-373",
+    "revision": 9,
+
+    "features": [
+      {
+        "bit": 0,
+        "code": "HEAT",
+        "name": "Heating",
+        "conformance": "AUTO, O.a+",
+        "description": "Thermostat is capable of managing a heating device",
+        "affects_states": ["Mode_Heat", "Mode_EmergencyHeat"],
+        "affects_transitions": ["T002", "T005", "T010", "T011", "T038"]
+      },
+      {
+        "bit": 1,
+        "code": "COOL",
+        "name": "Cooling",
+        "conformance": "AUTO, O.a+",
+        "description": "Thermostat is capable of managing a cooling device",
+        "affects_states": ["Mode_Cool", "Mode_Precooling"],
+        "affects_transitions": ["T003", "T006", "T012", "T013"]
+      },
+      {
+        "bit": 2,
+        "code": "OCC",
+        "name": "Occupancy",
+        "conformance": "O",
+        "description": "Supports Occupied and Unoccupied setpoints",
+        "affects_states": ["Mode_Heat", "Mode_Cool", "Mode_Auto"],
+        "affects_transitions": ["T028", "T029", "T031", "T032", "T033", "T034"]
+      },
+      {
+        "bit": 3,
+        "code": "SCH",
+        "name": "ScheduleConfiguration",
+        "conformance": "D",
+        "description": "Supports remote configuration of a weekly schedule of setpoint transitions",
+        "affects_states": ["Mode_Heat", "Mode_Cool", "Mode_Auto"],
+        "affects_transitions": ["T015", "T016", "T017", "T018", "T019", "T020", "T021", "T022"]
+      },
+      {
+        "bit": 4,
+        "code": "SB",
+        "name": "Setback",
+        "conformance": "O",
+        "description": "Supports configurable setback (or span) around setpoints to reduce over-cycling",
+        "affects_states": ["Mode_Heat", "Mode_Cool"],
+        "affects_transitions": ["T042", "T043", "T044", "T045", "T046"]
+      },
+      {
+        "bit": 5,
+        "code": "AUTO",
+        "name": "AutoMode",
+        "conformance": "O",
+        "description": "Supports a System Mode of Auto where both heating and cooling demands are generated as needed",
+        "affects_states": ["Mode_Auto"],
+        "affects_transitions": ["T004", "T014", "T030", "T033"]
+      },
+      {
+        "bit": 6,
+        "code": "LTNE",
+        "name": "LocalTemperatureNotExposed",
+        "conformance": "O",
+        "description": "Thermostat does not expose the LocalTemperature value; LocalTemperature attribute always reports null",
+        "affects_states": [],
+        "affects_transitions": ["T040", "T041"]
+      },
+      {
+        "bit": 7,
+        "code": "MSCH",
+        "name": "MatterScheduleConfiguration",
+        "conformance": "O",
+        "description": "Supports enhanced schedules with ScheduleStruct; requires time synchronization mechanism",
+        "affects_states": [],
+        "affects_transitions": ["T023", "T024", "T039"]
+      },
+      {
+        "bit": 8,
+        "code": "PRES",
+        "name": "Presets",
+        "conformance": "O",
+        "description": "Thermostat supports setpoint presets (named scenarios)",
+        "affects_states": [],
+        "affects_transitions": ["T025", "T026", "T027", "T047", "T048", "T049", "T050", "T051"]
+      }
+    ],
+
+    "dependencies": [
+      {
+        "cluster": "Temperature Measurement",
+        "relationship": "MAY_COEXIST",
+        "description": "Temperature Measurement client cluster MAY be on the same endpoint for remote temperature sensing (Section 4.3.7)"
+      },
+      {
+        "cluster": "Occupancy Sensing",
+        "relationship": "MAY_COEXIST",
+        "description": "Occupancy Sensing client cluster MAY be on the same endpoint for remote occupancy sensing (Section 4.3.7)"
+      }
+    ],
+
+    "states": [
+      {
+        "name": "Mode_Off",
+        "description": "Thermostat does not generate demand for Cooling or Heating. No HVAC equipment is commanded to run.",
+        "is_initial": true,
+        "invariants": [
+          "SystemMode == Off"
+        ],
+        "state_attributes": {
+          "SystemMode": "Off",
+          "ThermostatRunningMode": "Off"
+        },
+        "feature_requirements": [],
+        "safety_implications": "HVAC equipment is inactive. Risk of environment reaching unsafe temperatures if thermostat stays in Off and building automation depends on it."
+      },
+      {
+        "name": "Mode_Heat",
+        "description": "Demand is only generated for Heating. Thermostat commands heating equipment when Calculated Local Temperature is below the applicable heating setpoint.",
+        "is_initial": false,
+        "invariants": [
+          "SystemMode == Heat",
+          "Feature_HEAT == true",
+          "ControlSequenceOfOperation IN [HeatingOnly, HeatingWithReheat, CoolingAndHeating, CoolingAndHeatingWithReheat]"
+        ],
+        "state_attributes": {
+          "SystemMode": "Heat",
+          "ThermostatRunningMode": "Heat (when actively heating) or Off (when at setpoint)"
+        },
+        "feature_requirements": ["Feature_HEAT == true"],
+        "safety_implications": "Heating equipment is driven; risk of overheating if setpoints are set too high or if EmergencyHeat is triggered inadvertently. PII concern: Heating patterns reveal occupancy."
+      },
+      {
+        "name": "Mode_Cool",
+        "description": "Demand is only generated for Cooling. Thermostat commands cooling equipment when Calculated Local Temperature is above the applicable cooling setpoint.",
+        "is_initial": false,
+        "invariants": [
+          "SystemMode == Cool",
+          "Feature_COOL == true",
+          "ControlSequenceOfOperation IN [CoolingOnly, CoolingWithReheat, CoolingAndHeating, CoolingAndHeatingWithReheat]"
+        ],
+        "state_attributes": {
+          "SystemMode": "Cool",
+          "ThermostatRunningMode": "Cool (when actively cooling) or Off (when at setpoint)"
+        },
+        "feature_requirements": ["Feature_COOL == true"],
+        "safety_implications": "Cooling equipment is driven. Risk of overcooling (e.g., cold stress in homes with vulnerable occupants)."
+      },
+      {
+        "name": "Mode_Auto",
+        "description": "Demand is generated for either Cooling or Heating as required. Thermostat automatically switches between heating and cooling based on temperature relative to both setpoints.",
+        "is_initial": false,
+        "invariants": [
+          "SystemMode == Auto",
+          "Feature_AUTO == true",
+          "Feature_HEAT == true || Feature_COOL == true",
+          "OccupiedHeatingSetpoint <= (OccupiedCoolingSetpoint - MinSetpointDeadBand)"
+        ],
+        "state_attributes": {
+          "SystemMode": "Auto",
+          "ThermostatRunningMode": "Heat (when below heat setpoint), Cool (when above cool setpoint), Off (when between setpoints)"
+        },
+        "feature_requirements": ["Feature_AUTO == true"],
+        "safety_implications": "Complex mode; if deadband is not enforced, thermostat could simultaneously command heating and cooling equipment, causing equipment damage or energy waste."
+      },
+      {
+        "name": "Mode_EmergencyHeat",
+        "description": "2nd stage heating is in use to achieve desired temperature rapidly. Activated manually or automatically when temperature deficit exceeds EmergencyHeatDelta.",
+        "is_initial": false,
+        "invariants": [
+          "SystemMode == EmergencyHeat",
+          "Feature_HEAT == true"
+        ],
+        "state_attributes": {
+          "SystemMode": "EmergencyHeat",
+          "ThermostatRunningMode": "Heat"
+        },
+        "feature_requirements": ["Feature_HEAT == true"],
+        "safety_implications": "HIGH RISK: Highest stage of heating is engaged. Risk of excessive energy consumption, equipment overload, or fire hazard if EmergencyHeat triggers incorrectly or remains active after setpoint is reached."
+      },
+      {
+        "name": "Mode_Precooling",
+        "description": "Pre-cooling mode before a scheduled cooling event to prepare the space.",
+        "is_initial": false,
+        "invariants": [
+          "SystemMode == Precooling",
+          "Feature_COOL == true"
+        ],
+        "state_attributes": {
+          "SystemMode": "Precooling",
+          "ThermostatRunningMode": "Cool"
+        },
+        "feature_requirements": ["Feature_COOL == true"],
+        "safety_implications": "Cooling equipment is actively running before needed. Risk of over-cooling if started too early."
+      },
+      {
+        "name": "Mode_FanOnly",
+        "description": "Only the fan is running; no heating or cooling demand is generated.",
+        "is_initial": false,
+        "invariants": [
+          "SystemMode == FanOnly"
+        ],
+        "state_attributes": {
+          "SystemMode": "FanOnly",
+          "ThermostatRunningMode": "Off"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Minimal physical risk; fan circulates air without heating or cooling."
+      },
+      {
+        "name": "Mode_Dry",
+        "description": "Dehumidification mode; removes humidity without significant temperature change.",
+        "is_initial": false,
+        "invariants": [
+          "SystemMode == Dry"
+        ],
+        "state_attributes": {
+          "SystemMode": "Dry",
+          "ThermostatRunningMode": "Off"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Dehumidifier operation; low risk unless drainage fails."
+      },
+      {
+        "name": "Mode_Sleep",
+        "description": "Sleep mode; may apply energy-saving setpoints appropriate for sleeping occupants.",
+        "is_initial": false,
+        "invariants": [
+          "SystemMode == Sleep"
+        ],
+        "state_attributes": {
+          "SystemMode": "Sleep",
+          "ThermostatRunningMode": "Heat or Cool depending on temperature"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Occupants may be in reduced-awareness state; setpoint adjustments here could affect comfort and health without occupants realizing."
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T001",
+        "from_state": "any_mode",
+        "to_state": "Mode_Off",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write SystemMode",
+          "command_id": null
+        },
+        "guard_condition": "SystemMode_new == Off",
+        "actions": [
+          "SystemMode := Off",
+          "ThermostatRunningMode := Off"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.24 SystemMode Attribute"
+      },
+      {
+        "id": "T002",
+        "from_state": "any_mode",
+        "to_state": "Mode_Heat",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write SystemMode",
+          "command_id": null
+        },
+        "guard_condition": "Feature_HEAT == true && ControlSequenceOfOperation IN [HeatingOnly, HeatingWithReheat, CoolingAndHeating, CoolingAndHeatingWithReheat] && SystemMode_new == Heat",
+        "actions": [
+          "SystemMode := Heat"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Feature_HEAT == false",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Heat mode not supported without HEAT feature"
+          },
+          {
+            "condition": "ControlSequenceOfOperation NOT IN [HeatingOnly, HeatingWithReheat, CoolingAndHeating, CoolingAndHeatingWithReheat]",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "SystemMode value not consistent with ControlSequenceOfOperation"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.24 SystemMode Attribute; Section 4.3.8.17 ControlSequenceOfOperationEnum"
+      },
+      {
+        "id": "T003",
+        "from_state": "any_mode",
+        "to_state": "Mode_Cool",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write SystemMode",
+          "command_id": null
+        },
+        "guard_condition": "Feature_COOL == true && ControlSequenceOfOperation IN [CoolingOnly, CoolingWithReheat, CoolingAndHeating, CoolingAndHeatingWithReheat] && SystemMode_new == Cool",
+        "actions": [
+          "SystemMode := Cool"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Feature_COOL == false",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Cool mode not supported without COOL feature"
+          },
+          {
+            "condition": "ControlSequenceOfOperation IN [HeatingOnly, HeatingWithReheat]",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Cooling mode not possible when ControlSequenceOfOperation restricts to heating only"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.24 SystemMode Attribute; Section 4.3.8.17 ControlSequenceOfOperationEnum"
+      },
+      {
+        "id": "T004",
+        "from_state": "any_mode",
+        "to_state": "Mode_Auto",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write SystemMode",
+          "command_id": null
+        },
+        "guard_condition": "Feature_AUTO == true && ControlSequenceOfOperation IN [CoolingAndHeating, CoolingAndHeatingWithReheat] && SystemMode_new == Auto",
+        "actions": [
+          "SystemMode := Auto"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Feature_AUTO == false",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Auto mode not supported without AUTO feature"
+          },
+          {
+            "condition": "ControlSequenceOfOperation NOT IN [CoolingAndHeating, CoolingAndHeatingWithReheat]",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Auto mode requires ControlSequenceOfOperation supporting both heating and cooling"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.24 SystemMode Attribute; Section 4.3.8.21 SystemModeEnum"
+      },
+      {
+        "id": "T005",
+        "from_state": "any_mode",
+        "to_state": "Mode_EmergencyHeat",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write SystemMode",
+          "command_id": null
+        },
+        "guard_condition": "Feature_HEAT == true && ControlSequenceOfOperation IN [HeatingOnly, HeatingWithReheat, CoolingAndHeating, CoolingAndHeatingWithReheat] && SystemMode_new == EmergencyHeat",
+        "actions": [
+          "SystemMode := EmergencyHeat",
+          "ThermostatRunningMode := Heat"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Feature_HEAT == false",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "EmergencyHeat not supported without HEAT feature"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.24 SystemMode Attribute; Section 4.3.8.21 SystemModeEnum"
+      },
+      {
+        "id": "T006",
+        "from_state": "any_mode",
+        "to_state": "Mode_Precooling",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write SystemMode",
+          "command_id": null
+        },
+        "guard_condition": "Feature_COOL == true && ControlSequenceOfOperation IN [CoolingOnly, CoolingWithReheat, CoolingAndHeating, CoolingAndHeatingWithReheat] && SystemMode_new == Precooling",
+        "actions": [
+          "SystemMode := Precooling"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Feature_COOL == false",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Precooling not supported without COOL feature"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.24 SystemMode Attribute; Section 4.3.8.21 SystemModeEnum"
+      },
+      {
+        "id": "T007",
+        "from_state": "any_mode",
+        "to_state": "Mode_FanOnly",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write SystemMode",
+          "command_id": null
+        },
+        "guard_condition": "SystemMode_new == FanOnly",
+        "actions": [
+          "SystemMode := FanOnly"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.24 SystemMode Attribute; Section 4.3.8.21 SystemModeEnum"
+      },
+      {
+        "id": "T008",
+        "from_state": "any_mode",
+        "to_state": "Mode_Dry",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write SystemMode",
+          "command_id": null
+        },
+        "guard_condition": "SystemMode_new == Dry",
+        "actions": [
+          "SystemMode := Dry"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.24 SystemMode Attribute; Section 4.3.8.21 SystemModeEnum"
+      },
+      {
+        "id": "T009",
+        "from_state": "any_mode",
+        "to_state": "Mode_Sleep",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write SystemMode",
+          "command_id": null
+        },
+        "guard_condition": "SystemMode_new == Sleep",
+        "actions": [
+          "SystemMode := Sleep"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.24 SystemMode Attribute; Section 4.3.8.21 SystemModeEnum"
+      },
+      {
+        "id": "T010",
+        "from_state": "Mode_Heat",
+        "to_state": "Mode_Heat",
+        "trigger": {
+          "type": "command",
+          "name": "SetpointRaiseLower",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Mode == Heat && Feature_HEAT == true",
+        "actions": [
+          "OccupiedHeatingSetpoint := clamp(OccupiedHeatingSetpoint + Amount * 0.1, MinHeatSetpointLimit, MaxHeatSetpointLimit)",
+          "SetpointChangeSource := External",
+          "SetpointChangeAmount := Amount * 0.1",
+          "SetpointChangeSourceTimestamp := current_utc_time"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Feature_HEAT == false",
+            "status_code": "INVALID_COMMAND",
+            "description": "Heat mode not supported on this server"
+          }
+        ],
+        "spec_reference": "Section 4.3.10.1 SetpointRaiseLower Command; Section 4.3.10.1.3 Effect on Receipt"
+      },
+      {
+        "id": "T011",
+        "from_state": "Mode_Cool",
+        "to_state": "Mode_Cool",
+        "trigger": {
+          "type": "command",
+          "name": "SetpointRaiseLower",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Mode == Cool && Feature_COOL == true",
+        "actions": [
+          "OccupiedCoolingSetpoint := clamp(OccupiedCoolingSetpoint + Amount * 0.1, MinCoolSetpointLimit, MaxCoolSetpointLimit)",
+          "SetpointChangeSource := External",
+          "SetpointChangeAmount := Amount * 0.1",
+          "SetpointChangeSourceTimestamp := current_utc_time"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Feature_COOL == false",
+            "status_code": "INVALID_COMMAND",
+            "description": "Cool mode not supported on this server"
+          }
+        ],
+        "spec_reference": "Section 4.3.10.1 SetpointRaiseLower Command; Section 4.3.10.1.3 Effect on Receipt"
+      },
+      {
+        "id": "T012",
+        "from_state": "Mode_Auto",
+        "to_state": "Mode_Auto",
+        "trigger": {
+          "type": "command",
+          "name": "SetpointRaiseLower",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Mode == Both && Feature_AUTO == true",
+        "actions": [
+          "OccupiedHeatingSetpoint := clamp(OccupiedHeatingSetpoint + Amount * 0.1, MinHeatSetpointLimit, MaxHeatSetpointLimit)",
+          "OccupiedCoolingSetpoint := clamp(OccupiedCoolingSetpoint + Amount * 0.1, MinCoolSetpointLimit, MaxCoolSetpointLimit)",
+          "SetpointChangeSource := External",
+          "SetpointChangeAmount := Amount * 0.1",
+          "SetpointChangeSourceTimestamp := current_utc_time"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.10.1.1.3 Both Value; Section 4.3.10.1.3 Effect on Receipt - server adjusts only supported setpoints"
+      },
+      {
+        "id": "T013",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "command",
+          "name": "SetpointRaiseLower",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Mode == Both && Feature_AUTO == true && resulting_setpoint_invalid_due_to_deadband == true",
+        "actions": [
+          "OccupiedHeatingSetpoint := clamp(OccupiedHeatingSetpoint + Amount * 0.1, MinHeatSetpointLimit, MaxHeatSetpointLimit)",
+          "OccupiedCoolingSetpoint := adjust_to_maintain_deadband(OccupiedHeatingSetpoint, MinSetpointDeadBand)"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.10.1.1.1 Heat Value; Section 4.3.10.1.1.2 Cool Value - deadband enforcement when AUTO feature supported"
+      },
+      {
+        "id": "T014",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "command",
+          "name": "SetWeeklySchedule",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_SCH == true && setpoints_in_range == true && no_overlapping_transitions == true && format_valid == true && total_transitions_within_capacity == true",
+        "actions": [
+          "weekly_schedule_store(NumberOfTransitionsForSequence, DayOfWeekForSequence, ModeForSequence, Transitions)",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "total_transitions > device_capacity",
+            "status_code": "INSUFFICIENT_SPACE",
+            "description": "Device does not have capacity for total number of transitions requested"
+          },
+          {
+            "condition": "any_setpoint_out_of_AbsMin_AbsMax_range OR mode_not_supported",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Setpoints out of absolute limits or mode not supported; no setpoints from entire sequence applied"
+          },
+          {
+            "condition": "overlapping_transition_detected == true",
+            "status_code": "FAILURE",
+            "description": "Two transitions on the same day with the same time detected"
+          },
+          {
+            "condition": "device_no_multi_day_support && DayOfWeekForSequence has multiple bits set || device_no_multi_mode_support && ModeForSequence has multiple bits set || Transitions count mismatch",
+            "status_code": "INVALID_COMMAND",
+            "description": "Command format not supported by this device or payload inconsistency"
+          }
+        ],
+        "spec_reference": "Section 4.3.10.2 SetWeeklySchedule Command; Section 4.3.10.2.5 Effect on Receipt"
+      },
+      {
+        "id": "T015",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "command",
+          "name": "GetWeeklySchedule",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Feature_SCH == true && request_format_valid == true",
+        "actions": [
+          "return GetWeeklyScheduleResponse(NumberOfTransitionsForSequence, DayOfWeekForSequence, ModeForSequence, Transitions)"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "device_cannot_handle_multiple_days_or_modes_in_request == true",
+            "status_code": "INVALID_COMMAND",
+            "description": "Device does not support multi-day or multi-mode requests"
+          }
+        ],
+        "spec_reference": "Section 4.3.10.3 GetWeeklySchedule Command; Section 4.3.10.3.3 Effect on Receipt"
+      },
+      {
+        "id": "T016",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "command",
+          "name": "ClearWeeklySchedule",
+          "command_id": "0x03"
+        },
+        "guard_condition": "Feature_SCH == true",
+        "actions": [
+          "weekly_schedule_clear_all()",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.10.5 ClearWeeklySchedule Command - no error responses defined"
+      },
+      {
+        "id": "T017",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "command",
+          "name": "SetActiveScheduleRequest",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_MSCH == true && Schedules contains ScheduleStruct with ScheduleHandle == request.ScheduleHandle",
+        "actions": [
+          "ActiveScheduleHandle := request.ScheduleHandle",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Schedules does NOT contain ScheduleStruct with matching ScheduleHandle",
+            "status_code": "INVALID_COMMAND",
+            "description": "Provided ScheduleHandle does not match any existing schedule"
+          }
+        ],
+        "spec_reference": "Section 4.3.10.6 SetActiveScheduleRequest Command; Section 4.3.10.6.2 Effect on Receipt"
+      },
+      {
+        "id": "T018",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "command",
+          "name": "SetActivePresetRequest",
+          "command_id": "0x06"
+        },
+        "guard_condition": "Feature_PRES == true && request.PresetHandle == null",
+        "actions": [
+          "ActivePresetHandle := null",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.10.7 SetActivePresetRequest Command; Section 4.3.10.7.2 Effect on Receipt, step 1"
+      },
+      {
+        "id": "T019",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "command",
+          "name": "SetActivePresetRequest",
+          "command_id": "0x06"
+        },
+        "guard_condition": "Feature_PRES == true && request.PresetHandle != null && Presets contains PresetStruct with PresetHandle == request.PresetHandle",
+        "actions": [
+          "ActivePresetHandle := request.PresetHandle",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "request.PresetHandle != null AND Presets does NOT contain PresetStruct with matching PresetHandle",
+            "status_code": "INVALID_COMMAND",
+            "description": "Provided PresetHandle does not match any existing preset"
+          }
+        ],
+        "spec_reference": "Section 4.3.10.7 SetActivePresetRequest Command; Section 4.3.10.7.2 Effect on Receipt, step 2"
+      },
+      {
+        "id": "T020",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write OccupiedCoolingSetpoint",
+          "command_id": null
+        },
+        "guard_condition": "Feature_COOL == true && value >= MinCoolSetpointLimit && value <= MaxCoolSetpointLimit && value >= (OccupiedHeatingSetpoint + MinSetpointDeadBand)",
+        "actions": [
+          "OccupiedCoolingSetpoint := value",
+          "SetpointChangeSource := External",
+          "SetpointChangeSourceTimestamp := current_utc_time",
+          "if (Feature_PRES == true && (Feature_OCC == false || Occupancy.Occupied == true)) ActivePresetHandle := null"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "value > MaxCoolSetpointLimit OR value < MinCoolSetpointLimit",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Value outside user-configurable cooling setpoint limits"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.13 OccupiedCoolingSetpoint Attribute"
+      },
+      {
+        "id": "T021",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write OccupiedCoolingSetpoint (deadband adjustment)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_COOL == true && value >= MinCoolSetpointLimit && value <= MaxCoolSetpointLimit && value < (OccupiedHeatingSetpoint + MinSetpointDeadBand)",
+        "actions": [
+          "OccupiedCoolingSetpoint := value",
+          "OccupiedHeatingSetpoint := value - MinSetpointDeadBand",
+          "SetpointChangeSource := External",
+          "SetpointChangeSourceTimestamp := current_utc_time",
+          "if (Feature_PRES == true && (Feature_OCC == false || Occupancy.Occupied == true)) ActivePresetHandle := null"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.13 OccupiedCoolingSetpoint Attribute - deadband enforcement"
+      },
+      {
+        "id": "T022",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write OccupiedHeatingSetpoint",
+          "command_id": null
+        },
+        "guard_condition": "Feature_HEAT == true && value >= MinHeatSetpointLimit && value <= MaxHeatSetpointLimit && value <= (OccupiedCoolingSetpoint - MinSetpointDeadBand)",
+        "actions": [
+          "OccupiedHeatingSetpoint := value",
+          "SetpointChangeSource := External",
+          "SetpointChangeSourceTimestamp := current_utc_time",
+          "if (Feature_PRES == true && (Feature_OCC == false || Occupancy.Occupied == true)) ActivePresetHandle := null"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "value > MaxHeatSetpointLimit OR value < MinHeatSetpointLimit",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Value outside user-configurable heating setpoint limits"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.14 OccupiedHeatingSetpoint Attribute"
+      },
+      {
+        "id": "T023",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write OccupiedHeatingSetpoint (deadband adjustment)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_HEAT == true && value >= MinHeatSetpointLimit && value <= MaxHeatSetpointLimit && value > (OccupiedCoolingSetpoint - MinSetpointDeadBand)",
+        "actions": [
+          "OccupiedHeatingSetpoint := value",
+          "OccupiedCoolingSetpoint := value + MinSetpointDeadBand",
+          "SetpointChangeSource := External",
+          "SetpointChangeSourceTimestamp := current_utc_time",
+          "if (Feature_PRES == true && (Feature_OCC == false || Occupancy.Occupied == true)) ActivePresetHandle := null"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.14 OccupiedHeatingSetpoint Attribute - deadband enforcement"
+      },
+      {
+        "id": "T024",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write TemperatureSetpointHold (SetpointHoldOn with duration)",
+          "command_id": null
+        },
+        "guard_condition": "value == SetpointHoldOn && TemperatureSetpointHoldDuration != null && SetpointHoldExpiryTimestamp is supported",
+        "actions": [
+          "TemperatureSetpointHold := SetpointHoldOn",
+          "SetpointHoldExpiryTimestamp := current_utc_time + (TemperatureSetpointHoldDuration * 60)"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": "Duration in minutes specified by TemperatureSetpointHoldDuration attribute",
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.29 TemperatureSetpointHold Attribute"
+      },
+      {
+        "id": "T025",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write TemperatureSetpointHold (SetpointHoldOn without duration)",
+          "command_id": null
+        },
+        "guard_condition": "value == SetpointHoldOn && (TemperatureSetpointHoldDuration == null || SetpointHoldExpiryTimestamp not supported)",
+        "actions": [
+          "TemperatureSetpointHold := SetpointHoldOn"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": "Hold is indefinite (no automatic expiry)",
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.29 TemperatureSetpointHold Attribute; Section 4.3.9.61 SetpointHoldExpiryTimestamp Attribute"
+      },
+      {
+        "id": "T026",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write TemperatureSetpointHold (SetpointHoldOff)",
+          "command_id": null
+        },
+        "guard_condition": "value == SetpointHoldOff",
+        "actions": [
+          "TemperatureSetpointHold := SetpointHoldOff",
+          "if (SetpointHoldExpiryTimestamp is supported) SetpointHoldExpiryTimestamp := null"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.29 TemperatureSetpointHold Attribute; Section 4.3.9.61 SetpointHoldExpiryTimestamp Attribute"
+      },
+      {
+        "id": "T027",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "timer",
+          "name": "SetpointHoldExpiryTimer",
+          "command_id": null
+        },
+        "guard_condition": "TemperatureSetpointHold == SetpointHoldOn && current_utc_time >= SetpointHoldExpiryTimestamp",
+        "actions": [
+          "TemperatureSetpointHold := SetpointHoldOff",
+          "SetpointHoldExpiryTimestamp := null"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Autonomous expiry when SetpointHoldExpiryTimestamp is reached",
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.61 SetpointHoldExpiryTimestamp Attribute - 'known time when TemperatureSetpointHold SHALL be cleared'"
+      },
+      {
+        "id": "T028",
+        "from_state": "Mode_Heat",
+        "to_state": "Mode_EmergencyHeat",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "EmergencyHeatDelta threshold crossed",
+          "command_id": null
+        },
+        "guard_condition": "Feature_HEAT == true && SystemMode IN [Heat, Auto] && (OccupiedHeatingSetpoint - CalculatedLocalTemperature) >= EmergencyHeatDelta",
+        "actions": [
+          "SystemMode := EmergencyHeat",
+          "ThermostatRunningMode := Heat"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Immediate upon threshold detection",
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.42 EmergencyHeatDelta Attribute - 'SHALL immediately switch to the SystemMode value that provides the highest stage of heating'"
+      },
+      {
+        "id": "T029",
+        "from_state": "Mode_Auto",
+        "to_state": "Mode_EmergencyHeat",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "EmergencyHeatDelta threshold crossed (Auto mode)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_HEAT == true && SystemMode == Auto && (OccupiedHeatingSetpoint - CalculatedLocalTemperature) >= EmergencyHeatDelta",
+        "actions": [
+          "SystemMode := EmergencyHeat",
+          "ThermostatRunningMode := Heat"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Immediate upon threshold detection",
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.42 EmergencyHeatDelta Attribute"
+      },
+      {
+        "id": "T030",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "timer",
+          "name": "ScheduleTransitionTimer",
+          "command_id": null
+        },
+        "guard_condition": "Feature_MSCH == true && (TemperatureSetpointHold == SetpointHoldOff || ThermostatProgrammingOperationMode.ScheduleActive == false) == false && active_schedule_transition_found == true",
+        "actions": [
+          "apply_schedule_setpoints_from_transition(active_ScheduleTransitionStruct)",
+          "if (setpoint_derived_from_preset == true) ActivePresetHandle := transition.PresetHandle",
+          "if (Feature_COOL && Feature_OCC && Occupancy.Occupied == false) UnoccupiedCoolingSetpoint := transition.CoolingSetpoint else OccupiedCoolingSetpoint := transition.CoolingSetpoint",
+          "if (Feature_HEAT && Feature_OCC && Occupancy.Occupied == false) UnoccupiedHeatingSetpoint := transition.HeatingSetpoint else OccupiedHeatingSetpoint := transition.HeatingSetpoint",
+          "SetpointChangeSource := Schedule",
+          "SetpointChangeSourceTimestamp := current_utc_time"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Triggered at TransitionTime (minutes since midnight) on matching DayOfWeek",
+        "error_responses": [],
+        "spec_reference": "Section 4.3.8.27.5 Transitions Field; Section 4.3.8.28 ScheduleTransitionStruct Type"
+      },
+      {
+        "id": "T031",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write OccupiedSetback (within range)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_SB == true && value >= OccupiedSetbackMin && value <= OccupiedSetbackMax",
+        "actions": [
+          "OccupiedSetback := value",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.36 OccupiedSetback Attribute"
+      },
+      {
+        "id": "T032",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write OccupiedSetback (> max, clamped)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_SB == true && value > OccupiedSetbackMax",
+        "actions": [
+          "OccupiedSetback := OccupiedSetbackMax",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.36 OccupiedSetback Attribute - 'SHALL set its OccupiedSetback value to OccupiedSetbackMax and SHALL send SUCCESS'"
+      },
+      {
+        "id": "T033",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write OccupiedSetback (< min, clamped)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_SB == true && value < OccupiedSetbackMin",
+        "actions": [
+          "OccupiedSetback := OccupiedSetbackMin",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.36 OccupiedSetback Attribute - 'SHALL set its OccupiedSetback value to OccupiedSetbackMin and SHALL send SUCCESS'"
+      },
+      {
+        "id": "T034",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write UnoccupiedSetback (> max, clamped)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_SB == true && Feature_OCC == true && value > UnoccupiedSetbackMax",
+        "actions": [
+          "UnoccupiedSetback := UnoccupiedSetbackMax",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.39 UnoccupiedSetback Attribute"
+      },
+      {
+        "id": "T035",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write LocalTemperatureCalibration (clamped to limits)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_LTNE == false",
+        "actions": [
+          "LocalTemperatureCalibration := clamp(value, device_min_calibration, device_max_calibration)",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.12 LocalTemperatureCalibration Attribute - 'SHALL respond with SUCCESS and set value to upper or lower limit reached'"
+      },
+      {
+        "id": "T036",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write RemoteSensing (LTNE violation attempt)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_LTNE == true && value.LocalTemperature == 1",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Feature_LTNE == true AND LocalTemperature bit set to 1",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Cannot set LocalTemperature RemoteSensing bit to 1 when LTNE feature is present"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.22 RemoteSensing Attribute"
+      },
+      {
+        "id": "T037",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write ControlSequenceOfOperation (silently ignored)",
+          "command_id": null
+        },
+        "guard_condition": "true",
+        "actions": [
+          "return SUCCESS (value unchanged, write silently ignored)"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.23 ControlSequenceOfOperation Attribute - 'server SHALL silently ignore the write'"
+      },
+      {
+        "id": "T038",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write MinHeatSetpointLimit (with setpoint adjustment)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_HEAT == true && value >= AbsMinHeatSetpointLimit && value <= MaxHeatSetpointLimit && (value <= MinCoolSetpointLimit - MinSetpointDeadBand || Feature_AUTO == false)",
+        "actions": [
+          "MinHeatSetpointLimit := value",
+          "if (OccupiedHeatingSetpoint < value) OccupiedHeatingSetpoint := value",
+          "if (Feature_OCC && UnoccupiedHeatingSetpoint < value) UnoccupiedHeatingSetpoint := value"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "cannot resolve constraint conflicts with setpoints",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Value not consistent with setpoint limits and conflicts cannot be resolved by adjusting setpoints"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.17 MinHeatSetpointLimit Attribute"
+      },
+      {
+        "id": "T039",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write Presets (add new preset)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_PRES == true && PresetHandle == null && BuiltIn != true && PresetScenario in PresetTypes && total_presets < NumberOfPresets && presets_for_scenario < PresetTypeStruct.NumberOfPresets && name_unique_within_scenario == true",
+        "actions": [
+          "new_handle := generate_unique_preset_handle()",
+          "Presets.append(PresetStruct{PresetHandle: new_handle, ...})",
+          "return SUCCESS (pending commit)"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "BuiltIn == true at creation",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Cannot create a built-in preset via write"
+          },
+          {
+            "condition": "PresetScenario not in PresetTypes",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Specified scenario not supported by this thermostat"
+          },
+          {
+            "condition": "Name set but PresetTypeStruct does not have SupportsNames bit set",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "This preset scenario does not support user-provided names"
+          },
+          {
+            "condition": "total_presets would exceed NumberOfPresets",
+            "status_code": "RESOURCE_EXHAUSTED",
+            "description": "Maximum total preset count exceeded"
+          },
+          {
+            "condition": "presets_for_scenario would exceed PresetTypeStruct.NumberOfPresets",
+            "status_code": "RESOURCE_EXHAUSTED",
+            "description": "Maximum preset count for this scenario exceeded"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.59 Presets Attribute"
+      },
+      {
+        "id": "T040",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write Presets (modify existing preset)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_PRES == true && PresetHandle != null && Presets contains matching PresetHandle && BuiltIn consistency maintained",
+        "actions": [
+          "Presets.update(matching_preset, new_values)",
+          "return SUCCESS (pending commit)"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "PresetHandle not found in existing presets",
+            "status_code": "NOT_FOUND",
+            "description": "No existing preset with the provided PresetHandle"
+          },
+          {
+            "condition": "PresetHandle duplicated in updated list",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Duplicate PresetHandle values in the write payload"
+          },
+          {
+            "condition": "BuiltIn field mismatch with existing preset",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Cannot change BuiltIn status of an existing preset"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.59 Presets Attribute"
+      },
+      {
+        "id": "T041",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Presets commit - remove built-in or referenced preset",
+          "command_id": null
+        },
+        "guard_condition": "Feature_PRES == true && commit attempted && removed_preset.BuiltIn == true OR removed_preset.PresetHandle == ActivePresetHandle OR (Feature_MSCH && removed_preset.PresetHandle referenced in Schedules)",
+        "actions": [
+          "return attribute_status CONSTRAINT_ERROR or INVALID_IN_STATE (commit rejected)"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "removed preset has BuiltIn == true",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Cannot delete a built-in preset"
+          },
+          {
+            "condition": "removed PresetHandle == ActivePresetHandle",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Cannot delete the currently active preset"
+          },
+          {
+            "condition": "removed PresetHandle referenced by a ScheduleTransitionStruct",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Cannot delete a preset that is referenced by an active schedule"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.59 Presets Attribute - commit status"
+      },
+      {
+        "id": "T042",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write Schedules (add new schedule)",
+          "command_id": null
+        },
+        "guard_condition": "Feature_MSCH == true && ScheduleHandle == null && BuiltIn != true && SystemMode in ScheduleTypes && transitions_within_limits == true && no_duplicate_transitions == true && preset_references_valid == true",
+        "actions": [
+          "new_handle := generate_unique_schedule_handle()",
+          "Schedules.append(ScheduleStruct{ScheduleHandle: new_handle, ...})",
+          "return SUCCESS (pending commit)"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "BuiltIn == true at creation",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Cannot create a built-in schedule via write"
+          },
+          {
+            "condition": "SystemMode not in ScheduleTypes",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Specified SystemMode not supported for schedules"
+          },
+          {
+            "condition": "transitions count exceeds NumberOfScheduleTransitions",
+            "status_code": "RESOURCE_EXHAUSTED",
+            "description": "Too many transitions in this schedule"
+          },
+          {
+            "condition": "transitions per day exceeds NumberOfScheduleTransitionPerDay",
+            "status_code": "RESOURCE_EXHAUSTED",
+            "description": "Too many transitions on a single day"
+          },
+          {
+            "condition": "PresetHandle present but ScheduleTypeStruct.SupportsPresets is false",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "This schedule type does not support preset handles"
+          },
+          {
+            "condition": "PresetHandle present but not found in Presets after applying pending changes",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Referenced preset does not exist"
+          },
+          {
+            "condition": "total schedules would exceed NumberOfSchedules",
+            "status_code": "RESOURCE_EXHAUSTED",
+            "description": "Maximum schedule count reached"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.60 Schedules Attribute"
+      },
+      {
+        "id": "T043",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Schedules commit - remove built-in or active schedule",
+          "command_id": null
+        },
+        "guard_condition": "Feature_MSCH == true && commit attempted && (removed_schedule.BuiltIn == true OR removed_schedule.ScheduleHandle == ActiveScheduleHandle)",
+        "actions": [
+          "return attribute_status CONSTRAINT_ERROR or INVALID_IN_STATE (commit rejected)"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "removed schedule has BuiltIn == true",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Cannot delete a built-in schedule"
+          },
+          {
+            "condition": "removed ScheduleHandle == ActiveScheduleHandle",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Cannot delete the currently active schedule"
+          }
+        ],
+        "spec_reference": "Section 4.3.9.60 Schedules Attribute - commit status"
+      },
+      {
+        "id": "T044",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write TemperatureSetpointHoldDuration (non-null, hold active)",
+          "command_id": null
+        },
+        "guard_condition": "value != null && TemperatureSetpointHold == SetpointHoldOn && SetpointHoldExpiryTimestamp is supported",
+        "actions": [
+          "TemperatureSetpointHoldDuration := value",
+          "SetpointHoldExpiryTimestamp := current_utc_time + (value * 60)"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.30 TemperatureSetpointHoldDuration Attribute"
+      },
+      {
+        "id": "T045",
+        "from_state": "any_mode",
+        "to_state": "any_mode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "Write TemperatureSetpointHoldDuration (null)",
+          "command_id": null
+        },
+        "guard_condition": "value == null && SetpointHoldExpiryTimestamp is supported",
+        "actions": [
+          "TemperatureSetpointHoldDuration := null",
+          "SetpointHoldExpiryTimestamp := null"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 4.3.9.30 TemperatureSetpointHoldDuration Attribute"
+      }
+    ],
+
+    "events": [],
+
+    "timers": [
+      {
+        "name": "SetpointHoldExpiryTimer",
+        "source_attribute": "TemperatureSetpointHoldDuration",
+        "trigger": "TemperatureSetpointHold written to SetpointHoldOn when TemperatureSetpointHoldDuration is non-null; or when TemperatureSetpointHoldDuration is updated to a non-null value while TemperatureSetpointHold is SetpointHoldOn",
+        "expiry_transition": "T027",
+        "resolution": "seconds (SetpointHoldExpiryTimestamp stored as epoch-s)"
+      },
+      {
+        "name": "ScheduleTransitionTimer",
+        "source_attribute": "ScheduleTransitionStruct.TransitionTime",
+        "trigger": "Wall clock time matches a TransitionTime (minutes since midnight) on a matching DayOfWeek in the active schedule, and TemperatureSetpointHold is SetpointHoldOff and ScheduleActive bit is set in ThermostatProgrammingOperationMode",
+        "expiry_transition": "T030",
+        "resolution": "minutes (TransitionTime in minutes since midnight, max 1439)"
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "clamp",
+        "parameters": [
+          {"name": "value", "type": "temperature", "description": "The value to constrain"},
+          {"name": "min", "type": "temperature", "description": "Lower bound"},
+          {"name": "max", "type": "temperature", "description": "Upper bound"}
+        ],
+        "return_type": "temperature",
+        "description": "Returns value constrained within [min, max]. If value < min, returns min. If value > max, returns max. This clamping is NOT considered an error condition for SetpointRaiseLower.",
+        "usage_in_fsm": "T010, T011, T012, T035"
+      },
+      {
+        "name": "generate_unique_preset_handle",
+        "parameters": [],
+        "return_type": "octstr (max 16 bytes)",
+        "description": "Device-generated unique identifier for a new preset. The identifier SHALL be unique on the device and SHALL NOT be reused after the preset is deleted.",
+        "usage_in_fsm": "T039"
+      },
+      {
+        "name": "generate_unique_schedule_handle",
+        "parameters": [],
+        "return_type": "octstr (max 16 bytes)",
+        "description": "Device-generated unique identifier for a new schedule. The identifier SHALL be unique on the device and SHALL NOT be reused after the schedule is deleted.",
+        "usage_in_fsm": "T042"
+      },
+      {
+        "name": "weekly_schedule_store",
+        "parameters": [
+          {"name": "NumberOfTransitionsForSequence", "type": "uint8", "description": "Total transitions in this sequence"},
+          {"name": "DayOfWeekForSequence", "type": "ScheduleDayOfWeekBitmap", "description": "Days covered by this command"},
+          {"name": "ModeForSequence", "type": "ScheduleModeBitmap", "description": "Whether Heat/Cool setpoints are present"},
+          {"name": "Transitions", "type": "list[WeeklyScheduleTransitionStruct]", "description": "Up to 10 transitions per command"}
+        ],
+        "return_type": "void",
+        "description": "Stores the provided weekly schedule transitions in the thermostat, replacing any existing transitions for the specified DayOfWeekForSequence. Multiple commands may be needed for schedules exceeding 10 transitions.",
+        "usage_in_fsm": "T014"
+      },
+      {
+        "name": "weekly_schedule_clear_all",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Removes all stored weekly schedule transitions from the thermostat. No error conditions defined.",
+        "usage_in_fsm": "T016"
+      },
+      {
+        "name": "apply_schedule_setpoints_from_transition",
+        "parameters": [
+          {"name": "transition", "type": "ScheduleTransitionStruct", "description": "The active schedule transition to apply"}
+        ],
+        "return_type": "void",
+        "description": "Applies setpoints from a ScheduleTransitionStruct using the priority order: (1) PresetHandle if provided, (2) explicit HeatingSetpoint or CoolingSetpoint fields, (3) parent ScheduleStruct PresetHandle, (4) server default. Updates OccupiedCoolingSetpoint, OccupiedHeatingSetpoint, UnoccupiedCoolingSetpoint, UnoccupiedHeatingSetpoint, and ActivePresetHandle as appropriate.",
+        "usage_in_fsm": "T030"
+      },
+      {
+        "name": "adjust_to_maintain_deadband",
+        "parameters": [
+          {"name": "heat_setpoint", "type": "temperature", "description": "New heating setpoint"},
+          {"name": "deadband", "type": "SignedTemperature", "description": "MinSetpointDeadBand value"}
+        ],
+        "return_type": "temperature",
+        "description": "Given a new heating setpoint, returns the minimum cooling setpoint required to maintain the deadband constraint: result = heat_setpoint + deadband. Used when raising heat setpoint in AUTO mode would violate the deadband.",
+        "usage_in_fsm": "T013"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": [
+        "SetpointRaiseLower (0x00)",
+        "GetWeeklySchedule (0x02)",
+        "SetActiveScheduleRequest (0x05)",
+        "SetActivePresetRequest (0x06)",
+        "Write OccupiedCoolingSetpoint (attribute)",
+        "Write OccupiedHeatingSetpoint (attribute)",
+        "Write UnoccupiedCoolingSetpoint (attribute)",
+        "Write UnoccupiedHeatingSetpoint (attribute)"
+      ],
+      "manage_commands": [
+        "SetWeeklySchedule (0x01)",
+        "ClearWeeklySchedule (0x03)",
+        "Write SystemMode (attribute)",
+        "Write ControlSequenceOfOperation (attribute)",
+        "Write LocalTemperatureCalibration (attribute)",
+        "Write MinHeatSetpointLimit (attribute)",
+        "Write MaxHeatSetpointLimit (attribute)",
+        "Write MinCoolSetpointLimit (attribute)",
+        "Write MaxCoolSetpointLimit (attribute)",
+        "Write MinSetpointDeadBand (attribute)",
+        "Write RemoteSensing (attribute)",
+        "Write TemperatureSetpointHold (attribute)",
+        "Write TemperatureSetpointHoldDuration (attribute)",
+        "Write ThermostatProgrammingOperationMode (attribute)",
+        "Write OccupiedSetback (attribute)",
+        "Write UnoccupiedSetback (attribute)",
+        "Write EmergencyHeatDelta (attribute)",
+        "Write ACType, ACCapacity, ACRefrigerantType, ACCompressorType, ACErrorCode, ACLouverPosition, ACCapacityFormat (attributes)",
+        "Write Presets (attribute)",
+        "Write Schedules (attribute)"
+      ],
+      "administer_commands": [],
+      "timed_commands": []
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "transition",
+        "element_id": "T028",
+        "safety_concern": "Autonomous EmergencyHeat activation: when heating deficit >= EmergencyHeatDelta, the thermostat SHALL immediately switch to 2nd stage (emergency) heating. If EmergencyHeatDelta is set very low, this could trigger unnecessarily and consume excessive energy or overheat the space.",
+        "mitigation_in_spec": "EmergencyHeatDelta is configurable (default 25.5°C) and requires Manage access to modify. Thermostat continues until OccupiedHeatingSetpoint is reached."
+      },
+      {
+        "element_type": "state",
+        "element_id": "Mode_EmergencyHeat",
+        "safety_concern": "Maximum heating power is engaged. Risk of equipment overload, excessive energy consumption, and in extreme cases, fire hazard (e.g., if heating element is defective).",
+        "mitigation_in_spec": "Requires HEAT feature; can be manually cleared by writing SystemMode. Spec does not define automatic return from EmergencyHeat once setpoint is reached."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "EmergencyHeatDelta (0x003A)",
+        "safety_concern": "A malicious actor with Manage access could set EmergencyHeatDelta to 0, causing the thermostat to permanently operate in EmergencyHeat mode whenever in a heating mode.",
+        "mitigation_in_spec": "Requires Manage (M) privilege; no minimum value constraint defined in spec."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "OccupiedCoolingSetpoint (0x0011)",
+        "safety_concern": "Setting cooling setpoint extremely low could trigger overcooling, causing cold stress for vulnerable occupants (elderly, infants). Setpoint requires only Operate (O) privilege.",
+        "mitigation_in_spec": "Constrained by MinCoolSetpointLimit and AbsMinCoolSetpointLimit (default 16°C); CONSTRAINT_ERROR returned for out-of-range values."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "OccupiedHeatingSetpoint (0x0012)",
+        "safety_concern": "Setting heating setpoint extremely high could overheat occupants or trigger equipment damage. Setpoint requires only Operate (O) privilege.",
+        "mitigation_in_spec": "Constrained by MaxHeatSetpointLimit and AbsMaxHeatSetpointLimit (default 30°C); CONSTRAINT_ERROR returned for out-of-range values."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T037",
+        "safety_concern": "ControlSequenceOfOperation writes are silently ignored. A management system believing it has changed the operating environment may be unaware the thermostat is still operating in a restricted mode, leading to unexpected mode rejections.",
+        "mitigation_in_spec": "Spec explicitly notes silence is for backwards compatibility. Callers should read the attribute back to confirm current value."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "MinSetpointDeadBand (0x0019)",
+        "safety_concern": "If deadband approaches 0 and the AUTO feature is supported, the thermostat could simultaneously demand heating and cooling, wasting energy or damaging HVAC equipment.",
+        "mitigation_in_spec": "Writes to MinSetpointDeadBand are silently ignored (backwards compatibility); effective range is 0 to 12.7°C. Combined deadband constraints enforced on setpoint pairs."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T030",
+        "safety_concern": "Schedule-driven setpoint changes occur autonomously without user interaction. Maliciously crafted schedules (by a Manage-level attacker) could override comfort settings at specific times.",
+        "mitigation_in_spec": "TemperatureSetpointHold=SetpointHoldOn overrides schedules; requires Manage access to write schedules."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "LocalTemperatureCalibration (0x0010)",
+        "safety_concern": "Applying a large calibration offset causes the thermostat to make decisions based on a falsely reported temperature, potentially driving the environment to unsafe conditions.",
+        "mitigation_in_spec": "Requires Manage access; clamped to device-supported range (historically -2.5°C to 2.5°C, now wider per Revision 8)."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "ThermostatProgrammingOperationMode (0x0025)",
+        "safety_concern": "Disabling ScheduleActive (bit 0) by a remote actor prevents schedule-based energy conservation, or conversely, enabling it could engage an unexpected schedule.",
+        "mitigation_in_spec": "Requires Manage access; attribute is pushing (P) for observability."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "location": "Section 4.3.9.24 SystemMode Attribute",
+        "gap_type": "missing_constraint",
+        "description": "No explicit initial/default value for SystemMode is specified in the attribute table. SystemMode=Off is inferred as the safest default but not mandated.",
+        "security_impact": "Implementation may power up in an unexpected heating or cooling mode, causing unintended HVAC activation."
+      },
+      {
+        "location": "Section 4.3.9.23 ControlSequenceOfOperation Attribute",
+        "gap_type": "weak_normative",
+        "description": "Writes to ControlSequenceOfOperation SHALL be silently ignored. The attribute has RW VM access but writes have no effect. A management system that writes this attribute and believes it succeeded may have incorrect assumptions about allowed SystemMode values.",
+        "security_impact": "Authorization confusion: a controller with Manage access can write ControlSequenceOfOperation but the value silently does not change, creating a false security assumption about mode restrictions."
+      },
+      {
+        "location": "Section 4.3.9.21 MinSetpointDeadBand Attribute",
+        "gap_type": "weak_normative",
+        "description": "MinSetpointDeadBand is declared R[W] (optionally writable) but 'any writes SHALL be silently ignored' for backwards compatibility. This means the attribute has write access advertised but no write effect.",
+        "security_impact": "A controller may believe it lowered or raised the deadband without any effect; could be exploited to convince a controller that the deadband is lower than it actually is."
+      },
+      {
+        "location": "Section 4.3.9.29 TemperatureSetpointHold Attribute",
+        "gap_type": "weak_normative",
+        "description": "When TemperatureSetpointHold is SetpointHoldOn, the thermostat SHOULD maintain the setpoint, not SHALL. This is a weak normative requirement, allowing implementations to ignore the hold.",
+        "security_impact": "A hold intended to prevent schedule override (e.g., for safety) may not be honored by non-compliant implementations."
+      },
+      {
+        "location": "Section 4.3.9.61 SetpointHoldExpiryTimestamp Attribute and Section 4.3.9.29",
+        "gap_type": "missing_constraint",
+        "description": "After SetpointHoldExpiryTimestamp is reached, automatic clearing of TemperatureSetpointHold to SetpointHoldOff is implied but the spec uses 'if there is a known time when...SHALL be cleared' language. The mechanism for automatic hold clearing is not explicitly mandated as a SHALL behavior.",
+        "security_impact": "If the hold does not auto-clear, a temporary setpoint hold could become permanent, locking out schedule-driven setpoint adjustment indefinitely."
+      },
+      {
+        "location": "Section 4.3.9.42 EmergencyHeatDelta Attribute",
+        "gap_type": "missing_constraint",
+        "description": "No minimum value is specified for EmergencyHeatDelta. The default is 25.5°C (maximum for UnsignedTemperature type). A client with Manage access could write 0°C, causing the thermostat to permanently operate in EmergencyHeat when in a heating mode.",
+        "security_impact": "Denial of service / excessive energy attack: setting EmergencyHeatDelta to 0 forces continuous emergency heating regardless of temperature, potentially overheating and damaging HVAC equipment."
+      },
+      {
+        "location": "Section 4.3.8.27.5 Transitions Field (ScheduleStruct)",
+        "gap_type": "ambiguous",
+        "description": "DST (Daylight Saving Time) handling for schedule transitions is explicitly stated as 'implementation-dependent.' No normative guidance is given on whether transitions should repeat, be skipped, or interpolated during DST changeover.",
+        "security_impact": "During DST rollback, a transition time may be ambiguous (executed twice) or, in the spring forward, missed entirely. Could be exploited to prevent expected setpoint changes."
+      },
+      {
+        "location": "Section 4.3.8.28.1 DayOfWeek Field (ScheduleTransitionStruct)",
+        "gap_type": "missing_constraint",
+        "description": "The Vacation bit (bit 7) in ScheduleDayOfWeekBitmap SHALL NOT be set in ScheduleTransitionStruct, but the spec does not define what status code is returned if this constraint is violated (beyond 'SHALL be invalid').",
+        "security_impact": "Ambiguity in error response for Vacation bit allows inconsistent implementations; a client may not know the schedule was rejected."
+      },
+      {
+        "location": "Section 4.3.9.12 LocalTemperatureCalibration Attribute",
+        "gap_type": "missing_constraint",
+        "description": "The allowed range for LocalTemperatureCalibration is now implementation-defined (no explicit min/max in the attribute table since Revision 8 removed the -2.5°C to 2.5°C constraint). Devices may expose dangerously large calibration offsets.",
+        "security_impact": "A Manage-level attacker can apply a large calibration offset, causing the thermostat's calculated temperature to diverge significantly from reality, driving HVAC to dangerous extremes."
+      },
+      {
+        "location": "Section 4.3.10 Commands",
+        "gap_type": "missing_constraint",
+        "description": "No events (Matter formal event types) are defined for the Thermostat cluster. State changes (SystemMode transitions, setpoint changes, hold activations) are observable only via attribute subscriptions. There is no equivalent of a 'StateChangeEvent' that would provide a reliable audit trail.",
+        "security_impact": "Without events, logging and monitoring of thermostat state changes requires polling or subscription management. State changes by a compromised controller may go undetected."
+      },
+      {
+        "location": "Section 4.3.9.31 ThermostatProgrammingOperationMode Attribute",
+        "gap_type": "ambiguous",
+        "description": "The spec states thermostats with a schedule MAY use this attribute to control schedule usage even without the SCH feature. The interaction between ScheduleActive bit and the MSCH feature schedules is not explicitly defined.",
+        "security_impact": "An implementation might ignore the ScheduleActive bit for MSCH schedules, creating a divergence between the programmed intent and actual behavior."
+      },
+      {
+        "location": "Section 4.3.4 Features (HEAT/COOL mutual dependency)",
+        "gap_type": "ambiguous",
+        "description": "HEAT and COOL features have conformance 'AUTO, O.a+' which means at least one of HEAT or COOL should be present if AUTO is supported, but the exact constraint logic is not fully expressed in the feature bitmap. A device declaring AUTO without either HEAT or COOL is structurally invalid but no error response is defined.",
+        "security_impact": "A malformed device could advertise AUTO mode without supporting heating or cooling, leading clients to send SetpointRaiseLower commands that have no physical effect."
+      }
+    ],
+
+    "initial_state": "Mode_Off",
+    "all_states": [
+      "Mode_Off",
+      "Mode_Heat",
+      "Mode_Cool",
+      "Mode_Auto",
+      "Mode_EmergencyHeat",
+      "Mode_Precooling",
+      "Mode_FanOnly",
+      "Mode_Dry",
+      "Mode_Sleep"
+    ],
+    "all_triggers": [
+      "Write_SystemMode",
+      "SetpointRaiseLower",
+      "SetWeeklySchedule",
+      "GetWeeklySchedule",
+      "ClearWeeklySchedule",
+      "SetActiveScheduleRequest",
+      "SetActivePresetRequest",
+      "Write_OccupiedCoolingSetpoint",
+      "Write_OccupiedHeatingSetpoint",
+      "Write_UnoccupiedCoolingSetpoint",
+      "Write_UnoccupiedHeatingSetpoint",
+      "Write_MinHeatSetpointLimit",
+      "Write_MaxHeatSetpointLimit",
+      "Write_MinCoolSetpointLimit",
+      "Write_MaxCoolSetpointLimit",
+      "Write_LocalTemperatureCalibration",
+      "Write_RemoteSensing",
+      "Write_ControlSequenceOfOperation",
+      "Write_TemperatureSetpointHold",
+      "Write_TemperatureSetpointHoldDuration",
+      "Write_ThermostatProgrammingOperationMode",
+      "Write_OccupiedSetback",
+      "Write_UnoccupiedSetback",
+      "Write_Presets",
+      "Write_Schedules",
+      "SetpointHoldExpiryTimer",
+      "ScheduleTransitionTimer",
+      "EmergencyHeatDeltaThresholdCrossed"
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true,
+      "notes": {
+        "all_commands_mapped": "SetpointRaiseLower (T010-T013), SetWeeklySchedule (T014), GetWeeklySchedule (T015), ClearWeeklySchedule (T016), SetActiveScheduleRequest (T017), SetActivePresetRequest (T018-T019) mapped. No response-only commands (GetWeeklyScheduleResponse) require separate FSM transitions.",
+        "all_events_mapped": "Thermostat cluster defines NO formal Matter events (Section 4.3.10 contains no events table). State observability relies on attribute pushing (P quality) and subscriptions. Documented as spec_gap.",
+        "timers_modeled": "SetpointHoldExpiryTimer (T027) and ScheduleTransitionTimer (T030) are modeled. Weekly schedule timers (SCH feature) operate on wall-clock minutes; MSCH schedule timers operate similarly.",
+        "all_features_handled": "HEAT, COOL, OCC, SCH, SB, AUTO, LTNE, MSCH, PRES feature guards are applied throughout transitions."
+      }
+    }
+  }
+}

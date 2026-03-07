@@ -1,0 +1,471 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Oven Mode",
+    "cluster_id": "0x0049",
+    "pics_code": "OTCCM",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 8.11, Pages 664-666",
+
+    "properties": [
+      {
+        "id": "PROP_001",
+        "name": "Clean_Mode_Requires_No_Elevated_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The ChangeToMode command activating the Clean mode tag (0x4004) requires only Operate-level access, which is insufficient to protect against unauthorized remote activation of a pyrolytic self-cleaning cycle operating at extreme temperatures (>480°C).",
+        "formal": "∀cmd ∈ ChangeToMode. 0x4004 ∈ SupportedModes[cmd.NewMode].ModeTags ⟹ required_privilege(cmd) == Operate",
+        "spec_source": "Section 8.11.7.1.5: 'This mode sets the device into cleaning mode to clean the internal components of the appliance.' Access level inherited from Mode Base ChangeToMode (Operate). No elevated access is specified anywhere in Section 8.11.",
+        "violation": {
+          "description": "Any fabric member with Operate-level access (e.g., a guest controller, a third-party automation app, or a compromised Matter node) can remotely initiate pyrolytic self-cleaning without physical presence, door verification, or timeliness guarantee. Pyrolytic cleaning cycles run at temperatures exceeding 480°C, creating severe burn and fire hazard.",
+          "attack_vector": "Send ChangeToMode command (0x00) with NewMode pointing to a SupportedModes entry bearing the Clean tag (0x4004) from any Operate-privileged fabric member. No timed interaction is required, so replay of a captured command is also feasible.",
+          "physical_impact": "Activation of extreme-temperature self-cleaning cycle while oven cavity is occupied by food, flammable materials, or within reach of persons — fire risk, appliance damage, severe burns."
+        },
+        "proverifQuery": "query invoker:principal, cmd:command ⊢ event clean_mode_activated(invoker, cmd) ==> has_privilege(invoker, Manage) || has_privilege(invoker, Administer)"
+      },
+      {
+        "id": "PROP_002",
+        "name": "Hazardous_Mode_Activation_No_Timed_Interaction",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "No ChangeToMode command in the Oven Mode cluster requires a Timed Interaction, including when the target mode is safety-critical (Clean, Grill), leaving all mode activations vulnerable to replay attacks.",
+        "formal": "∀cmd ∈ ChangeToMode. timed_invoke_required(cmd) == false",
+        "spec_source": "Section 8.11.6 Attributes, Section 8.11.7.1. No timed interaction requirement is specified in Section 8.11 or inherited from Mode Base. Contrast with Door Lock Section 5.2 which mandates timed invoke for UnlockDoor.",
+        "violation": {
+          "description": "A captured or injected ChangeToMode PDU targeting a hazardous mode (Clean tag 0x4004, Grill tag 0x4002) can be replayed at any time. Matter's Timed Interaction mechanism, which enforces a bounded window between TimedRequest and the subsequent invoke, is entirely absent for Oven Mode. This removes the freshness guarantee that would otherwise detect replayed commands.",
+          "attack_vector": "Passive network observer records a valid ChangeToMode command invoking Clean mode. Attacker replays this command at an arbitrary later time when the oven is occupied or unattended.",
+          "physical_impact": "Delayed activation of pyrolytic cleaning (480°C+) or grill cycle without user awareness — fire, burns, appliance damage."
+        },
+        "proverifQuery": "query cmd:command, t_capture:time, t_replay:time ⊢ event mode_change_success(cmd, t_replay) ∧ t_replay > t_capture + delta ==> event timed_invoke_verified(cmd, t_replay)"
+      },
+      {
+        "id": "PROP_003",
+        "name": "No_ModeChange_Event_Generated",
+        "category": "EventIntegrity",
+        "importance": "CRITICAL",
+        "claim": "The Oven Mode cluster defines no event to notify observers when CurrentMode changes, making unauthorized activation of hazardous modes (Clean, Grill) undetectable without continuous polling.",
+        "formal": "∀t. ∆CurrentMode(t) ⟹ ¬∃event e. generated(e, t) ∧ describes_mode_change(e)",
+        "spec_source": "Section 8.11 defines no events. Mode Base cluster defines no ModeChange event. Contrast with clusters such as Door Lock (Section 5.2, LockOperationEvent) or Operational State (Section 5.9) which generate events on state change.",
+        "violation": {
+          "description": "A safety-monitoring controller, a home automation hub, or an audit system cannot subscribe to event-driven notifications of oven mode changes. Unauthorized mode transitions (including to Clean or Grill) are silent. Detection requires periodic polling of the CurrentMode attribute, which introduces a detection latency window during which the hazardous condition may already have manifested.",
+          "attack_vector": "Attacker activates Clean mode from a rogue or compromised Operate-privileged node. No event is published to inform monitoring systems. Activation is discovered only on next polling cycle or via physical observation.",
+          "physical_impact": "Delayed detection of unauthorized hazardous mode → fire or burns may occur before monitoring system reacts."
+        },
+        "proverifQuery": "query d:device, m_old:mode, m_new:mode ⊢ event current_mode_changed(d, m_old, m_new) ==> event mode_change_event_published(d, m_old, m_new)"
+      },
+      {
+        "id": "PROP_004",
+        "name": "Grill_Mode_Requires_No_Elevated_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The Grill (Broil) mode tag (0x4002), which operates the upper heating element at maximum radiant intensity, is activatable via ChangeToMode with only Operate-level access and no timed interaction requirement.",
+        "formal": "∀cmd ∈ ChangeToMode. 0x4002 ∈ SupportedModes[cmd.NewMode].ModeTags ⟹ required_privilege(cmd) == Operate ∧ timed_invoke_required(cmd) == false",
+        "spec_source": "Section 8.11.7.1.3: 'This mode sets the device into grill mode for grilling food items. This is the same as Broil for many regions.' Operate access level and no timed-invoke inherited from Mode Base.",
+        "violation": {
+          "description": "Any Operate-privileged node can remotely activate the upper heating element at maximum intensity without physical presence check. With food, parchment paper, or other flammable materials inside the oven cavity, an unattended grill activation presents a serious fire and burn risk.",
+          "attack_vector": "Send ChangeToMode command with NewMode targeting a SupportedModes entry bearing tag 0x4002 from any Operate-privileged fabric member.",
+          "physical_impact": "Unattended radiant-heat activation — fire risk from flammable cavity contents, severe burns from radiant heat if oven door is opened."
+        },
+        "proverifQuery": "query invoker:principal, cmd:command ⊢ event grill_mode_activated(invoker, cmd) ==> has_privilege(invoker, Manage) || has_privilege(invoker, Administer)"
+      },
+      {
+        "id": "PROP_005",
+        "name": "Bake_Tag_Mandatory_In_SupportedModes",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The SupportedModes attribute SHALL always contain at least one ModeOptionStruct entry whose ModeTags field includes the Bake mode tag (0x4000).",
+        "formal": "∀t. ∃m ∈ SupportedModes(t). 0x4000 ∈ m.ModeTags",
+        "spec_source": "Section 8.11.6.1: 'At least one entry in the SupportedModes attribute SHALL include the Bake mode tag in the ModeTags field list.'",
+        "violation": {
+          "description": "A non-conformant or manipulated SupportedModes attribute that omits all Bake-tagged entries violates an explicit SHALL requirement. This invalidates the cluster's conformance contract and may cause controllers relying on Bake mode availability to malfunction or fall back to undefined behaviors.",
+          "attack_vector": "Exploit a firmware vulnerability or unsanitized attribute write path to overwrite SupportedModes with entries that exclude tag 0x4000. If SupportedModes is writable (implementation-dependent), a Manage/Administer-privileged attacker could directly write a non-compliant value.",
+          "physical_impact": "None directly; conformance failure may cascade to interoperability exploitation."
+        },
+        "proverifQuery": "query d:device ⊢ event cluster_active(d) ==> event bake_tag_present_in_supported_modes(d)"
+      },
+      {
+        "id": "PROP_006",
+        "name": "ModeTags_Count_Bounds",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "Every ModeOptionStruct entry in SupportedModes SHALL contain between 1 and 8 ModeTags (inclusive), and no entry with fewer than 1 or more than 8 tags is permitted.",
+        "formal": "∀m ∈ SupportedModes. 1 ≤ |m.ModeTags| ≤ 8",
+        "spec_source": "Section 8.11.5.1 ModeOptionStruct Type: ModeTags field Constraint column: '1 to 8'; Conformance: M (Mandatory).",
+        "violation": {
+          "description": "A SupportedModes entry with 0 ModeTags is semantically invalid (mode has no defined purpose) and cannot be mapped to a valid FSM state. An entry with more than 8 tags exceeds the constraint, may trigger implementation-specific parsing errors, and could be used as a fuzzing vector to find buffer overruns or parser vulnerabilities in Mode Base cluster implementations.",
+          "attack_vector": "Inject a malformed SupportedModes write (if attribute is writable) or exploit a non-conformant implementation that constructs SupportedModes dynamically without bounds checking.",
+          "physical_impact": "None directly; implementation crash or undefined mode behavior may result."
+        },
+        "proverifQuery": "query m:mode_option_struct ⊢ event mode_in_supported(m) ==> event tag_count_valid(m, 1, 8)"
+      },
+      {
+        "id": "PROP_007",
+        "name": "DEPONOFF_Feature_Disallowed",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "The DEPONOFF (OnOff dependency) feature SHALL NOT be enabled on any conformant Oven Mode cluster instance; a device advertising this feature violates the Revision 2 conformance requirement.",
+        "formal": "∀d. conformant_oven_mode(d) ⟹ FeatureMap(d).DEPONOFF == 0",
+        "spec_source": "Section 8.11.4 Features: DEPONOFF bit 0, conformance 'X' (Disallowed). Section 8.11.1 Revision History: 'Revision 2: Set OnOff feature, StartUpMode, and OnMode as disallowed.'",
+        "violation": {
+          "description": "A non-conformant device that enables DEPONOFF creates a covert channel where OnOff cluster state changes can drive automatic oven mode transitions. An attacker with Operate access to the OnOff cluster (a weaker or more broadly granted privilege than Manage/Administer on the oven) could indirectly influence oven mode through OnOff state manipulation, bypassing any intended mode-change authorization model.",
+          "attack_vector": "Exploit a non-conformant device that enables DEPONOFF. Set OnOff cluster state to On/Off to trigger OnMode or StartUpMode transitions into potentially hazardous oven modes without directly invoking ChangeToMode.",
+          "physical_impact": "Indirect activation of hazardous oven modes (e.g., Clean or Grill via OnMode) through OnOff cluster manipulation."
+        },
+        "proverifQuery": "query d:device ⊢ event cluster_active(d) ==> event deponoff_feature_disabled(d)"
+      },
+      {
+        "id": "PROP_008",
+        "name": "StartUpMode_Disallowed",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "The StartUpMode attribute (0x0002) SHALL NOT be present on any conformant Oven Mode cluster instance; its absence means oven startup mode is entirely implementation-defined with no spec constraint.",
+        "formal": "∀d. conformant_oven_mode(d) ⟹ ¬∃attr. attr.id == 0x0002 ∧ present(attr, d)",
+        "spec_source": "Section 8.11.6 Attributes: StartUpMode (0x0002) conformance 'X' (Disallowed). Section 8.11.1 Revision 2: 'Set ... StartUpMode ... as disallowed.'",
+        "violation": {
+          "description": "The absence of a conformance-defined StartUpMode means the mode the oven enters at power-on or reset is wholly implementation-defined. If an implementation initializes CurrentMode from non-volatile storage (which may have been previously set to a hazardous mode such as Clean or Grill by a legitimate or attacker-controlled command), a power cycle can cause the oven to enter a dangerous mode without any explicit current-session user command.",
+          "attack_vector": "Set CurrentMode to Clean mode (0x4004) via ChangeToMode, then trigger a device power cycle (e.g., by exploiting a separate vulnerability or waiting for a power outage). On restart, implementation may restore the last-known CurrentMode from NVM, activating Clean mode without any command in the new session.",
+          "physical_impact": "Oven enters pyrolytic cleaning or grill mode on power-up with no current-session authorization — fire and burn risk."
+        },
+        "proverifQuery": "query d:device ⊢ event device_startup(d) ==> event current_mode_explicitly_set_this_session(d) || event safe_default_mode_applied(d)"
+      },
+      {
+        "id": "PROP_009",
+        "name": "OnMode_Disallowed",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "The OnMode attribute (0x0003) SHALL NOT be present on any conformant Oven Mode cluster instance, preventing OnOff cluster state from driving automatic mode transitions.",
+        "formal": "∀d. conformant_oven_mode(d) ⟹ ¬∃attr. attr.id == 0x0003 ∧ present(attr, d)",
+        "spec_source": "Section 8.11.6 Attributes: OnMode (0x0003) conformance 'X' (Disallowed). Section 8.11.1 Revision 2: 'Set OnOff feature ... and OnMode as disallowed.'",
+        "violation": {
+          "description": "Non-conformant presence of OnMode creates an automatic mode-switching path gated entirely on OnOff cluster state changes. An attacker with Operate access to the OnOff cluster can force the oven into the OnMode-configured mode (which could be Clean, Grill, or any hazardous configuration) simply by toggling the OnOff state, without directly invoking ChangeToMode.",
+          "attack_vector": "Non-conformant device exposes OnMode set to a hazardous mode value. Attacker with Operate access to OnOff cluster sends On command → oven automatically enters hazardous mode via OnMode path.",
+          "physical_impact": "Indirect hazardous mode activation through OnOff cluster — fire and burn risk."
+        },
+        "proverifQuery": "query d:device ⊢ event cluster_active(d) ==> event on_mode_attribute_absent(d)"
+      },
+      {
+        "id": "PROP_010",
+        "name": "CurrentMode_Always_Valid_SupportedModes_Reference",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "CurrentMode SHALL always contain a value that corresponds to a Mode field of an existing ModeOptionStruct entry in SupportedModes.",
+        "formal": "∀t. CurrentMode(t) ∈ {m.Mode | m ∈ SupportedModes(t)}",
+        "spec_source": "Section 8.11.6 Attributes (inherited from Mode Base): CurrentMode (0x0001) by definition references an entry in SupportedModes. ChangeToMode returns UNSUPPORTED_MODE if NewMode not found in SupportedModes, ensuring only valid transitions occur.",
+        "violation": {
+          "description": "If CurrentMode holds a value not present in SupportedModes (e.g., due to a race condition between SupportedModes update and CurrentMode update, or a firmware bug), the device is in an undefined FSM state. Controllers relying on CurrentMode to determine device behavior receive misleading state information, potentially masking a hazardous physical state.",
+          "attack_vector": "Exploit a TOCTOU (time-of-check/time-of-use) race between a SupportedModes write and CurrentMode read, or a non-atomic update of SupportedModes that removes the mode currently referenced by CurrentMode.",
+          "physical_impact": "Controller believes device is in safe state while oven hardware operates in the mode that was active before the inconsistency — masking hazardous condition."
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event current_mode_read(d, t, v) ==> event value_in_supported_modes(d, t, v)"
+      },
+      {
+        "id": "PROP_011",
+        "name": "ChangeToMode_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "The ChangeToMode command (0x00) SHALL require at minimum Operate-level privilege; invocations from nodes with only View-level privilege SHALL be rejected.",
+        "formal": "∀cmd ∈ ChangeToMode. has_privilege(invoker(cmd), Operate) ∨ has_privilege(invoker(cmd), Manage) ∨ has_privilege(invoker(cmd), Administer)",
+        "spec_source": "Mode Base cluster ChangeToMode access level: Operate. Section 8.11 inherits without modification. View-only nodes cannot invoke this command.",
+        "violation": {
+          "description": "If a non-conformant implementation allows ChangeToMode from View-privileged nodes, the access control boundary collapses. Any read-only observer (e.g., an energy monitor, a diagnostic service) can change oven operating mode including to hazardous modes.",
+          "attack_vector": "Send ChangeToMode command from a View-only privileged fabric session. If implementation fails to check privilege level, command is accepted and mode changes to attacker-selected target.",
+          "physical_impact": "Full mode control by minimally-privileged nodes — all physical safety risks of unrestricted mode changes apply."
+        },
+        "proverifQuery": "query invoker:principal, cmd:command ⊢ event change_to_mode_accepted(invoker, cmd) ==> has_privilege(invoker, Operate)"
+      },
+      {
+        "id": "PROP_012",
+        "name": "UnsupportedMode_Returns_Error_Without_StateChange",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When ChangeToMode is invoked with a NewMode value not present in SupportedModes, the command SHALL return ChangeToModeResponse with Status UNSUPPORTED_MODE and CurrentMode SHALL remain unchanged.",
+        "formal": "∀cmd ∈ ChangeToMode. cmd.NewMode ∉ {m.Mode | m ∈ SupportedModes} ⟹ response(cmd).Status == UNSUPPORTED_MODE ∧ CurrentMode_after == CurrentMode_before",
+        "spec_source": "Mode Base cluster ChangeToMode 'Effect on Receipt': returns UNSUPPORTED_MODE status when NewMode not found; CurrentMode is not modified. Inherited by Section 8.11.",
+        "violation": {
+          "description": "If an implementation partially processes an invalid ChangeToMode (e.g., changes CurrentMode to an undefined value before the validation check), it creates an inconsistent FSM state. An attacker can craft a NewMode value at the boundary of SupportedModes to probe implementation behavior and potentially trigger undefined physical actuator states.",
+          "attack_vector": "Send ChangeToMode with NewMode values not in SupportedModes (e.g., 0xFF or values between valid mode indices) to probe off-by-one errors or non-atomic state update bugs in the implementation.",
+          "physical_impact": "Oven physical state may diverge from reported CurrentMode — masking hazardous physical operating condition."
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event change_to_mode_rejected(d, cmd, UNSUPPORTED_MODE) ==> event current_mode_unchanged(d)"
+      },
+      {
+        "id": "PROP_013",
+        "name": "Compound_Hazardous_Tag_Combination_Undefined",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "No normative constraint prevents a SupportedModes entry from combining hazardous mode tags (e.g., Grill 0x4002 + Clean 0x4004, or Steam 0x4009 + Grill 0x4002), and the physical semantics of such combinations are entirely implementation-defined.",
+        "formal": "∃m ∈ SupportedModes. {0x4002, 0x4004} ⊆ m.ModeTags ∧ physical_behavior(m) == UNDEFINED",
+        "spec_source": "Section 8.11.5.1 ModeTags constraint: '1 to 8'. Section 8.11.8 provides only informative examples. No normative rule excludes any tag combination. Section 8.11.7.1.5 (Clean) and 8.11.7.1.3 (Grill) define tags independently without compositional semantics.",
+        "violation": {
+          "description": "An implementation may expose a compound mode with tags for Grill and Clean simultaneously. Whether this means sequential execution (clean then grill), simultaneous activation (both elements at maximum), or an implementation-specific blend is undefined. An attacker who can observe that such a compound mode exists (by reading SupportedModes) may exploit it to reach physical states that manufacturers did not design safety interlocks for.",
+          "attack_vector": "Read SupportedModes to discover compound hazardous-tag modes. Invoke ChangeToMode targeting such a mode. Implementation enters an untested physical state — manufacturer's safety interlocks may not cover this combination.",
+          "physical_impact": "Undefined compound actuation of multiple thermal elements simultaneously — potential for thermal runaway, fire, or catastrophic appliance failure."
+        },
+        "proverifQuery": "query m:mode_option_struct ⊢ event compound_mode_activated(m) ==> event safety_semantics_defined(m)"
+      },
+      {
+        "id": "PROP_014",
+        "name": "Clean_Mode_No_Physical_Presence_Verification",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "The specification defines no mechanism requiring physical presence verification, door-lock confirmation, or any out-of-band safety interlock before a remote ChangeToMode command can activate Clean mode.",
+        "formal": "∀cmd ∈ ChangeToMode. 0x4004 ∈ SupportedModes[cmd.NewMode].ModeTags ⟹ ¬∃check. physical_presence_verified(check) ∧ precedes(check, cmd)",
+        "spec_source": "Section 8.11.7.1.5: 'This mode sets the device into cleaning mode to clean the internal components of the appliance.' Section 8.11 defines no precondition, interlock, or physical confirmation requirement for entering Clean mode. No dependency on a physical button press, door state, or occupancy sensor is specified.",
+        "violation": {
+          "description": "Matter's access control model (Operate privilege sufficient) and the absence of any physical channel requirement means Clean mode can be activated entirely over-the-air from any geographic location with network access to the device. No local physical action is required. A person may be standing in front of an open oven or have items inside when a remote attacker or compromised automation system triggers the cycle.",
+          "attack_vector": "From a remote network position, send ChangeToMode targeting Clean mode. No feedback mechanism confirms the oven is empty, the door is closed, or a person is physically present to authorize the cycle. Command succeeds based solely on privilege check.",
+          "physical_impact": "SEVERE: Pyrolytic cleaning at >480°C with food, flammable materials, or accessible open-door configuration — extreme burn, fire, or toxic fume risk from burning food residue."
+        },
+        "proverifQuery": "query invoker:principal, cmd:command ⊢ event clean_mode_accepted(invoker, cmd) ==> event physical_confirmation_received(cmd) || event local_button_pressed(cmd)"
+      },
+      {
+        "id": "PROP_015",
+        "name": "Steam_Mode_Scalding_Risk_No_Access_Elevation",
+        "category": "PhysicalSafety",
+        "importance": "MEDIUM",
+        "claim": "The Steam mode tag (0x4009) is activatable with only Operate-level access; sudden steam activation while a person is accessing the oven cavity presents a scalding risk with no spec-defined access restriction.",
+        "formal": "∀cmd ∈ ChangeToMode. 0x4009 ∈ SupportedModes[cmd.NewMode].ModeTags ⟹ required_privilege(cmd) == Operate ∧ timed_invoke_required(cmd) == false",
+        "spec_source": "Section 8.11.7.1 Mode Tags, 0x4009 (Steam). No access restriction or precondition defined beyond inherited Operate access from Mode Base ChangeToMode.",
+        "violation": {
+          "description": "Steam injection into an oven cavity while a person has the door open or is reaching inside creates an immediate scalding hazard. With Operate-level access and no timed-invoke requirement, a rogue or compromised controller can trigger steam mode without warning.",
+          "attack_vector": "Send ChangeToMode targeting Steam-tagged mode from any Operate-privileged node. No precondition checks on door state or occupancy are required.",
+          "physical_impact": "Steam scalding injury to person accessing oven cavity during remote mode activation."
+        },
+        "proverifQuery": "query invoker:principal, cmd:command ⊢ event steam_mode_activated(invoker, cmd) ==> has_privilege(invoker, Manage) || event safety_precondition_met(cmd)"
+      },
+      {
+        "id": "PROP_016",
+        "name": "SupportedModes_Is_Fixed_Server_Attribute",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "SupportedModes (0x0000) is a server-side attribute; clients cannot directly write to it or remove mode entries, protecting the mode space from unauthorized modification.",
+        "formal": "∀write_attempt. target(write_attempt) == SupportedModes(0x0000) ⟹ rejected(write_attempt)",
+        "spec_source": "Section 8.11.6 Attributes: SupportedModes attribute access column is blank (inherits from Mode Base — defined as Read-only server attribute). ChangeToMode is the only command affecting mode state and it only modifies CurrentMode, not SupportedModes.",
+        "violation": {
+          "description": "If SupportedModes were writable by clients, an attacker could redefine the available modes — for example, replacing safe production modes with a mode bearing the Clean tag at an unexpected index, causing standard automation scripts to inadvertently activate pyrolytic cleaning.",
+          "attack_vector": "Attempt WriteAttribute to SupportedModes (0x0000) with a crafted list replacing all modes with a single Clean-tagged entry. If access control is misconfigured or the implementation has a write permission bug, mode space is corrupted.",
+          "physical_impact": "Mode space manipulation causing inadvertent hazardous mode activation by legitimate automation routines."
+        },
+        "proverifQuery": "query w:write_request ⊢ event write_accepted(w, SupportedModes) ==> false"
+      },
+      {
+        "id": "PROP_017",
+        "name": "Mode_Base_Inheritance_Completeness",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The Oven Mode cluster, as a Mode Base derived cluster, SHALL correctly implement ALL inherited Mode Base behaviors including the ChangeToMode command, ModeOptionStruct type validation, and UNSUPPORTED_MODE / INVALID_IN_MODE error responses.",
+        "formal": "∀behavior b ∈ ModeBase. oven_mode_implements(b) == true",
+        "spec_source": "Section 8.11 preamble: 'This cluster is derived from the Mode Base cluster and defines additional mode tags and name-spaced enumerated values for oven devices.' Section 8.11.5.1: 'The table below lists the changes relative to the Mode Base cluster for the fields of the ModeOptionStruct type. A blank field indicates no change.'",
+        "violation": {
+          "description": "Incomplete or incorrect implementation of inherited Mode Base behaviors (e.g., failure to return INVALID_IN_MODE, failure to validate ModeTags count) creates behavioral gaps. Missing INVALID_IN_MODE responses allow mode transitions the manufacturer intended to restrict (e.g., exiting Clean mode mid-cycle) to succeed unexpectedly.",
+          "attack_vector": "Send ChangeToMode commands during a Clean cycle expecting INVALID_IN_MODE rejection. If implementation omits this error path, the attacker can interrupt the cycle mid-operation, potentially leaving oven at extreme temperature in an uncontrolled intermediate thermal state.",
+          "physical_impact": "Premature Clean cycle termination at extreme temperatures with undefined thermal state — burn risk, appliance damage."
+        },
+        "proverifQuery": "query cmd:command ⊢ event invalid_in_mode_returned(cmd) ==> event mode_base_constraint_violated(cmd)"
+      },
+      {
+        "id": "PROP_018",
+        "name": "No_Privilege_Differentiation_Across_Mode_Safety_Levels",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The specification applies a single Operate access level uniformly to all ChangeToMode invocations regardless of the safety impact of the target mode — no differentiated access control exists between safe modes (Proofing, Warming) and extreme-hazard modes (Clean, Grill).",
+        "formal": "∀m1, m2 ∈ SupportedModes. required_privilege(ChangeToMode(m1)) == required_privilege(ChangeToMode(m2)) == Operate",
+        "spec_source": "Section 8.11 — no per-mode access requirement is defined. Mode Base ChangeToMode access level (Operate) is applied globally. No conditional access based on target mode tags is specified anywhere in Section 8.11.",
+        "violation": {
+          "description": "The spectrum of oven modes ranges from low-risk (Proofing at ~35°C) to extreme-hazard (Clean at >480°C), yet all are equally accessible to any Operate-privileged node. The single flat access level means a node granted Operate access for the benign purpose of setting Warming mode has identical authority to activate pyrolytic cleaning. There is no least-privilege mechanism in the spec to scope Operate access to non-hazardous modes only.",
+          "attack_vector": "Legitimate Operate-privileged automation controller (e.g., a cooking schedule app) is compromised or its commands are replayed. Attacker uses the same privilege level to invoke ChangeToMode targeting Clean mode — no additional barrier exists.",
+          "physical_impact": "Privilege granted for benign oven use is automatically sufficient for extreme-hazard mode activation — fire, burns, property damage."
+        },
+        "proverifQuery": "query invoker:principal, safe_cmd:command, hazard_cmd:command ⊢ event change_to_mode_accepted(invoker, safe_cmd) ∧ safe_mode(safe_cmd.NewMode) ==> ¬event change_to_mode_accepted(invoker, hazard_cmd) ∧ hazardous_mode(hazard_cmd.NewMode)"
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "The ChangeToMode command is inherited from the Mode Base cluster with Operate access level. The Oven Mode cluster spec does not re-specify command access levels, and this extraction assumes Mode Base defaults apply without override.",
+        "type": "Implicit",
+        "source": "Section 8.11 preamble; Mode Base cluster specification",
+        "dependencies": ["PROP_001", "PROP_002", "PROP_004", "PROP_011", "PROP_018"],
+        "impact_if_violated": "If Mode Base actually specifies a higher access level in context not visible here, CRITICAL properties PROP_001, PROP_004, PROP_018 may be incorrectly rated — actual access barrier may be higher than Operate."
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "Physical actuator safety interlocks (door locks, temperature limiters, occupancy sensors) are assumed to be purely implementation-defined hardware mechanisms not mandated by this cluster specification.",
+        "type": "Implicit",
+        "source": "Derived — Section 8.11 contains no reference to hardware interlocks",
+        "dependencies": ["PROP_001", "PROP_014", "PROP_015"],
+        "impact_if_violated": "If a companion Device Type specification or regional regulation mandates hardware interlocks for pyrolytic cleaning, the physical safety risk of PROP_001 and PROP_014 may be partially mitigated at the hardware layer despite spec-level gaps."
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "The Oven Mode cluster is deployed on an endpoint accessible to multiple fabric members (as typical in Matter), meaning multiple nodes with varying trust levels share access to the ChangeToMode command.",
+        "type": "Implicit",
+        "source": "Derived — Matter multi-fabric model; Section 8.11.2 Scope: Endpoint",
+        "dependencies": ["PROP_001", "PROP_004", "PROP_014", "PROP_018"],
+        "impact_if_violated": "If deployment is single-fabric with strict ACL limiting ChangeToMode to a trusted commissioner only, practical exploitability of access-control properties is reduced. The spec-level gap remains regardless."
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "Matter's network-layer security (PASE/CASE session encryption, message counter replay protection) is assumed to be operational and correctly implemented. Properties in this document concern cluster-level security above the transport layer.",
+        "type": "Explicit",
+        "source": "Matter Core Specification — session security is a separate concern from cluster access control",
+        "dependencies": ["PROP_002"],
+        "impact_if_violated": "If network-layer replay protection operates correctly, the replay vector for PROP_002 is reduced. However, the absence of timed-invoke remains a spec-level gap that allows replays within session unless timed invoke is mandated."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 8.11 (entire cluster)",
+        "normative_weakness": "Unspecified",
+        "description": "No access level differentiation between safe modes (Proofing, Warming) and extreme-hazard modes (Clean, Grill). All ChangeToMode invocations require the same Operate privilege regardless of target mode's thermal hazard level.",
+        "properties_affected": ["PROP_001", "PROP_004", "PROP_018"],
+        "security_impact": "Any node with Operate access for routine oven scheduling can remotely activate pyrolytic cleaning without additional authorization. Least-privilege principle is violated for safety-critical mode activations."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 8.11 (entire cluster)",
+        "normative_weakness": "Unspecified",
+        "description": "No event is defined for CurrentMode changes. Neither Oven Mode nor Mode Base specifies a mandatory ModeChange event analogous to LockOperationEvent (Door Lock) or StateChange (Operational State).",
+        "properties_affected": ["PROP_003"],
+        "security_impact": "Silent mode transitions to hazardous states cannot be detected by monitoring systems without continuous polling. Detection latency window allows physical hazard to develop before response system reacts."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 8.11 (entire cluster — ChangeToMode command)",
+        "normative_weakness": "Unspecified",
+        "description": "No timed interaction requirement exists for any ChangeToMode invocation, including those targeting safety-critical modes (Clean tag 0x4004, Grill tag 0x4002). Matter's Timed Invoke mechanism, used by Door Lock for UnlockDoor, provides a short validity window that prevents replay or injection attacks — this protection is entirely absent from Oven Mode.",
+        "properties_affected": ["PROP_002"],
+        "security_impact": "Replayed ChangeToMode commands activating hazardous modes succeed without time-bound freshness constraint. Passive adversary can capture and replay Clean/Grill mode commands at arbitrary future times."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 8.11.6 Attributes 0x0002, 0x0003",
+        "normative_weakness": "Unspecified",
+        "description": "StartUpMode (0x0002) and OnMode (0x0003) are disallowed (conformance X), but no normative behavior is defined for the mode the oven enters at cluster initialization or device startup. Power-cycle mode behavior is entirely implementation-defined.",
+        "properties_affected": ["PROP_008"],
+        "security_impact": "Implementation may restore last-known CurrentMode (including hazardous modes) from non-volatile storage on power-up, activating Clean or Grill mode without any current-session authorization. No spec constraint prevents this."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 8.11.5.1 ModeOptionStruct ModeTags",
+        "normative_weakness": "Unspecified",
+        "description": "No normative rule prohibits hazardous tag combinations within a single ModeOptionStruct entry (e.g., Grill 0x4002 + Clean 0x4004). Section 8.11.8 provides illustrative examples only (informative, not normative). Compositional semantics of multiple hazardous tags are undefined.",
+        "properties_affected": ["PROP_013"],
+        "security_impact": "Manufacturers may expose compound hazardous-tag modes with undefined thermal behavior. Attackers can discover and activate these modes to reach physical states for which safety interlocks were not designed."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 8.11.7.1.5 Clean Tag; Section 8.11 (entire cluster)",
+        "normative_weakness": "Unspecified",
+        "description": "No physical presence verification, door state pre-check, occupancy detection requirement, or out-of-band confirmation mechanism is defined before activation of Clean mode (>480°C). Comparison: appliance safety regulations in many jurisdictions require physical button confirmation for pyrolytic cleaning cycle initiation.",
+        "properties_affected": ["PROP_014"],
+        "security_impact": "Fully remote activation of pyrolytic cleaning without any physical-world confirmation or presence verification. No standard deviation from this behavior is permitted by or even discussed in the spec."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 8.11.4 Features (DEPONOFF) and Section 8.11.6 (StartUpMode, OnMode)",
+        "normative_weakness": "Unspecified",
+        "description": "DEPONOFF, StartUpMode, and OnMode are disallowed but no mandatory conformance test assertion or enforcement mechanism is described. A non-conformant device implementing any of these opens indirect mode-change vectors not visible in the Oven Mode cluster's own access control surface.",
+        "properties_affected": ["PROP_007", "PROP_008", "PROP_009"],
+        "security_impact": "Non-conformant implementations that ignore 'X' conformance marking create hidden authorization bypass paths through the OnOff cluster and startup behavior, potentially activating hazardous modes through indirect channels."
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": ["Oven Mode (0x0049)", "On/Off (0x0006)"],
+        "property": {
+          "claim": "A conformant Oven Mode cluster SHALL NOT have a covert mode-switching dependency on the On/Off cluster state through DEPONOFF, OnMode, or StartUpMode. Any implementation-level coupling between OnOff state and CurrentMode is non-conformant and creates an unauthorized mode-change channel.",
+          "formal": "∀d. conformant_oven_mode(d) ⟹ ¬(∆OnOff.OnOff(d) → ∆OvenMode.CurrentMode(d))"
+        },
+        "violation_scenario": "Non-conformant device enables DEPONOFF and sets OnMode to Clean (0x4004) mode index. Attacker with Operate access to On/Off cluster sends On command → oven automatically enters pyrolytic cleaning without invoking ChangeToMode on the Oven Mode cluster. This bypasses any ACL restriction placed specifically on ChangeToMode and may evade audit logging scoped to Oven Mode commands."
+      },
+      {
+        "id": "XPROP_002",
+        "clusters_involved": ["Oven Mode (0x0049)", "Operational State (0x0060)"],
+        "property": {
+          "claim": "If an Operational State cluster is co-located on the same endpoint, the spec does not normatively require Oven Mode to respect Operational State error conditions before accepting ChangeToMode commands.",
+          "formal": "∃d. OperationalState(d).Error ∧ ¬∃constraint. ChangeToMode_rejected_when(OperationalState.Error)"
+        },
+        "violation_scenario": "Oven is in OperationalState Error (e.g., temperature sensor fault). An attacker sends ChangeToMode to activate Grill or Clean mode. Without a mandatory cross-cluster guard, the oven may accept the mode change despite being in a fault state where sensor feedback is unreliable, resulting in uncontrolled heating without thermal regulation."
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_001",
+        "safety_category": "FireSafety",
+        "failure_mode": "Pyrolytic self-cleaning cycle initiated remotely without physical presence confirmation while oven cavity contains food or flammable materials, or while a person is physically proximate to the appliance.",
+        "spec_mitigation": "UNSPECIFIED — Section 8.11 defines no access restriction, timed interaction, physical interlock, or confirmation requirement for Clean mode activation."
+      },
+      {
+        "property_id": "PROP_002",
+        "safety_category": "FireSafety",
+        "failure_mode": "Replayed ChangeToMode command activates pyrolytic cleaning or grill cycle at an arbitrary future time when attacker chooses — e.g., at night when oven is unattended and risk of fire spread is maximized.",
+        "spec_mitigation": "UNSPECIFIED — timed interaction not required; Matter message replay counter prevents exact duplicate messages but does not limit time window absent timed-invoke."
+      },
+      {
+        "property_id": "PROP_003",
+        "safety_category": "FireSafety",
+        "failure_mode": "Clean or Grill mode activates without generating any event notification. Home safety monitoring system has no asynchronous signal to trigger a fire suppression response or user alert. Detection latency equals polling interval (potentially minutes).",
+        "spec_mitigation": "UNSPECIFIED — no event defined for CurrentMode changes in Oven Mode or Mode Base clusters."
+      },
+      {
+        "property_id": "PROP_004",
+        "safety_category": "FireSafety",
+        "failure_mode": "Upper broil/grill element activated remotely at maximum intensity with flammable cavity contents present, open oven door, or person reaching into cavity.",
+        "spec_mitigation": "UNSPECIFIED — Operate access and no timed-invoke; no physical interlock defined."
+      },
+      {
+        "property_id": "PROP_013",
+        "safety_category": "FireSafety",
+        "failure_mode": "Compound mode with undefined thermal behavior (e.g., Grill + Clean simultaneously) activates heating elements in ways that manufacturer did not design thermal safety interlocks to handle — potential for thermal runaway or appliance fire.",
+        "spec_mitigation": "UNSPECIFIED — no normative constraint on tag combinations; informative examples only."
+      },
+      {
+        "property_id": "PROP_014",
+        "safety_category": "FireSafety",
+        "failure_mode": "Remote activation of pyrolytic clean cycle (>480°C) with no physical confirmation requirement. Person may be standing in front of open oven, oven may contain items, or building may be unoccupied — fire detection may be delayed.",
+        "spec_mitigation": "UNSPECIFIED — no door state check, physical button, occupancy sensor, or out-of-band confirmation defined anywhere in Section 8.11."
+      },
+      {
+        "property_id": "PROP_015",
+        "safety_category": "PhysicalSafety",
+        "failure_mode": "Steam injection into open oven cavity causes immediate scalding burns to person accessing the oven at the moment of remote mode activation.",
+        "spec_mitigation": "UNSPECIFIED — Operate access only; no door state or occupancy precondition."
+      },
+      {
+        "property_id": "PROP_008",
+        "safety_category": "FireSafety",
+        "failure_mode": "Device power-cycles and restores previously-set hazardous CurrentMode (e.g., Clean) from NVM, initiating pyrolytic cleaning on boot without current-session user authorization.",
+        "spec_mitigation": "UNSPECIFIED — StartUpMode is disallowed but default startup mode behavior is not constrained. Spec does not require a safe-default mode on power-on."
+      }
+    ],
+
+    "summary": {
+      "total_properties": 18,
+      "by_importance": {
+        "CRITICAL": 5,
+        "HIGH": 9,
+        "MEDIUM": 4
+      },
+      "by_category": {
+        "AccessControl": 5,
+        "StateIntegrity": 5,
+        "PhysicalSafety": 3,
+        "Authorization": 3,
+        "EventIntegrity": 1,
+        "Timing": 0,
+        "Authentication": 0,
+        "SecretProtection": 0,
+        "Availability": 0,
+        "CrossCluster": 1
+      },
+      "spec_gaps_found": 7,
+      "safety_critical_count": 8,
+      "key_finding": "The Oven Mode cluster has an exceptionally flat access control surface (single Operate level for all mode changes) combined with a complete absence of safety interlocks, mode-change events, and timed interaction requirements. Safety-critical modes including pyrolytic self-cleaning (>480°C) are as accessible as benign modes (Proofing, Warming). The cluster's security posture relies entirely on implementation-defined hardware interlocks and ACL deployment choices with no normative spec-level safety constraints."
+    }
+  }
+}

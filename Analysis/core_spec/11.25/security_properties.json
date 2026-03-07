@@ -1,0 +1,402 @@
+{
+  "specification": "Matter Specification R1.4 - Section 11.25: Joint Fabric PKI Cluster",
+  "cluster_id": "0x0753",
+  "analysis_date": "2026-01-30",
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "ICACSR_Request_Response_Binding",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Every ICACSRRequest command SHALL generate exactly one ICACSRResponse command",
+      "formal": "∀req:ICACSRRequest. event send(req) ==> ∃!resp:ICACSRResponse. event receive(resp) ∧ binds(req, resp)",
+      "violation": "If a request does not receive a response, the client cannot proceed with commissioning, causing denial of service. If multiple responses are generated, replay attacks or response confusion become possible, allowing an attacker to inject forged ICAC certificates.",
+      "proverifQuery": "query req:ICACSRRequest ⊢ event send_request(req) ==> event receive_response(response_for(req))"
+    },
+    {
+      "id": "PROP_002",
+      "name": "ICACSR_Format_Validation_Required",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The server MUST validate that ICACSR conforms to PKCS #10 rules before processing",
+      "formal": "∀csr:octstr. event process(csr) ==> validated_pkcs10(csr) ∨ return_status(InvalidIcaCsrFormat)",
+      "violation": "Malformed CSR can exploit parser vulnerabilities, bypass validation checks, or inject malicious certificate fields. Without validation, an attacker can submit arbitrary data that crashes the server or bypasses security policies.",
+      "proverifQuery": "query csr:bitstring, result:key ⊢ event issue_certificate(csr, result) ==> event validated_format(csr)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "ICACSR_Signature_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The ICACSR signature MUST be cryptographically verified before issuing ICAC",
+      "formal": "∀csr:octstr, pubkey:key. event issue_icac(csr) ==> verify_signature(csr, pubkey) ∨ return_status(InvalidIcaCsrSignature)",
+      "violation": "Unverified signatures allow an attacker to submit CSRs they don't control, enabling certificate issuance for nodes the attacker doesn't possess the private key for. This breaks authentication and allows man-in-the-middle attacks.",
+      "proverifQuery": "query csr:bitstring, cert:bitstring ⊢ event issue_cert(csr, cert) ==> event verify_sig(csr, public_key(csr))"
+    },
+    {
+      "id": "PROP_004",
+      "name": "DCL_Vendor_ID_Validation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The Vendor ID in the ICACSR MUST be validated against the DCL before certificate issuance",
+      "formal": "∀csr:octstr, vid:uint16. event issue_icac(csr) ==> dcl_validate(vid) ∨ return_status(FailedDCLVendorIdValidation)",
+      "violation": "Without DCL validation, an attacker can claim to be any vendor, bypassing ecosystem trust boundaries. This allows unauthorized manufacturers to issue certificates for devices they don't control, breaking the chain of trust.",
+      "proverifQuery": "query csr:bitstring, vid:bitstring, cert:bitstring ⊢ event issue_cert(csr, cert) ==> event dcl_validated(extract_vid(csr))"
+    },
+    {
+      "id": "PROP_005",
+      "name": "ICAC_Certificate_Type_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The issued certificate MUST be verified to be an Intermediate CA Certificate, not a leaf or root certificate",
+      "formal": "∀cert:octstr. event issue_certificate(cert) ==> is_icac(cert) ∨ return_status(NotAnIcac)",
+      "violation": "Issuing non-ICAC certificates (e.g., root CA or leaf certificates) breaks PKI hierarchy. An attacker receiving a root CA certificate could issue arbitrary certificates for the entire fabric. A leaf certificate prevents further delegation, breaking commissioning.",
+      "proverifQuery": "query cert:bitstring ⊢ event issued(cert) ==> event verified_icac_type(cert)"
+    },
+    {
+      "id": "PROP_006",
+      "name": "ICAC_PEM_Format_Enforcement",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If ICAC field is present in ICACSRResponse, it SHALL contain the certificate in PEM format",
+      "formal": "∀resp:ICACSRResponse. has_field(resp, ICAC) ==> is_pem_format(resp.ICAC)",
+      "violation": "Non-PEM formatted certificates cause parsing failures in clients expecting PEM. This creates interoperability failures or forces clients to accept arbitrary formats, opening parser vulnerability attack surface.",
+      "proverifQuery": "query resp:ICACSRResponse, cert:bitstring ⊢ event send_response(resp, cert) ==> event validated_pem(cert)"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Anchor_Transfer_Request_Authorization",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Only a candidate Joint Fabric Anchor Administrator SHALL be authorized to send TransferAnchorRequest",
+      "formal": "∀node:principal, req:TransferAnchorRequest. event send(node, req) ==> is_candidate_anchor_admin(node)",
+      "violation": "Unauthorized nodes sending TransferAnchorRequest can initiate anchor transfer to malicious nodes, hijacking the Anchor CA role. This allows the attacker to control certificate issuance for the entire joint fabric.",
+      "proverifQuery": "query node:principal, req:TransferAnchorRequest ⊢ event send_transfer_request(node, req) ==> event authorized_candidate(node)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Anchor_Transfer_Target_Validation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "TransferAnchorRequest SHALL only be sent to the current Joint Fabric Anchor Administrator",
+      "formal": "∀sender:principal, target:principal, req:TransferAnchorRequest. event send_to(sender, target, req) ==> is_current_anchor_admin(target)",
+      "violation": "Sending TransferAnchorRequest to non-anchor nodes could leak sensitive anchor credentials or initiate unauthorized transfers. An attacker impersonating the anchor could receive transfer requests and extract fabric secrets.",
+      "proverifQuery": "query sender:principal, target:principal, req:TransferAnchorRequest ⊢ event send_transfer(sender, target, req) ==> event verified_current_anchor(target)"
+    },
+    {
+      "id": "PROP_009",
+      "name": "User_Consent_Required_For_ICACSR",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "ICACSR processing requires user consent; absence of consent SHALL result in IcaCsrRequestNoUserConsent status",
+      "formal": "∀req:ICACSRRequest. event process(req) ==> has_user_consent(req) ∨ return_status(IcaCsrRequestNoUserConsent)",
+      "violation": "Processing ICACSR without user consent allows automated certificate issuance attacks. An attacker can commission unauthorized devices into the fabric without administrator awareness, bypassing security policies.",
+      "proverifQuery": "query req:ICACSRRequest, cert:bitstring ⊢ event issue_cert_for(req, cert) ==> event user_consented(req)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "User_Consent_Required_For_Anchor_Transfer",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Anchor transfer requires user consent; absence SHALL result in TransferAnchorStatusNoUserConsent",
+      "formal": "∀req:TransferAnchorRequest. event initiate_transfer(req) ==> has_user_consent(req) ∨ return_status(TransferAnchorStatusNoUserConsent)",
+      "violation": "Anchor transfer without consent enables automated anchor hijacking. An attacker can silently transfer anchor control to a compromised node, gaining full PKI authority over the joint fabric without administrator awareness.",
+      "proverifQuery": "query req:TransferAnchorRequest ⊢ event begin_transfer(req) ==> event transfer_consented(req)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "Anchor_Transfer_Atomicity",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "Anchor transfer SHALL be atomic; concurrent operations SHALL be rejected with BusyAnchorTransfer or DatastoreBusy status",
+      "formal": "∀t1, t2:TransferAnchorRequest. event start_transfer(t1) ∧ ¬event complete_transfer(t1) ==> ¬event start_transfer(t2) ∨ return_status(BusyAnchorTransfer)",
+      "violation": "Concurrent transfers can leave the fabric in an inconsistent state where multiple nodes believe they are the Anchor CA. This creates split-brain scenarios where different certificates are issued by different 'anchors', breaking trust.",
+      "proverifQuery": "query t1:TransferAnchorRequest, t2:TransferAnchorRequest ⊢ event concurrent_transfers(t1, t2) ==> event transfer_rejected(t2, BusyAnchorTransfer)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Datastore_Operations_During_Transfer_Blocked",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Datastore operations SHALL be blocked during anchor transfer to prevent inconsistency",
+      "formal": "∀req:TransferAnchorRequest, op:DatastoreOp. event active_transfer(req) ==> ¬event execute(op) ∨ return_status(TransferAnchorStatusDatastoreBusy)",
+      "violation": "Datastore modifications during transfer can corrupt state or create race conditions. An attacker timing operations during transfer could inject malicious ACL entries or corrupt node information that persists after transfer completes.",
+      "proverifQuery": "query req:TransferAnchorRequest, op:DatastoreOp ⊢ event datastore_op_during_transfer(req, op) ==> event operation_rejected(op)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Transfer_Anchor_Complete_Finalization",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "TransferAnchorComplete command SHALL indicate completion and finalize the anchor transfer state transition",
+      "formal": "∀req:TransferAnchorRequest, comp:TransferAnchorComplete. event send(req) ∧ event send(comp) ==> after(transfer_complete, transfer_initiated)",
+      "violation": "If TransferAnchorComplete is not sent or processed, the fabric remains in transfer-in-progress state indefinitely. This causes permanent denial of service where no certificates can be issued and no datastore operations can proceed.",
+      "proverifQuery": "query req:TransferAnchorRequest ⊢ event transfer_started(req) ==> ∃comp:TransferAnchorComplete. event transfer_finalized(comp)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Request_Response_Ordering",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Response commands SHALL only be generated after corresponding request commands are received",
+      "formal": "∀req:Request, resp:Response. event send_response(resp) ==> ∃req. event received_request(req) ∧ before(received_request(req), send_response(resp))",
+      "violation": "Responses sent before requests indicate replay attacks or response injection. An attacker can pre-generate responses to bypass validation logic or inject forged certificates that appear to be legitimate server responses.",
+      "proverifQuery": "query req:bitstring, resp:bitstring ⊢ event send_response(resp) ==> event before(receive_request(req), send_response(resp))"
+    },
+    {
+      "id": "PROP_015",
+      "name": "ICACSR_Max_Size_Enforcement",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "ICACSR field SHALL be constrained to maximum 400 octets to prevent buffer overflow attacks",
+      "formal": "∀csr:octstr. event receive(csr) ==> length(csr) ≤ 400",
+      "violation": "Oversized CSR payloads can cause buffer overflows, denial of service, or memory exhaustion. An attacker sending large CSRs can crash the server or exploit memory corruption vulnerabilities.",
+      "proverifQuery": "query csr:bitstring ⊢ event process_csr(csr) ==> event validated_size(csr, 400)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "ICAC_Max_Size_Enforcement",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "ICAC field in response SHALL be constrained to maximum 400 octets",
+      "formal": "∀cert:octstr. event send_icac(cert) ==> length(cert) ≤ 400",
+      "violation": "Oversized certificate responses can cause client buffer overflows or denial of service. An attacker compromising the server can send malicious certificates that crash clients or exploit memory vulnerabilities.",
+      "proverifQuery": "query cert:bitstring ⊢ event send_certificate(cert) ==> event validated_size(cert, 400)"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Command_Access_Control_Admin_Only",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "All commands in this cluster require Access level 'A' (Administrator), non-admin nodes SHALL be rejected",
+      "formal": "∀node:principal, cmd:Command. event send_command(node, cmd) ==> has_admin_access(node) ∨ event reject(cmd)",
+      "violation": "Non-admin access to PKI commands allows unauthorized certificate issuance and anchor transfers. An attacker without admin privileges could commission malicious devices or hijack the Anchor CA role.",
+      "proverifQuery": "query node:principal, cmd:Command ⊢ event execute_command(node, cmd) ==> event verified_admin(node)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "StatusCode_Response_Completeness",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "ICACSRResponse StatusCode field SHALL always be present and contain a valid IcacsrRequestStatusEnum value",
+      "formal": "∀resp:ICACSRResponse. event send(resp) ==> has_field(resp, StatusCode) ∧ is_valid_enum(resp.StatusCode, IcacsrRequestStatusEnum)",
+      "violation": "Missing or invalid status codes prevent clients from determining operation outcomes. This can cause clients to incorrectly assume success, proceeding with commissioning using invalid or missing certificates.",
+      "proverifQuery": "query resp:ICACSRResponse ⊢ event send_response(resp) ==> event has_valid_status(resp.StatusCode)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "ICAC_Field_Optional_But_Conditional",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "ICAC field SHALL be present in ICACSRResponse if and only if StatusCode is OK",
+      "formal": "∀resp:ICACSRResponse. (resp.StatusCode = OK) ⟺ has_field(resp, ICAC)",
+      "violation": "Absent ICAC with OK status causes commissioning to fail (client expects certificate). Present ICAC with error status confuses clients who may use invalid certificates, breaking authentication.",
+      "proverifQuery": "query resp:ICACSRResponse ⊢ (event status_ok(resp) ⟺ event has_certificate(resp))"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Joint_Commissioning_Sequence_Enforcement",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "ICACSRRequest SHALL only be generated during Joint Commissioning Method steps, not during normal operation",
+      "formal": "∀req:ICACSRRequest. event generate(req) ==> in_state(JointCommissioning)",
+      "violation": "ICACSR requests outside commissioning indicate protocol violations or replay attacks. An attacker can repeatedly request certificates to exhaust resources or probe for changed security policies.",
+      "proverifQuery": "query req:ICACSRRequest ⊢ event send_icacsr(req) ==> event in_commissioning_phase()"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Anchor_Transfer_Complete_Idempotency",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "TransferAnchorComplete command SHALL be idempotent; repeated invocations have no additional effect",
+      "formal": "∀comp:TransferAnchorComplete, state:AnchorState. event process(comp) ∧ event process(comp) ==> state_after_first = state_after_second",
+      "violation": "Non-idempotent completion can cause state corruption if the command is replayed or retried. An attacker replaying completion messages can disrupt anchor state or create denial of service.",
+      "proverifQuery": "query comp:TransferAnchorComplete ⊢ event process_complete(comp) ∧ event process_complete(comp) ==> event same_final_state()"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "The underlying cryptographic primitives (PKCS #10 signature verification, certificate validation) are secure and correctly implemented",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_002, PROP_003, PROP_005 fail. Attacker can forge CSRs, bypass signature checks, or inject malicious certificates. Complete PKI breakdown."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "The DCL (Device Certificate List) provides authentic and untampered vendor validation information",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_004 fails. Attacker controlling DCL can authorize any vendor ID, allowing unauthorized manufacturers to issue certificates for devices they don't control."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "User consent mechanisms cannot be bypassed or automated without genuine user interaction",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_009, PROP_010 fail. Attacker can automate certificate issuance or anchor transfers without administrator awareness, enabling silent fabric takeover."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "The access control mechanism (Access level 'A') is correctly enforced at the transport/session layer before commands reach cluster logic",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_021 fails. Non-admin nodes can send PKI commands, allowing unauthorized certificate issuance and anchor hijacking."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Network transport layer prevents replay attacks and ensures message ordering",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_014 fails. Attacker can replay old responses or reorder request-response pairs, injecting forged certificates or disrupting commissioning."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "The provisional status of this cluster implies it may have incomplete security validation; implementations must not rely on it for production security",
+      "type": "Explicit",
+      "impact_if_violated": "All properties may have unidentified vulnerabilities. The specification notes 'Support for Joint Fabric PKI Cluster is provisional', indicating this is not fully hardened."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Clock synchronization is sufficient for temporal ordering of events (transfer completion, user consent timeouts)",
+      "type": "Implicit",
+      "impact_if_violated": "Clock skew can cause race conditions in transfer completion timing or user consent timeout handling."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "The 'current Joint Fabric Anchor Administrator' is unambiguously identified and authenticated across the fabric",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_008 fails. Multiple nodes believing they are 'current anchor' creates split-brain where different certificates are issued by different anchors, breaking trust."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Request without response: Denial of service preventing commissioning. Multiple responses: Response injection attack where attacker provides forged ICAC certificate that appears legitimate.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker intercepts ICACSRRequest, blocks legitimate response, sends forged ICACSRResponse with attacker-controlled ICAC certificate. Client accepts it as valid server response."
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Malformed CSR exploits parser vulnerabilities or bypasses validation checks, enabling injection of malicious certificate fields or server crashes.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker crafts CSR with malformed DER encoding that bypasses PKCS #10 validation but gets parsed by certificate issuer, injecting arbitrary Subject or Extension fields."
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Attacker submits CSR signed with incorrect key but server issues certificate anyway, enabling impersonation of nodes the attacker doesn't control.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker generates CSR for victim's NodeID using attacker's private key. Server fails to verify signature, issues ICAC. Attacker now has valid certificate for victim's identity."
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Unauthorized vendor claims any VendorID, issues certificates for devices they don't manufacture, bypassing ecosystem trust boundaries.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker submits ICACSR claiming VendorID of legitimate manufacturer. Server skips DCL validation, issues certificate. Attacker can now commission counterfeit devices as legitimate."
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Issuing root CA certificate: Attacker gains unrestricted certificate issuance for entire fabric. Issuing leaf certificate: Commissioning fails as client cannot delegate further.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker submits CSR. Server issues root CA certificate instead of ICAC. Attacker now has root CA authority, can issue arbitrary certificates including new ICACs."
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Non-admin node initiates anchor transfer to attacker-controlled node, hijacking Anchor CA role and gaining full PKI authority.",
+      "severity": "CRITICAL",
+      "attack_vector": "Compromised non-admin node sends TransferAnchorRequest to current anchor without authorization check. Transfer proceeds, compromised node becomes new anchor."
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "TransferAnchorRequest sent to non-anchor leaks anchor credentials or initiates unauthorized transfer. Attacker impersonating anchor receives transfer secrets.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker impersonates anchor node. Legitimate admin sends TransferAnchorRequest to attacker. Attacker receives anchor private keys and fabric secrets in transfer payload."
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "Automated certificate issuance without admin awareness. Attacker commissions unauthorized devices into fabric, bypassing security policies.",
+      "severity": "HIGH",
+      "attack_vector": "Attacker automates ICACSR requests. Server processes without user consent check. Attacker silently commissions malicious devices into fabric over time."
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Silent anchor hijacking. Attacker transfers anchor control to compromised node without administrator awareness, gaining full PKI authority.",
+      "severity": "CRITICAL",
+      "attack_vector": "Compromised admin client automatically sends TransferAnchorRequest without prompting user. Server processes without consent check. Anchor transferred to attacker-controlled node."
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Concurrent transfers create split-brain where multiple nodes believe they are Anchor CA, issuing conflicting certificates and breaking trust.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker initiates TransferAnchorRequest while another transfer is in progress. Both proceed concurrently. Two nodes end up with anchor credentials, issue different certificates."
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Datastore modifications during transfer corrupt state. Attacker injects malicious ACL entries or corrupts node information that persists after transfer.",
+      "severity": "HIGH",
+      "attack_vector": "Attacker times ACL addition to occur during anchor transfer. Datastore allows operation. ACL List becomes corrupted with partially applied entries that survive transfer."
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Transfer never completes, fabric stuck in transfer-in-progress state indefinitely. Permanent DoS where no certificates issued, no datastore operations proceed.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker initiates transfer, blocks TransferAnchorComplete message. Fabric permanently stuck. All ICACSR requests rejected with BusyAnchorTransfer, all datastore ops rejected."
+    },
+    {
+      "property_id": "PROP_021",
+      "vulnerability": "Non-admin nodes issue certificates and hijack Anchor CA. Complete PKI compromise by unauthorized nodes.",
+      "severity": "CRITICAL",
+      "attack_vector": "Non-admin node sends ICACSRRequest or TransferAnchorRequest without access check. Commands execute with admin privileges, compromising PKI."
+    },
+    {
+      "property_id": "PROP_023",
+      "vulnerability": "Missing ICAC with OK status: Client expects certificate, commissioning fails. Present ICAC with error status: Client uses invalid certificate, authentication broken.",
+      "severity": "HIGH",
+      "attack_vector": "Server responds OK but omits ICAC. Client assumes success, proceeds with commissioning using null certificate. Authentication checks fail unpredictably downstream."
+    },
+    {
+      "property_id": "PROP_024",
+      "vulnerability": "ICACSR requests outside commissioning indicate replay attacks or protocol violations. Attacker exhausts resources or probes for security policy changes.",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker repeatedly sends ICACSRRequest outside commissioning phase. Server processes each, exhausting certificate issuance rate limits or revealing policy changes via error codes."
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "JointCommissioning",
+      "properties_enforcing_transitions": ["PROP_024", "PROP_001"],
+      "critical_property": "PROP_024 violated if ICACSRRequest accepted outside commissioning state"
+    },
+    {
+      "state_name": "AnchorTransferInProgress",
+      "properties_enforcing_transitions": ["PROP_011", "PROP_012", "PROP_013"],
+      "critical_property": "PROP_011 violated if state allows concurrent transfers; PROP_013 violated if state never transitions to AnchorTransferComplete"
+    },
+    {
+      "state_name": "ICACSRProcessing",
+      "properties_enforcing_transitions": ["PROP_002", "PROP_003", "PROP_004", "PROP_005"],
+      "critical_property": "All validation properties (PROP_002-005) must pass before transitioning to ICACSRComplete state"
+    },
+    {
+      "state_name": "UserConsentRequired",
+      "properties_enforcing_transitions": ["PROP_009", "PROP_010"],
+      "critical_property": "PROP_009/010 violated if state transitions to processing without consent_granted event"
+    }
+  ],
+  "additionalInsights": "1. **Provisional Status Risk**: The specification explicitly marks this cluster as 'provisional', suggesting incomplete security validation. Production deployments should treat all properties as potentially vulnerable until the cluster reaches stable status. This is a meta-vulnerability affecting all properties.\n\n2. **Split-Brain Anchor Risk**: The specification lacks explicit tie-breaking mechanisms for determining 'current Joint Fabric Anchor Administrator' in network partition scenarios. If two nodes simultaneously believe they are anchor (due to message loss or partition), both issue certificates creating trust bifurcation. Recommendation: Add anchor epoch numbering with monotonic increment and majority consensus requirement.\n\n3. **User Consent Bypass Vector**: User consent checks (PROP_009, PROP_010) lack specification of consent mechanism, timeout, or replay prevention. An attacker can capture a consent token/credential and replay it for future unauthorized operations. Recommendation: Bind consent to specific operation parameters (CSR content, target node) with nonce.\n\n4. **Certificate Chain Validation Gap**: PROP_005 verifies certificate type is ICAC but doesn't specify validation of the full chain to root CA. An attacker could present valid ICAC format but signed by untrusted root. Recommendation: Require full chain validation to trusted root.\n\n5. **Resource Exhaustion via Status Codes**: Multiple error status codes (PROP_022) but no rate limiting specified. Attacker can trigger expensive validation operations (DCL lookup, signature verification) repeatedly, causing denial of service even if all requests fail.\n\n6. **Anchor Transfer Completion Ambiguity**: PROP_013 requires TransferAnchorComplete but doesn't specify timeout or failure recovery if message is lost. Network partition during transfer can leave both old and new anchor in inconsistent states. Recommendation: Add explicit timeout with rollback mechanism.\n\n7. **PEM Format Injection Risk**: PROP_006 requires PEM format but PEM allows comments and whitespace. Attacker could inject malicious data in PEM comments that survive parsing but affect downstream systems expecting strict DER. Recommendation: Strip and validate PEM before storage.\n\n8. **Missing Cryptographic Agility**: All properties assume current cryptographic primitives remain secure. No property addresses algorithm negotiation or migration. If PKCS #10 signature algorithm becomes weak, there's no migration path without protocol redesign.\n\n9. **Implicit Trust in DCL**: PROP_004 validates against DCL but doesn't specify DCL update mechanism or handling of stale/expired DCL data. Attacker compromising DCL update path can inject malicious vendor authorizations that persist across fabric. Recommendation: Add DCL signature verification and staleness checks.",
+  "summary": {
+    "total_properties": 21,
+    "by_importance": {
+      "CRITICAL": 13,
+      "HIGH": 5,
+      "MEDIUM": 3
+    },
+    "by_category": {
+      "Security": 8,
+      "Correctness": 6,
+      "AccessControl": 3,
+      "Consistency": 1,
+      "Atomicity": 1,
+      "Cryptography": 0,
+      "Timing": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 8,
+    "vulnerabilities_identified": 16
+  }
+}

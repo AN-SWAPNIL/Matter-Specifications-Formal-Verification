@@ -1,0 +1,1370 @@
+{
+  "fsm_model": {
+    "section_name": "4.15. Secure Communications over TCP",
+    "section_ref": "Matter Core Specification, Section 4.15",
+    "states": [
+      {
+        "name": "Initial",
+        "description": "No TCP connection exists. Node may initiate connection or wait for peer.",
+        "is_initial": true,
+        "invariants": [
+          "connection_status == not_established",
+          "session_status == not_established",
+          "no_timers_active == true"
+        ],
+        "state_variables": {
+          "connection_status": "not_established",
+          "session_status": "not_established",
+          "establishment_timer": "inactive",
+          "backoff_timer_active": "false"
+        }
+      },
+      {
+        "name": "ConnectionEstablishing",
+        "description": "TCP connection establishment in progress (SYN sent, awaiting SYN-ACK).",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == establishing",
+          "establishment_timer > 0 || establishment_timer == active"
+        ],
+        "state_variables": {
+          "connection_status": "establishing",
+          "establishment_timer": "positive_integer_or_active",
+          "session_status": "not_established"
+        }
+      },
+      {
+        "name": "EstablishmentTimeout",
+        "description": "Connection establishment failed due to timeout. Application notified.",
+        "is_initial": false,
+        "invariants": [
+          "establishment_timer == 0 || establishment_timer == expired",
+          "connection_status == not_established"
+        ],
+        "state_variables": {
+          "connection_status": "not_established",
+          "establishment_timer": "expired",
+          "failure_reason": "establishment_timeout"
+        }
+      },
+      {
+        "name": "ConnectionActive",
+        "description": "TCP connection established, secure session active, MRP reliability disabled. Keep-alive may be configured independently for each direction.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == established",
+          "session_status == active",
+          "transport_type == TCP",
+          "mrp_reliability_enabled == false",
+          "keep_alive_configured == true => (has_tcp_keep_alive_time && has_tcp_keep_alive_interval && has_tcp_keep_alive_probes)"
+        ],
+        "state_variables": {
+          "connection_status": "established",
+          "session_status": "active",
+          "transport_type": "TCP",
+          "mrp_reliability_enabled": "false",
+          "active_exchanges": "set_of_exchange_ids",
+          "current_max_message_size": "integer_bytes",
+          "keep_alive_configured": "boolean",
+          "client_keep_alive_enabled": "boolean",
+          "server_keep_alive_enabled": "boolean"
+        }
+      },
+      {
+        "name": "ConnectionIdle",
+        "description": "Connection established but no recent data activity. Keep-alive timer active.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == idle",
+          "session_status == active",
+          "keep_alive_time_remaining > 0"
+        ],
+        "state_variables": {
+          "connection_status": "idle",
+          "session_status": "active",
+          "keep_alive_time_remaining": "positive_integer",
+          "last_activity_time": "timestamp"
+        }
+      },
+      {
+        "name": "KeepAliveProbing",
+        "description": "Keep-alive time expired. Sending probes to verify connection liveness.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == idle",
+          "keep_alive_time_remaining == 0 || keep_alive_interval_counting == true",
+          "keep_alive_probe_count >= 0",
+          "keep_alive_probe_count < tcp_keep_alive_probes"
+        ],
+        "state_variables": {
+          "connection_status": "idle",
+          "keep_alive_probe_count": "integer_0_to_max_probes",
+          "keep_alive_interval_remaining": "positive_integer",
+          "tcp_keep_alive_probes": "integer_configured"
+        }
+      },
+      {
+        "name": "DataTransmissionActive",
+        "description": "Data sent on connection, awaiting acknowledgment. User timeout active.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == established",
+          "unacknowledged_data_pending == true",
+          "user_timeout_remaining > 0"
+        ],
+        "state_variables": {
+          "connection_status": "established",
+          "session_status": "active",
+          "unacknowledged_data_pending": "true",
+          "user_timeout_remaining": "positive_integer",
+          "sent_data_buffer": "bitstring"
+        }
+      },
+      {
+        "name": "UserTimeoutExpired",
+        "description": "Transmitted data not acknowledged within user timeout. Connection must be force-closed.",
+        "is_initial": false,
+        "invariants": [
+          "user_timeout_remaining == 0",
+          "unacknowledged_data_pending == true"
+        ],
+        "state_variables": {
+          "user_timeout_remaining": "0",
+          "unacknowledged_data_pending": "true",
+          "connection_status": "established_but_stalled"
+        }
+      },
+      {
+        "name": "PeerClosedConnection",
+        "description": "Peer initiated connection closure. Local end must close and notify application.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == peer_closed",
+          "peer_initiated_close == true"
+        ],
+        "state_variables": {
+          "connection_status": "peer_closed",
+          "session_status": "active_or_retained",
+          "peer_initiated_close": "true"
+        }
+      },
+      {
+        "name": "ConnectionClosing",
+        "description": "Connection closure in progress. Exchanges being closed, application notified.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == closing",
+          "close_reason != null"
+        ],
+        "state_variables": {
+          "connection_status": "closing",
+          "close_reason": "enum_keep_alive_timeout_or_user_timeout_or_upper_layer_or_peer_initiated_or_message_too_large",
+          "active_exchanges": "set_being_closed"
+        }
+      },
+      {
+        "name": "ConnectionClosedSessionRemoved",
+        "description": "Connection closed, session removed. No state retained.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == closed",
+          "session_status == removed"
+        ],
+        "state_variables": {
+          "connection_status": "closed",
+          "session_status": "removed",
+          "active_exchanges": "empty_set"
+        }
+      },
+      {
+        "name": "ConnectionClosedSessionRetained",
+        "description": "Connection closed, session retained and marked for reconnection. Resumption state may be stored. Peer identity must be verified on reconnection.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == closed",
+          "session_status == retained_disconnected",
+          "session_marked_for_reconnect == true",
+          "original_peer_identity_stored == true"
+        ],
+        "state_variables": {
+          "connection_status": "closed",
+          "session_status": "retained_disconnected",
+          "session_marked_for_reconnect": "true",
+          "resumption_state_retained": "boolean",
+          "active_exchanges": "empty_set",
+          "original_peer_identity": "node_identifier"
+        }
+      },
+      {
+        "name": "BackoffBeforeReconnection",
+        "description": "Fibonacci backoff active before reconnection attempt. Prevents connection races.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == closed",
+          "backoff_timer_active == true",
+          "backoff_duration > 0"
+        ],
+        "state_variables": {
+          "connection_status": "closed",
+          "backoff_timer_active": "true",
+          "backoff_duration": "positive_integer",
+          "reconnection_attempt_number": "positive_integer",
+          "session_status": "removed_or_retained"
+        }
+      },
+      {
+        "name": "ReconnectionAttempt",
+        "description": "Attempting to re-establish connection after backoff period.",
+        "is_initial": false,
+        "invariants": [
+          "connection_status == establishing",
+          "establishment_timer > 0",
+          "reconnection_in_progress == true"
+        ],
+        "state_variables": {
+          "connection_status": "establishing",
+          "establishment_timer": "positive_integer",
+          "session_status": "retained_disconnected_or_not_established",
+          "reconnection_in_progress": "true"
+        }
+      },
+      {
+        "name": "OversizedMessageDetected",
+        "description": "Received message header indicates size exceeds maximum. Must close connection with error.",
+        "is_initial": false,
+        "invariants": [
+          "received_message_size > current_max_message_size"
+        ],
+        "state_variables": {
+          "connection_status": "established",
+          "received_message_size": "integer_bytes",
+          "current_max_message_size": "integer_bytes",
+          "oversized_message_detected": "true"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "Initial",
+        "to_state": "ConnectionEstablishing",
+        "trigger": "initiate_tcp_connection",
+        "guard_condition": "supports_tcp(self) == true && supports_tcp(peer) == true",
+        "actions": [
+          "connection_status := establishing",
+          "establishment_timer := establishment_timeout_config",
+          "send_tcp_syn(peer)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionEstablishing",
+        "to_state": "ConnectionActive",
+        "trigger": "connection_established_event",
+        "guard_condition": "establishment_timer > 0",
+        "actions": [
+          "connection_status := established",
+          "session_status := active",
+          "transport_type := TCP",
+          "mrp_reliability_enabled := false",
+          "establishment_timer := inactive",
+          "current_max_message_size := default_tcp_max_size",
+          "notify_application(connection_success)"
+        ],
+        "timing_requirement": "before_establishment_timeout"
+      },
+      {
+        "from_state": "ConnectionEstablishing",
+        "to_state": "EstablishmentTimeout",
+        "trigger": "timer_tick",
+        "guard_condition": "establishment_timer == 0",
+        "actions": [
+          "connection_status := not_established",
+          "failure_reason := establishment_timeout",
+          "notify_application(connection_timeout)",
+          "generate_event(establishment_failure)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionActive",
+        "to_state": "ConnectionIdle",
+        "trigger": "no_data_activity_detected",
+        "guard_condition": "time_since_last_data >= idle_threshold",
+        "actions": [
+          "connection_status := idle",
+          "keep_alive_time_remaining := tcp_keep_alive_time_config",
+          "last_activity_time := current_time"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionIdle",
+        "to_state": "KeepAliveProbing",
+        "trigger": "timer_tick",
+        "guard_condition": "keep_alive_time_remaining == 0",
+        "actions": [
+          "keep_alive_probe_count := 0",
+          "send_keep_alive_probe()",
+          "keep_alive_interval_remaining := tcp_keep_alive_interval_config"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "KeepAliveProbing",
+        "to_state": "ConnectionActive",
+        "trigger": "keep_alive_ack_received",
+        "guard_condition": "keep_alive_probe_count < tcp_keep_alive_probes_config",
+        "actions": [
+          "connection_status := established",
+          "keep_alive_probe_count := 0",
+          "keep_alive_time_remaining := tcp_keep_alive_time_config"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "KeepAliveProbing",
+        "to_state": "KeepAliveProbing",
+        "trigger": "timer_tick",
+        "guard_condition": "keep_alive_interval_remaining == 0 && keep_alive_probe_count < tcp_keep_alive_probes_config",
+        "actions": [
+          "keep_alive_probe_count := keep_alive_probe_count + 1",
+          "send_keep_alive_probe()",
+          "keep_alive_interval_remaining := tcp_keep_alive_interval_config"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "KeepAliveProbing",
+        "to_state": "ConnectionClosing",
+        "trigger": "timer_tick",
+        "guard_condition": "keep_alive_probe_count >= tcp_keep_alive_probes_config && keep_alive_interval_remaining == 0",
+        "actions": [
+          "connection_status := closing",
+          "close_reason := keep_alive_timeout",
+          "notify_application(connection_dead)",
+          "generate_event(keep_alive_timeout_expired)"
+        ],
+        "timing_requirement": "total_keep_alive_timeout = tcp_keep_alive_time + (tcp_keep_alive_interval * tcp_keep_alive_probes)"
+      },
+      {
+        "from_state": "ConnectionActive",
+        "to_state": "DataTransmissionActive",
+        "trigger": "send_data",
+        "guard_condition": "true",
+        "actions": [
+          "unacknowledged_data_pending := true",
+          "user_timeout_remaining := tcp_user_timeout_config",
+          "transmit_data_on_tcp(data)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataTransmissionActive",
+        "to_state": "ConnectionActive",
+        "trigger": "data_ack_received",
+        "guard_condition": "true",
+        "actions": [
+          "unacknowledged_data_pending := false",
+          "user_timeout_remaining := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataTransmissionActive",
+        "to_state": "UserTimeoutExpired",
+        "trigger": "timer_tick",
+        "guard_condition": "user_timeout_remaining == 0 && unacknowledged_data_pending == true",
+        "actions": [
+          "notify_application(data_timeout)",
+          "generate_event(user_timeout_expired)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "UserTimeoutExpired",
+        "to_state": "ConnectionClosing",
+        "trigger": "force_close_command",
+        "guard_condition": "true",
+        "actions": [
+          "connection_status := closing",
+          "close_reason := user_timeout",
+          "force_close_tcp_connection()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionActive",
+        "to_state": "ConnectionClosing",
+        "trigger": "upper_layer_close_request",
+        "guard_condition": "true",
+        "actions": [
+          "connection_status := closing",
+          "close_reason := upper_layer_command",
+          "initiate_graceful_close()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionIdle",
+        "to_state": "ConnectionClosing",
+        "trigger": "upper_layer_close_request",
+        "guard_condition": "true",
+        "actions": [
+          "connection_status := closing",
+          "close_reason := upper_layer_command",
+          "initiate_graceful_close()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataTransmissionActive",
+        "to_state": "ConnectionClosing",
+        "trigger": "upper_layer_close_request",
+        "guard_condition": "true",
+        "actions": [
+          "connection_status := closing",
+          "close_reason := upper_layer_command",
+          "initiate_graceful_close()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionActive",
+        "to_state": "PeerClosedConnection",
+        "trigger": "peer_close_notification",
+        "guard_condition": "true",
+        "actions": [
+          "connection_status := peer_closed",
+          "peer_initiated_close := true",
+          "notify_application(peer_closed_connection)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionIdle",
+        "to_state": "PeerClosedConnection",
+        "trigger": "peer_close_notification",
+        "guard_condition": "true",
+        "actions": [
+          "connection_status := peer_closed",
+          "peer_initiated_close := true",
+          "notify_application(peer_closed_connection)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "KeepAliveProbing",
+        "to_state": "PeerClosedConnection",
+        "trigger": "peer_close_notification",
+        "guard_condition": "true",
+        "actions": [
+          "connection_status := peer_closed",
+          "peer_initiated_close := true",
+          "notify_application(peer_closed_connection)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataTransmissionActive",
+        "to_state": "PeerClosedConnection",
+        "trigger": "peer_close_notification",
+        "guard_condition": "true",
+        "actions": [
+          "connection_status := peer_closed",
+          "peer_initiated_close := true",
+          "notify_application(peer_closed_connection)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PeerClosedConnection",
+        "to_state": "ConnectionClosing",
+        "trigger": "close_local_end_command",
+        "guard_condition": "true",
+        "actions": [
+          "close_local_tcp_connection()",
+          "close_reason := peer_initiated"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionClosing",
+        "to_state": "ConnectionClosedSessionRemoved",
+        "trigger": "connection_closed_event",
+        "guard_condition": "session_retention_policy == remove",
+        "actions": [
+          "connection_status := closed",
+          "session_status := removed",
+          "close_all_active_exchanges()",
+          "clear_session_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionClosing",
+        "to_state": "ConnectionClosedSessionRetained",
+        "trigger": "connection_closed_event",
+        "guard_condition": "session_retention_policy == retain",
+        "actions": [
+          "connection_status := closed",
+          "session_status := retained_disconnected",
+          "session_marked_for_reconnect := true",
+          "store_original_peer_identity(peer)",
+          "may_retain_resumption_state()",
+          "close_all_active_exchanges()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionClosedSessionRemoved",
+        "to_state": "BackoffBeforeReconnection",
+        "trigger": "reconnection_desired_event",
+        "guard_condition": "reconnection_allowed == true",
+        "actions": [
+          "backoff_duration := calculate_fibonacci_backoff(reconnection_attempt_number)",
+          "backoff_timer_active := true",
+          "reconnection_attempt_number := reconnection_attempt_number + 1"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionClosedSessionRetained",
+        "to_state": "BackoffBeforeReconnection",
+        "trigger": "reconnection_desired_event",
+        "guard_condition": "reconnection_allowed == true",
+        "actions": [
+          "backoff_duration := calculate_fibonacci_backoff(reconnection_attempt_number)",
+          "backoff_timer_active := true",
+          "reconnection_attempt_number := reconnection_attempt_number + 1"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "BackoffBeforeReconnection",
+        "to_state": "ReconnectionAttempt",
+        "trigger": "timer_tick",
+        "guard_condition": "backoff_duration == 0",
+        "actions": [
+          "backoff_timer_active := false",
+          "connection_status := establishing",
+          "establishment_timer := establishment_timeout_config",
+          "initiate_tcp_reconnection(peer)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "BackoffBeforeReconnection",
+        "to_state": "ConnectionEstablishing",
+        "trigger": "incoming_connection_request",
+        "guard_condition": "backoff_timer_active == true && incoming_peer == target_peer",
+        "actions": [
+          "backoff_timer_active := false",
+          "backoff_duration := 0",
+          "connection_status := establishing",
+          "accept_incoming_tcp_connection(peer)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ReconnectionAttempt",
+        "to_state": "ConnectionActive",
+        "trigger": "connection_established_event",
+        "guard_condition": "session_status == retained_disconnected && verify_peer_identity(peer, original_peer_identity) == true",
+        "actions": [
+          "connection_status := established",
+          "session_status := active",
+          "session_marked_for_reconnect := false",
+          "transport_type := TCP",
+          "mrp_reliability_enabled := false",
+          "may_use_resumption_state()",
+          "current_max_message_size := default_tcp_max_size",
+          "reconnection_attempt_number := 0",
+          "notify_application(reconnection_success)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ReconnectionAttempt",
+        "to_state": "ConnectionActive",
+        "trigger": "connection_established_event",
+        "guard_condition": "session_status == not_established",
+        "actions": [
+          "connection_status := established",
+          "session_status := active",
+          "transport_type := TCP",
+          "mrp_reliability_enabled := false",
+          "current_max_message_size := default_tcp_max_size",
+          "reconnection_attempt_number := 0",
+          "notify_application(reconnection_success)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ReconnectionAttempt",
+        "to_state": "EstablishmentTimeout",
+        "trigger": "timer_tick",
+        "guard_condition": "establishment_timer == 0",
+        "actions": [
+          "connection_status := not_established",
+          "failure_reason := establishment_timeout",
+          "notify_application(reconnection_timeout)",
+          "generate_event(reconnection_failure)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EstablishmentTimeout",
+        "to_state": "BackoffBeforeReconnection",
+        "trigger": "reconnection_desired_event",
+        "guard_condition": "reconnection_allowed == true",
+        "actions": [
+          "backoff_duration := calculate_fibonacci_backoff(reconnection_attempt_number)",
+          "backoff_timer_active := true",
+          "reconnection_attempt_number := reconnection_attempt_number + 1"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionActive",
+        "to_state": "OversizedMessageDetected",
+        "trigger": "receive_message_header",
+        "guard_condition": "extract_message_size(header) > current_max_message_size",
+        "actions": [
+          "received_message_size := extract_message_size(header)",
+          "oversized_message_detected := true",
+          "generate_event(oversized_message_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataTransmissionActive",
+        "to_state": "OversizedMessageDetected",
+        "trigger": "receive_message_header",
+        "guard_condition": "extract_message_size(header) > current_max_message_size",
+        "actions": [
+          "received_message_size := extract_message_size(header)",
+          "oversized_message_detected := true",
+          "generate_event(oversized_message_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "OversizedMessageDetected",
+        "to_state": "ConnectionClosing",
+        "trigger": "handle_oversized_message",
+        "guard_condition": "true",
+        "actions": [
+          "send_status_report(MESSAGE_TOO_LARGE)",
+          "connection_status := closing",
+          "close_reason := message_too_large",
+          "initiate_connection_close()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionActive",
+        "to_state": "ConnectionActive",
+        "trigger": "exchange_started",
+        "guard_condition": "exchange_transport == MRP",
+        "actions": [
+          "current_max_message_size := default_mrp_max_size"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionActive",
+        "to_state": "ConnectionActive",
+        "trigger": "exchange_started",
+        "guard_condition": "exchange_transport == TCP",
+        "actions": [
+          "current_max_message_size := default_tcp_max_size"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionIdle",
+        "to_state": "ConnectionClosing",
+        "trigger": "timer_tick",
+        "guard_condition": "time_since_last_activity > connection_reap_threshold",
+        "actions": [
+          "connection_status := closing",
+          "close_reason := resource_conservation",
+          "initiate_graceful_close()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionIdle",
+        "to_state": "ConnectionActive",
+        "trigger": "data_activity_resumed",
+        "guard_condition": "true",
+        "actions": [
+          "connection_status := established",
+          "keep_alive_time_remaining := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionIdle",
+        "to_state": "ConnectionIdle",
+        "trigger": "timer_tick",
+        "guard_condition": "keep_alive_time_remaining > 0",
+        "actions": [
+          "keep_alive_time_remaining := keep_alive_time_remaining - 1"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "KeepAliveProbing",
+        "to_state": "KeepAliveProbing",
+        "trigger": "timer_tick",
+        "guard_condition": "keep_alive_interval_remaining > 0",
+        "actions": [
+          "keep_alive_interval_remaining := keep_alive_interval_remaining - 1"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "DataTransmissionActive",
+        "to_state": "DataTransmissionActive",
+        "trigger": "timer_tick",
+        "guard_condition": "user_timeout_remaining > 0",
+        "actions": [
+          "user_timeout_remaining := user_timeout_remaining - 1"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "BackoffBeforeReconnection",
+        "to_state": "BackoffBeforeReconnection",
+        "trigger": "timer_tick",
+        "guard_condition": "backoff_duration > 0",
+        "actions": [
+          "backoff_duration := backoff_duration - 1"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectionEstablishing",
+        "to_state": "ConnectionEstablishing",
+        "trigger": "timer_tick",
+        "guard_condition": "establishment_timer > 0",
+        "actions": [
+          "establishment_timer := establishment_timer - 1"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ReconnectionAttempt",
+        "to_state": "ReconnectionAttempt",
+        "trigger": "timer_tick",
+        "guard_condition": "establishment_timer > 0",
+        "actions": [
+          "establishment_timer := establishment_timer - 1"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "calculate_fibonacci_backoff",
+        "parameters": [
+          {
+            "name": "attempt_number",
+            "type": "positive_integer",
+            "description": "The current reconnection attempt number (1-based index)"
+          }
+        ],
+        "return_type": "positive_integer_milliseconds",
+        "description": "Computes backoff duration using Fibonacci sequence with random jitter to prevent connection race conditions between peers attempting simultaneous reconnection",
+        "algorithm_detail": "fibonacci(attempt_number) * base_interval_ms + random(0, jitter_range_ms). Fibonacci sequence: F(1)=1, F(2)=1, F(n)=F(n-1)+F(n-2). Random component adds unpredictability to prevent synchronized retry collisions. No upper bound specified in specification.",
+        "usage_in_fsm": "Called when transitioning to BackoffBeforeReconnection state after connection closure or establishment timeout. Used in transitions from ConnectionClosedSessionRemoved, ConnectionClosedSessionRetained, and EstablishmentTimeout to BackoffBeforeReconnection."
+      },
+      {
+        "name": "send_keep_alive_probe",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Sends TCP keep-alive probe packet to peer to verify connection liveness",
+        "algorithm_detail": "TCP layer sends keep-alive segment with SEQ=SND.NXT-1 (one byte before current sequence number). Expects ACK response from peer. Implementation uses operating system's TCP keep-alive mechanism.",
+        "usage_in_fsm": "Called when transitioning from ConnectionIdle to KeepAliveProbing (first probe), and on KeepAliveProbing stay transitions (subsequent probes). Used to detect broken connections that appear active."
+      },
+      {
+        "name": "close_all_active_exchanges",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Closes all Exchange protocol objects that are currently active over this TCP connection, as exchanges become unusable when the underlying connection is closed",
+        "algorithm_detail": "Iterates through the set of active_exchanges associated with this connection. For each exchange_id: (1) Notify the application layer that the exchange is being terminated due to connection closure, (2) Mark exchange as closed, (3) Release exchange resources (buffers, timers, sequence numbers), (4) Remove exchange_id from active_exchanges set. Order of closure does not matter as all must be closed atomically from the FSM perspective.",
+        "usage_in_fsm": "Called when transitioning from ConnectionClosing to ConnectionClosedSessionRemoved or ConnectionClosedSessionRetained. Ensures that no exchanges remain in an inconsistent state after connection termination."
+      },
+      {
+        "name": "extract_message_size",
+        "parameters": [
+          {
+            "name": "header",
+            "type": "bitstring_message_header",
+            "description": "The received message header containing size field"
+          }
+        ],
+        "return_type": "positive_integer_bytes",
+        "description": "Parses Matter message header to extract the total payload size field, used to check against maximum message size limits before allocating receive buffers",
+        "algorithm_detail": "Matter message header format (specification section 4.7): Read payload length field from header structure. The field indicates total size of message payload in bytes. Returns integer representing size. Does not include header overhead itself.",
+        "usage_in_fsm": "Called when transitioning from ConnectionActive or DataTransmissionActive to OversizedMessageDetected. Used in guard condition to compare received size against current_max_message_size before accepting the message."
+      },
+      {
+        "name": "send_status_report",
+        "parameters": [
+          {
+            "name": "error_code",
+            "type": "enum_STATUS_REPORT_ERROR_CODE",
+            "description": "Error code to send to peer, e.g., MESSAGE_TOO_LARGE"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sends STATUS_REPORT message to peer with specified error code to inform sender of the reason for connection closure before closing the connection",
+        "algorithm_detail": "Construct Matter STATUS_REPORT message (specification section 4.11.2) with status code set to error_code parameter. Attempt to send on TCP connection. If send succeeds, peer receives diagnostic information. If connection already broken, send may fail silently. This is a SHOULD requirement (best effort), not SHALL.",
+        "usage_in_fsm": "Called when transitioning from OversizedMessageDetected to ConnectionClosing. Provides diagnostic feedback to sender about message size violation before forcibly closing the connection."
+      },
+      {
+        "name": "may_retain_resumption_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Optionally stores secure session resumption state (session keys, resumption token, cipher suite) to disk or secure memory to enable expedited session re-establishment when reconnecting with the peer",
+        "algorithm_detail": "If implementation policy allows and secure storage is available: (1) Extract current session cryptographic state (session keys, master secret, resumption token), (2) Store state in secure persistent storage with access controls, (3) Set resumption_state_retained flag to true. If policy disallows or storage unavailable, set resumption_state_retained to false. Storage must protect confidentiality and integrity of resumption data. No freshness bound specified in this section.",
+        "usage_in_fsm": "Called when transitioning from ConnectionClosing to ConnectionClosedSessionRetained. Enables future performance optimization but introduces security risks if storage is compromised."
+      },
+      {
+        "name": "may_use_resumption_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Optionally retrieves and uses previously stored session resumption state to expedite secure session establishment during reconnection, skipping full handshake if resumption is valid",
+        "algorithm_detail": "If resumption_state_retained == true: (1) Retrieve stored session resumption state from secure storage, (2) Verify resumption state integrity (MAC/signature check), (3) Check if resumption state is still valid (no explicit expiration in this section), (4) If valid, use resumption token in session establishment protocol to skip full handshake, (5) Restore session keys and parameters. If resumption_state_retained == false or verification fails, perform full session establishment.",
+        "usage_in_fsm": "Called when transitioning from ReconnectionAttempt to ConnectionActive with session_status == retained_disconnected. Reduces latency for session re-establishment but requires secure storage."
+      },
+      {
+        "name": "supports_tcp",
+        "parameters": [
+          {
+            "name": "node",
+            "type": "node_identifier",
+            "description": "The node to check for TCP support capability"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks whether a node advertises TCP support capability by querying its DNS-SD operational service TXT record for the presence of key 'T'",
+        "algorithm_detail": "Query DNS-SD for the node's operational service advertisement (service type '_matter._tcp' or '_matterc._udp'). Parse TXT record fields. Check for presence of key 'T' indicating TCP transport support. Return true if 'T' key exists, false otherwise. DNS-SD integrity is assumed (see security assumptions).",
+        "usage_in_fsm": "Called in guard condition when transitioning from Initial to ConnectionEstablishing. Ensures both peers support TCP before attempting TCP connection establishment. Prevents connection attempts to TCP-incapable peers."
+      },
+      {
+        "name": "send_tcp_syn",
+        "parameters": [
+          {
+            "name": "peer",
+            "type": "node_identifier",
+            "description": "The peer node to establish TCP connection with"
+          }
+        ],
+        "return_type": "void",
+        "description": "Initiates TCP three-way handshake by sending SYN packet to peer's IP address and port",
+        "algorithm_detail": "Resolve peer node_identifier to IP address and port (from DNS-SD service record). Open TCP socket. Send TCP SYN packet with initial sequence number. TCP layer handles retry logic per TCP specification. Sets connection to SYN_SENT state at TCP layer.",
+        "usage_in_fsm": "Called when transitioning from Initial to ConnectionEstablishing. Starts TCP connection establishment process."
+      },
+      {
+        "name": "notify_application",
+        "parameters": [
+          {
+            "name": "event_type",
+            "type": "enum_CONNECTION_EVENT",
+            "description": "Type of connection event to notify: connection_success, connection_timeout, peer_closed_connection, connection_dead, data_timeout, reconnection_success, reconnection_timeout"
+          }
+        ],
+        "return_type": "void",
+        "description": "Notifies the application layer about significant connection lifecycle events, enabling application to react to connection state changes",
+        "algorithm_detail": "Invoke application-registered callback or event handler with event_type parameter. Pass connection context (peer ID, connection ID) to application. Application can then take appropriate action (retry, display error, clean up resources). Notification is synchronous or asynchronous depending on implementation.",
+        "usage_in_fsm": "Called in multiple transitions: connection_success (ConnectionEstablishing->ConnectionActive), connection_timeout (ConnectionEstablishing->EstablishmentTimeout), peer_closed_connection (multiple states->PeerClosedConnection), connection_dead (KeepAliveProbing->ConnectionClosing), data_timeout (DataTransmissionActive->UserTimeoutExpired), reconnection_success (ReconnectionAttempt->ConnectionActive), reconnection_timeout (ReconnectionAttempt->EstablishmentTimeout)."
+      },
+      {
+        "name": "transmit_data_on_tcp",
+        "parameters": [
+          {
+            "name": "data",
+            "type": "bitstring",
+            "description": "The message payload data to transmit over TCP connection"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sends application data over established TCP connection, buffering unacknowledged data and starting user timeout timer",
+        "algorithm_detail": "Pass data to TCP layer for transmission. TCP segments data, adds headers, transmits to peer. Stores unacknowledged data in retransmission buffer. TCP layer handles acknowledgment tracking and retransmission per TCP specification. This FSM tracks user timeout independently of TCP's retransmission timeout.",
+        "usage_in_fsm": "Called when transitioning from ConnectionActive to DataTransmissionActive. Initiates data transmission that requires acknowledgment tracking."
+      },
+      {
+        "name": "initiate_graceful_close",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Initiates graceful TCP connection closure by sending FIN packet, allowing in-flight data to be delivered before connection closes",
+        "algorithm_detail": "Send TCP FIN (finish) packet to peer. Transition TCP state to FIN_WAIT_1. Wait for peer's ACK and FIN. Complete four-way handshake (FIN, ACK, FIN, ACK). Allows buffered data to be transmitted before closure. Timeout if peer does not respond within reasonable time.",
+        "usage_in_fsm": "Called when transitioning to ConnectionClosing due to upper_layer_command or resource_conservation. Provides clean shutdown allowing data delivery."
+      },
+      {
+        "name": "force_close_tcp_connection",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Forcibly closes TCP connection by sending RST packet, immediately terminating connection without waiting for acknowledgments",
+        "algorithm_detail": "Send TCP RST (reset) packet to peer. Immediately close socket and free resources. No graceful shutdown. Peer receives RST and also immediately closes. Any unacknowledged data is lost. Used when connection is determined to be dead or unresponsive.",
+        "usage_in_fsm": "Called when transitioning from UserTimeoutExpired to ConnectionClosing. Used after user timeout expires indicating peer is unresponsive."
+      },
+      {
+        "name": "close_local_tcp_connection",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Closes the local end of TCP connection after peer has already initiated closure, completing the shutdown process",
+        "algorithm_detail": "If peer sent FIN and local side ACKed, now send local FIN. Complete four-way handshake. Close socket and free resources. This is required when peer closes first to properly clean up local state.",
+        "usage_in_fsm": "Called when transitioning from PeerClosedConnection to ConnectionClosing. Completes bidirectional shutdown after peer initiated closure."
+      },
+      {
+        "name": "clear_session_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Removes all session state including cryptographic keys, session parameters, and resumption data when session is not being retained",
+        "algorithm_detail": "Securely erase session keys (overwrite memory with zeros or random data). Remove session from session table. Clear session_id, peer_id, cipher_suite, sequence_numbers, and all session-related state. If resumption_state_retained == true, also clear stored resumption data from persistent storage.",
+        "usage_in_fsm": "Called when transitioning from ConnectionClosing to ConnectionClosedSessionRemoved. Ensures no session state leaks remain after session removal."
+      },
+      {
+        "name": "initiate_tcp_reconnection",
+        "parameters": [
+          {
+            "name": "peer",
+            "type": "node_identifier",
+            "description": "The peer node to reconnect to"
+          }
+        ],
+        "return_type": "void",
+        "description": "Starts TCP connection re-establishment after backoff period expires, attempting to reconnect to previously connected peer",
+        "algorithm_detail": "Similar to send_tcp_syn but in reconnection context. Resolve peer address, open new TCP socket, send SYN. May use different source port than previous connection. If session was retained, session re-establishment will occur after TCP connection succeeds.",
+        "usage_in_fsm": "Called when transitioning from BackoffBeforeReconnection to ReconnectionAttempt after backoff timer expires."
+      },
+      {
+        "name": "accept_incoming_tcp_connection",
+        "parameters": [
+          {
+            "name": "peer",
+            "type": "node_identifier",
+            "description": "The peer node initiating the incoming connection"
+          }
+        ],
+        "return_type": "void",
+        "description": "Accepts incoming TCP connection request from peer while local node is in backoff state, canceling backoff timer to prevent connection race",
+        "algorithm_detail": "Receive SYN from peer. Send SYN-ACK. Complete three-way handshake. Set connection to ESTABLISHED at TCP layer. Cancel local backoff timer to avoid creating duplicate connection when timer would have expired.",
+        "usage_in_fsm": "Called when transitioning from BackoffBeforeReconnection to ConnectionEstablishing upon receiving incoming_connection_request. Prevents simultaneous bidirectional connection attempts."
+      },
+      {
+        "name": "initiate_connection_close",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Generic connection closure initiation used when closing due to protocol errors like oversized messages",
+        "algorithm_detail": "Similar to initiate_graceful_close or force_close depending on context. When closing due to protocol error, may use immediate close. Implementation-specific choice between graceful and forceful closure.",
+        "usage_in_fsm": "Called when transitioning from OversizedMessageDetected to ConnectionClosing. Closes connection after protocol violation detected."
+      },
+      {
+        "name": "verify_peer_identity",
+        "parameters": [
+          {
+            "name": "peer",
+            "type": "node_identifier",
+            "description": "The peer node attempting to establish connection"
+          },
+          {
+            "name": "expected_peer_identity",
+            "type": "node_identifier",
+            "description": "The original peer identity from the retained session"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that the peer attempting reconnection is the same peer as the original connection, preventing session hijacking via peer impersonation",
+        "algorithm_detail": "Compare peer node identifier with stored original_peer_identity from retained session. For Matter nodes, this includes verifying: (1) Node ID matches, (2) Fabric ID matches (nodes must be in same fabric), (3) Operational credentials are valid for the claimed identity. May use cryptographic challenge-response to prove peer possesses private key corresponding to their certificate. Return true only if all identity checks pass. This prevents attacker from impersonating original peer during reconnection window.",
+        "usage_in_fsm": "Called in guard condition when transitioning from ReconnectionAttempt to ConnectionActive with retained session. Critical security control preventing session hijacking. If verification fails, connection should be rejected or session should be removed rather than reused."
+      },
+      {
+        "name": "store_original_peer_identity",
+        "parameters": [
+          {
+            "name": "peer",
+            "type": "node_identifier",
+            "description": "The peer identity to store for future verification"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores the original peer identity when retaining session after disconnection, enabling later verification during reconnection",
+        "algorithm_detail": "Extract and store peer's Node ID, Fabric ID, and certificate fingerprint. Store in association with retained session state. This data must be protected with same security controls as resumption state. Enables verify_peer_identity to check that reconnecting peer matches original.",
+        "usage_in_fsm": "Called when transitioning from ConnectionClosing to ConnectionClosedSessionRetained. Ensures original peer identity is preserved for verification during reconnection attempt."
+      }
+    ],
+    "definitions": [
+      {
+        "term": "MRP (Message Reliability Protocol)",
+        "definition": "Matter's application-layer reliability protocol providing acknowledgment and retransmission for UDP transport. Designed to fit messages within IPv6 MTU of 1280 bytes to avoid IP fragmentation.",
+        "security_relevance": "MRP reliability MUST NOT be used over TCP to avoid conflicting retransmission mechanisms. Violation causes message duplication, bandwidth waste, and state desynchronization."
+      },
+      {
+        "term": "Secure Session",
+        "definition": "Cryptographically protected communication channel between two Matter nodes using session keys derived during CASE (Certificate Authenticated Session Establishment) or PASE (Password Authenticated Session Establishment). Provides confidentiality, integrity, and authenticity.",
+        "security_relevance": "Session security depends on underlying connection integrity. When TCP connection breaks, session becomes unusable and must be marked for reconnection or removed to prevent use-after-connection attacks."
+      },
+      {
+        "term": "Exchange",
+        "definition": "A protocol-level request-response interaction over a secure session. Matter's exchange layer tracks message correlation and protocol state for operations like reads, writes, commands, and subscriptions.",
+        "security_relevance": "Exchanges tied to broken connections must be closed to prevent application deadlock and resource leaks. Failure to close exchanges on connection termination creates zombie state vulnerable to resource exhaustion attacks."
+      },
+      {
+        "term": "Session Resumption State",
+        "definition": "Cryptographic state (session keys, master secret, resumption token) stored to enable expedited session re-establishment without full handshake. Reduces latency for reconnections.",
+        "security_relevance": "If stored insecurely, resumption state enables session hijacking. Attacker with storage access can impersonate peer indefinitely. Requires secure storage with access controls and integrity protection. No freshness bound specified creates replay attack risk."
+      },
+      {
+        "term": "DNS-SD (DNS Service Discovery)",
+        "definition": "Protocol for advertising and discovering Matter node services using DNS TXT records. TXT record key 'T' indicates TCP transport support.",
+        "security_relevance": "DNS-SD records are assumed trusted but not cryptographically authenticated in this specification section. DNS spoofing or response suppression enables downgrade attacks forcing nodes to MRP-only mode or causing connection attempts to fail."
+      },
+      {
+        "term": "Fibonacci Backoff",
+        "definition": "Exponential-like backoff strategy using Fibonacci sequence (1, 1, 2, 3, 5, 8, 13, ...) to compute increasing delays between reconnection attempts. Random jitter added to prevent synchronized collisions.",
+        "security_relevance": "Prevents connection race conditions where both peers simultaneously reconnect creating duplicate connections. Without backoff or with synchronized backoff, connection thrashing can cause denial-of-service. Unbounded growth can cause permanent disconnection."
+      },
+      {
+        "term": "TCP Keep-Alive",
+        "definition": "TCP mechanism for detecting broken connections by sending probe packets after idle period. Configurable parameters: TIME (initial idle time), INTERVAL (probe spacing), PROBES (count before declaring dead).",
+        "security_relevance": "Without keep-alive, broken connections appear active to application causing silent message loss. NAT timeout or middlebox drops can create half-open connections consuming resources. Keep-alive detects and cleans up dead connections preventing resource exhaustion."
+      },
+      {
+        "term": "TCP User Timeout",
+        "definition": "Maximum time transmitted data may remain unacknowledged before forcibly closing connection. Independent of TCP's retransmission timeout. Limits time connection stays open when data flow is blocked.",
+        "security_relevance": "Without user timeout, unresponsive peer can cause sender to buffer unlimited unacknowledged data leading to memory exhaustion. Attacker accepting connections but never acknowledging data exploits this for remote denial-of-service."
+      },
+      {
+        "term": "Maximum Message Size",
+        "definition": "Platform-configurable limit on message payload size that can be received. MRP uses 1280 bytes (IPv6 MTU). TCP can support larger messages (platform-dependent).",
+        "security_relevance": "Enforcing size limit prevents memory exhaustion attacks where attacker sends message header claiming arbitrarily large payload forcing unbounded allocation. Dynamic adjustment prevents applying wrong limit causing fragmentation (MRP) or underutilization (TCP)."
+      },
+      {
+        "term": "STATUS_REPORT Message",
+        "definition": "Matter protocol message containing error status code. MESSAGE_TOO_LARGE indicates received message exceeded maximum size. Sent before closing connection to provide diagnostic feedback.",
+        "security_relevance": "Without error reporting, sender cannot diagnose size mismatches causing persistent retry loops wasting bandwidth. Error provides feedback enabling sender to adjust message size or configuration."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "MRP_Reliability_Exclusion_Over_TCP",
+        "type": "correctness",
+        "description": "MRP reliability semantics MUST NOT be enabled when using TCP as transport protocol to prevent conflicting reliability mechanisms",
+        "fsm_states_involved": [
+          "ConnectionActive",
+          "DataTransmissionActive",
+          "ConnectionIdle"
+        ],
+        "critical_transitions": [
+          "ConnectionEstablishing -> ConnectionActive",
+          "ReconnectionAttempt -> ConnectionActive"
+        ]
+      },
+      {
+        "property_name": "Session_Unusability_On_Broken_Connection",
+        "type": "security",
+        "description": "Secure session over TCP is unusable when connection is broken or closed. Session must be marked for reconnection or removed to prevent unsafe usage.",
+        "fsm_states_involved": [
+          "PeerClosedConnection",
+          "ConnectionClosing",
+          "ConnectionClosedSessionRemoved",
+          "ConnectionClosedSessionRetained"
+        ],
+        "critical_transitions": [
+          "* -> PeerClosedConnection",
+          "ConnectionClosing -> ConnectionClosedSessionRetained"
+        ]
+      },
+      {
+        "property_name": "Session_Marking_For_Reconnection_Required",
+        "type": "security",
+        "description": "If session is retained after disconnection, it SHALL be marked so underlying connection must be re-established before session can be used again",
+        "fsm_states_involved": [
+          "ConnectionClosedSessionRetained",
+          "BackoffBeforeReconnection",
+          "ReconnectionAttempt"
+        ],
+        "critical_transitions": [
+          "ConnectionClosing -> ConnectionClosedSessionRetained"
+        ]
+      },
+      {
+        "property_name": "Connection_Closure_Notification_Required",
+        "type": "consistency",
+        "description": "When peer closes connection, node SHALL close its end and notify application. Application must be aware of connection state changes.",
+        "fsm_states_involved": [
+          "PeerClosedConnection",
+          "ConnectionClosing"
+        ],
+        "critical_transitions": [
+          "* -> PeerClosedConnection",
+          "PeerClosedConnection -> ConnectionClosing"
+        ]
+      },
+      {
+        "property_name": "Exchange_Closure_On_Connection_Close",
+        "type": "consistency",
+        "description": "All active Exchanges over a closed connection SHOULD be closed as they are unusable over broken connection. Prevents zombie exchanges.",
+        "fsm_states_involved": [
+          "ConnectionClosing",
+          "ConnectionClosedSessionRemoved",
+          "ConnectionClosedSessionRetained"
+        ],
+        "critical_transitions": [
+          "ConnectionClosing -> ConnectionClosedSessionRemoved",
+          "ConnectionClosing -> ConnectionClosedSessionRetained"
+        ]
+      },
+      {
+        "property_name": "Backoff_Timer_Cancellation_On_Incoming_Connection",
+        "type": "correctness",
+        "description": "Node receiving connection request SHOULD cancel its own backoff timer to same peer to prevent duplicate connections and connection races",
+        "fsm_states_involved": [
+          "BackoffBeforeReconnection"
+        ],
+        "critical_transitions": [
+          "BackoffBeforeReconnection -> ConnectionEstablishing"
+        ]
+      },
+      {
+        "property_name": "Oversized_Message_Rejection",
+        "type": "security",
+        "description": "If message size exceeds maximum, node SHALL close connection and SHOULD send MESSAGE_TOO_LARGE error before closing. Prevents memory exhaustion.",
+        "fsm_states_involved": [
+          "OversizedMessageDetected",
+          "ConnectionClosing"
+        ],
+        "critical_transitions": [
+          "ConnectionActive -> OversizedMessageDetected",
+          "DataTransmissionActive -> OversizedMessageDetected",
+          "OversizedMessageDetected -> ConnectionClosing"
+        ]
+      },
+      {
+        "property_name": "Dynamic_Max_Message_Size_Configuration",
+        "type": "correctness",
+        "description": "Node using both MRP and TCP SHOULD dynamically adjust maximum message size based on current Exchange's transport to prevent fragmentation or underutilization",
+        "fsm_states_involved": [
+          "ConnectionActive"
+        ],
+        "critical_transitions": [
+          "ConnectionActive -> ConnectionActive (exchange_started)"
+        ]
+      },
+      {
+        "property_name": "Keep_Alive_Total_Timeout_Enforcement",
+        "type": "timing",
+        "description": "Total keep-alive timeout calculated as TCP_KEEP_ALIVE_TIME + (TCP_KEEP_ALIVE_INTERVAL * TCP_KEEP_ALIVE_PROBES). Connection declared dead after all probes fail.",
+        "fsm_states_involved": [
+          "ConnectionIdle",
+          "KeepAliveProbing",
+          "ConnectionClosing"
+        ],
+        "critical_transitions": [
+          "KeepAliveProbing -> ConnectionClosing"
+        ]
+      },
+      {
+        "property_name": "User_Timeout_Force_Close",
+        "type": "security",
+        "description": "If transmitted data remains unacknowledged beyond user timeout, connection SHALL be forcibly closed to prevent unbounded buffer accumulation",
+        "fsm_states_involved": [
+          "DataTransmissionActive",
+          "UserTimeoutExpired",
+          "ConnectionClosing"
+        ],
+        "critical_transitions": [
+          "DataTransmissionActive -> UserTimeoutExpired",
+          "UserTimeoutExpired -> ConnectionClosing"
+        ]
+      },
+      {
+        "property_name": "Connection_Establishment_Timeout_Enforcement",
+        "type": "timing",
+        "description": "Connection establishment attempt must timeout and notify application if not completed within establishment_timeout period",
+        "fsm_states_involved": [
+          "ConnectionEstablishing",
+          "EstablishmentTimeout",
+          "ReconnectionAttempt"
+        ],
+        "critical_transitions": [
+          "ConnectionEstablishing -> EstablishmentTimeout",
+          "ReconnectionAttempt -> EstablishmentTimeout"
+        ]
+      },
+      {
+        "property_name": "Resource_Conservation_Via_Idle_Connection_Reaping",
+        "type": "correctness",
+        "description": "Nodes SHOULD proactively reap old unused connections to conserve system resources (file descriptors, memory, connection tracking)",
+        "fsm_states_involved": [
+          "ConnectionIdle",
+          "ConnectionClosing"
+        ],
+        "critical_transitions": [
+          "ConnectionIdle -> ConnectionClosing (time_since_last_activity > reap_threshold)"
+        ]
+      },
+      {
+        "property_name": "Peer_Identity_Verification_On_Reconnection",
+        "type": "security",
+        "description": "When reconnecting with retained session, peer identity MUST be verified to match original peer, preventing session hijacking via impersonation",
+        "fsm_states_involved": [
+          "ConnectionClosedSessionRetained",
+          "ReconnectionAttempt",
+          "ConnectionActive"
+        ],
+        "critical_transitions": [
+          "ReconnectionAttempt -> ConnectionActive (guard requires verify_peer_identity == true)"
+        ]
+      },
+      {
+        "property_name": "Keep_Alive_Conditional_Parameter_Requirements",
+        "type": "correctness",
+        "description": "If TCP Keep Alive is configured, it SHALL use the three specified parameters (TIME, INTERVAL, PROBES), not alternative mechanisms",
+        "fsm_states_involved": [
+          "ConnectionActive",
+          "ConnectionIdle",
+          "KeepAliveProbing"
+        ],
+        "critical_transitions": [
+          "ConnectionIdle -> KeepAliveProbing (uses standardized parameters)"
+        ]
+      },
+      {
+        "property_name": "Bidirectional_Keep_Alive_Independence",
+        "type": "correctness",
+        "description": "Keep-alive MAY be configured independently at client and server for each direction of connection, managing liveness asymmetrically",
+        "fsm_states_involved": [
+          "ConnectionActive",
+          "ConnectionIdle",
+          "KeepAliveProbing"
+        ],
+        "critical_transitions": [
+          "All keep-alive related transitions (client and server may have different timeouts)"
+        ]
+      }
+    ],
+    "initial_state": "Initial",
+    "all_states": [
+      "Initial",
+      "ConnectionEstablishing",
+      "EstablishmentTimeout",
+      "ConnectionActive",
+      "ConnectionIdle",
+      "KeepAliveProbing",
+      "DataTransmissionActive",
+      "UserTimeoutExpired",
+      "PeerClosedConnection",
+      "ConnectionClosing",
+      "ConnectionClosedSessionRemoved",
+      "ConnectionClosedSessionRetained",
+      "BackoffBeforeReconnection",
+      "ReconnectionAttempt",
+      "OversizedMessageDetected"
+    ],
+    "all_triggers": [
+      "initiate_tcp_connection",
+      "connection_established_event",
+      "timer_tick",
+      "no_data_activity_detected",
+      "keep_alive_ack_received",
+      "send_data",
+      "data_ack_received",
+      "force_close_command",
+      "upper_layer_close_request",
+      "peer_close_notification",
+      "close_local_end_command",
+      "connection_closed_event",
+      "reconnection_desired_event",
+      "incoming_connection_request",
+      "receive_message_header",
+      "handle_oversized_message",
+      "exchange_started",
+      "data_activity_resumed"
+    ],
+    "all_functions_used": [
+      "calculate_fibonacci_backoff",
+      "send_keep_alive_probe",
+      "close_all_active_exchanges",
+      "extract_message_size",
+      "send_status_report",
+      "may_retain_resumption_state",
+      "may_use_resumption_state",
+      "supports_tcp",
+      "send_tcp_syn",
+      "notify_application",
+      "transmit_data_on_tcp",
+      "initiate_graceful_close",
+      "force_close_tcp_connection",
+      "close_local_tcp_connection",
+      "clear_session_state",
+      "initiate_tcp_reconnection",
+      "accept_incoming_tcp_connection",
+      "initiate_connection_close",
+      "verify_peer_identity",
+      "store_original_peer_identity"
+    ],
+    "cryptographic_operations": [],
+    "security_assumptions": [
+      {
+        "assumption": "TCP provides reliable, in-order delivery with built-in retransmission and flow control",
+        "type": "explicit",
+        "if_violated": "MRP reliability exclusion becomes unsafe. Nodes would need MRP to compensate for unreliable transport, but specification forbids it over TCP. Message loss would occur without recovery mechanism."
+      },
+      {
+        "assumption": "DNS-SD service records for TCP capability advertisement ('T' TXT key) are trusted and not subject to poisoning or man-in-the-middle attacks",
+        "type": "implicit",
+        "if_violated": "Downgrade attacks possible where attacker suppresses TCP capability forcing nodes to MRP-only mode. Alternatively, attacker could advertise false TCP capability causing connection attempts to TCP-incapable nodes, resulting in denial-of-service."
+      },
+      {
+        "assumption": "Session resumption state is stored in secure storage with proper access controls and integrity protection",
+        "type": "implicit",
+        "if_violated": "Session hijacking via storage compromise. Attacker with read access to storage can extract resumption tokens and session keys to impersonate peer indefinitely. Lack of forward secrecy means historical sessions also compromised."
+      },
+      {
+        "assumption": "Clock synchronization between peers is sufficient for timeout mechanisms to function correctly within acceptable bounds",
+        "type": "implicit",
+        "if_violated": "Severe clock skew causes keep-alive, user timeout, establishment timeout, and backoff mechanisms to behave unpredictably. Premature or delayed timeouts disrupt connectivity. Backoff collision prevention fails if clocks synchronized causing simultaneous retries."
+      },
+      {
+        "assumption": "Connection state machines at both endpoints remain synchronized - when one side observes state transition, peer will eventually observe corresponding transition",
+        "type": "implicit",
+        "if_violated": "Connection state divergence where one peer believes connection is active while other has closed. Sessions used unsafely on broken connections. Messages sent into void. Zombie exchanges persist indefinitely consuming resources."
+      },
+      {
+        "assumption": "System has finite resources (file descriptors, memory, connection tracking entries) that can be exhausted",
+        "type": "explicit",
+        "if_violated": "All resource conservation mechanisms (connection closure, exchange cleanup, idle reaping, size limits) become unnecessary optimizations rather than critical security controls. Resource exhaustion attacks become impossible to execute."
+      },
+      {
+        "assumption": "Fibonacci backoff growth is acceptable without upper bound specification",
+        "type": "implicit",
+        "if_violated": "Assumption is actually violated by specification ambiguity. Unbounded Fibonacci growth can reach days or years after many failures, effectively disabling reconnection permanently. Attacker inducing repeated early failures exploits this for persistent denial-of-service."
+      },
+      {
+        "assumption": "Session resumption state does not require freshness checks or expiration bounds",
+        "type": "implicit",
+        "if_violated": "Assumption creates vulnerability not detected in this specification section. Old resumption state can be replayed indefinitely enabling session hijacking even if original session keys have been rotated. Lack of freshness bound violates security best practices."
+      },
+      {
+        "assumption": "IPv6 MTU of 1280 bytes accounts for all network overhead including potential tunneling",
+        "type": "implicit",
+        "if_violated": "In tunneled networks (IPsec, VPN, 6to4), effective MTU is lower than 1280 bytes. Messages sized at 1279 bytes will still fragment causing the same fragmentation-induced failures the specification tried to prevent. MRP sizing becomes ineffective."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

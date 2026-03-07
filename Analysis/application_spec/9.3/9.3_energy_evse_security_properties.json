@@ -1,0 +1,883 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Energy EVSE",
+    "cluster_id": "0x0099",
+    "pics_code": "EEVSE",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 9.3, Pages 716-742",
+
+    "properties": [
+
+      {
+        "id": "PROP_EVSE_001",
+        "name": "All_Commands_Require_Timed_Invoke",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "Every EVSE command (Disable, EnableCharging, EnableDischarging, StartDiagnostics, SetTargets, GetTargets, ClearTargets) SHALL require a Timed Interaction (Matter Timed Invoke), preventing replay and injection attacks on all charging control operations.",
+        "formal": "∀cmd ∈ {Disable, EnableCharging, EnableDischarging, StartDiagnostics, SetTargets, GetTargets, ClearTargets}. invoke(cmd) ⟹ is_timed_invoke(cmd)",
+        "spec_source": "Section 9.3.9 Commands Table: all commands have Access 'O T' where T = Timed Invoke required",
+        "violation": {
+          "description": "An attacker who captures a valid EVSE command can replay it later to disable charging, enable unauthorized discharging, or clear charging schedules. Without timed invoke enforcement, a compromised or malicious controller can inject commands without fresh interaction tokens.",
+          "attack_vector": "Replay captured command frames on the Matter network; omit TimedRequestMessage header when sending EVSE command if server does not enforce it",
+          "physical_impact": "Unauthorized start/stop of EV charging or V2X discharging; disruption of time-of-use charging schedules; potential grid backfeed without consent"
+        },
+        "proverifQuery": "query cmd:command ⊢ event evse_command_accepted(cmd) ==> event timed_invoke_completed(cmd)"
+      },
+
+      {
+        "id": "PROP_EVSE_002",
+        "name": "Fault_Forces_DisabledError_SupplyState",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "Whenever the FaultState attribute is not NoError, the SupplyState attribute SHALL be DisabledError, ensuring no energy transfer occurs during any detected fault condition.",
+        "formal": "∀t. FaultState(t) ≠ NoError ⟹ SupplyState(t) == DisabledError",
+        "spec_source": "Section 9.3.8.3: 'When the SupplyState attribute is DisabledError, the FaultState attribute will be one of the values listed in FaultStateEnum, except NoError. For all values of SupplyState other than DisabledError, the FaultState attribute SHALL be NoError.'",
+        "violation": {
+          "description": "If an EVSE continues or initiates energy transfer when FaultState is non-NoError, dangerous electrical conditions including GroundFault, OverCurrent, LiveNeutralSwap, or EmergencyStop become active hazards. The invariant must be maintained under all conditions including power restoration.",
+          "attack_vector": "Software fault or race condition between fault detection and SupplyState update; deliberate fault injection to create window where fault is detected but supply not yet disabled",
+          "physical_impact": "Electrocution risk, equipment fire, ground fault arcing, grid backfeed during wiring fault"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event fault_detected(d, t) ==> event supply_state_disabled_error(d, t)"
+      },
+
+      {
+        "id": "PROP_EVSE_003",
+        "name": "EnableCharging_Rejected_On_Error_Or_Diagnostics",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "The EnableCharging command SHALL be rejected with FAILURE status if the EVSE currently has an error (FaultState != NoError) or if diagnostics are active (SupplyState == DisabledDiagnostics).",
+        "formal": "∀cmd:EnableCharging. (FaultState ≠ NoError ∨ SupplyState == DisabledDiagnostics) ⟹ return_status(cmd) == FAILURE ∧ SupplyState_unchanged",
+        "spec_source": "Section 9.3.9.2.4: 'If there is currently an error present on the EVSE, or Diagnostics are currently active, then the command SHALL be ignored and a response with a status of FAILURE SHALL be returned.'",
+        "violation": {
+          "description": "Enabling charging during a live fault condition (e.g., GroundFault, ContactWetFailure) would force current through a compromised circuit. An attacker or buggy controller that succeeds in sending EnableCharging during fault clearance race window could force energy transfer through a dangerous path.",
+          "attack_vector": "Send EnableCharging command during narrow window between physical fault detection and software SupplyState update; coordinate attack with event that briefly resets FaultState",
+          "physical_impact": "Electrocution, equipment damage, fire from charging through faulted wiring"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event enable_charging_accepted(d, cmd) ==> event fault_state_no_error(d) ∧ ¬event diagnostics_active(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_004",
+        "name": "EnableDischarging_Rejected_On_Error_Or_Diagnostics",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "The EnableDischarging command (V2X feature) SHALL be rejected with FAILURE status if the EVSE has an active error or diagnostics are running.",
+        "formal": "∀cmd:EnableDischarging. (FaultState ≠ NoError ∨ SupplyState == DisabledDiagnostics) ⟹ return_status(cmd) == FAILURE ∧ SupplyState_unchanged",
+        "spec_source": "Section 9.3.9.3.3: 'If there is currently an error present on the EVSE, or Diagnostics are currently active, then the command SHALL be ignored and a response with a status of FAILURE SHALL be returned.'",
+        "violation": {
+          "description": "Enabling V2X discharging during a wiring fault could backfeed dangerous voltages to home wiring or the utility grid. A LiveNeutralSwap fault paired with active discharging creates an extremely hazardous condition for utility workers and home occupants.",
+          "attack_vector": "Exploit race condition in fault detection; trigger EnableDischarging immediately after transient fault clears but before EVSE refreshes SafetyChecks",
+          "physical_impact": "Uncontrolled grid backfeed during wiring fault; hazard for utility workers; home wiring overload"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event enable_discharging_accepted(d, cmd) ==> event fault_state_no_error(d) ∧ ¬event diagnostics_active(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_005",
+        "name": "MaximumChargeCurrent_Physically_Bounded",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "The MaximumChargeCurrent attribute SHALL always be the minimum of CircuitCapacity, CableAssemblyCurrentLimit, the MaximumChargeCurrent field from EnableCharging, and UserMaximumChargeCurrent — never exceeding any physical limit.",
+        "formal": "∀t. MaximumChargeCurrent(t) == min(CircuitCapacity, CableAssemblyCurrentLimit, EnableCharging.MaximumChargeCurrent, UserMaximumChargeCurrent)",
+        "spec_source": "Section 9.3.8.8: 'This attribute value SHALL be the minimum of: CircuitCapacity - Electrician's installation setting; CableAssemblyCurrentLimit (detected by the EVSE when the cable is plugged in); MaximumChargeCurrent field in the EnableCharging command; UserMaximumChargeCurrent attribute'",
+        "violation": {
+          "description": "If EnableCharging's MaximumChargeCurrent field is used directly without bounding to CircuitCapacity or CableAssemblyCurrentLimit, the EVSE could signal an EV to draw more current than the physical circuit can safely carry. A malicious Operate-level actor could submit EnableCharging with a higher current than the circuit rating.",
+          "attack_vector": "Submit EnableCharging with MaximumChargeCurrent significantly above CircuitCapacity; if the minimum computation is bypassed, the circuit breaker may trip or wiring may overheat",
+          "physical_impact": "Circuit overload, wiring overheating, fire risk, circuit breaker trip disrupting service"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event max_charge_current_set(d, v, t) ==> v <= CircuitCapacity(d) ∧ v <= CableAssemblyCurrentLimit(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_006",
+        "name": "MaximumDischargeCurrent_Physically_Bounded",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "The MaximumDischargeCurrent attribute (V2X) SHALL always be the minimum of CircuitCapacity, CableAssemblyCurrentLimit, and the MaximumDischargeCurrent field from EnableDischarging, preventing backfeed currents from exceeding physical capacity.",
+        "formal": "∀t. Feature_V2X == true ⟹ MaximumDischargeCurrent(t) == min(CircuitCapacity, CableAssemblyCurrentLimit, EnableDischarging.MaximumDischargeCurrent)",
+        "spec_source": "Section 9.3.8.9: 'This attribute value SHALL be the minimum of: CircuitCapacity - Electrician's installation setting; CableAssemblyCurrentLimit (detected by the EVSE when the cable is plugged in); MaximumDischargeCurrent field in the EnableDischarging command'",
+        "violation": {
+          "description": "Unbounded discharge current could push more current back to the home circuit or grid than the wiring can safely carry. A compromised EMS issuing EnableDischarging with a very high MaximumDischargeCurrent could overload home wiring.",
+          "attack_vector": "Compromised EMS sends EnableDischarging with MaximumDischargeCurrent equal to max uint value; if bounding not enforced, discharge exceeds circuit rating",
+          "physical_impact": "Home wiring overload, fire risk, dangerous backfeed to utility grid"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event max_discharge_current_set(d, v, t) ==> v <= CircuitCapacity(d) ∧ v <= CableAssemblyCurrentLimit(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_007",
+        "name": "Physical_Safety_Lockout_Before_Remote_Enable",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "The EVSE SHALL enforce a physical safety lockout mechanism that prevents remote charging/discharging enablement until initial latching conditions (hardware safety interlocks) have been met.",
+        "formal": "∀t. remote_enable_charging(t) ⟹ latching_conditions_met(t)",
+        "spec_source": "Section 9.3 Introduction: 'This cluster supports a safety mechanism that may lockout remote operation until the initial latching conditions have been met.'",
+        "violation": {
+          "description": "If remote operation is permitted before physical safety interlocks are confirmed (e.g., proper grounding verified, cable locked), a remote actor could initiate charging while the EVSE is in an unsafe hardware state that the spec is designed to prevent.",
+          "attack_vector": "Send EnableCharging immediately after EVSE boots or after cable insertion before hardware safety sequence completes; exploit intermittent connectivity to send command during reconnect before safety checks refresh",
+          "physical_impact": "Charging through improperly seated cable, ungrounded circuit, or before contactor safety verification — electrocution, equipment damage"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event charging_enabled(d, cmd) ==> event latching_conditions_satisfied(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_008",
+        "name": "GFCI_CCID_Faults_Require_Physical_Clearance",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "Certain fault conditions (GFCI, CCID as defined in SAE J1772) SHALL require physical operator intervention to clear and SHALL NOT be clearable purely via remote Matter commands.",
+        "formal": "∀f ∈ {GFCI_fault, CCID_fault}. fault_active(f) ⟹ ¬∃remote_cmd. resolves_fault(remote_cmd, f)",
+        "spec_source": "Section 9.3 Introduction: 'Some of the fault conditions defined in SAE J1772, such as Ground-Fault Circuit Interrupter (GFCI) or Charging Circuit Interrupting Device (CCID), may require clearing by an operator by, for example, pressing a button on the equipment or breaker panel.'",
+        "violation": {
+          "description": "If a GFCI trip can be remotely cleared without physical operator inspection, a ground fault that caused the trip might still be present when charging restarts. This defeats the entire purpose of the GFCI safety mechanism and could result in ongoing shock hazard.",
+          "attack_vector": "Send a sequence of Matter commands that reset FaultState to NoError without physical verification; exploit a software-only fault reset path in the implementation",
+          "physical_impact": "Restart of charging through a ground-faulted circuit; ongoing electrocution risk to persons in contact with the EV or charging equipment"
+        },
+        "proverifQuery": "query d:device, f:fault ⊢ f ∈ {GFCI, CCID} ∧ event fault_cleared(d, f) ==> event physical_operator_action(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_009",
+        "name": "Operate_Privilege_Required_All_Commands",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "All EVSE commands (Disable, EnableCharging, EnableDischarging, StartDiagnostics, SetTargets, GetTargets, ClearTargets) require at minimum Operate (O) privilege; View (V) privilege is insufficient.",
+        "formal": "∀cmd ∈ EVSE_commands. invoke(cmd, subject) ⟹ has_privilege(subject, Operate)",
+        "spec_source": "Section 9.3.9 Commands Table: Access column shows 'O T' for all commands (O = Operate privilege required)",
+        "violation": {
+          "description": "A subject with only View privilege on the EVSE endpoint could invoke charging commands, disabling or enabling power flow without legitimate authorization. Binding View subscribers (e.g., monitoring apps) should not control charging.",
+          "attack_vector": "Exploit ACL misconfiguration granting View subjects command access; attempt command invocation via View-privileged subject",
+          "physical_impact": "Unauthorized charging control; third-party monitoring app inadvertently or maliciously controls EV charging"
+        },
+        "proverifQuery": "query s:subject, cmd:command ⊢ event evse_command_accepted(s, cmd) ==> has_privilege(s, Operate)"
+      },
+
+      {
+        "id": "PROP_EVSE_010",
+        "name": "StartDiagnostics_Only_From_Disabled_State",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The EVSE SHALL only enter the DisabledDiagnostics SupplyState when StartDiagnostics is received while SupplyState == Disabled; the command SHALL fail otherwise.",
+        "formal": "∀cmd:StartDiagnostics. SupplyState ≠ Disabled ⟹ return_status(cmd) == FAILURE ∧ SupplyState_unchanged",
+        "spec_source": "Section 9.3.9.4.1: 'On receipt of this command, the EVSE SHALL enter a Diagnostics state only if the SupplyState attribute is in the Disabled state. If the EVSE cannot start diagnostics, a response SHALL be generated with a status of FAILURE.'",
+        "violation": {
+          "description": "If StartDiagnostics is accepted while SupplyState == ChargingEnabled, the EVSE would simultaneously be in diagnostics mode and charging mode. This creates an inconsistent state where diagnostic self-tests may interfere with active high-current charging, or allow a DoS attack that interrupts charging by forcing a diagnostics transition.",
+          "attack_vector": "Send StartDiagnostics during an active charging session to interrupt charging without explicit Disable command; diagnostics mode persists until manufacturer-defined completion",
+          "physical_impact": "Interrupted charging session; potential equipment hazard if diagnostics run while contactors are energized"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event diagnostics_started(d, cmd) ==> SupplyState(d) == Disabled"
+      },
+
+      {
+        "id": "PROP_EVSE_011",
+        "name": "Diagnostics_DoS_Via_Unbounded_Duration",
+        "category": "Availability",
+        "importance": "HIGH",
+        "claim": "StartDiagnostics can be invoked by any Operate-level subject and has no specified maximum duration, meaning an attacker can keep the EVSE in DisabledDiagnostics (preventing all charging) for an indefinite period.",
+        "formal": "∀d:device. (∃actor:Operate_privileged. invoke(StartDiagnostics, actor)) ⟹ SupplyState(d) == DisabledDiagnostics_until_manufacturer_defined_end",
+        "spec_source": "Section 9.3.9.4.1: 'The diagnostics are at the discretion of the manufacturer and usually include internal checks. Upon completion of the diagnostics, the EVSE SHALL restore SupplyState to the Disabled state.'",
+        "violation": {
+          "description": "Any legitimate controller with Operate privilege (same level needed for EnableCharging) can put the EVSE in DisabledDiagnostics with no way for another controller to cancel it. The duration is implementation-defined with no maximum. This is an effective, spec-compliant denial-of-service attack vector.",
+          "attack_vector": "Acquire Operate privilege on EVSE endpoint (same as normal EMS control); send StartDiagnostics command; if diagnostics run for hours, no charging is possible; repeat after completion to maintain DoS",
+          "physical_impact": "Prevents EV charging when needed (e.g., overnight emergency charging); blocks V2X grid services"
+        },
+        "proverifQuery": "query d:device, t1:time, t2:time ⊢ event diagnostics_started(d, t1) ∧ t2 - t1 > max_diagnostics_duration ==> event diagnostics_completed(d, t2)"
+      },
+
+      {
+        "id": "PROP_EVSE_012",
+        "name": "ChargingEnabledUntil_Auto_Stops_Charging",
+        "category": "Timing",
+        "importance": "HIGH",
+        "claim": "When ChargingEnabledUntil is not null and its timestamp expires, the EVSE SHALL automatically stop charging and update SupplyState to Disabled (or DischargingEnabled if DischargingEnabledUntil is in the future).",
+        "formal": "∀t. ChargingEnabledUntil(t) ≠ null ∧ current_time(t) >= ChargingEnabledUntil(t) ⟹ (next(SupplyState) == Disabled ∨ (Feature_V2X == true ∧ DischargingEnabledUntil > current_time ∧ next(SupplyState) == DischargingEnabled))",
+        "spec_source": "Section 9.3.9.2.4: 'when this time expires then the EVSE SHALL stop charging and SHALL update the State attribute to indicate it is no longer charging, and SHALL update the SupplyState attribute to Disabled (if DischargingEnabledUntil is also in the past) or DischargingEnabled (if DischargingEnabledUntil is in the future or null).'",
+        "violation": {
+          "description": "If ChargingEnabledUntil expiry is not enforced, time-limited charging sessions never terminate automatically. An attacker who grants charging for a short window (e.g., via compromised EMS) may have intended a temporary session that becomes permanent if the timer is not enforced.",
+          "attack_vector": "Exploit time-keeping failure (e.g., RTC drift, time synchronization attack via malicious Time Synchronization cluster) to prevent expiry from being detected; set system time backward to extend sessions",
+          "physical_impact": "Overcharging EV battery beyond scheduled session; unintended energy cost to consumer"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ current_time > ChargingEnabledUntil(d) ∧ ChargingEnabledUntil(d) ≠ null ==> event charging_stopped(d, t)"
+      },
+
+      {
+        "id": "PROP_EVSE_013",
+        "name": "DischargingEnabledUntil_Auto_Stops_Discharging",
+        "category": "Timing",
+        "importance": "HIGH",
+        "claim": "When DischargingEnabledUntil (V2X) is not null and its timestamp expires, the EVSE SHALL automatically stop discharging and update SupplyState to Disabled (or ChargingEnabled if ChargingEnabledUntil is still future/null).",
+        "formal": "Feature_V2X == true ∧ DischargingEnabledUntil(t) ≠ null ∧ current_time(t) >= DischargingEnabledUntil(t) ⟹ (next(SupplyState) == Disabled ∨ (ChargingEnabledUntil > current_time ∧ next(SupplyState) == ChargingEnabled))",
+        "spec_source": "Section 9.3.9.3.3: 'when this time expires then the EVSE SHALL stop discharging and SHALL update the State attribute to indicate it is no longer discharging, and SHALL update the SupplyState attribute to Disabled (if ChargingEnabledUntil is also in the past) or ChargingEnabled (if ChargingEnabledUntil is in the future or null).'",
+        "violation": {
+          "description": "Uncontrolled V2X discharging beyond the authorized window could drain the EV battery beyond the consumer's consent, or continue backfeed to grid after a contracted time window that the utility or EMS has defined. This has both financial and grid stability implications.",
+          "attack_vector": "Time synchronization attack via compromised Time Synchronization cluster to delay expiry detection; or implementation bug that checks expiry on command receipt but not continuously during session",
+          "physical_impact": "Excessive EV battery drain; unauthorized grid backfeed beyond contracted window; potential EV left without sufficient charge for emergency travel"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ current_time > DischargingEnabledUntil(d) ∧ DischargingEnabledUntil(d) ≠ null ==> event discharging_stopped(d, t)"
+      },
+
+      {
+        "id": "PROP_EVSE_014",
+        "name": "FaultState_NoError_When_Not_DisabledError",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "Whenever SupplyState is not DisabledError, the FaultState attribute SHALL be NoError. This bidirectional invariant prevents inconsistent state where a fault is reported but charging is not blocked.",
+        "formal": "∀t. SupplyState(t) ≠ DisabledError ⟹ FaultState(t) == NoError",
+        "spec_source": "Section 9.3.8.3: 'For all values of SupplyState other than DisabledError, the FaultState attribute SHALL be NoError.'",
+        "violation": {
+          "description": "If FaultState shows a non-NoError value while SupplyState indicates charging is enabled, the EVSE is reporting a fault while allowing current flow — a dangerous and contradictory state. Monitoring systems that check FaultState to assess safety would receive incorrect information.",
+          "attack_vector": "Exploit software race condition where FaultState is updated asynchronously from SupplyState; write FaultState via a future writable attribute (currently read-only but possible in implementation error)",
+          "physical_impact": "Operator believes fault condition exists but system is still charging; or operator believes system is safe while a fault value lingers undetected"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ SupplyState(d, t) ≠ DisabledError ==> FaultState(d, t) == NoError"
+      },
+
+      {
+        "id": "PROP_EVSE_015",
+        "name": "V2X_Feature_Required_For_EnableDischarging",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "The EnableDischarging command SHALL only be available (respond with SUCCESS) when the V2X feature is supported; invocation without V2X feature support SHALL be rejected as INVALID_COMMAND.",
+        "formal": "∀cmd:EnableDischarging. invoke(cmd) ∧ Feature_V2X == false ⟹ return_status(cmd) == INVALID_COMMAND",
+        "spec_source": "Section 9.3.9 Commands Table: EnableDischarging Conformance is 'V2X'; Section 9.3.4.5: 'If the EVSE can support bi-directional charging, it may be possible to request that the vehicle can discharge to the home or grid.'",
+        "violation": {
+          "description": "An EVSE that processes EnableDischarging without V2X hardware support may enable contactors in a configuration not tested or certified for bidirectional current flow. Additionally, non-V2X EVSEs may not have the protection mechanisms required for safe backfeed.",
+          "attack_vector": "Send EnableDischarging to a non-V2X EVSE; if command is accepted due to missing conformance check, unauthorized discharging mode may be activated",
+          "physical_impact": "Backfeed through hardware not rated for reverse current; potential contactor damage or fire"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event enable_discharging_accepted(d, cmd) ==> Feature_V2X(d) == true"
+      },
+
+      {
+        "id": "PROP_EVSE_016",
+        "name": "Disable_Unconditionally_Stops_Power_Flow",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "On receipt of the Disable command, the EVSE SHALL stop all power flow between EV and EVSE and set SupplyState to Disabled, regardless of current active session state.",
+        "formal": "∀cmd:Disable. ¬cannot_handle(cmd) ⟹ (next(SupplyState) == Disabled ∧ ChargingEnabledUntil := 0x0 ∧ DischargingEnabledUntil := 0x0)",
+        "spec_source": "Section 9.3.9.1.1: 'On receipt of this command, the EVSE will stop any power flow between the EV and EVSE... the ChargingEnabledUntil and DischargingEnabledUntil attributes SHALL be set to 0x0, the SupplyState attribute changed to Disabled...'",
+        "violation": {
+          "description": "If Disable fails to actually stop energy transfer (e.g., due to hardware contactor sticking or software not propagating the command to the hardware), the EVSE is unable to perform emergency shutoff. The Disable command is the primary remote emergency stop mechanism.",
+          "attack_vector": "DoS attack that blocks Disable commands from reaching the EVSE; hardware failure where contactor does not open despite command; implementation bug that marks SupplyState Disabled but does not signal hardware",
+          "physical_impact": "Inability to perform emergency remote shutoff of EV charging during fault or emergency scenario"
+        },
+        "proverifQuery": "query d:device, cmd:Disable ⊢ event disable_accepted(d, cmd) ==> event power_flow_stopped(d) ∧ SupplyState(d) == Disabled"
+      },
+
+      {
+        "id": "PROP_EVSE_017",
+        "name": "UserMaximumChargeCurrent_Within_Bounds",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The UserMaximumChargeCurrent attribute SHALL be constrained to the range [MinimumChargeCurrent, MaximumChargeCurrent]; the EVSE SHALL reject write operations outside this range with CONSTRAINT_ERROR.",
+        "formal": "∀v:write_value. write(UserMaximumChargeCurrent, v) ∧ (v < MinimumChargeCurrent ∨ v > MaximumChargeCurrent) ⟹ return_status == CONSTRAINT_ERROR",
+        "spec_source": "Section 9.3.8.10: 'This attribute value SHALL be limited by the EVSE to be in the range of: MinimumChargeCurrent <= UserMaximumChargeCurrent <= MaximumChargeCurrent where MinimumChargeCurrent and MaximumChargeCurrent are the values received in the EnableCharging command.'",
+        "violation": {
+          "description": "If UserMaximumChargeCurrent can be set above MaximumChargeCurrent (the physically safe limit), it becomes the effective controlling value for MaximumChargeCurrent computation — since MaximumChargeCurrent is the min() of several values, a too-high UserMaximumChargeCurrent would be ignored, but a too-low value could violate the MinimumChargeCurrent safety floor.",
+          "attack_vector": "Write UserMaximumChargeCurrent = 0 to prevent any charging; or write above MaximumChargeCurrent if bounds check is absent; Manage-level privilege required for write",
+          "physical_impact": "Setting to zero could prevent emergency charging; invalid values may cause undefined EVSE behavior"
+        },
+        "proverifQuery": "query d:device, v:value ⊢ event user_max_charge_current_written(d, v) ==> v >= MinimumChargeCurrent(d) ∧ v <= MaximumChargeCurrent(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_018",
+        "name": "Manage_Privilege_Required_For_Critical_Attribute_Writes",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "The writable attributes UserMaximumChargeCurrent, RandomizationDelayWindow, and ApproximateEVEfficiency SHALL require Manage (M) privilege for write access; Operate (O) privilege is insufficient.",
+        "formal": "∀attr ∈ {UserMaximumChargeCurrent, RandomizationDelayWindow, ApproximateEVEfficiency}. write(attr, v) ⟹ has_privilege(writer, Manage)",
+        "spec_source": "Section 9.3.8 Attributes Table: UserMaximumChargeCurrent Access 'RW VM'; RandomizationDelayWindow Access 'RW VM'; ApproximateEVEfficiency Access 'RW VM' (VM = View + Manage for write)",
+        "violation": {
+          "description": "An Operate-level controller (same as one that invokes EnableCharging) should not be able to reduce the randomization window to zero or manipulate UserMaximumChargeCurrent to impair charging. Separation of control (Operate) from configuration (Manage) is a key defense.",
+          "attack_vector": "Compromised controller with Operate privilege attempts write to RW VM attribute; if server does not enforce Manage-level check on write, configuration is modified",
+          "physical_impact": "Setting RandomizationDelayWindow to 0 removes grid demand management; setting UserMaximumChargeCurrent to minimum starves EV of charge"
+        },
+        "proverifQuery": "query s:subject, attr:attribute ⊢ event attribute_written(s, attr) ∧ attr ∈ {UserMaximumChargeCurrent, RandomizationDelayWindow} ==> has_privilege(s, Manage)"
+      },
+
+      {
+        "id": "PROP_EVSE_019",
+        "name": "ChargingEnabledUntil_Persisted_Across_Reboots",
+        "category": "Availability",
+        "importance": "HIGH",
+        "claim": "The ChargingEnabledUntil attribute SHALL be persisted non-volatile storage so that a temporary power loss does not inadvertently disable charging during an active session.",
+        "formal": "∀t1, t2. power_failure(t1) ∧ power_restored(t2) ∧ t2 < ChargingEnabledUntil(t1) ⟹ ChargingEnabledUntil(t2) == ChargingEnabledUntil(t1)",
+        "spec_source": "Section 9.3.8.4: 'This attribute SHALL be persisted, for example a temporary power failure should not stop the vehicle from being charged.'",
+        "violation": {
+          "description": "If ChargingEnabledUntil is lost on power failure, the EVSE defaults to not charging after reboot (null or 0x0 = disabled), interrupting a time-critical charging session. In environments with intermittent power, this creates systematic charging failures.",
+          "attack_vector": "Cut power to EVSE briefly to clear charging session; EVSE reboots with ChargingEnabledUntil = null/0, disabling charging without explicit Disable command",
+          "physical_impact": "EV remains uncharged overnight despite pre-configured charging session; consumer unaware of interruption"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event power_restored(d, t) ∧ ChargingEnabledUntil_before_power_loss(d) > t ==> ChargingEnabledUntil(d, t) == ChargingEnabledUntil_before_power_loss(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_020",
+        "name": "DischargingEnabledUntil_Persisted_Across_Reboots",
+        "category": "Availability",
+        "importance": "HIGH",
+        "claim": "The DischargingEnabledUntil attribute (V2X) SHALL be persisted so a power failure during a V2X discharging session does not cause unintended session termination or incomplete grid service delivery.",
+        "formal": "Feature_V2X == true ∧ power_failure(t1) ∧ power_restored(t2) ∧ t2 < DischargingEnabledUntil(t1) ⟹ DischargingEnabledUntil(t2) == DischargingEnabledUntil(t1)",
+        "spec_source": "Section 9.3.8.5: 'This attribute SHALL be persisted, for example a temporary power failure should not stop the vehicle from being discharged.'",
+        "violation": {
+          "description": "Loss of DischargingEnabledUntil on power failure would prevent resumption of V2X grid services after EVSE reboots, silently breaking a contractual grid service obligation without generating a fault event.",
+          "attack_vector": "Briefly interrupt EVSE power during a contracted V2X grid service window to terminate discharging; EVSE reboots unable to resume",
+          "physical_impact": "Failure to deliver contracted grid stabilization services; EV battery left with unexpectedly high charge if discharging was for capacity management"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event power_restored(d, t) ∧ Feature_V2X(d) ∧ DischargingEnabledUntil_before_power_loss(d) > t ==> DischargingEnabledUntil(d, t) == DischargingEnabledUntil_before_power_loss(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_021",
+        "name": "EnergyTransferStarted_Event_On_Charging_Or_Discharging_Start",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "An EnergyTransferStarted event SHALL be generated whenever the EV starts charging or discharging (except under PowerAdjustment feature switching in Device Energy Management), establishing an auditable record of all energy transfer initiations.",
+        "formal": "∀t. (State_changes_to(PluggedInCharging, t) ∨ State_changes_to(PluggedInDischarging, t)) ∧ ¬PowerAdjustment_feature_switch(t) ⟹ generate_event(EnergyTransferStarted, t)",
+        "spec_source": "Section 9.3.10.3: 'This event SHALL be generated whenever the EV starts charging or discharging, except when an EV has switched between charging and discharging under the control of the PowerAdjustment feature...'",
+        "violation": {
+          "description": "Failure to generate EnergyTransferStarted events means charging sessions begin without an auditable event log entry. This prevents detection of unauthorized charging sessions initiated while the consumer's monitoring app was not subscribed.",
+          "attack_vector": "Implementation omits event generation in a code path (e.g., automatic schedule-triggered charging start); energy transfer begins and ends without any event record",
+          "physical_impact": "None directly; but inability to detect unauthorized charging sessions used for energy theft or privacy violation"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event charging_started(d, t) ==> event energy_transfer_started_generated(d, t)"
+      },
+
+      {
+        "id": "PROP_EVSE_022",
+        "name": "EnergyTransferStopped_Event_On_Charging_Or_Discharging_Stop",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "An EnergyTransferStopped event SHALL be generated whenever the EV stops charging or discharging (except under PowerAdjustment switching), ensuring all session terminations are auditable.",
+        "formal": "∀t. (State_leaves(PluggedInCharging, t) ∨ State_leaves(PluggedInDischarging, t)) ∧ ¬PowerAdjustment_feature_switch(t) ⟹ generate_event(EnergyTransferStopped, t)",
+        "spec_source": "Section 9.3.10.4: 'This event SHALL be generated whenever the EV stops charging or discharging, except when an EV has switched between charging and discharging under the control of the PowerAdjustment feature...'",
+        "violation": {
+          "description": "Missing EnergyTransferStopped events hide the reason for charging termination (EVStopped, EVSEStopped, Other) and the total energy transferred, preventing consumers and operators from diagnosing incomplete charging sessions or energy billing discrepancies.",
+          "attack_vector": "Trigger abnormal session termination path (power failure, fault recovery, automatic expiry) that bypasses event generation code; suppress events via subscription manipulation",
+          "physical_impact": "None directly; energy accounting and billing integrity compromised; security incident investigation impaired"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event charging_stopped(d, t) ==> event energy_transfer_stopped_generated(d, t)"
+      },
+
+      {
+        "id": "PROP_EVSE_023",
+        "name": "Fault_Event_CRITICAL_Priority_Generated_On_Fault",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "A Fault event with CRITICAL priority SHALL be generated whenever the EVSE detects a fault condition (internally or in pilot signal), ensuring fault notifications survive under event log pressure.",
+        "formal": "∀t. FaultState_changes_from(NoError, t) ⟹ generate_event(Fault, t, priority=CRITICAL)",
+        "spec_source": "Section 9.3.10 Events Table: Fault event has Priority 'CRITICAL'; Section 9.3.8.3: 'This attribute SHALL indicate the type of fault detected by the EVSE (internally or as detected in the pilot signal).'",
+        "violation": {
+          "description": "If the Fault event is not generated or is generated with lower priority (INFO/DEBUG), it may be evicted from the EVSE's event log by higher-frequency informational events before a monitoring client can retrieve it. CRITICAL-priority events are specially protected in Matter's event logging system.",
+          "attack_vector": "Flood EVSE with commands generating many INFO-priority events to fill event log and evict CRITICAL fault events before retrieval; requires Operate-level access",
+          "physical_impact": "Fault condition not communicated to monitoring system; operator unaware of dangerous electrical condition"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event fault_detected(d, t) ==> event fault_event_generated(d, t, CRITICAL)"
+      },
+
+      {
+        "id": "PROP_EVSE_024",
+        "name": "EVConnected_Event_On_Plugin",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "An EVConnected event SHALL be generated each time an EV is plugged in, with the new SessionID, establishing an auditable record of all EVSE sessions.",
+        "formal": "∀t. State_changes_to(PluggedInNoDemand, t) FROM NotPluggedIn ⟹ generate_event(EVConnected, {SessionID: new_session_id}, t)",
+        "spec_source": "Section 9.3.10.1: 'This event SHALL be generated when the EV is plugged in.'",
+        "violation": {
+          "description": "Without EVConnected events, unauthorized EV connections (e.g., someone else using a public or workplace EVSE) go undetected. The event log would show charging but no connection event, creating a gap that obscures billing and access control auditing.",
+          "attack_vector": "Implementation bug where EVConnected is not generated on rapid plugin/unplug cycles; RFID-gated EVSE where plugin event is delayed until after authorization",
+          "physical_impact": "None directly; privacy and billing accountability compromised"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event ev_plugged_in(d, t) ==> event ev_connected_event_generated(d, t)"
+      },
+
+      {
+        "id": "PROP_EVSE_025",
+        "name": "EVNotDetected_Event_On_Unplug",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "An EVNotDetected event SHALL be generated when the EV is unplugged or not detected (having been previously plugged in), recording SessionDuration and SessionEnergyCharged for billing and audit purposes.",
+        "formal": "∀t. State_changes_to(NotPluggedIn, t) FROM any_plugged_state ⟹ generate_event(EVNotDetected, {SessionID, State, SessionDuration, SessionEnergyCharged}, t)",
+        "spec_source": "Section 9.3.10.2: 'This event SHALL be generated when the EV is unplugged or not detected (having been previously plugged in). When the vehicle is unplugged then the session is ended.'",
+        "violation": {
+          "description": "Missing EVNotDetected events at session end means energy totals (SessionEnergyCharged, SessionEnergyDischarged) and session duration are not recorded with an immutable timestamp. The event log would be incomplete for billing reconciliation after a session.",
+          "attack_vector": "Force unplug via hardware (physically remove cable) in a way that triggers abnormal pilot signal transition not handled by the software; implementation omits event generation on rapid disconnect",
+          "physical_impact": "Session energy accounting lost; billing disputes cannot be resolved with event log evidence"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event ev_unplugged(d, t) ==> event ev_not_detected_event_generated(d, t)"
+      },
+
+      {
+        "id": "PROP_EVSE_026",
+        "name": "SessionID_Incremented_On_Each_Plugin",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The SessionID attribute SHALL be incremented each time an EV plug-in event is detected, and SessionDuration/SessionEnergyCharged/SessionEnergyDischarged SHALL be reset to zero.",
+        "formal": "∀t. State_changes_to_plugged(t) ⟹ SessionID(t) == SessionID(t-1) + 1 ∧ SessionDuration(t) == 0 ∧ SessionEnergyCharged(t) == 0 ∧ (Feature_V2X == true ⟹ SessionEnergyDischarged(t) == 0)",
+        "spec_reference": "Section 9.3.8.20: 'Whenever the State leaves the NotPluggedIn state and moves to any Plugged state, the SessionID attribute SHALL be incremented. The SessionDuration, SessionEnergyCharged and SessionEnergyDischarged attributes SHALL be reset to zero.'",
+        "spec_source": "Section 9.3.8.20.1 and 9.3.8.20: 'The SessionID SHALL be incremented each time a plugin is detected.'",
+        "violation": {
+          "description": "If SessionID is not incremented on plugin, multiple sessions share the same ID. Monitoring clients using SessionID to correlate EVConnected/EVNotDetected events would confuse distinct sessions, causing billing errors and preventing detection of unexpected charging sessions.",
+          "attack_vector": "Rapid plug/unplug cycling causing SessionID counter overflow (rollover allowed by spec); create session confusion as attacker uses session with same ID as previous legitimate session",
+          "physical_impact": "Billing and energy accounting confusion; inability to trace specific session for incident response"
+        },
+        "proverifQuery": "query d:device, t:time, id_prev:uint32 ⊢ SessionID(d, t-1) == id_prev ∧ event ev_plugged_in(d, t) ==> SessionID(d, t) == id_prev + 1"
+      },
+
+      {
+        "id": "PROP_EVSE_027",
+        "name": "SetTargets_Day_Uniqueness_Enforced",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The SetTargets command SHALL return CONSTRAINT_ERROR if any day of the week appears in more than one ChargingTargetSchedule in the submitted list, preventing ambiguous scheduling conflicts.",
+        "formal": "∀cmd:SetTargets. ∃d:day. count(d, cmd.ChargingTargetSchedules.DayOfWeekForSequence) > 1 ⟹ return_status(cmd) == CONSTRAINT_ERROR",
+        "spec_source": "Section 9.3.9.5.2: 'that each day of the week is included in at most one of the ChargingTargetSchedule, if they are not then the response SHALL be CONSTRAINT_ERROR.'",
+        "violation": {
+          "description": "Duplicate day assignments in ChargingTargetSchedules create ambiguous scheduling with undefined conflict resolution. An attacker submitting conflicting schedules could cause unpredictable EVSE charge planning, or prevent an EMS from computing a valid forecast.",
+          "attack_vector": "Submit SetTargets with the same day set in two ChargingTargetSchedules; if accepted, EVSE behavior for that day is undefined",
+          "physical_impact": "None directly; unpredictable charge scheduling leading to inefficient energy costs or missed charge targets"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event set_targets_accepted(d, cmd) ==> no_duplicate_day_of_week(cmd.ChargingTargetSchedules)"
+      },
+
+      {
+        "id": "PROP_EVSE_028",
+        "name": "SetTargets_Resource_Exhaustion_Enforced",
+        "category": "Availability",
+        "importance": "MEDIUM",
+        "claim": "The SetTargets command SHALL return RESOURCE_EXHAUSTED when the total number of charging targets requested exceeds the device's storage capacity, preventing memory exhaustion.",
+        "formal": "∀cmd:SetTargets. total_targets(cmd) > device_max_targets ⟹ return_status(cmd) == RESOURCE_EXHAUSTED",
+        "spec_source": "Section 9.3.9.5.2: 'When a command is received that requires a total number of charging targets greater than the device supports, the status of the response SHALL be RESOURCE_EXHAUSTED.'",
+        "violation": {
+          "description": "Without resource exhaustion enforcement, a SetTargets command with excessive targets could cause memory allocation failure on resource-constrained EVSE hardware, potentially causing a crash or denial of service of the entire cluster.",
+          "attack_vector": "Send SetTargets with 7 schedules × 10 targets each = 70 targets if device maximum is lower; repeat to stress test allocation",
+          "physical_impact": "EVSE cluster crash disabling all charging control; loss of pre-configured charging schedules"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ total_targets(cmd) > max_device_targets(d) ==> return_status(cmd) == RESOURCE_EXHAUSTED"
+      },
+
+      {
+        "id": "PROP_EVSE_029",
+        "name": "ClearTargets_Stops_Automatic_Mode_Charging",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "If the EVSE is currently charging in automatic schedule mode when ClearTargets is received, it SHALL stop charging as part of the ClearTargets execution.",
+        "formal": "∀cmd:ClearTargets. charging_mode == Automatic ∧ State == PluggedInCharging ⟹ next(SupplyState) == Disabled",
+        "spec_source": "Section 9.3.9.8.1: 'If the EVSE is currently charging based on being in automatic mode, then it SHALL stop the EVSE charging.'",
+        "violation": {
+          "description": "If ClearTargets removes schedules but does not stop an in-progress automatic charging session, the EVSE continues charging without any valid schedule context. This creates a session with no associated target — the session is both undirected and unaccounted for in future schedule planning.",
+          "attack_vector": "Send ClearTargets during automatic charging; if charging continues, then send SetTargets with a manipulated new schedule that the EVSE immediately begins following",
+          "physical_impact": "Uncontrolled charging continuation after schedule removal; possible overcharging"
+        },
+        "proverifQuery": "query d:device, cmd:ClearTargets ⊢ charging_mode(d) == Automatic ∧ event clear_targets_accepted(d, cmd) ==> event charging_stopped(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_030",
+        "name": "RandomizationDelayWindow_Max_86400_Enforced",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The RandomizationDelayWindow attribute SHALL be constrained to a maximum of 86400 seconds (24 hours); write requests exceeding this SHALL be rejected.",
+        "formal": "∀v:write_value. write(RandomizationDelayWindow, v) ∧ v > 86400 ⟹ return_status == CONSTRAINT_ERROR",
+        "spec_source": "Section 9.3.8 Attributes Table: RandomizationDelayWindow Constraint 'max 86400'",
+        "violation": {
+          "description": "A RandomizationDelayWindow set to an absurdly large value (e.g., > 24 hours) would prevent the EVSE from ever starting a scheduled charging session within a day's window. An attacker with Manage privilege could permanently disable scheduled auto-charging by setting this to max_uint.",
+          "attack_vector": "Write RandomizationDelayWindow to max uint32 (~136 years); scheduled charging would never start within the computed window",
+          "physical_impact": "Scheduled charging never begins; EV perpetually uncharged despite configured schedule"
+        },
+        "proverifQuery": "query d:device, v:value ⊢ event randomization_window_written(d, v) ==> v <= 86400"
+      },
+
+      {
+        "id": "PROP_EVSE_031",
+        "name": "RandomizationDelayWindow_Grid_Demand_Management",
+        "category": "Timing",
+        "importance": "MEDIUM",
+        "claim": "The EVSE SHOULD apply a random delay (0 to RandomizationDelayWindow-1 seconds) before starting a scheduled charging session to prevent synchronized grid demand spikes from fleet-wide simultaneous charge starts.",
+        "formal": "∀t:scheduled_charge_start. actual_start(t) ∈ [t, t + RandomizationDelayWindow - 1]",
+        "spec_source": "Section 9.3.8.11: 'This is a feature that is mandated in some markets (such as UK) where the EVSE should by default randomize its start time within the randomization window. By default in the UK this should be 600s.'",
+        "violation": {
+          "description": "If EVSEs ignore RandomizationDelayWindow and all start charging simultaneously at a cheap-rate start time, thousands of EVSEs activating together create a sudden large demand surge on the local grid. This is a real-world grid stability concern documented in demand management regulations.",
+          "attack_vector": "Manage-level actor writes RandomizationDelayWindow = 0 to disable randomization; all EVSEs under that controller's management start simultaneously at cheap rate transition",
+          "physical_impact": "Grid demand surge causing local voltage sag, transformer overloading, or regional grid instability"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ RandomizationDelayWindow(d) == 0 ∧ ∃fleet:devices. |fleet| > threshold ==> event grid_demand_spike_risk(fleet, t)"
+      },
+
+      {
+        "id": "PROP_EVSE_032",
+        "name": "SessionDuration_Correct_Across_Reboots",
+        "category": "EventIntegrity",
+        "importance": "MEDIUM",
+        "claim": "Manufacturers SHALL ensure SessionDuration is correctly calculated even after a power failure or reboot during an active session, maintaining accurate billing and audit records.",
+        "formal": "∀t_start, t_reboot, t_end. session_starts(t_start) ∧ power_failure(t_reboot) ∧ session_ends(t_end) ⟹ SessionDuration(t_end) == t_end - t_start",
+        "spec_source": "Section 9.3.8.20.2: 'Manufacturers SHALL ensure this can be correctly calculated if there has been an power failure or reboot since the start of the session.'",
+        "violation": {
+          "description": "If SessionDuration is calculated from a volatile timestamp lost on reboot, all EVSE sessions interrupted by power failure would show artificially short durations. This impairs energy billing, incident forensics, and grid service delivery tracking.",
+          "attack_vector": "Cut EVSE power mid-session to reset session start timestamp; after reboot, session reports zero or incorrect duration and energy values",
+          "physical_impact": "Billing underreporting; grid service delivery contracts show incomplete session data"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event power_restored(d, t) ∧ session_in_progress(d) ==> SessionDuration_computed_correctly(d, t)"
+      },
+
+      {
+        "id": "PROP_EVSE_033",
+        "name": "SessionEnergyCharged_Not_A_Net_Value",
+        "category": "EventIntegrity",
+        "importance": "MEDIUM",
+        "claim": "SessionEnergyCharged SHALL represent only the total energy delivered from EVSE to EV (not a net value), and SessionEnergyDischarged (V2X) SHALL represent only the total energy received from EV to EVSE — they SHALL NOT be netted against each other.",
+        "formal": "∀session. SessionEnergyCharged == Σ(energy_EVSE_to_EV) ∧ (Feature_V2X ⟹ SessionEnergyDischarged == Σ(energy_EV_to_EVSE)) ∧ SessionEnergyCharged ≥ 0 ∧ SessionEnergyDischarged ≥ 0",
+        "spec_source": "Section 9.3.10.2.4: 'if bi-directional charging occurs during the session, then this value SHALL only include the sum of energy transferred from the EVSE to the EV, and SHALL NOT be a net value of charging and discharging energy.'",
+        "violation": {
+          "description": "If SessionEnergyCharged is computed as a net (charging minus discharging), V2X sessions where the vehicle both charged and discharged would report incorrect energy totals. This distorts billing, grid service accounting, and carbon footprint calculations.",
+          "attack_vector": "Exploit V2X session with alternating charging/discharging phases; if energy is netted, the total appears lower than actual energy transferred; consumer may dispute billing",
+          "physical_impact": "Financial: inaccurate energy billing in workplace or public charging with metered sessions"
+        },
+        "proverifQuery": "query d:device, s:session ⊢ event session_ended(d, s) ==> SessionEnergyCharged(s) >= 0 ∧ SessionEnergyDischarged(s) >= 0 ∧ ¬netted_together(SessionEnergyCharged(s), SessionEnergyDischarged(s))"
+      },
+
+      {
+        "id": "PROP_EVSE_034",
+        "name": "SessionDuration_Report_Rate_Limited",
+        "category": "Availability",
+        "importance": "MEDIUM",
+        "claim": "Changes to SessionDuration, SessionEnergyCharged, and SessionEnergyDischarged SHALL only be marked reportable at most once every 10 seconds during active changes, preventing attribute reporting from flooding subscription channels.",
+        "formal": "∀t1, t2. report(SessionDuration, t1) ∧ report(SessionDuration, t2) ∧ t2 > t1 ⟹ t2 - t1 >= 10s",
+        "spec_source": "Section 9.3.8.20.2: 'Changes to this attribute SHALL only be marked as reportable in the following cases: At most once every 10 seconds on changes, or When it changes from null to any other value and vice versa.'",
+        "violation": {
+          "description": "Without report rate limiting, a long charging session updating session energy every second would flood the Matter fabric with subscriptions from all subscribed clients, consuming network bandwidth and processing resources on subscriber devices.",
+          "attack_vector": "Subscribe to session attributes and create conditions that suppress rate limiting (e.g., via implementation bug); observe high-frequency reporting flooding the fabric",
+          "physical_impact": "Network congestion on Matter fabric; subscriber device resource exhaustion from processing excess reports"
+        },
+        "proverifQuery": "query d:device, t1:time, t2:time ⊢ event session_duration_reported(d, t1) ∧ event session_duration_reported(d, t2) ∧ t2 > t1 ==> t2 - t1 >= 10"
+      },
+
+      {
+        "id": "PROP_EVSE_035",
+        "name": "RFID_Authorization_External_Dependency",
+        "category": "Authentication",
+        "importance": "MEDIUM",
+        "claim": "RFID-based session authorization depends entirely on an external EVSE Management cluster client; the EVSE cluster itself performs no authorization validation of RFID UID values, creating an external dependency that must be secured separately.",
+        "formal": "∀rfid_event. RFID_authorization_result := external_client_decision(rfid_event.UID) ∧ ¬∃f:cluster_function. f validates(rfid_event.UID)",
+        "spec_source": "Section 9.3.4.4: 'The lookup and authorization of RFID UID is outside the scope of this cluster. An RFID event can be generated when a user taps an RFID card onto the RFID reader. The event must be subscribed to by the EVSE Management cluster client. This client may use this to enable the EV to charge or discharge.'",
+        "violation": {
+          "description": "The EVSE cluster has no fallback if the RFID authorization client is offline, unsubscribed, or compromised. Any party that can subscribe to the RFID event AND has Operate privilege on the EVSE endpoint can effectively control RFID-gated charging authorization.",
+          "attack_vector": "Subscribe to RFID events from a malicious controller on the same fabric; when a legitimate user taps an RFID card, the malicious controller uses the UID and timing to respond first with EnableCharging instead of the legitimate authorization system",
+          "physical_impact": "Unauthorized charging sessions enabled by malicious RFID event subscriber; or legitimate users denied charging if authorization client is manipulated"
+        },
+        "proverifQuery": "query d:device, uid:rfid_uid ⊢ event rfid_tap(d, uid) ==> event external_authorization_decision(uid, _)"
+      },
+
+      {
+        "id": "PROP_EVSE_036",
+        "name": "Time_Synchronization_Dependency_For_Epoch_Attributes",
+        "category": "CrossCluster",
+        "importance": "MEDIUM",
+        "claim": "The EVSE cluster SHALL require an accurate time source (built-in RTC, non-Matter time source, or Time Synchronization cluster); without accurate time, ChargingEnabledUntil and DischargingEnabledUntil expiry enforcement is undefined.",
+        "formal": "∀t. (ChargingEnabledUntil ≠ null ∨ DischargingEnabledUntil ≠ null) ⟹ accurate_time_available(t)",
+        "spec_source": "Section 9.3.5: 'The server side of this cluster SHALL depend on setting time from another device or using a real-time clock. This can either use a built-in real-time clock or non-Matter time source, or can be derived using the Time Synchronization cluster.'",
+        "violation": {
+          "description": "If the EVSE has no access to accurate time (e.g., Time Synchronization cluster is absent and no RTC is fitted), all epoch-based attributes and expiry logic become unreliable. ChargingEnabledUntil may never expire, or may expire immediately, depending on the assumed epoch base.",
+          "attack_vector": "Compromise Time Synchronization cluster to provide false time; roll back time to prevent expiry of ChargingEnabledUntil; advance time to prematurely terminate authorized charging sessions",
+          "physical_impact": "Charging sessions that never expire (no time reference) or sessions terminated too early due to time manipulation"
+        },
+        "proverifQuery": "query d:device ⊢ (ChargingEnabledUntil(d) ≠ null ∨ DischargingEnabledUntil(d) ≠ null) ==> accurate_time_source_available(d)"
+      },
+
+      {
+        "id": "PROP_EVSE_037",
+        "name": "ChargingTargetSchedules_Max_7_Enforced",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The ChargingTargetSchedules field in SetTargets SHALL contain at most 7 ChargingTargetScheduleStruct entries (one per day group), and each schedule SHALL contain at most 10 ChargingTargetStruct entries.",
+        "formal": "∀cmd:SetTargets. |cmd.ChargingTargetSchedules| <= 7 ∧ ∀sched ∈ cmd.ChargingTargetSchedules. |sched.ChargingTargets| <= 10",
+        "spec_source": "Section 9.3.9.5 SetTargets Command Table: ChargingTargetSchedules 'max 7'; Section 9.3.7.7 ChargingTargetScheduleStruct: ChargingTargets 'max 10'",
+        "violation": {
+          "description": "Exceeding the defined array bounds for charging schedules constitutes a malformed command. If an EVSE implementation dynamically allocates storage without bounds checking, an oversized SetTargets could cause heap overflow or undefined behavior on embedded EVSE hardware.",
+          "attack_vector": "Send SetTargets with 100 ChargingTargetSchedules or 100 ChargingTargets per schedule; exploit missing bounds check on embedded implementation",
+          "physical_impact": "EVSE firmware crash or memory corruption; loss of all charging configuration requiring manual reconfiguration"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event set_targets_accepted(d, cmd) ==> |cmd.ChargingTargetSchedules| <= 7"
+      },
+
+      {
+        "id": "PROP_EVSE_038",
+        "name": "VehicleID_Only_Via_PNC_Feature",
+        "category": "SecretProtection",
+        "importance": "MEDIUM",
+        "claim": "The VehicleID attribute SHALL only contain a vehicle-identifying value when the PNC (PlugAndCharge) feature is supported; without PNC, no vehicle identity information is exposed.",
+        "formal": "∀t. VehicleID(t) ≠ null ⟹ Feature_PNC == true ∧ compatible_EV_connected(t)",
+        "spec_source": "Section 9.3.8.19: 'This attribute SHALL indicate the vehicle ID read by the EVSE via ISO-15118 using the PNC feature, if the EVSE supports this capability. A null value SHALL indicate that this is unknown.'",
+        "violation": {
+          "description": "If VehicleID is extracted and exposed without PNC feature support, it represents unauthorized vehicle tracking. VehicleID can be used to identify specific vehicles at specific locations and times, a significant privacy concern.",
+          "attack_vector": "Read VehicleID attribute when PNC feature is not declared as supported; if implementation populates it via alternative means, vehicle identity is exposed without consent",
+          "physical_impact": "Vehicle tracking and privacy violation; location correlation of EV owner movements"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ VehicleID(d, t) ≠ null ==> Feature_PNC(d) == true"
+      },
+
+      {
+        "id": "PROP_EVSE_039",
+        "name": "StateOfCharge_SoC_Feature_Gated",
+        "category": "SecretProtection",
+        "importance": "MEDIUM",
+        "claim": "The StateOfCharge and BatteryCapacity attributes SHALL only contain valid values when the SOC feature is supported; without SOC feature, these attributes SHALL return null.",
+        "formal": "∀t. (StateOfCharge(t) ≠ null ∨ BatteryCapacity(t) ≠ null) ⟹ Feature_SOC == true ∧ compatible_EV_connected(t)",
+        "spec_source": "Section 9.3.8.17: 'If the StateOfCharge cannot be read from the vehicle it SHALL be returned with a NULL value.' Section 9.3.4.2: 'If the EVSE supports reporting of State of Charge this feature will only work if a compatible EV is connected.'",
+        "violation": {
+          "description": "Exposing EV battery state of charge without SOC feature declaration or compatible vehicle connected reveals private vehicle information. SoC data combined with VehicleID enables tracking of vehicle usage patterns and driving behavior.",
+          "attack_vector": "Read StateOfCharge attribute without SOC feature support; if EVSE populates it via other mechanisms, vehicle battery data is exposed",
+          "physical_impact": "Privacy violation; battery health and usage pattern disclosure to unauthorized parties"
+        },
+        "proverifQuery": "query d:device, t:time ⊢ StateOfCharge(d, t) ≠ null ==> Feature_SOC(d) == true ∧ compatible_ev_connected(d, t)"
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_EVSE_001",
+        "statement": "The EVSE hardware correctly implements the J1772/IEC61851 pilot signal protocol and accurately reflects pilot signal state in the Matter State attribute without software manipulation.",
+        "type": "Implicit",
+        "source": "Section 9.3 Introduction",
+        "dependencies": ["PROP_EVSE_002", "PROP_EVSE_003", "PROP_EVSE_004"],
+        "impact_if_violated": "State attribute could be spoofed or held in incorrect value; fault conditions in pilot signal not accurately reflected in FaultState; charging enabled despite hardware fault"
+      },
+      {
+        "id": "ASSUM_EVSE_002",
+        "statement": "CircuitCapacity is set by a qualified electrician during installation and represents the true physical circuit limit; it is not modified remotely after installation without physical access or re-commissioning.",
+        "type": "Implicit",
+        "source": "Section 9.3.8.6",
+        "dependencies": ["PROP_EVSE_005", "PROP_EVSE_006"],
+        "impact_if_violated": "CircuitCapacity set too high by remote Manage-level actor; MaximumChargeCurrent bounded against incorrect limit; physical circuit overloaded"
+      },
+      {
+        "id": "ASSUM_EVSE_003",
+        "statement": "The CableAssemblyCurrentLimit value is reliably detected from the cable assembly at plug-in time and is not manipulable by software commands.",
+        "type": "Implicit",
+        "source": "Section 9.3.8.8",
+        "dependencies": ["PROP_EVSE_005", "PROP_EVSE_006"],
+        "impact_if_violated": "Incorrect CableAssemblyCurrentLimit allows current to flow above cable rating; cable overheating, melting, fire"
+      },
+      {
+        "id": "ASSUM_EVSE_004",
+        "statement": "The Matter fabric's ACL (Access Control List) correctly enforces privilege levels, and Operate-privileged subjects are legitimate and trusted controllers (e.g., a home EMS), not arbitrary network peers.",
+        "type": "Explicit",
+        "source": "Matter Core Specification (Access Control Cluster)",
+        "dependencies": ["PROP_EVSE_001", "PROP_EVSE_009", "PROP_EVSE_018"],
+        "impact_if_violated": "All Operate-privilege-gated properties fail; any network peer could control charging"
+      },
+      {
+        "id": "ASSUM_EVSE_005",
+        "statement": "The EVSE is within Wi-Fi or Thread range for normal operation; the spec acknowledges intermittent connectivity and allows pre-configured profiles for offline operation.",
+        "type": "Explicit",
+        "source": "Section 9.3 Introduction: 'the EVSE may be outside the home and may suffer from intermittent network connections'",
+        "dependencies": ["PROP_EVSE_019", "PROP_EVSE_020", "PROP_EVSE_037"],
+        "impact_if_violated": "Attribute persistence and pre-configured charging profiles become critical fallbacks when network is unavailable"
+      },
+      {
+        "id": "ASSUM_EVSE_006",
+        "statement": "The EVSE supports only a single EV connection at a time; multi-EVSE environments are managed by backend systems outside the cluster scope.",
+        "type": "Explicit",
+        "source": "Section 9.3 Introduction: 'This EVSE cluster is written around support of a single EVSE.'",
+        "dependencies": ["PROP_EVSE_026"],
+        "impact_if_violated": "SessionID and session attribute semantics are undefined if multiple EVs could connect simultaneously to one cluster endpoint"
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_EVSE_001",
+        "location": "Section 9.3.9.4.1",
+        "normative_weakness": "Unspecified",
+        "description": "StartDiagnostics duration is entirely at manufacturer discretion with no maximum timeout, no cancellation command, and no way to determine remaining diagnostic time. EVSE can be held in DisabledDiagnostics indefinitely.",
+        "properties_affected": ["PROP_EVSE_010", "PROP_EVSE_011"],
+        "security_impact": "Any Operate-level controller can permanently deny charging service by repeatedly invoking StartDiagnostics; this is a spec-compliant DoS vector with no mitigation"
+      },
+      {
+        "id": "GAP_EVSE_002",
+        "location": "Section 9.3.8.6",
+        "normative_weakness": "Unspecified",
+        "description": "CircuitCapacity is described as set by an 'installer' but no installer-specific access role, attribute write access restriction, or one-time-write protection is defined. Any Manage-level remote actor can modify it post-installation.",
+        "properties_affected": ["PROP_EVSE_005", "PROP_EVSE_006"],
+        "security_impact": "Remote Manage-level actor can increase CircuitCapacity, causing MaximumChargeCurrent to exceed physical circuit breaker rating; overcurrent hazard"
+      },
+      {
+        "id": "GAP_EVSE_003",
+        "location": "Section 9.3 Introduction",
+        "normative_weakness": "MAY",
+        "description": "The physical safety lockout mechanism 'may lockout remote operation until the initial latching conditions have been met.' No attribute, command, or event formally describes this lockout state; it is unqueryable and unverifiable via Matter.",
+        "properties_affected": ["PROP_EVSE_007"],
+        "security_impact": "Implementations may omit the physical safety lockout entirely since it is 'MAY'; no cluster-level mechanism exists to verify whether the lockout is active or has been satisfied"
+      },
+      {
+        "id": "GAP_EVSE_004",
+        "location": "Section 9.3.4.4",
+        "normative_weakness": "Unspecified",
+        "description": "RFID authorization is explicitly stated to be 'outside the scope of this cluster.' No fallback, default policy, or timeout is defined for when the external authorization client is offline or fails to respond.",
+        "properties_affected": ["PROP_EVSE_035"],
+        "security_impact": "If RFID authorization system is offline, EVSE behavior (deny all sessions, allow all sessions, use last known policy) is implementation-defined — inconsistent security posture across implementations"
+      },
+      {
+        "id": "GAP_EVSE_005",
+        "location": "Section 9.3.9.2.4 and Section 9.3.9.3.3",
+        "normative_weakness": "Ambiguous",
+        "description": "EnableCharging and EnableDischarging Effect on Receipt do not explicitly define behavior when received while SupplyState is already in the corresponding enabled state (e.g., EnableCharging while ChargingEnabled). It is unclear whether parameters are updated silently or command is rejected.",
+        "properties_affected": ["PROP_EVSE_012", "PROP_EVSE_013"],
+        "security_impact": "Silent parameter update (e.g., extending ChargingEnabledUntil or reducing MinimumChargeCurrent) on an active session may not trigger an EnergyTransferStarted event, bypassing the audit trail for session parameter changes"
+      },
+      {
+        "id": "GAP_EVSE_006",
+        "location": "Section 9.3.9.5.2",
+        "normative_weakness": "SHOULD",
+        "description": "SetTargets automatic charging behavior uses SHOULD: 'should be able to compute the latest NextChargeStartTime' and 'should automatically begin charging'. Automatic schedule-following is not a SHALL requirement.",
+        "properties_affected": ["PROP_EVSE_031"],
+        "security_impact": "EVSEs may store charging targets but never automatically act on them, undermining the entire ChargingPreferences feature; consumers believe schedules are active when they are not"
+      },
+      {
+        "id": "GAP_EVSE_007",
+        "location": "Section 9.3.8.20.1",
+        "normative_weakness": "Unspecified",
+        "description": "SessionID rollover is explicitly allowed ('SessionIDs are allowed to roll over') with no mechanism to detect, handle, or prevent false session correlation when rollover occurs. No uniqueness guarantee beyond 'unlikely in lifetime'.",
+        "properties_affected": ["PROP_EVSE_026"],
+        "security_impact": "Rapid session cycling (via electrical fault or malicious plug/unplug) causes SessionID rollover; event logs associate current session events with a previous session's record, confusing billing and incident analysis"
+      },
+      {
+        "id": "GAP_EVSE_008",
+        "location": "Section 9.3.9 Commands Table",
+        "normative_weakness": "Ambiguous",
+        "description": "GetTargets command has 'O T' access (Operate + Timed), but retrieving charging targets is effectively a read operation. Requiring Timed Invoke for a read command is unusual and may prevent read-only monitoring clients from retrieving targets.",
+        "properties_affected": ["PROP_EVSE_009"],
+        "security_impact": "Read-only monitoring applications cannot retrieve charging targets without Operate privilege and Timed Invoke capability, potentially forcing operators to grant higher privileges than necessary for monitoring"
+      },
+      {
+        "id": "GAP_EVSE_009",
+        "location": "Section 9.3 (General)",
+        "normative_weakness": "Unspecified",
+        "description": "No per-fabric isolation is specified for EVSE session data, charging targets, or attribute writes. Multiple fabrics on the same EVSE could interfere with each other's charging configurations (e.g., Fabric A sets targets that Fabric B's ClearTargets deletes).",
+        "properties_affected": ["PROP_EVSE_015", "PROP_EVSE_027"],
+        "security_impact": "Multi-fabric deployments (e.g., home fabric + utility grid fabric) can interfere with each other's charging schedules without coordinated access control"
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_EVSE_001",
+        "clusters_involved": ["Energy EVSE (0x0099)", "Time Synchronization (0x0038)"],
+        "property": {
+          "claim": "Accurate time from Time Synchronization cluster (or equivalent RTC) is required for correct ChargingEnabledUntil and DischargingEnabledUntil expiry enforcement; without it, timed charging sessions cannot be reliably terminated.",
+          "formal": "∀t. (ChargingEnabledUntil ≠ null ∨ DischargingEnabledUntil ≠ null) ∧ ¬accurate_time_available(t) ⟹ expiry_enforcement_undefined(t)"
+        },
+        "violation_scenario": "An attacker compromises the Time Synchronization cluster, advancing the clock to prematurely expire ChargingEnabledUntil and terminate authorized charging sessions, or rolling back the clock to prevent expiry of unauthorized charging sessions"
+      },
+      {
+        "id": "XPROP_EVSE_002",
+        "clusters_involved": ["Energy EVSE (0x0099)", "Device Energy Management"],
+        "property": {
+          "claim": "When the EVSE's associated Device Energy Management cluster supports PA (PowerAdjustment), switching between charging and discharging modes under PA control SHALL NOT generate EnergyTransferStarted/Stopped events — but explicit Disable/EnableCharging/EnableDischarging commands still SHALL generate them.",
+          "formal": "∀t. mode_switch_PA(t) ⟹ ¬generate_event(EnergyTransferStarted, t) ∧ ¬generate_event(EnergyTransferStopped, t)"
+        },
+        "violation_scenario": "Implementation incorrectly suppresses EnergyTransferStarted/Stopped events for all mode switches (including explicit commands) rather than only PA-controlled ones; explicit command invocations lose their audit trail"
+      },
+      {
+        "id": "XPROP_EVSE_003",
+        "clusters_involved": ["Energy EVSE (0x0099)", "Device Energy Management (FA feature)"],
+        "property": {
+          "claim": "If the EVSE supports Device Energy Management FA (ForecastAdjustment) feature, charging profiles set by the EMS via FA commands represent an additional authority channel for controlling EVSE behavior, operating alongside Matter EVSE commands.",
+          "formal": "Feature_FA == true ⟹ EMS_charging_profile(t) additionally controls EVSE_behavior(t)"
+        },
+        "violation_scenario": "EMS with FA authority provides a charging profile that conflicts with a ChargingTargetSchedule set by another controller via SetTargets; no conflict resolution protocol is defined, creating unpredictable EVSE behavior when two authority channels disagree"
+      },
+      {
+        "id": "XPROP_EVSE_004",
+        "clusters_involved": ["Energy EVSE (0x0099)", "Commodity Price"],
+        "property": {
+          "claim": "The EVSE optimizer MAY use Commodity Price cluster to compute cheapest/lowest-GHG charging schedule; if Commodity Price data is manipulated, the resulting charging schedule may be suboptimal or harmful.",
+          "formal": "∀t. charging_schedule_computed_from(CommodityPrice, t) ∧ CommodityPrice_manipulated(t) ⟹ charging_schedule_suboptimal_or_incorrect(t)"
+        },
+        "violation_scenario": "Attacker manipulates Commodity Price cluster to show artificially low prices during a period of high grid demand, causing EVSE to schedule charging during peak hours and contribute to grid congestion — grid demand manipulation through pricing data injection"
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_EVSE_002",
+        "safety_category": "ElectricalSafety",
+        "failure_mode": "EVSE continues charging or discharging through a faulted circuit; GroundFault allows leakage current through persons; OverCurrent heats wiring beyond safe limits; LiveNeutralSwap creates shock hazard on EV chassis",
+        "spec_mitigation": "FaultState/SupplyState bidirectional invariant (SHALL); Fault event CRITICAL priority; some faults require physical operator clearance"
+      },
+      {
+        "property_id": "PROP_EVSE_003",
+        "safety_category": "ElectricalSafety",
+        "failure_mode": "High-current charging initiated through a circuit known to be in a fault state; contactor closured onto a faulted path",
+        "spec_mitigation": "EnableCharging returns FAILURE if FaultState != NoError or diagnostics active (SHALL)"
+      },
+      {
+        "property_id": "PROP_EVSE_004",
+        "safety_category": "ElectricalSafety",
+        "failure_mode": "V2X backfeed initiated through faulted wiring; reverse current into a ground-faulted circuit; dangerous backfeed to utility grid during wiring fault",
+        "spec_mitigation": "EnableDischarging returns FAILURE if FaultState != NoError or diagnostics active (SHALL)"
+      },
+      {
+        "property_id": "PROP_EVSE_005",
+        "safety_category": "ElectricalSafety",
+        "failure_mode": "EV draws more current than circuit wiring can safely carry; wiring insulation heats and melts; circuit breaker fails to trip if MaximumChargeCurrent is set just below breaker rating; sustained high current causes fire",
+        "spec_mitigation": "MaximumChargeCurrent is min() of CircuitCapacity, CableAssemblyCurrentLimit, command field, UserMaximumChargeCurrent (SHALL)"
+      },
+      {
+        "property_id": "PROP_EVSE_006",
+        "safety_category": "ElectricalSafety",
+        "failure_mode": "V2X backfeed current exceeds home wiring rating; transformer secondary overloaded by high reverse current; utility grid hazard for maintenance workers during live-line work",
+        "spec_mitigation": "MaximumDischargeCurrent is min() of CircuitCapacity, CableAssemblyCurrentLimit, command field (SHALL)"
+      },
+      {
+        "property_id": "PROP_EVSE_007",
+        "safety_category": "ElectricalSafety",
+        "failure_mode": "Charging enabled before hardware safety interlocks confirm proper grounding, cable seating, and contactor safety; arcing or shock hazard from partially connected cable",
+        "spec_mitigation": "Safety lockout mechanism described (MAY — WEAK); no formal cluster attribute, event, or command enforces it"
+      },
+      {
+        "property_id": "PROP_EVSE_008",
+        "safety_category": "ElectricalSafety",
+        "failure_mode": "GFCI trip cleared remotely without physical inspection; ground fault still present when charging restarts; person in contact with EV or equipment receives electric shock",
+        "spec_mitigation": "Spec states physical operator action may be required (MAY — WEAK); no mandatory remote lockout mechanism is defined in the cluster"
+      },
+      {
+        "property_id": "PROP_EVSE_016",
+        "safety_category": "EmergencyShutoff",
+        "failure_mode": "Emergency remote shutoff of charging fails; ongoing dangerous current flow cannot be halted; useful in cases of vehicle fire, cable damage, or flood",
+        "spec_mitigation": "Disable command SHALL stop all power flow; FAILURE returned only if command cannot be handled at all"
+      },
+      {
+        "property_id": "PROP_EVSE_023",
+        "safety_category": "SafetyMonitoring",
+        "failure_mode": "Fault in EVSE electrical system not communicated to monitoring system; operator unaware of dangerous condition persisting; delayed response to fire or shock risk",
+        "spec_mitigation": "Fault event CRITICAL priority (SHALL); CRITICAL events are protected from eviction in Matter event log"
+      }
+    ],
+
+    "summary": {
+      "total_properties": 39,
+      "by_importance": {
+        "CRITICAL": 8,
+        "HIGH": 18,
+        "MEDIUM": 13
+      },
+      "by_category": {
+        "AccessControl": 3,
+        "PhysicalSafety": 7,
+        "StateIntegrity": 7,
+        "Timing": 4,
+        "Availability": 4,
+        "EventIntegrity": 6,
+        "Authorization": 2,
+        "Authentication": 1,
+        "SecretProtection": 2,
+        "CrossCluster": 1
+      },
+      "spec_gaps_found": 9,
+      "safety_critical_count": 9,
+      "cross_cluster_properties_found": 4,
+      "assumptions_documented": 6
+    }
+  }
+}

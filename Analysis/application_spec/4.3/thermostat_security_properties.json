@@ -1,0 +1,606 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Thermostat",
+    "cluster_id": "0x0201",
+    "pics_code": "TSTAT",
+    "spec_reference": "Matter 1.5, Section 4.3, Pages 327-373",
+
+    "properties": [
+      {
+        "id": "PROP_TSTAT_001",
+        "name": "EmergencyHeat_Autonomous_Activation",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "When the difference between OccupiedHeatingSetpoint and Calculated Local Temperature meets or exceeds EmergencyHeatDelta while SystemMode is in a heating-related mode, the server SHALL immediately switch to the highest-stage heating mode.",
+        "formal": "∀t. SystemMode(t) ∈ {Heat, EmergencyHeat} ∧ (OccupiedHeatingSetpoint − LocalTemperature ≥ EmergencyHeatDelta) ⟹ SystemMode(t+1) = EmergencyHeat",
+        "spec_source": "Section 4.3.9.42: 'If the difference between the Calculated Local Temperature and OccupiedHeatingSetpoint ... is greater than or equal to the EmergencyHeatDelta and the Thermostat server's SystemMode attribute is in a heating-related mode, then the Thermostat server SHALL immediately switch to the SystemMode attribute value that provides the highest stage of heating (e.g., emergency heat) and continue operating in that running state until the OccupiedHeatingSetpoint value is reached.'",
+        "violation": {
+          "description": "The thermostat fails to escalate to emergency heat when temperature drops dangerously below setpoint. Occupants may be exposed to dangerously cold conditions without the heating system responding with maximum output. Pipe freezing risk increases significantly in cold climates.",
+          "attack_vector": "Write EmergencyHeatDelta to its maximum value (25.5°C, Manage privilege required) to prevent the autonomous emergency heat escalation from ever triggering, even during extreme cold events.",
+          "physical_impact": "Occupants exposed to dangerously cold temperatures; risk of hypothermia in extreme climates; water pipe freezing and burst."
+        },
+        "proverifQuery": "query t:thermostat ⊢ event heating_mode(t) ∧ event threshold_exceeded(t, EmergencyHeatDelta) ==> event emergency_heat_activated(t)"
+      },
+      {
+        "id": "PROP_TSTAT_002",
+        "name": "Setpoints_Within_Absolute_Device_Limits",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "All setpoint attributes SHALL always remain within corresponding manufacturer-defined absolute minimum and maximum limits, regardless of the mechanism that modifies them.",
+        "formal": "∀t. AbsMinHeatSetpointLimit ≤ OccupiedHeatingSetpoint(t) ≤ AbsMaxHeatSetpointLimit ∧ AbsMinCoolSetpointLimit ≤ OccupiedCoolingSetpoint(t) ≤ AbsMaxCoolSetpointLimit",
+        "spec_source": "Section 4.3.6: 'User configurable limits must be within device limits: AbsMinHeatSetpointLimit ≤ MinHeatSetpointLimit ≤ MaxHeatSetpointLimit ≤ AbsMaxHeatSetpointLimit'; 'Setpoints must be within user configurable limits: MinHeatSetpointLimit ≤ OccupiedHeatingSetpoint ≤ MaxHeatSetpointLimit'; Section 4.3.9.13: 'If an attempt is made to set this attribute to a value greater than MaxCoolSetpointLimit or less than MinCoolSetpointLimit, a response with the status code CONSTRAINT_ERROR SHALL be returned.'",
+        "violation": {
+          "description": "Setpoints set outside absolute device limits cause HVAC equipment to target temperatures beyond safe design parameters. The cascading limit-modification attack (lower MinHeatSetpointLimit via Manage, then write OccupiedHeatingSetpoint via Operate to the new sub-absolute-minimum) could defeat the absolute boundary.",
+          "attack_vector": "First lower MinHeatSetpointLimit (Manage privilege) below AbsMinHeatSetpointLimit if absolute limits are not enforced as truly fixed; then write OccupiedHeatingSetpoint (Operate privilege) below the original absolute minimum. Also: use SetpointRaiseLower to push setpoints cumulatively and verify clamping is applied at absolute bounds.",
+          "physical_impact": "HVAC equipment operates outside manufacturer-validated safe parameters; damage to heating/cooling components; dangerously extreme ambient temperatures."
+        },
+        "proverifQuery": "query t:thermostat, sp:temperature ⊢ event setpoint_write_success(t, sp) ==> abs_min(t) <= sp ∧ sp <= abs_max(t)"
+      },
+      {
+        "id": "PROP_TSTAT_003",
+        "name": "SystemMode_Write_Requires_Manage_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "Writes to the SystemMode attribute SHALL only succeed when the invoking principal has Manage (M) or higher privilege.",
+        "formal": "∀p. write(SystemMode, p) succeed ⟹ has_privilege(p, Manage)",
+        "spec_source": "Section 4.3.9, Attribute table, row 0x001C SystemMode: Access column = 'RW VM' — Read requires View, Write requires Manage.",
+        "violation": {
+          "description": "An attacker with only Operate privilege can switch the thermostat to any SystemMode (Off, Heat, Cool, Auto, EmergencyHeat, etc.), circumventing the intended privilege separation between operational adjustments and mode management. Switching to Off mode mid-winter or EmergencyHeat mid-summer has direct physical consequences.",
+          "attack_vector": "Send a Write Attribute request for SystemMode (0x001C) using an Operate-level ACL session; if the server does not enforce the Manage write requirement, the mode change succeeds.",
+          "physical_impact": "Unauthorized mode change to Off in winter causes dangerous cold; unauthorized EmergencyHeat in summer causes overheating and energy waste."
+        },
+        "proverifQuery": "query p:principal ⊢ event system_mode_write_success(p) ==> has_privilege(p, Manage)"
+      },
+      {
+        "id": "PROP_TSTAT_004",
+        "name": "SetWeeklySchedule_Requires_Manage_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The SetWeeklySchedule command SHALL only be accepted from principals with Manage (M) or higher privilege.",
+        "formal": "∀p. invoke(SetWeeklySchedule, p) succeed ⟹ has_privilege(p, Manage)",
+        "spec_source": "Section 4.3.10, Commands table: SetWeeklySchedule (0x01): Access = 'M' (Manage). Conformance = SCH (ScheduleConfiguration feature).",
+        "violation": {
+          "description": "An attacker with Operate-level access can reprogram the entire weekly heating/cooling schedule, overriding temperature programs established by building management systems. All daily setpoint transitions can be replaced to force extreme temperatures at arbitrary times.",
+          "attack_vector": "Send SetWeeklySchedule command from an Operate-privilege Matter session targeting a thermostat where the ACL grants Operate to untrusted nodes, reprogramming all daily transitions.",
+          "physical_impact": "Unauthorized schedule reprogramming causes improper heating/cooling patterns; comfort, health, and energy cost impacts during the entire reprogrammed schedule window."
+        },
+        "proverifQuery": "query p:principal ⊢ event set_weekly_schedule_success(p) ==> has_privilege(p, Manage)"
+      },
+      {
+        "id": "PROP_TSTAT_005",
+        "name": "ClearWeeklySchedule_Requires_Manage_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The ClearWeeklySchedule command SHALL only be accepted from principals with Manage (M) or higher privilege.",
+        "formal": "∀p. invoke(ClearWeeklySchedule, p) succeed ⟹ has_privilege(p, Manage)",
+        "spec_source": "Section 4.3.10, Commands table: ClearWeeklySchedule (0x03): Access = 'M' (Manage). Section 4.3.10.5: 'Upon receipt, all transitions currently stored SHALL be cleared and a default response of SUCCESS SHALL be sent. There are no error responses to this command.'",
+        "violation": {
+          "description": "An Operate-level attacker can erase all programmed weekly schedules with a single no-payload command. This is a destructive, irreversible action within the session. The command always returns SUCCESS with no error paths.",
+          "attack_vector": "Send ClearWeeklySchedule from a session with Operate-level privilege. The command never returns an operation-specific error, so a bypassed access check produces no distinguishable output.",
+          "physical_impact": "Loss of all schedule programming; thermostat reverts to manual setpoint control, potentially leaving occupant spaces unregulated during off-hours."
+        },
+        "proverifQuery": "query p:principal ⊢ event clear_weekly_schedule_success(p) ==> has_privilege(p, Manage)"
+      },
+      {
+        "id": "PROP_TSTAT_006",
+        "name": "SetpointRaiseLower_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "The SetpointRaiseLower command SHALL only be accepted from principals with Operate (O) or higher privilege.",
+        "formal": "∀p. invoke(SetpointRaiseLower, p) succeed ⟹ has_privilege(p, Operate)",
+        "spec_source": "Section 4.3.10, Commands table: SetpointRaiseLower (0x00): Access = 'O' (Operate). Conformance = M (Mandatory).",
+        "violation": {
+          "description": "A View-only principal who can passively read thermostat data could also control setpoint temperatures. Continuous incremental raises or lowers via SetpointRaiseLower, clamped at MinSetpoint/MaxSetpoint limits, allow setpoints to be pushed to extremes.",
+          "attack_vector": "Invoke SetpointRaiseLower with Amount = +127 (max int8, = +12.7°C) repeatedly from a View-privilege session to push OccupiedHeatingSetpoint to MaxHeatSetpointLimit.",
+          "physical_impact": "Unnecessary heating or cooling to extreme setpoints; occupant discomfort; energy waste; potential equipment stress."
+        },
+        "proverifQuery": "query p:principal ⊢ event setpoint_raise_lower_success(p) ==> has_privilege(p, Operate)"
+      },
+      {
+        "id": "PROP_TSTAT_007",
+        "name": "Deadband_Integrity_Maintained_AUTO",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When the AUTO feature is supported, OccupiedHeatingSetpoint SHALL always remain at or below OccupiedCoolingSetpoint minus MinSetpointDeadBand.",
+        "formal": "∀t. Feature_AUTO ⟹ OccupiedHeatingSetpoint(t) ≤ OccupiedCoolingSetpoint(t) − MinSetpointDeadBand",
+        "spec_source": "Section 4.3.6: 'OccupiedHeatingSetpoint ≤ (OccupiedCoolingSetpoint - MinSetpointDeadBand)'; Section 4.3.9.13: 'If this attribute is set to a value that is less than (OccupiedHeatingSetpoint + MinSetpointDeadBand), the value of OccupiedHeatingSetpoint SHALL be adjusted to (OccupiedCoolingSetpoint - MinSetpointDeadBand)'; Section 4.3.9.14: 'If this attribute is set to a value that is greater than (OccupiedCoolingSetpoint - MinSetpointDeadBand), the value of OccupiedCoolingSetpoint SHALL be adjusted to (OccupiedHeatingSetpoint + MinSetpointDeadBand)'.",
+        "violation": {
+          "description": "If the heating setpoint meets or exceeds the cooling setpoint, the thermostat generates simultaneous heating and cooling demand, causing HVAC equipment to work against itself. This results in compressor damage, dramatically elevated energy consumption, and erratic temperature control.",
+          "attack_vector": "Begin with OccupiedHeatingSetpoint = 20°C, OccupiedCoolingSetpoint = 22°C, deadband = 2°C. Write OccupiedCoolingSetpoint to 21°C using Operate privilege; if cascading adjustment of OccupiedHeatingSetpoint to 19°C is not applied, the deadband violation occurs.",
+          "physical_impact": "Simultaneous heating and cooling destroys compressors and wastes extreme amounts of energy; HVAC equipment failure."
+        },
+        "proverifQuery": "query t:thermostat, hs:temperature, cs:temperature, db:temperature ⊢ Feature_AUTO(t) ∧ event setpoints_applied(t, hs, cs, db) ==> hs <= cs - db"
+      },
+      {
+        "id": "PROP_TSTAT_008",
+        "name": "RemoteSensing_LTNE_Write_Blocked",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "When the LTNE feature is present, writing the LocalTemperature bit of the RemoteSensing attribute to 1 SHALL fail with CONSTRAINT_ERROR.",
+        "formal": "Feature_LTNE ∧ write(RemoteSensing, v) ∧ v.LocalTemperature_bit == 1 ⟹ response(CONSTRAINT_ERROR)",
+        "spec_source": "Section 4.3.9.22: 'If the LTNE feature is present in the server, the LocalTemperature RemoteSensing bit value SHALL always report a value of 0. If the LocalTemperature RemoteSensing bit is written with a value of 1 when the LTNE feature is present, the write SHALL fail and the server SHALL report a CONSTRAINT_ERROR.'",
+        "violation": {
+          "description": "If the constraint is not enforced, a Manage-level attacker sets LocalTemperature RemoteSensing bit on an LTNE device, causing undefined behavior in temperature calculation. The device is not designed to expose or relay its internal temperature while LTNE is active.",
+          "attack_vector": "Write RemoteSensing (0x001A) with bit 0 (LocalTemperature) set to 1 using a Manage-level session on a device where LTNE feature is active.",
+          "physical_impact": "Incorrect temperature source selection causes wrong HVAC control decisions; potential continuous heating or cooling due to corrupted temperature input."
+        },
+        "proverifQuery": "query t:thermostat ⊢ Feature_LTNE(t) ∧ event remote_sensing_write_localtemp_1(t) ==> event write_constraint_error(t)"
+      },
+      {
+        "id": "PROP_TSTAT_009",
+        "name": "BuiltIn_Preset_Immutable",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "It SHALL NOT be possible to remove a preset that has BuiltIn set to true, or to change a preset's BuiltIn status from true to false or vice versa.",
+        "formal": "∀p. p.BuiltIn == true ⟹ ¬remove(p) ∧ ¬write(p.BuiltIn, false); p.BuiltIn == false ∧ existing_preset(p) ⟹ ¬write(p.BuiltIn, true)",
+        "spec_source": "Section 4.3.9.59 commit rules: 'If the BuiltIn field is true on the removed PresetStruct, the attribute status SHALL be CONSTRAINT_ERROR'; write rules: 'If the BuiltIn field is true, and the PresetStruct in the current value with a matching PresetHandle field has a BuiltIn field set to false, a response with the status code CONSTRAINT_ERROR SHALL be returned'; 'If the BuiltIn field is false, and the PresetStruct in the current value with a matching PresetHandle field has a BuiltIn field set to true, a response with the status code CONSTRAINT_ERROR SHALL be returned'.",
+        "violation": {
+          "description": "If built-in presets can be deleted or their immutable status changed, factory-provisioned operational modes are permanently destroyed and require factory reset to restore. This is an irreversible action within a session.",
+          "attack_vector": "Write the Presets attribute with a modified entry where BuiltIn is changed from true to false for a built-in preset, then commit; or write the Presets list omitting a built-in PresetHandle, then commit to delete it.",
+          "physical_impact": "Permanent loss of factory preset configurations; thermostat may lack essential operational modes after malicious removal."
+        },
+        "proverifQuery": "query t:thermostat, h:handle ⊢ preset_builtin_true(t, h) ∧ event commit_removes_preset(t, h) ==> event commit_status(t, CONSTRAINT_ERROR)"
+      },
+      {
+        "id": "PROP_TSTAT_010",
+        "name": "Schedule_Capacity_Limit_Enforced",
+        "category": "Availability",
+        "importance": "HIGH",
+        "claim": "The thermostat SHALL reject schedule additions that would cause pending schedules to exceed NumberOfSchedules or transitions to exceed NumberOfScheduleTransitions, responding with RESOURCE_EXHAUSTED.",
+        "formal": "pending_schedule_count > NumberOfSchedules ∨ pending_transition_count > NumberOfScheduleTransitions ⟹ response(RESOURCE_EXHAUSTED)",
+        "spec_source": "Section 4.3.9.60: 'If appending the received ScheduleStruct to the pending list of Schedules would cause the total number of pending schedules to exceed the value of the NumberOfSchedules attribute, a response with the status code RESOURCE_EXHAUSTED SHALL be returned'; 'If the number of transitions exceeds the NumberOfScheduleTransitions value, a response with the status code RESOURCE_EXHAUSTED SHALL be returned'.",
+        "violation": {
+          "description": "Without capacity enforcement, an attacker can exhaust schedule storage, preventing legitimate schedule creation or update operations (denial-of-service). On constrained devices, unlimited schedule writes may also cause memory corruption or device instability.",
+          "attack_vector": "Send repeated Schedules attribute writes (each with null ScheduleHandle, creating new entries) until storage is exhausted; then legitimate management operations fail with no capacity remaining.",
+          "physical_impact": "Building management loses ability to update or add new schedule programming; thermostat locked into existing schedule indefinitely."
+        },
+        "proverifQuery": "query t:thermostat, n:uint8 ⊢ event schedule_add_attempt(t, n) ∧ n > NumberOfSchedules(t) ==> event resource_exhausted(t)"
+      },
+      {
+        "id": "PROP_TSTAT_011",
+        "name": "ActivePresetHandle_Cleared_On_Manual_Setpoint_Write",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "Writing OccupiedCoolingSetpoint or OccupiedHeatingSetpoint when PRES feature is supported and the space is occupied SHALL set ActivePresetHandle to null.",
+        "formal": "write(OccupiedCoolingSetpoint) ∧ Feature_PRES ∧ (¬Feature_OCC ∨ Occupancy.Occupied==1) ⟹ ActivePresetHandle == null; write(OccupiedHeatingSetpoint) ∧ Feature_PRES ∧ (¬Feature_OCC ∨ Occupancy.Occupied==1) ⟹ ActivePresetHandle == null",
+        "spec_source": "Section 4.3.9.13: 'If a client changes the value of this attribute, the server supports the PRES feature, and the server either does not support the OCC feature or the Occupied bit is set on the Occupancy attribute, the value of the ActivePresetHandle attribute SHALL be set to null'; Section 4.3.9.14: identical requirement for OccupiedHeatingSetpoint.",
+        "violation": {
+          "description": "If ActivePresetHandle is not cleared when a manual setpoint override is applied, the thermostat reports an active preset that no longer matches actual operating setpoints. Building management systems relying on ActivePresetHandle to determine operational mode receive false information.",
+          "attack_vector": "Write OccupiedCoolingSetpoint to override a preset's setpoint value. If ActivePresetHandle is not cleared, monitoring systems see a named preset as 'active' while the device runs different manual setpoints.",
+          "physical_impact": "None directly; audit trail and operational status reporting corrupted, leading to incorrect decisions by building management systems."
+        },
+        "proverifQuery": "query t:thermostat ⊢ Feature_PRES(t) ∧ event occupied_setpoint_write(t) ==> ActivePresetHandle(t) == null"
+      },
+      {
+        "id": "PROP_TSTAT_012",
+        "name": "SetpointHold_Expiry_Timestamp_Consistency",
+        "category": "Timing",
+        "importance": "HIGH",
+        "claim": "SetpointHoldExpiryTimestamp SHALL be correctly set to now+duration*60 when hold activates with a non-null duration, and SHALL be set to null when hold is deactivated.",
+        "formal": "TemperatureSetpointHold = SetpointHoldOn ∧ TemperatureSetpointHoldDuration ≠ null ⟹ SetpointHoldExpiryTimestamp = UTC_now() + TemperatureSetpointHoldDuration × 60; TemperatureSetpointHold = SetpointHoldOff ⟹ SetpointHoldExpiryTimestamp = null",
+        "spec_source": "Section 4.3.9.29: 'If this attribute is updated to SetpointHoldOn and the TemperatureSetpointHoldDuration has a non-null value and the SetpointHoldExpiryTimestamp is supported, the server SHALL update the SetpointHoldExpiryTimestamp with a value of current UTC timestamp, in seconds, plus the value in TemperatureSetpointHoldDuration multiplied by 60'; 'If this attribute is updated to SetpointHoldOff and the SetpointHoldExpiryTimestamp is supported, the server SHALL set the SetpointHoldExpiryTimestamp to null'.",
+        "violation": {
+          "description": "Incorrect expiry timestamps allow hold timers to never expire or to expire prematurely. A malicious operator can activate SetpointHoldOn with TemperatureSetpointHoldDuration = 1440 minutes (24 hours max) to freeze setpoints for an entire day, overriding all scheduled transitions during that period.",
+          "attack_vector": "Write TemperatureSetpointHoldDuration to 1440 (max, 24 hours) and activate SetpointHoldOn using Manage privilege; all scheduled setpoint transitions are suppressed for 24 hours.",
+          "physical_impact": "Schedules disabled for up to 24 hours; building may be over-heated or over-cooled with no automatic correction via schedule."
+        },
+        "proverifQuery": "query t:thermostat ⊢ event hold_off(t) ==> SetpointHoldExpiryTimestamp(t) == null"
+      },
+      {
+        "id": "PROP_TSTAT_013",
+        "name": "SetActiveScheduleRequest_Handle_Validated",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "SetActiveScheduleRequest SHALL return INVALID_COMMAND if the provided ScheduleHandle does not match any ScheduleStruct in the Schedules attribute.",
+        "formal": "∀h. invoke(SetActiveScheduleRequest, h) ∧ ¬∃s ∈ Schedules. s.ScheduleHandle == h ⟹ response(INVALID_COMMAND)",
+        "spec_source": "Section 4.3.10.6.2: 'Upon receipt, if the Schedules attribute contains a ScheduleStruct whose ScheduleHandle field matches the value of the ScheduleHandle field, the server SHALL set the thermostat's ActiveScheduleHandle attribute to the value of the ScheduleHandle field. Otherwise, the server SHALL return a status code of INVALID_COMMAND.'",
+        "violation": {
+          "description": "If arbitrary handle values are accepted without validation, an attacker can activate a non-existent or crafted handle reference, corrupting ActiveScheduleHandle state and potentially causing undefined schedule-activation behavior or memory out-of-bounds access on constrained devices.",
+          "attack_vector": "Send SetActiveScheduleRequest with a random or crafted octstr handle value (up to 16 bytes) that does not correspond to any configured ScheduleStruct.",
+          "physical_impact": "Undefined thermostat schedule behavior; potential device instability or crash on constrained hardware."
+        },
+        "proverifQuery": "query t:thermostat, h:handle ⊢ invoke(SetActiveScheduleRequest, t, h) ∧ ¬schedule_exists(t, h) ==> event invalid_command(t)"
+      },
+      {
+        "id": "PROP_TSTAT_014",
+        "name": "SetActivePresetRequest_Handle_Validated_Or_Null",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "SetActivePresetRequest SHALL return INVALID_COMMAND if the PresetHandle field is non-null and does not match any PresetStruct in the Presets attribute.",
+        "formal": "∀h. invoke(SetActivePresetRequest, h) ∧ h ≠ null ∧ ¬∃p ∈ Presets. p.PresetHandle == h ⟹ response(INVALID_COMMAND)",
+        "spec_source": "Section 4.3.10.7.2: 'If this command is received with a PresetHandle such that the Presets attribute does not contain a PresetStruct whose PresetHandle field matches the value of the PresetHandle, the server SHALL return a status code of INVALID_COMMAND'.",
+        "violation": {
+          "description": "Accepting arbitrary preset handles could set ActivePresetHandle to a handle with no corresponding preset definition, corrupting the active preset state. If internal preset lookup does not validate, memory safety issues may arise on constrained devices.",
+          "attack_vector": "Send SetActivePresetRequest with a manufactured non-null handle value not present in the Presets list.",
+          "physical_impact": "ActivePresetHandle corrupted; thermostat state reporting inconsistency; potential device instability."
+        },
+        "proverifQuery": "query t:thermostat, h:handle ⊢ invoke(SetActivePresetRequest, t, h) ∧ h != null ∧ ¬preset_exists(t, h) ==> event invalid_command(t)"
+      },
+      {
+        "id": "PROP_TSTAT_015",
+        "name": "SetWeeklySchedule_Setpoints_Within_AbsLimits",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "SetWeeklySchedule SHALL reject any sequence where a setpoint transition is outside AbsMin/MaxSetPointLimit, returning CONSTRAINT_ERROR for the entire sequence.",
+        "formal": "∃tr ∈ Transitions. (tr.HeatSetpoint ∉ [AbsMinHeatSetpointLimit, AbsMaxHeatSetpointLimit] ∨ tr.CoolSetpoint ∉ [AbsMinCoolSetpointLimit, AbsMaxCoolSetpointLimit]) ⟹ response(CONSTRAINT_ERROR)",
+        "spec_source": "Section 4.3.10.2.5: 'When any of the setpoints sent in the sequence is out of range (AbsMin/MaxSetPointLimit), or when the Mode for Sequence field includes a mode not supported by the device, the status of the response SHALL be CONSTRAINT_ERROR and no setpoints from the entire sequence SHOULD be used.'",
+        "violation": {
+          "description": "If out-of-range setpoints in schedule transitions are accepted, the scheduled thermostat attempts to reach temperatures beyond absolute device-safe limits. During scheduled transitions (potentially overnight without user awareness), this could operate HVAC equipment dangerously.",
+          "attack_vector": "Send SetWeeklySchedule with HeatSetpoint values above AbsMaxHeatSetpointLimit or CoolSetpoint values below AbsMinCoolSetpointLimit to inject unsafe scheduled setpoints.",
+          "physical_impact": "HVAC equipment operates outside manufacturer-specified safe temperature bounds, causing equipment damage or hazardous ambient temperatures."
+        },
+        "proverifQuery": "query t:thermostat, sp:temperature ⊢ event scheduled_setpoint_activated(t, sp) ==> abs_min(t) <= sp ∧ sp <= abs_max(t)"
+      },
+      {
+        "id": "PROP_TSTAT_016",
+        "name": "SetpointLimit_Change_Cascades_To_Setpoints",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When MinHeatSetpointLimit or MaxHeatSetpointLimit (or their cool equivalents) is modified and the change conflicts with existing setpoint values, those setpoints SHALL be adjusted by the minimum amount to maintain consistency.",
+        "formal": "write(MinHeatSetpointLimit, v) ∧ OccupiedHeatingSetpoint < v ⟹ OccupiedHeatingSetpoint == v; write(MaxHeatSetpointLimit, v) ∧ OccupiedHeatingSetpoint > v ⟹ OccupiedHeatingSetpoint == v",
+        "spec_source": "Section 4.3.9.17: 'If an attempt is made to set this attribute to a value which conflicts with setpoint values then those setpoints SHALL be adjusted by the minimum amount to permit this attribute to be set to the desired value. If an attempt is made to set this attribute to a value which is not consistent with the constraints and cannot be resolved by modifying setpoints then a response with the status code CONSTRAINT_ERROR SHALL be returned.'",
+        "violation": {
+          "description": "If setpoint limit changes do not cascade to adjust existing setpoints, the device can enter a state where active operational setpoints violate the newly effective limits. The thermostat then operates with internally inconsistent state: limits claim one range while setpoints are outside it.",
+          "attack_vector": "Write MinHeatSetpointLimit to a value higher than current OccupiedHeatingSetpoint without triggering the cascading setpoint adjustment; the active setpoint then violates its own minimum limit.",
+          "physical_impact": "Thermostat operates with internally inconsistent setpoints; HVAC control behavior becomes unpredictable and may cycle inappropriately."
+        },
+        "proverifQuery": "query t:thermostat, new_min:temperature ⊢ event min_limit_written(t, new_min) ==> ∀sp. active_heating_setpoint(t, sp) ∧ sp >= new_min"
+      },
+      {
+        "id": "PROP_TSTAT_017",
+        "name": "Preset_Capacity_Limit_Enforced",
+        "category": "Availability",
+        "importance": "HIGH",
+        "claim": "The thermostat SHALL reject Presets attribute writes that would cause the total count of pending presets to exceed NumberOfPresets, returning RESOURCE_EXHAUSTED.",
+        "formal": "pending_preset_count + 1 > NumberOfPresets ⟹ response(RESOURCE_EXHAUSTED)",
+        "spec_source": "Section 4.3.9.59: 'If appending the received PresetStruct to the pending list of Presets would cause the total number of pending presets to exceed the value of the NumberOfPresets attribute, a response with the status code RESOURCE_EXHAUSTED SHALL be returned.'",
+        "violation": {
+          "description": "Without capacity enforcement, repeated new-preset writes (null PresetHandle) exhaust storage, preventing legitimate preset creation by building management systems. This is a straightforward denial-of-service requiring only Manage privilege.",
+          "attack_vector": "Repeatedly write the Presets attribute with null-handle entries (each creating a new preset) until NumberOfPresets is reached, then block all further legitimate preset additions.",
+          "physical_impact": "Denial-of-service on preset management; no new temperature presets can be added by authorized operators."
+        },
+        "proverifQuery": "query t:thermostat ⊢ event preset_add_attempt(t) ∧ preset_count_at_max(t) ==> event resource_exhausted(t)"
+      },
+      {
+        "id": "PROP_TSTAT_018",
+        "name": "BuiltIn_Schedule_Removal_Blocked_At_Commit",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "On commit, removal of a ScheduleStruct with BuiltIn set to true SHALL be rejected with CONSTRAINT_ERROR.",
+        "formal": "∀s. s.BuiltIn == true ∧ ¬contains(pending_Schedules, s.ScheduleHandle) ⟹ commit_status(CONSTRAINT_ERROR)",
+        "spec_source": "Section 4.3.9.60 commit rules: 'If the BuiltIn field is true on the removed ScheduleStruct, the attribute status SHALL be CONSTRAINT_ERROR.'",
+        "violation": {
+          "description": "If built-in schedules can be silently deleted via the write-commit model (by omitting them from the pending write), factory-provisioned schedules that ensure proper operation in specific deployments (e.g., safety-critical HVAC control schedules) are permanently lost.",
+          "attack_vector": "Write the Schedules attribute omitting a BuiltIn ScheduleStruct handle from the list (effectively queueing its deletion), then commit, permanently removing the factory-programmed schedule.",
+          "physical_impact": "Loss of factory-programmed schedule configurations with potentially cascading effects on HVAC operational behavior."
+        },
+        "proverifQuery": "query t:thermostat, h:handle ⊢ schedule_builtin_true(t, h) ∧ event commit_omits_schedule(t, h) ==> event commit_error(t, CONSTRAINT_ERROR)"
+      },
+      {
+        "id": "PROP_TSTAT_019",
+        "name": "LocalTemperature_LTNE_Null_Always",
+        "category": "SecretProtection",
+        "importance": "MEDIUM",
+        "claim": "When the LTNE feature is present, the LocalTemperature attribute SHALL always report null, preventing external observation of the internal measured temperature.",
+        "formal": "Feature_LTNE ⟹ ∀t. LocalTemperature(t) == null",
+        "spec_source": "Section 4.3.9.2: 'Otherwise, if the LTNE feature is supported, there is no feedback externally available for the LocalTemperatureCalibration. In that case, the LocalTemperature attribute SHALL always report null.'",
+        "violation": {
+          "description": "If LocalTemperature is reported when LTNE is active, the internal calculated temperature (intended to be private) is exposed, potentially enabling side-channel inference about occupancy or HVAC operational state.",
+          "attack_vector": "Subscribe to or read the LocalTemperature attribute on a device with LTNE feature; if not null, the internal temperature feed is inadvertently exposed.",
+          "physical_impact": "Privacy leak of internal temperature measurement; no direct physical safety impact."
+        },
+        "proverifQuery": "query t:thermostat ⊢ Feature_LTNE(t) ==> LocalTemperature(t) == null"
+      },
+      {
+        "id": "PROP_TSTAT_020",
+        "name": "SetpointChangeSource_Attribution_Accurate",
+        "category": "EventIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The SetpointChangeSource attribute SHALL accurately reflect whether the current setpoint was changed manually, by schedule, or by external command.",
+        "formal": "∀t. setpoint_changed_by_schedule(t) ⟹ SetpointChangeSource(t) == Schedule; setpoint_changed_by_external_write(t) ⟹ SetpointChangeSource(t) == External",
+        "spec_source": "Section 4.3.9.33: 'This attribute SHALL indicate the source of the current active OccupiedCoolingSetpoint or OccupiedHeatingSetpoint (i.e., who or what determined the current setpoint). This attribute enables service providers to determine whether changes to setpoints were initiated due to occupant comfort, scheduled programming or some other source.'",
+        "violation": {
+          "description": "Incorrect source attribution prevents building management systems from distinguishing occupant-initiated, schedule-driven, and unauthorized remote setpoint changes. An attacker changing setpoints could appear to be a legitimate schedule event if attribution is incorrect.",
+          "attack_vector": "Externally write setpoints without triggering SetpointChangeSource update to External; manipulated setpoints appear as schedule-driven in audit logs.",
+          "physical_impact": "None directly; audit trail integrity compromised, masking unauthorized setpoint manipulation."
+        },
+        "proverifQuery": "query t:thermostat ⊢ event external_setpoint_write(t) ==> SetpointChangeSource(t) == External"
+      },
+      {
+        "id": "PROP_TSTAT_021",
+        "name": "ControlSequenceOfOperation_Write_Silently_Ignored",
+        "category": "Authorization",
+        "importance": "MEDIUM",
+        "claim": "Writes to ControlSequenceOfOperation SHALL be silently ignored with a SUCCESS response, leaving the attribute value unchanged.",
+        "formal": "∀v. write(ControlSequenceOfOperation, v) ⟹ ControlSequenceOfOperation_unchanged ∧ response(SUCCESS)",
+        "spec_source": "Section 4.3.9.23: 'If an attempt is made to write to this attribute, the server SHALL silently ignore the write and the value of this attribute SHALL remain unchanged. This behavior is in place for backwards compatibility with existing thermostats.'",
+        "violation": {
+          "description": "If the server actually applies writes to ControlSequenceOfOperation, the set of valid SystemMode values could be changed without the operator's knowledge. Since writes always return SUCCESS (even per the silent-ignore spec), there is no mechanism for the client to detect whether the value was applied or ignored.",
+          "attack_vector": "Write ControlSequenceOfOperation to CoolingOnly (value 0) to attempt to disable heating via a Manage-level write; if the server applies the value, SystemMode values for heating become invalid.",
+          "physical_impact": "If applied (non-compliant behavior): potential loss of heating or cooling capability via unauthorized operating mode restriction."
+        },
+        "proverifQuery": "query t:thermostat, v:ControlSequenceEnum ⊢ event csoo_write(t, v) ==> csoo_value_unchanged(t) ∧ response_success(t)"
+      },
+      {
+        "id": "PROP_TSTAT_022",
+        "name": "MinSetpointDeadBand_Write_Silently_Ignored",
+        "category": "Authorization",
+        "importance": "MEDIUM",
+        "claim": "Writes to MinSetpointDeadBand SHALL be silently ignored, leaving the attribute value unchanged.",
+        "formal": "∀v. write(MinSetpointDeadBand, v) ⟹ MinSetpointDeadBand_unchanged",
+        "spec_source": "Section 4.3.9.21: 'For backwards compatibility, this attribute is optionally writeable. However any writes to this attribute SHALL be silently ignored.'",
+        "violation": {
+          "description": "If MinSetpointDeadBand writes are accepted and applied, an attacker with Manage access could reduce the deadband to 0°C, enabling heating and cooling setpoints to be set identically. Combined with PROP_TSTAT_007 violation, this enables simultaneous heating and cooling.",
+          "attack_vector": "Write MinSetpointDeadBand to 0 (SignedTemperature = 0) to eliminate the mandatory separation between heating and cooling setpoints, then set both to the same value.",
+          "physical_impact": "If applied (non-compliant): deadband protection defeated, enabling simultaneous heating/cooling and HVAC equipment damage."
+        },
+        "proverifQuery": "query t:thermostat, v:SignedTemperature ⊢ event deadband_write(t, v) ==> deadband_unchanged(t)"
+      },
+      {
+        "id": "PROP_TSTAT_023",
+        "name": "SetpointRaiseLower_Results_Clamped_Not_Error",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When SetpointRaiseLower results in a setpoint outside MinCoolSetpointLimit/MaxCoolSetpointLimit or MinHeatSetpointLimit/MaxHeatSetpointLimit, the value SHALL be clamped to those limits without returning an error.",
+        "formal": "invoke(SetpointRaiseLower, Amount) ∧ (Setpoint + Amount × 0.1°C) > MaxLimit ⟹ Setpoint == MaxLimit ∧ response(SUCCESS); (Setpoint + Amount × 0.1°C) < MinLimit ⟹ Setpoint == MinLimit ∧ response(SUCCESS)",
+        "spec_source": "Section 4.3.10.1.3: 'Upon receipt, the attributes for the indicated setpoint(s) SHALL have the amount specified in the Amount field added to them. If the resulting value is outside the limits imposed by MinCoolSetpointLimit, MaxCoolSetpointLimit, MinHeatSetpointLimit and MaxHeatSetpointLimit, the value is clamped to those limits. This is not considered an error condition.'",
+        "violation": {
+          "description": "If clamping is not applied and out-of-range adjustments are rejected with an error, clients expecting clamping semantics will receive unexpected error responses. If values outside limits are applied without clamping, setpoints exceed user-configured limit bounds.",
+          "attack_vector": "Repeatedly call SetpointRaiseLower with Amount = +127 to verify that setpoints stop at MaxHeatSetpointLimit (not beyond) and that SUCCESS is returned, not CONSTRAINT_ERROR, at the boundary.",
+          "physical_impact": "If clamping not applied: setpoints exceed user-configured limits, potentially reaching unsafe temperatures between user-min and absolute-min bounds."
+        },
+        "proverifQuery": "query t:thermostat, sp:temperature ⊢ event setpoint_raise_lower_applied(t, sp) ==> sp >= min_limit(t) ∧ sp <= max_limit(t)"
+      },
+      {
+        "id": "PROP_TSTAT_024",
+        "name": "GetWeeklySchedule_MultiMode_MultiDay_Rejected_If_Unsupported",
+        "category": "Availability",
+        "importance": "MEDIUM",
+        "claim": "If the thermostat cannot handle GetWeeklySchedule with multiple days or multiple modes in one command, it SHALL respond with INVALID_COMMAND.",
+        "formal": "¬supports_multi_day ∧ popcount(DaysToReturn) > 1 ⟹ response(INVALID_COMMAND); ¬supports_multi_mode ∧ popcount(ModeToReturn) > 1 ⟹ response(INVALID_COMMAND)",
+        "spec_source": "Section 4.3.10.3.3: 'If thermostat cannot handle incoming command with multiple days and/or multiple modes within one command, it SHALL send default response of INVALID_COMMAND in return.'",
+        "violation": {
+          "description": "If multi-day or multi-mode requests are not properly rejected on incapable devices, the server may return partial, undefined, or corrupt schedule data to clients. Clients acting on corrupt schedule readbacks may program incorrect setpoints.",
+          "attack_vector": "Send GetWeeklySchedule with all 7 days and both heat+cool modes set on a single-day/single-mode device; if not rejected, observe what schedule data is returned and whether it can be used to infer or manipulate the stored schedule.",
+          "physical_impact": "Incorrect schedule readback leading to wrong setpoint programming by management systems."
+        },
+        "proverifQuery": "query t:thermostat, days:ScheduleDayBitmap ⊢ ¬supports_multiday(t) ∧ popcount(days) > 1 ∧ event get_weekly_schedule(t, days) ==> event invalid_command(t)"
+      },
+      {
+        "id": "PROP_TSTAT_025",
+        "name": "OccupiedSetback_Out_Of_Range_Clamped_Returns_Success",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "Writes to OccupiedSetback outside [OccupiedSetbackMin, OccupiedSetbackMax] SHALL be clamped to the nearest boundary and SHALL return SUCCESS rather than an error.",
+        "formal": "write(OccupiedSetback, v) ∧ v > OccupiedSetbackMax ⟹ OccupiedSetback == OccupiedSetbackMax ∧ response(SUCCESS); write(OccupiedSetback, v) ∧ v < OccupiedSetbackMin ⟹ OccupiedSetback == OccupiedSetbackMin ∧ response(SUCCESS)",
+        "spec_source": "Section 4.3.9.36: 'If the Thermostat client attempts to write OccupiedSetback to a value greater than OccupiedSetbackMax, the Thermostat server SHALL set its OccupiedSetback value to OccupiedSetbackMax and SHALL send a Write Attribute Response command with a Status Code field enumeration of SUCCESS response. If the Thermostat client attempts to write OccupiedSetback to a value less than OccupiedSetbackMin, the Thermostat server SHALL set its OccupiedSetback value to OccupiedSetbackMin and SHALL send a Write Attribute Response command with a Status Code field enumeration of SUCCESS response.'",
+        "violation": {
+          "description": "If clamping is not applied, excessively large setback values may be accepted, causing the thermostat to tolerate large temperature deviations before activating HVAC, reducing comfort and responsiveness. If the server returns CONSTRAINT_ERROR instead of clamping, client behavior is inconsistent with spec.",
+          "attack_vector": "Write OccupiedSetback to 0xFF (25.5°C, max UnsignedTemperature) on a device where OccupiedSetbackMax is, e.g., 2.0°C; if not clamped, the thermostat defers HVAC activation until 25.5°C beyond setpoint.",
+          "physical_impact": "HVAC under-responsiveness; occupants experience large temperature swings before heating/cooling activates."
+        },
+        "proverifQuery": "query t:thermostat, v:UnsignedTemperature ⊢ event setback_write(t, v) ==> setback_within_device_limits(t) ∧ response_success(t)"
+      },
+      {
+        "id": "PROP_TSTAT_026",
+        "name": "LocalTemperatureCalibration_Clamped_Returns_Success",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "Writing LocalTemperatureCalibration to an out-of-range value SHALL clamp the applied value to the nearest supported limit and return SUCCESS, not an error.",
+        "formal": "write(LocalTemperatureCalibration, v) ∧ v > max_calibration ⟹ LocalTemperatureCalibration == max_calibration ∧ response(SUCCESS); write(LocalTemperatureCalibration, v) ∧ v < min_calibration ⟹ LocalTemperatureCalibration == min_calibration ∧ response(SUCCESS)",
+        "spec_source": "Section 4.3.9.12: 'If a Thermostat client attempts to write LocalTemperatureCalibration attribute to an unsupported value (e.g., out of the range supported by the Thermostat server), the Thermostat server SHALL respond with a status of SUCCESS and set the value of LocalTemperatureCalibration to the upper or lower limit reached.'",
+        "violation": {
+          "description": "If clamping is not applied, extreme calibration offsets cause the thermostat to operate at systematically incorrect temperatures. An attacker with Manage privilege applying a maximum calibration shift (+12.7°C or -12.7°C) could cause the thermostat to measure and report significantly incorrect temperatures, triggering inappropriate HVAC responses.",
+          "attack_vector": "Write LocalTemperatureCalibration to 127 (SignedTemperature = +12.7°C) using Manage privilege; if no device-side max limit is enforced below the type maximum, the thermostat reports all temperatures as 12.7°C higher than actual, preventing heating from ever triggering at cold temperatures.",
+          "physical_impact": "Systematically incorrect temperature reporting causes HVAC control decisions based on false calibration, potentially causing dangerous underfitting of heating or cooling."
+        },
+        "proverifQuery": "query t:thermostat, v:SignedTemperature ⊢ event calibration_write(t, v) ==> calibration_within_device_range(t) ∧ response_success(t)"
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "Matter fabric ACL entries correctly grant Operate and Manage privileges only to authorized fabrics and node IDs; the underlying Matter access control enforcement is correct.",
+        "type": "Implicit",
+        "source": "Matter Core Specification (Access Control Cluster, Section 6)",
+        "dependencies": ["PROP_TSTAT_003", "PROP_TSTAT_004", "PROP_TSTAT_005", "PROP_TSTAT_006"],
+        "impact_if_violated": "All command access control properties (PROP_TSTAT_003 through PROP_TSTAT_006) fail; any Matter node can invoke any command regardless of privilege requirement."
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "The device has a reliable, synchronized UTC time source for SetpointHoldExpiryTimestamp calculation; MSCH feature mandates time synchronization support.",
+        "type": "Explicit",
+        "source": "Section 4.3.4.2: 'If this feature is supported, the thermostat SHALL support a mechanism to do time synchronization.'",
+        "dependencies": ["PROP_TSTAT_012"],
+        "impact_if_violated": "SetpointHoldExpiryTimestamp calculations and MSCH schedule transitions fire at incorrect UTC times, violating hold expiry timing properties and schedule activation correctness."
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "The Calculated Local Temperature reflects actual physical temperature with sufficient accuracy for HVAC control decisions (sensor accuracy and calibration are within expected operational range).",
+        "type": "Implicit",
+        "source": "Derived from Section 4.3.9.1 (Calculated Local Temperature definition) and cluster intent",
+        "dependencies": ["PROP_TSTAT_001", "PROP_TSTAT_002"],
+        "impact_if_violated": "EmergencyHeat trigger calculations and setpoint limit comparisons based on falsified temperature values lead to inappropriate HVAC activation or deactivation; adversarial sensor manipulation bypasses safety properties."
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "The transactional write model for Presets and Schedules (pend-then-commit) ensures atomicity: a commit entirely succeeds or fails without partial application.",
+        "type": "Implicit",
+        "source": "Derived from Section 4.3.9.59 and 4.3.9.60 commit semantics",
+        "dependencies": ["PROP_TSTAT_009", "PROP_TSTAT_018"],
+        "impact_if_violated": "Partial commits to Presets or Schedules leave the device in an inconsistent state; some changes applied and others not, creating undefined preset/schedule configurations."
+      },
+      {
+        "id": "ASSUM_005",
+        "statement": "Absolute setpoint limits (AbsMinHeatSetpointLimit, AbsMaxHeatSetpointLimit, AbsMinCoolSetpointLimit, AbsMaxCoolSetpointLimit) are truly Fixed (Quality=F) and cannot be modified by any external request.",
+        "type": "Explicit",
+        "source": "Section 4.3.9 attribute table: AbsMin/MaxHeatSetpointLimit rows — Access = 'R V' (read-only), Quality = 'F' (Fixed)",
+        "dependencies": ["PROP_TSTAT_002", "PROP_TSTAT_015"],
+        "impact_if_violated": "If absolute limits can be changed, the entire setpoint safety hierarchy collapses; user-configurable limits and setpoints can breach what were intended as immutable device boundaries."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 4.3 (entire cluster)",
+        "normative_weakness": "Unspecified",
+        "description": "The Thermostat cluster defines zero Matter events. Critical state changes — SystemMode changes, EmergencyHeat autonomous activation, SetpointHold expiry, preset and schedule activation — are observable only via attribute subscriptions, which are best-effort and not guaranteed.",
+        "properties_affected": ["PROP_TSTAT_001", "PROP_TSTAT_011", "PROP_TSTAT_020"],
+        "security_impact": "Missing events make it impossible for monitoring applications to reliably audit thermostat state changes. An attacker who changes settings and then restores them leaves no event trail and may not be detected by sampling-based attribute monitoring."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 4.3.9.23",
+        "normative_weakness": "Unspecified",
+        "description": "Writes to ControlSequenceOfOperation are silently ignored and always return SUCCESS, regardless of whether the value was applied. Clients cannot distinguish between 'write applied' and 'write silently discarded', violating the principle of accurate write feedback.",
+        "properties_affected": ["PROP_TSTAT_021"],
+        "security_impact": "Clients relying on ControlSequenceOfOperation writes to restrict SystemMode receive false SUCCESS confirmations; actual mode restriction never occurs. Attackers can use the always-SUCCESS response to mask what would otherwise be detectable write attempts."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 4.3.9.21",
+        "normative_weakness": "Unspecified",
+        "description": "Writes to MinSetpointDeadBand are silently ignored. There is no mechanism to dynamically update the deadband, and the always-ignored-with-success behavior means clients receive false confirmation of deadband changes.",
+        "properties_affected": ["PROP_TSTAT_022", "PROP_TSTAT_007"],
+        "security_impact": "Clients cannot reduce an excessively large deadband remotely. Operators may believe they have changed the deadband (SUCCESS returned) while the actual value remains unchanged, causing unexpected HVAC behavior."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 4.3.10.1 (SetpointRaiseLower)",
+        "normative_weakness": "Unspecified",
+        "description": "No rate limiting is specified for the SetpointRaiseLower command. An Operate-level attacker can send it at the maximum Matter message rate to continuously shift setpoints, causing excessive HVAC cycling with no detection or throttling mechanism.",
+        "properties_affected": ["PROP_TSTAT_006"],
+        "security_impact": "Rapid repeated SetpointRaiseLower invocations cause excessive HVAC cycling, dramatically increasing energy consumption, accelerating compressor wear, and creating unstable temperature control — all without any spec-defined rate limiting or alarm."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 4.3.9.42 (EmergencyHeatDelta)",
+        "normative_weakness": "Unspecified",
+        "description": "EmergencyHeat activation is an autonomous SystemMode change triggered internally by the server. The spec defines no event, no notification, and no acknowledgment mechanism for this critical state change.",
+        "properties_affected": ["PROP_TSTAT_001"],
+        "security_impact": "Silent emergency heat activation means monitoring systems may not promptly detect or audit critical mode escalations. Emergency heat events cannot be reliably detected or correlated with a specific trigger by remote management."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 4.3.9.24 (SystemMode)",
+        "normative_weakness": "Unspecified",
+        "description": "The spec states that SystemMode SHALL be limited by ControlSequenceOfOperation, but provides no explicit error response for what SHALL happen when SystemMode is written to a value inconsistent with the current ControlSequenceOfOperation value.",
+        "properties_affected": ["PROP_TSTAT_003"],
+        "security_impact": "Implementations may interpret this constraint inconsistently; some may silently reject invalid SystemMode values, others may apply them and create undefined HVAC behavior. The absence of a normative response code leaves this as an implementation variant attack surface."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 4.3.9.59-4.3.9.60 (Presets/Schedules commit model)",
+        "normative_weakness": "Unspecified",
+        "description": "TOCTOU race condition in the Presets/Schedules transactional write model: SetActivePresetRequest can set ActivePresetHandle to a preset that is concurrently being removed in a pending write-commit sequence. The spec handles this only at commit with INVALID_IN_STATE, but not during the pending phase.",
+        "properties_affected": ["PROP_TSTAT_009", "PROP_TSTAT_018"],
+        "security_impact": "A race between SetActivePresetRequest and a Presets commit that removes the active preset can leave ActivePresetHandle pointing to a non-existent preset handle during the window between pending write and commit."
+      },
+      {
+        "id": "GAP_008",
+        "location": "Section 4.3.4.2 (MatterScheduleConfiguration Feature)",
+        "normative_weakness": "Unspecified",
+        "description": "MSCH feature requires time synchronization but the spec does not specify what happens to active schedules when time sync is lost, when the UTC clock jumps significantly, or when the device has no time source on boot.",
+        "properties_affected": ["PROP_TSTAT_012"],
+        "security_impact": "Time sync loss or deliberate time manipulation (via Time Sync cluster or NTP) could cause schedule transitions to fire at wrong times or not at all, enabling schedule-bypass attacks without modifying any thermostat attribute."
+      },
+      {
+        "id": "GAP_009",
+        "location": "Section 4.3.10.2.2 (SetWeeklySchedule, DayOfWeekForSequence)",
+        "normative_weakness": "SHOULD",
+        "description": "SetWeeklySchedule states devices SHOULD replace each daily setpoint set as it receives updates (SHOULD = not SHALL). An implementation that merges rather than replaces could create overlapping or duplicate transitions, resulting in FAILURE errors on subsequent updates.",
+        "properties_affected": ["PROP_TSTAT_015"],
+        "security_impact": "Inconsistent schedule replacement behavior across implementations makes it impossible to confidently predict active schedule state after partial updates, enabling confusion attacks where the stored schedule differs from what was intended."
+      },
+      {
+        "id": "GAP_010",
+        "location": "Section 4.3.9.31 (ThermostatProgrammingOperationMode)",
+        "normative_weakness": "Unspecified",
+        "description": "Clearing the ScheduleActive bit in ThermostatProgrammingOperationMode (Manage privilege, RW VM) silently disables all schedule programming. This produces no event or notification, making it an untraceable way to disable the thermostat's schedule.",
+        "properties_affected": ["PROP_TSTAT_020"],
+        "security_impact": "A Manage-level attacker can silently disable all schedule-based setpoint control by clearing ScheduleActive, causing the thermostat to operate in manual mode indefinitely without any audit event being generated."
+      },
+      {
+        "id": "GAP_011",
+        "location": "Section 4.3.9.61 (SetpointHoldExpiryTimestamp)",
+        "normative_weakness": "Unspecified",
+        "description": "The SetpointHoldExpiryTimestamp expiry action — what the server does when current UTC time reaches or passes the expiry timestamp — is not specified. The spec only describes how to set this attribute, not the behavioral transition triggered by its expiry.",
+        "properties_affected": ["PROP_TSTAT_012"],
+        "security_impact": "Undefined hold-expiry behavior means implementations may vary: some may not automatically release the hold when the timestamp is reached, perpetuating manual setpoints indefinitely beyond the configured hold duration."
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": ["Thermostat (0x0201)", "Temperature Measurement (0x0402)"],
+        "property": {
+          "claim": "When RemoteSensing.LocalTemperature bit is set, the Thermostat's Calculated Local Temperature is derived from the Temperature Measurement cluster (remote node) rather than internal sensors; the integrity of HVAC control depends on the security of that external cluster.",
+          "formal": "RemoteSensing.LocalTemperature == 1 ⟹ Thermostat.LocalTemperature == TemperatureMeasurement.MeasuredValue + LocalTemperatureCalibration"
+        },
+        "violation_scenario": "If the Temperature Measurement cluster node is compromised or reports falsified MeasuredValue, the thermostat's Calculated Local Temperature is corrupted without any indication to the thermostat. EmergencyHeat threshold checks (PROP_TSTAT_001) and all setpoint comparisons become based on adversarially-controlled values, enabling both suppression and forced activation of HVAC modes."
+      },
+      {
+        "id": "XPROP_002",
+        "clusters_involved": ["Thermostat (0x0201)", "Occupancy Sensing (0x0406)"],
+        "property": {
+          "claim": "When the OCC feature is supported and RemoteSensing.Occupancy bit is set, the Thermostat's occupancy state drives the selection between Occupied and Unoccupied setpoints, and depends on the integrity of the Occupancy Sensing cluster.",
+          "formal": "Feature_OCC ∧ RemoteSensing.Occupancy == 1 ⟹ Thermostat.Occupancy == OccupancySensing.Occupancy"
+        },
+        "violation_scenario": "Tampering with or forcing a false state in the Occupancy Sensing cluster causes the thermostat to switch between Occupied and Unoccupied setpoints inappropriately. An attacker reporting no occupancy during occupied hours forces the thermostat onto Unoccupied (potentially colder/warmer) setpoints, creating occupant discomfort or unsafe conditions. Conversely, forcing occupied reports during vacation mode defeats energy-saving unoccupied setpoints."
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_TSTAT_001",
+        "safety_category": "ThermalSafety",
+        "failure_mode": "Thermostat fails to escalate to emergency heat during extreme cold conditions; occupants exposed to dangerously low ambient temperatures; hypothermia risk; water pipe freezing and burst damage.",
+        "spec_mitigation": "Section 4.3.9.42 mandates an autonomous, immediate SystemMode switch to highest-stage heating when the EmergencyHeatDelta threshold is breached while in a heating-related mode."
+      },
+      {
+        "property_id": "PROP_TSTAT_002",
+        "safety_category": "ThermalSafety",
+        "failure_mode": "HVAC equipment operates beyond manufacturer-specified temperature limits; overheated heating elements cause fire risk; compressor damage from extreme cooling demands; dangerous ambient temperatures in occupied spaces.",
+        "spec_mitigation": "Section 4.3.6 defines the absolute limit hierarchy as Fixed (F quality) attributes; Section 4.3.9.13/14 mandate CONSTRAINT_ERROR for setpoints outside user-configurable limits; SetpointRaiseLower results are clamped to min/max limits per Section 4.3.10.1.3."
+      },
+      {
+        "property_id": "PROP_TSTAT_007",
+        "safety_category": "EquipmentSafety",
+        "failure_mode": "Simultaneous heating and cooling demand causes HVAC systems to work against each other; compressor cycling damage; dramatically reduced equipment lifespan; potentially tripped circuit breakers or fire from overload.",
+        "spec_mitigation": "Section 4.3.9.13 and 4.3.9.14 mandate automatic cascading adjustment of the opposing setpoint when a deadband violation would result from a setpoint write."
+      },
+      {
+        "property_id": "PROP_TSTAT_003",
+        "safety_category": "ThermalSafety",
+        "failure_mode": "Unauthorized SystemMode change (e.g., Off in winter, EmergencyHeat in summer, or Cool when only heating is available) creates dangerous thermal conditions for occupants or drives HVAC equipment into an unsupported operational mode.",
+        "spec_mitigation": "Section 4.3.9 attribute table restricts SystemMode writes to Manage (VM) privilege; Matter ACL enforcement is relied upon to gate this privilege separation."
+      }
+    ],
+
+    "summary": {
+      "total_properties": 26,
+      "by_importance": {
+        "CRITICAL": 5,
+        "HIGH": 13,
+        "MEDIUM": 8
+      },
+      "by_category": {
+        "AccessControl": 4,
+        "StateIntegrity": 9,
+        "PhysicalSafety": 2,
+        "Authorization": 4,
+        "Timing": 1,
+        "Availability": 3,
+        "EventIntegrity": 1,
+        "SecretProtection": 1,
+        "Authentication": 0,
+        "CrossCluster": 0
+      },
+      "spec_gaps_found": 11,
+      "safety_critical_count": 4
+    }
+  }
+}

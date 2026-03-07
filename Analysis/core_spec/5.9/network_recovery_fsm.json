@@ -1,0 +1,1476 @@
+{
+  "fsm_model": {
+    "section_name": "5.9. Network Recovery",
+    "section_ref": "Matter Core Specification 1.5, Section 5.9",
+    "states": [
+      {
+        "name": "NormalOperation",
+        "description": "Node is connected to operational network and functioning normally with valid credentials",
+        "is_initial": true,
+        "invariants": [
+          "connected_to_operational_network == true",
+          "has_valid_credentials == true",
+          "recovery_mode == false"
+        ],
+        "state_variables": {
+          "operational_credentials": "WiFi or Thread network credentials",
+          "connected_to_operational_network": "boolean"
+        }
+      },
+      {
+        "name": "ConnectivityLost",
+        "description": "Node has lost connection to operational network due to credential change or network unavailability",
+        "is_initial": false,
+        "invariants": [
+          "connected_to_operational_network == false"
+        ],
+        "state_variables": {
+          "old_credentials": "WiFi or Thread credentials",
+          "connectivity_loss_time": "timestamp"
+        }
+      },
+      {
+        "name": "WaitingReconnect",
+        "description": "Node attempting to reconnect to operational network using existing credentials for minimum 120 seconds before entering recovery mode",
+        "is_initial": false,
+        "invariants": [
+          "attempting_reconnect == true",
+          "reconnect_timer > 0",
+          "reconnect_timer <= 120",
+          "recovery_mode == false"
+        ],
+        "state_variables": {
+          "reconnect_timer": "integer (seconds, range 0-120)",
+          "old_credentials": "WiFi or Thread credentials",
+          "connection_attempts": "integer"
+        }
+      },
+      {
+        "name": "RecoveryAnnouncing",
+        "description": "Node in Network Recovery mode, advertising RecoveryIdentifier and attempting reconnection in parallel",
+        "is_initial": false,
+        "invariants": [
+          "recovery_mode == true",
+          "announcing == true",
+          "attempting_reconnect == true",
+          "announcement_timer > 0"
+        ],
+        "state_variables": {
+          "recovery_identifier": "identifier from GeneralCommissioning cluster",
+          "announcement_timer": "integer (seconds)",
+          "error_codes": "list of error codes leading to recovery need",
+          "commissioning_channels": "list (BLE, WiFi)"
+        }
+      },
+      {
+        "name": "ExtendedAnnouncementEnded",
+        "description": "Extended announcement duration has ended but node still cannot reach operational network, continues reconnection at manufacturer-defined intervals",
+        "is_initial": false,
+        "invariants": [
+          "extended_announcement_expired == true",
+          "attempting_reconnect == true",
+          "recovery_mode == true"
+        ],
+        "state_variables": {
+          "manufacturer_reconnect_interval": "integer (seconds)",
+          "old_credentials": "WiFi or Thread credentials"
+        }
+      },
+      {
+        "name": "AwaitingAdministrator",
+        "description": "Node is announcing recovery and Administrator has received announcement but not yet established connection",
+        "is_initial": false,
+        "invariants": [
+          "recovery_announcement_active == true",
+          "admin_received_announcement == true",
+          "recovery_connection_active == false"
+        ],
+        "state_variables": {
+          "recovery_identifier": "identifier",
+          "user_consent_obtained": "boolean"
+        }
+      },
+      {
+        "name": "RecoveryConnectionEstablished",
+        "description": "Administrator has established connection with Recovery Node over BLE or WiFi commissioning channel",
+        "is_initial": false,
+        "invariants": [
+          "recovery_connection_active == true",
+          "case_session_active == false"
+        ],
+        "state_variables": {
+          "recovery_channel": "enum (BLE, WiFi)",
+          "administrator_identity": "admin identifier"
+        }
+      },
+      {
+        "name": "CASESessionEstablished",
+        "description": "Secure CASE session established between Administrator and Recovery Node, autonomous reconnect attempts suspended",
+        "is_initial": false,
+        "invariants": [
+          "case_session_active == true",
+          "autonomous_reconnect_suspended == true",
+          "recovery_connection_active == true"
+        ],
+        "state_variables": {
+          "case_session": "CASE session object",
+          "case_derived_keys": "symmetric encryption keys from CASE",
+          "case_establishment_time": "timestamp"
+        }
+      },
+      {
+        "name": "NodeFailSafeArmed",
+        "description": "Recovery Node has autonomously armed fail-safe timer for 60 seconds upon CASE session establishment",
+        "is_initial": false,
+        "invariants": [
+          "node_failsafe_armed == true",
+          "node_failsafe_timer > 0",
+          "node_failsafe_timer <= 60",
+          "admin_failsafe_armed == false"
+        ],
+        "state_variables": {
+          "node_failsafe_timer": "integer (seconds, range 0-60)",
+          "case_establishment_time": "timestamp"
+        }
+      },
+      {
+        "name": "AdminFailSafeArmed",
+        "description": "Administrator has successfully armed fail-safe timer within 60 seconds of CASE session establishment",
+        "is_initial": false,
+        "invariants": [
+          "admin_failsafe_armed == true",
+          "node_failsafe_armed == true",
+          "both_failsafes_armed == true"
+        ],
+        "state_variables": {
+          "admin_failsafe_timer": "integer (seconds)",
+          "node_failsafe_timer": "integer (seconds)"
+        }
+      },
+      {
+        "name": "CredentialsProvisioned",
+        "description": "Administrator has provided new operational network credentials to Recovery Node using AddOrUpdateWiFiNetwork or AddOrUpdateThreadNetwork commands",
+        "is_initial": false,
+        "invariants": [
+          "has_new_credentials == true",
+          "both_failsafes_armed == true"
+        ],
+        "state_variables": {
+          "new_operational_credentials": "WiFi or Thread credentials",
+          "old_credentials_removed": "boolean",
+          "credential_type": "enum (WiFi, Thread)"
+        }
+      },
+      {
+        "name": "ConnectingToOperational",
+        "description": "Recovery Node attempting to connect to operational network using newly-provisioned credentials",
+        "is_initial": false,
+        "invariants": [
+          "attempting_connection_new_network == true",
+          "has_new_credentials == true",
+          "connected_to_operational_network == false"
+        ],
+        "state_variables": {
+          "new_operational_credentials": "WiFi or Thread credentials",
+          "connection_attempts": "integer"
+        }
+      },
+      {
+        "name": "OperationalConnected",
+        "description": "Recovery Node successfully connected to operational network with new credentials, recovery connection terminated, all subsequent messages over operational network",
+        "is_initial": false,
+        "invariants": [
+          "connected_to_operational_network == true",
+          "recovery_connection_terminated == true",
+          "case_session_active == true"
+        ],
+        "state_variables": {
+          "operational_connection": "network connection object",
+          "new_operational_credentials": "WiFi or Thread credentials"
+        }
+      },
+      {
+        "name": "OperationalDiscovered",
+        "description": "Administrator and Recovery Node have discovered each other on operational network using operational discovery mechanism",
+        "is_initial": false,
+        "invariants": [
+          "operational_discovery_complete == true",
+          "mutual_discovery == true",
+          "connected_to_operational_network == true"
+        ],
+        "state_variables": {
+          "operational_discovery_info": "discovery information"
+        }
+      },
+      {
+        "name": "RecoveryCompleted",
+        "description": "CommissioningComplete and CommissioningCompleteResponse commands exchanged over CASE session over operational network, recovery successful",
+        "is_initial": false,
+        "invariants": [
+          "commissioning_complete_exchanged == true",
+          "recovery_successful == true"
+        ],
+        "state_variables": {
+          "recovery_completion_time": "timestamp"
+        }
+      },
+      {
+        "name": "RecoveryAborted",
+        "description": "Network recovery procedure failed or terminated, autonomous reconnection attempts resumed",
+        "is_initial": false,
+        "invariants": [
+          "recovery_failed == true",
+          "autonomous_reconnect_resumed == true"
+        ],
+        "state_variables": {
+          "failure_reason": "string (no_consent, failsafe_timeout, connection_failed, etc.)",
+          "old_credentials": "WiFi or Thread credentials"
+        }
+      },
+      {
+        "name": "FailSafeExpired",
+        "description": "Fail-safe timer expired before recovery completion, state rolled back",
+        "is_initial": false,
+        "invariants": [
+          "failsafe_timer == 0",
+          "state_rolled_back == true"
+        ],
+        "state_variables": {
+          "rollback_reason": "string"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "NormalOperation",
+        "to_state": "ConnectivityLost",
+        "trigger": "operational_credentials_changed",
+        "guard_condition": "connected_to_operational_network == true",
+        "actions": [
+          "connected_to_operational_network := false",
+          "connectivity_loss_time := get_current_time()",
+          "generate_event(connectivity_lost)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NormalOperation",
+        "to_state": "ConnectivityLost",
+        "trigger": "network_unreachable",
+        "guard_condition": "connected_to_operational_network == true",
+        "actions": [
+          "connected_to_operational_network := false",
+          "connectivity_loss_time := get_current_time()",
+          "generate_event(connectivity_lost)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectivityLost",
+        "to_state": "WaitingReconnect",
+        "trigger": "connectivity_lost",
+        "guard_condition": "true",
+        "actions": [
+          "reconnect_timer := 120",
+          "attempting_reconnect := true",
+          "connection_attempts := 0",
+          "start_reconnect_attempts(old_credentials)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "WaitingReconnect",
+        "to_state": "WaitingReconnect",
+        "trigger": "reconnect_attempt_tick",
+        "guard_condition": "reconnect_timer > 0 && connected_to_operational_network == false",
+        "actions": [
+          "reconnect_timer := reconnect_timer - 1",
+          "retry_connection(old_credentials)",
+          "connection_attempts := connection_attempts + 1"
+        ],
+        "timing_requirement": "continuously while timer > 0"
+      },
+      {
+        "from_state": "WaitingReconnect",
+        "to_state": "NormalOperation",
+        "trigger": "successful_reconnect",
+        "guard_condition": "connected_to_operational_network == true",
+        "actions": [
+          "reconnect_timer := 0",
+          "attempting_reconnect := false",
+          "has_valid_credentials := true",
+          "generate_event(connectivity_restored)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "WaitingReconnect",
+        "to_state": "RecoveryAnnouncing",
+        "trigger": "reconnect_timer_expired",
+        "guard_condition": "reconnect_timer == 0 && connected_to_operational_network == false",
+        "actions": [
+          "recovery_mode := true",
+          "recovery_identifier := get_recovery_identifier()",
+          "error_codes := get_error_codes()",
+          "announcement_timer := get_extended_announcement_duration()",
+          "start_recovery_announcement(recovery_identifier, error_codes)",
+          "continue_reconnect_attempts(old_credentials)",
+          "announcing := true"
+        ],
+        "timing_requirement": "after at least 120 seconds"
+      },
+      {
+        "from_state": "RecoveryAnnouncing",
+        "to_state": "RecoveryAnnouncing",
+        "trigger": "announcement_tick",
+        "guard_condition": "announcement_timer > 0 && connected_to_operational_network == false",
+        "actions": [
+          "advertise_recovery_payload(recovery_identifier, error_codes, commissioning_channels)",
+          "attempt_reconnect(old_credentials)",
+          "announcement_timer := announcement_timer - 1"
+        ],
+        "timing_requirement": "continuously during announcement period"
+      },
+      {
+        "from_state": "RecoveryAnnouncing",
+        "to_state": "NormalOperation",
+        "trigger": "successful_reconnect",
+        "guard_condition": "connected_to_operational_network == true",
+        "actions": [
+          "recovery_mode := false",
+          "announcing := false",
+          "stop_recovery_announcement()",
+          "announcement_timer := 0",
+          "has_valid_credentials := true",
+          "generate_event(connectivity_restored)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RecoveryAnnouncing",
+        "to_state": "ExtendedAnnouncementEnded",
+        "trigger": "extended_announcement_timer_expired",
+        "guard_condition": "announcement_timer == 0 && connected_to_operational_network == false",
+        "actions": [
+          "extended_announcement_expired := true",
+          "announcing := false",
+          "stop_active_announcement()",
+          "continue_periodic_reconnect(old_credentials, manufacturer_reconnect_interval)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ExtendedAnnouncementEnded",
+        "to_state": "ExtendedAnnouncementEnded",
+        "trigger": "reconnect_interval_tick",
+        "guard_condition": "connected_to_operational_network == false",
+        "actions": [
+          "attempt_reconnect(old_credentials)"
+        ],
+        "timing_requirement": "at manufacturer-defined intervals"
+      },
+      {
+        "from_state": "ExtendedAnnouncementEnded",
+        "to_state": "RecoveryAnnouncing",
+        "trigger": "commissioning_mode_initial_steps_performed",
+        "guard_condition": "true",
+        "actions": [
+          "extended_announcement_expired := false",
+          "announcement_timer := get_extended_announcement_duration()",
+          "restart_recovery_procedure()",
+          "start_recovery_announcement(recovery_identifier, error_codes)",
+          "announcing := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ExtendedAnnouncementEnded",
+        "to_state": "NormalOperation",
+        "trigger": "successful_reconnect",
+        "guard_condition": "connected_to_operational_network == true",
+        "actions": [
+          "extended_announcement_expired := false",
+          "recovery_mode := false",
+          "has_valid_credentials := true",
+          "generate_event(connectivity_restored)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RecoveryAnnouncing",
+        "to_state": "AwaitingAdministrator",
+        "trigger": "administrator_received_announcement",
+        "guard_condition": "true",
+        "actions": [
+          "admin_received_announcement := true",
+          "generate_event(announcement_received_by_admin)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AwaitingAdministrator",
+        "to_state": "RecoveryConnectionEstablished",
+        "trigger": "administrator_establish_connection",
+        "guard_condition": "user_consent_obtained == true",
+        "actions": [
+          "recovery_channel := establish_recovery_connection()",
+          "recovery_connection_active := true",
+          "administrator_identity := get_admin_identity()",
+          "generate_event(recovery_connection_established)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AwaitingAdministrator",
+        "to_state": "RecoveryAborted",
+        "trigger": "user_consent_not_granted",
+        "guard_condition": "user_consent_obtained == false",
+        "actions": [
+          "failure_reason := 'no_user_consent'",
+          "terminate_recovery_flow()",
+          "recovery_failed := true",
+          "resume_autonomous_reconnect(old_credentials)",
+          "autonomous_reconnect_resumed := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RecoveryConnectionEstablished",
+        "to_state": "CASESessionEstablished",
+        "trigger": "establish_case",
+        "guard_condition": "recovery_connection_active == true",
+        "actions": [
+          "case_session := establish_case_session(administrator_identity)",
+          "case_derived_keys := derive_case_keys(case_session)",
+          "case_session_active := true",
+          "case_establishment_time := get_current_time()",
+          "suspend_autonomous_reconnect()",
+          "autonomous_reconnect_suspended := true",
+          "generate_event(case_session_established)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CASESessionEstablished",
+        "to_state": "NodeFailSafeArmed",
+        "trigger": "case_session_established",
+        "guard_condition": "case_session_active == true",
+        "actions": [
+          "node_failsafe_timer := 60",
+          "arm_failsafe(60)",
+          "node_failsafe_armed := true",
+          "generate_event(node_failsafe_armed)"
+        ],
+        "timing_requirement": "automatically upon CASE session establishment"
+      },
+      {
+        "from_state": "NodeFailSafeArmed",
+        "to_state": "AdminFailSafeArmed",
+        "trigger": "admin_arm_failsafe_command",
+        "guard_condition": "(get_current_time() - case_establishment_time) <= 60",
+        "actions": [
+          "arm_admin_failsafe()",
+          "admin_failsafe_armed := true",
+          "both_failsafes_armed := true",
+          "generate_event(admin_failsafe_armed)"
+        ],
+        "timing_requirement": "within 60 seconds of CASE session establishment"
+      },
+      {
+        "from_state": "NodeFailSafeArmed",
+        "to_state": "RecoveryAborted",
+        "trigger": "admin_arm_failsafe_command",
+        "guard_condition": "(get_current_time() - case_establishment_time) > 60",
+        "actions": [
+          "failure_reason := 'admin_failsafe_timeout'",
+          "generate_event(failsafe_timeout)",
+          "terminate_session()",
+          "recovery_failed := true",
+          "resume_autonomous_reconnect(old_credentials)",
+          "autonomous_reconnect_resumed := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NodeFailSafeArmed",
+        "to_state": "FailSafeExpired",
+        "trigger": "node_failsafe_timer_expired",
+        "guard_condition": "node_failsafe_timer == 0 && admin_failsafe_armed == false",
+        "actions": [
+          "rollback_reason := 'node_failsafe_expired_without_admin_arm'",
+          "rollback_state()",
+          "state_rolled_back := true",
+          "terminate_session()",
+          "generate_event(node_failsafe_expired)"
+        ],
+        "timing_requirement": "automatically when timer reaches 0"
+      },
+      {
+        "from_state": "AdminFailSafeArmed",
+        "to_state": "CredentialsProvisioned",
+        "trigger": "add_or_update_wifi_network_command",
+        "guard_condition": "admin_failsafe_armed == true",
+        "actions": [
+          "new_operational_credentials := provision_wifi_credentials(command_params)",
+          "credential_type := 'WiFi'",
+          "has_new_credentials := true",
+          "generate_event(credentials_provisioned)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AdminFailSafeArmed",
+        "to_state": "CredentialsProvisioned",
+        "trigger": "add_or_update_thread_network_command",
+        "guard_condition": "admin_failsafe_armed == true",
+        "actions": [
+          "new_operational_credentials := provision_thread_credentials(command_params)",
+          "credential_type := 'Thread'",
+          "has_new_credentials := true",
+          "generate_event(credentials_provisioned)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AdminFailSafeArmed",
+        "to_state": "CredentialsProvisioned",
+        "trigger": "remove_network_then_add_or_update",
+        "guard_condition": "admin_failsafe_armed == true",
+        "actions": [
+          "remove_network(old_network_id)",
+          "old_credentials_removed := true",
+          "new_operational_credentials := provision_credentials(command_params)",
+          "has_new_credentials := true",
+          "generate_event(credentials_provisioned_after_removal)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CredentialsProvisioned",
+        "to_state": "ConnectingToOperational",
+        "trigger": "connect_network_command",
+        "guard_condition": "has_new_credentials == true",
+        "actions": [
+          "connection_attempts := 0",
+          "attempt_connection_to_operational_network(new_operational_credentials)",
+          "attempting_connection_new_network := true",
+          "generate_event(connecting_to_operational)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectingToOperational",
+        "to_state": "OperationalConnected",
+        "trigger": "operational_connection_established",
+        "guard_condition": "connected_to_operational_network == true",
+        "actions": [
+          "terminate_recovery_connection()",
+          "recovery_connection_terminated := true",
+          "recovery_connection_active := false",
+          "attempting_connection_new_network := false",
+          "generate_event(operational_connection_success)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ConnectingToOperational",
+        "to_state": "RecoveryAborted",
+        "trigger": "operational_connection_failed",
+        "guard_condition": "connection_attempts >= max_connection_attempts",
+        "actions": [
+          "failure_reason := 'operational_connection_failed'",
+          "rollback_state()",
+          "recovery_failed := true",
+          "resume_autonomous_reconnect(old_credentials)",
+          "autonomous_reconnect_resumed := true",
+          "generate_event(connection_failure)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "OperationalConnected",
+        "to_state": "OperationalDiscovered",
+        "trigger": "initiate_operational_discovery",
+        "guard_condition": "connected_to_operational_network == true && case_session_active == true",
+        "actions": [
+          "perform_operational_discovery()",
+          "operational_discovery_complete := true",
+          "mutual_discovery := true",
+          "generate_event(operational_discovery_complete)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "OperationalDiscovered",
+        "to_state": "RecoveryCompleted",
+        "trigger": "commissioning_complete_command",
+        "guard_condition": "received_over_operational_network == true && over_case_session == true",
+        "actions": [
+          "send_commissioning_complete_response()",
+          "commissioning_complete_exchanged := true",
+          "recovery_successful := true",
+          "recovery_completion_time := get_current_time()",
+          "generate_event(recovery_completed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "OperationalDiscovered",
+        "to_state": "OperationalDiscovered",
+        "trigger": "commissioning_complete_command",
+        "guard_condition": "received_over_operational_network == false || over_case_session == false",
+        "actions": [
+          "reject_commissioning_complete('invalid_channel_or_session')",
+          "generate_event(invalid_completion_attempt)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RecoveryCompleted",
+        "to_state": "NormalOperation",
+        "trigger": "recovery_finalized",
+        "guard_condition": "recovery_successful == true",
+        "actions": [
+          "reset_recovery_state()",
+          "connected_to_operational_network := true",
+          "has_valid_credentials := true",
+          "recovery_mode := false",
+          "operational_credentials := new_operational_credentials",
+          "generate_event(recovery_finalization_complete)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "FailSafeExpired",
+        "to_state": "RecoveryAborted",
+        "trigger": "rollback_complete",
+        "guard_condition": "state_rolled_back == true",
+        "actions": [
+          "recovery_failed := true",
+          "resume_autonomous_reconnect(old_credentials)",
+          "autonomous_reconnect_resumed := true",
+          "generate_event(failsafe_rollback_complete)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RecoveryAborted",
+        "to_state": "WaitingReconnect",
+        "trigger": "resume_reconnect",
+        "guard_condition": "autonomous_reconnect_resumed == true",
+        "actions": [
+          "reconnect_timer := 120",
+          "attempting_reconnect := true",
+          "start_reconnect_attempts(old_credentials)",
+          "generate_event(autonomous_reconnect_resumed)"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "get_current_time",
+        "parameters": [],
+        "return_type": "timestamp",
+        "description": "Returns the current system time as a timestamp",
+        "algorithm_detail": "Retrieves current time from system clock in seconds since epoch or similar monotonic time source",
+        "usage_in_fsm": "Used to record timing of events (connectivity loss, CASE establishment) and calculate time differences for timeout guards"
+      },
+      {
+        "name": "start_reconnect_attempts",
+        "parameters": [
+          {
+            "name": "credentials",
+            "type": "WiFi_or_Thread_credentials",
+            "description": "Existing operational network credentials to use for reconnection attempts"
+          }
+        ],
+        "return_type": "void",
+        "description": "Initiates continuous attempts to reconnect to operational network using provided credentials",
+        "algorithm_detail": "Starts background process that periodically attempts to authenticate and connect to operational network using the provided WiFi or Thread credentials. Continues until connection succeeds or reconnect_timer expires",
+        "usage_in_fsm": "Called when transitioning to WaitingReconnect state to begin the mandatory 120-second reconnection attempt period"
+      },
+      {
+        "name": "retry_connection",
+        "parameters": [
+          {
+            "name": "credentials",
+            "type": "WiFi_or_Thread_credentials",
+            "description": "Credentials to use for connection attempt"
+          }
+        ],
+        "return_type": "void",
+        "description": "Performs a single connection attempt to operational network",
+        "algorithm_detail": "Attempts network association and authentication using provided credentials. For WiFi: attempts WPA2/WPA3 authentication. For Thread: attempts to join Thread network using commissioner credentials. Updates connection status",
+        "usage_in_fsm": "Called on each tick in WaitingReconnect state to retry connection while timer is active"
+      },
+      {
+        "name": "get_recovery_identifier",
+        "parameters": [],
+        "return_type": "identifier",
+        "description": "Retrieves the RecoveryIdentifier attribute value from GeneralCommissioning cluster",
+        "algorithm_detail": "Reads the RecoveryIdentifier attribute value from local storage or from the GeneralCommissioning cluster. This identifier uniquely identifies the node for recovery purposes and should have been retrieved by Administrator before credentials changed",
+        "usage_in_fsm": "Called when entering RecoveryAnnouncing state to obtain identifier that will be advertised to Administrator"
+      },
+      {
+        "name": "get_error_codes",
+        "parameters": [],
+        "return_type": "list_of_error_codes",
+        "description": "Retrieves error codes that led to the need for network recovery",
+        "algorithm_detail": "Gathers diagnostic error codes indicating reason for connectivity loss (e.g., authentication failure, network not found, credential mismatch). Returns list of error codes per Matter error code specification",
+        "usage_in_fsm": "Called when entering RecoveryAnnouncing state to populate error_codes field for advertisement"
+      },
+      {
+        "name": "get_extended_announcement_duration",
+        "parameters": [],
+        "return_type": "integer",
+        "description": "Returns the Extended Announcement duration value in seconds",
+        "algorithm_detail": "Retrieves the Extended Announcement duration configuration value from specification requirements or implementation settings. This defines how long the node should actively announce recovery availability",
+        "usage_in_fsm": "Called when transitioning to RecoveryAnnouncing state to initialize announcement_timer"
+      },
+      {
+        "name": "start_recovery_announcement",
+        "parameters": [
+          {
+            "name": "recovery_identifier",
+            "type": "identifier",
+            "description": "RecoveryIdentifier value to advertise"
+          },
+          {
+            "name": "error_codes",
+            "type": "list_of_error_codes",
+            "description": "Error codes that led to recovery need"
+          }
+        ],
+        "return_type": "void",
+        "description": "Begins advertising Network Recovery availability over available commissioning channels",
+        "algorithm_detail": "Initiates announcement over BLE (using BLE Service Data payload format with RecoveryIdentifier and error codes) and/or WiFi (using WiFi Unsynchronized Service Discovery to publish RecoveryID). Includes OpCode that identifies node as being in Network Recovery mode. Follows announcement duration requirements",
+        "usage_in_fsm": "Called when entering RecoveryAnnouncing state to begin advertising recovery availability to Administrator"
+      },
+      {
+        "name": "continue_reconnect_attempts",
+        "parameters": [
+          {
+            "name": "credentials",
+            "type": "WiFi_or_Thread_credentials",
+            "description": "Credentials to use for ongoing reconnection attempts"
+          }
+        ],
+        "return_type": "void",
+        "description": "Continues autonomous reconnection attempts in parallel with recovery announcement",
+        "algorithm_detail": "Maintains background reconnection attempts using old credentials while simultaneously advertising recovery availability. Implements parallel execution of two recovery strategies: autonomous reconnection and administrator-assisted recovery",
+        "usage_in_fsm": "Called when entering RecoveryAnnouncing state to ensure node continues attempting autonomous recovery per specification requirement"
+      },
+      {
+        "name": "advertise_recovery_payload",
+        "parameters": [
+          {
+            "name": "recovery_identifier",
+            "type": "identifier",
+            "description": "RecoveryIdentifier to include in advertisement"
+          },
+          {
+            "name": "error_codes",
+            "type": "list_of_error_codes",
+            "description": "Error codes to include in advertisement"
+          },
+          {
+            "name": "channels",
+            "type": "list_of_commissioning_channels",
+            "description": "Commissioning channels to use (BLE, WiFi, etc.)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Transmits a single recovery advertisement over specified commissioning channels",
+        "algorithm_detail": "For BLE: broadcasts BLE Service Data payload containing RecoveryIdentifier, OpCode indicating recovery mode, and error codes. For WiFi: publishes using WiFi Unsynchronized Service Discovery with RecoveryID per Table 74. Administrator uses OpCode to distinguish recovery advertisements from commissioning advertisements",
+        "usage_in_fsm": "Called on each announcement tick in RecoveryAnnouncing state to maintain advertisement visibility"
+      },
+      {
+        "name": "attempt_reconnect",
+        "parameters": [
+          {
+            "name": "credentials",
+            "type": "WiFi_or_Thread_credentials",
+            "description": "Credentials to use for reconnection attempt"
+          }
+        ],
+        "return_type": "void",
+        "description": "Performs a single reconnection attempt to operational network",
+        "algorithm_detail": "Attempts network association and authentication using provided credentials. Updates internal connection state. If successful, triggers successful_reconnect event. If failed, continues according to current state logic",
+        "usage_in_fsm": "Called periodically in RecoveryAnnouncing and ExtendedAnnouncementEnded states to maintain parallel reconnection attempts"
+      },
+      {
+        "name": "stop_recovery_announcement",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Stops all active recovery announcements across all commissioning channels",
+        "algorithm_detail": "Ceases broadcasting BLE Service Data payloads and WiFi discovery publications for recovery. Releases radio resources used for announcement. Called when recovery is no longer needed (successful reconnection or recovery completion)",
+        "usage_in_fsm": "Called when transitioning from RecoveryAnnouncing to NormalOperation upon successful autonomous reconnection"
+      },
+      {
+        "name": "stop_active_announcement",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Stops active announcement when Extended Announcement duration ends",
+        "algorithm_detail": "Ceases active broadcasting of recovery advertisements but retains recovery state. Node continues periodic reconnection attempts but no longer actively announces availability",
+        "usage_in_fsm": "Called when transitioning from RecoveryAnnouncing to ExtendedAnnouncementEnded when announcement timer expires"
+      },
+      {
+        "name": "continue_periodic_reconnect",
+        "parameters": [
+          {
+            "name": "credentials",
+            "type": "WiFi_or_Thread_credentials",
+            "description": "Credentials to use for reconnection"
+          },
+          {
+            "name": "interval",
+            "type": "integer",
+            "description": "Manufacturer-defined reconnection interval in seconds"
+          }
+        ],
+        "return_type": "void",
+        "description": "Initiates periodic reconnection attempts at manufacturer-defined intervals",
+        "algorithm_detail": "Sets up timer-based reconnection attempts that occur at the specified interval. Uses exponential backoff or fixed interval as defined by manufacturer. Continues indefinitely until connection succeeds or recovery procedure is restarted",
+        "usage_in_fsm": "Called when entering ExtendedAnnouncementEnded state to maintain reconnection attempts without active announcement"
+      },
+      {
+        "name": "restart_recovery_procedure",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Restarts the entire Network Recovery procedure from announcement phase",
+        "algorithm_detail": "Resets recovery state and reinitializes announcement timers. Called when CommissioningModeInitialStepsHint steps are performed by user (e.g., button press or reset trigger). Allows user to re-initiate recovery after Extended Announcement has ended",
+        "usage_in_fsm": "Called when transitioning from ExtendedAnnouncementEnded back to RecoveryAnnouncing upon user-triggered restart"
+      },
+      {
+        "name": "establish_recovery_connection",
+        "parameters": [],
+        "return_type": "commissioning_channel_enum",
+        "description": "Establishes connection with Recovery Node over BLE or WiFi commissioning channel",
+        "algorithm_detail": "Administrator initiates connection over available commissioning channel (BLE or WiFi Public Action Frame). Establishes transport-level connection similar to commissioning an uncommissioned device. Returns the channel type used (BLE or WiFi)",
+        "usage_in_fsm": "Called when Administrator initiates connection after receiving recovery announcement and obtaining user consent"
+      },
+      {
+        "name": "get_admin_identity",
+        "parameters": [],
+        "return_type": "admin_identifier",
+        "description": "Retrieves Administrator identity information from connection",
+        "algorithm_detail": "Extracts Administrator identity from connection handshake or session establishment. Returns identifier that can be used for authorization and logging",
+        "usage_in_fsm": "Called when establishing recovery connection to record which Administrator is performing recovery"
+      },
+      {
+        "name": "terminate_recovery_flow",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Terminates the Network Recovery flow when user consent is not granted",
+        "algorithm_detail": "Closes any open connections, stops announcements, and cleans up recovery state. Per specification, if user consent not granted, Administrator terminates execution and following steps SHALL NOT be performed",
+        "usage_in_fsm": "Called when transitioning to RecoveryAborted due to lack of user consent"
+      },
+      {
+        "name": "resume_autonomous_reconnect",
+        "parameters": [
+          {
+            "name": "credentials",
+            "type": "WiFi_or_Thread_credentials",
+            "description": "Credentials to use for autonomous reconnection"
+          }
+        ],
+        "return_type": "void",
+        "description": "Resumes autonomous network reconnection attempts after recovery failure",
+        "algorithm_detail": "Per specification, autonomous attempts to re-establish network connectivity SHALL resume in the event of failure of network recovery procedure. Re-initiates background reconnection process using old credentials",
+        "usage_in_fsm": "Called when recovery fails or is aborted to resume autonomous reconnection attempts as required by specification"
+      },
+      {
+        "name": "establish_case_session",
+        "parameters": [
+          {
+            "name": "admin_identity",
+            "type": "admin_identifier",
+            "description": "Administrator identity for CASE session establishment"
+          }
+        ],
+        "return_type": "case_session_object",
+        "description": "Establishes secure Certificate Authenticated Session Establishment (CASE) session between Administrator and Recovery Node",
+        "algorithm_detail": "Implements CASE protocol for mutual authentication using X.509 certificates. Node and Administrator exchange certificates, perform signature verification, and derive shared session keys using Elliptic Curve Diffie-Hellman (ECDH). Results in authenticated secure session with derived symmetric encryption keys for subsequent messages",
+        "usage_in_fsm": "Called when transitioning from RecoveryConnectionEstablished to CASESessionEstablished to secure recovery channel"
+      },
+      {
+        "name": "derive_case_keys",
+        "parameters": [
+          {
+            "name": "session",
+            "type": "case_session_object",
+            "description": "CASE session from which to derive keys"
+          }
+        ],
+        "return_type": "symmetric_keys",
+        "description": "Derives symmetric encryption keys from established CASE session",
+        "algorithm_detail": "Extracts session key material from CASE handshake. Uses HKDF (HMAC-based Key Derivation Function) to derive separate keys for encryption, authentication, and IV generation. Keys are used with AES-CCM for message encryption and authentication",
+        "usage_in_fsm": "Called after CASE session establishment to obtain keys for encrypting recovery messages per requirement that all messages SHALL be encrypted using CASE-derived keys"
+      },
+      {
+        "name": "suspend_autonomous_reconnect",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Suspends autonomous network reconnection attempts during recovery procedure",
+        "algorithm_detail": "Per specification, network recovery procedure SHALL preempt autonomous network reconnect attempts. Once secure connection established, ongoing autonomous attempts SHALL be suspended and SHALL NOT interfere with recovery session. Pauses or cancels background reconnection processes",
+        "usage_in_fsm": "Called when CASE session is established to prevent interference between recovery procedure and autonomous reconnection"
+      },
+      {
+        "name": "arm_failsafe",
+        "parameters": [
+          {
+            "name": "timeout",
+            "type": "integer",
+            "description": "Fail-safe timeout in seconds"
+          }
+        ],
+        "return_type": "void",
+        "description": "Arms the fail-safe timer to guard against incomplete recovery",
+        "algorithm_detail": "Starts fail-safe timer that will trigger automatic rollback if recovery does not complete within timeout period. Analogous to fail-safe in standard commissioning flow. If timer expires without successful completion, node rolls back to previous state",
+        "usage_in_fsm": "Called automatically by Recovery Node when CASE session established, with 60-second timeout per specification requirement"
+      },
+      {
+        "name": "arm_admin_failsafe",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Administrator arms fail-safe timer on Recovery Node",
+        "algorithm_detail": "Administrator sends ArmFailSafe command to Recovery Node to confirm continuation of recovery procedure. Must occur within 60 seconds of CASE session establishment. Resets or extends fail-safe timer, indicating Administrator intends to proceed",
+        "usage_in_fsm": "Called when Administrator sends ArmFailSafe command within timing window, transitioning from NodeFailSafeArmed to AdminFailSafeArmed"
+      },
+      {
+        "name": "terminate_session",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Terminates the recovery session and closes connection",
+        "algorithm_detail": "Closes CASE session, terminates recovery connection over commissioning channel, releases cryptographic session keys securely (zeroing memory), and cleans up connection state. Called when recovery fails or times out",
+        "usage_in_fsm": "Called when transitioning to RecoveryAborted or FailSafeExpired due to timeout or failure"
+      },
+      {
+        "name": "rollback_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Rolls back node state to pre-recovery state when fail-safe expires or recovery fails",
+        "algorithm_detail": "Reverts any partial configuration changes made during recovery. Removes provisioned credentials if not yet committed, restores old credentials, resets network configuration to state before recovery began. Ensures node is in consistent state after recovery failure",
+        "usage_in_fsm": "Called when fail-safe timer expires or connection to operational network fails, to ensure atomic recovery semantics"
+      },
+      {
+        "name": "provision_wifi_credentials",
+        "parameters": [
+          {
+            "name": "params",
+            "type": "wifi_network_parameters",
+            "description": "WiFi network credentials including SSID, password, security type"
+          }
+        ],
+        "return_type": "wifi_credentials",
+        "description": "Provisions new WiFi network credentials received via AddOrUpdateWiFiNetwork command",
+        "algorithm_detail": "Stores new WiFi credentials (SSID, password, security type, etc.) received from Administrator. Credentials are staged but not yet active until ConnectNetwork command issued. Validates credential format and security type compatibility",
+        "usage_in_fsm": "Called when Administrator sends AddOrUpdateWiFiNetwork command in AdminFailSafeArmed state"
+      },
+      {
+        "name": "provision_thread_credentials",
+        "parameters": [
+          {
+            "name": "params",
+            "type": "thread_network_parameters",
+            "description": "Thread network credentials including operational dataset"
+          }
+        ],
+        "return_type": "thread_credentials",
+        "description": "Provisions new Thread network credentials received via AddOrUpdateThreadNetwork command",
+        "algorithm_detail": "Stores new Thread operational dataset received from Administrator. Dataset includes network name, PAN ID, extended PAN ID, network key, etc. Credentials staged but not active until ConnectNetwork command. Validates dataset format",
+        "usage_in_fsm": "Called when Administrator sends AddOrUpdateThreadNetwork command in AdminFailSafeArmed state"
+      },
+      {
+        "name": "remove_network",
+        "parameters": [
+          {
+            "name": "network_id",
+            "type": "network_identifier",
+            "description": "Identifier of network configuration to remove"
+          }
+        ],
+        "return_type": "void",
+        "description": "Removes existing network credentials as optional step before provisioning new credentials",
+        "algorithm_detail": "Administrator MAY choose to delete Recovery Node's existing network credentials by sending RemoveNetwork command. This removes the specified network configuration from node storage. Optional step before provisioning new credentials",
+        "usage_in_fsm": "Optionally called before credential provisioning to clean up old network configurations"
+      },
+      {
+        "name": "provision_credentials",
+        "parameters": [
+          {
+            "name": "params",
+            "type": "network_parameters",
+            "description": "WiFi or Thread network credentials"
+          }
+        ],
+        "return_type": "network_credentials",
+        "description": "Generic function to provision either WiFi or Thread credentials",
+        "algorithm_detail": "Determines credential type from parameters and calls appropriate provisioning function (provision_wifi_credentials or provision_thread_credentials). Used when credential type is determined at runtime",
+        "usage_in_fsm": "Called in transition that includes RemoveNetwork followed by credential provisioning"
+      },
+      {
+        "name": "attempt_connection_to_operational_network",
+        "parameters": [
+          {
+            "name": "credentials",
+            "type": "network_credentials",
+            "description": "New operational network credentials to use for connection"
+          }
+        ],
+        "return_type": "void",
+        "description": "Attempts to connect to operational network using newly-provisioned credentials",
+        "algorithm_detail": "Per specification, Recovery Node SHALL attempt to connect to operational network using newly-provisioned credentials upon receiving ConnectNetwork command. Performs network association, authentication, and establishes operational connection. Once connected, all remaining messages SHALL be exchanged over operational network",
+        "usage_in_fsm": "Called when transitioning from CredentialsProvisioned to ConnectingToOperational"
+      },
+      {
+        "name": "terminate_recovery_connection",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Terminates the recovery connection over commissioning channel after operational connection established",
+        "algorithm_detail": "Closes BLE or WiFi commissioning channel connection that was used for recovery. Per specification, once Recovery Node connects to operational network, recovery connection should be terminated and all subsequent messages exchanged over operational network. Prevents security bypass via dual-channel access",
+        "usage_in_fsm": "Called when successfully connecting to operational network to close recovery channel and force all subsequent communication over operational network"
+      },
+      {
+        "name": "perform_operational_discovery",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Performs mutual operational discovery between Administrator and Recovery Node on operational network",
+        "algorithm_detail": "Uses operational discovery mechanism per Section 4.3.2 of specification. Administrator and Recovery Node use mDNS or other service discovery to find each other on operational network. Establishes operational addressing and enables CASE session over operational network",
+        "usage_in_fsm": "Called when transitioning from OperationalConnected to OperationalDiscovered to establish operational communication path"
+      },
+      {
+        "name": "send_commissioning_complete_response",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Sends CommissioningCompleteResponse to Administrator over operational network CASE session",
+        "algorithm_detail": "Constructs and sends CommissioningCompleteResponse message to Administrator. Message SHALL be sent over CASE session over operational network per specification. Indicates successful completion of Network Recovery flow",
+        "usage_in_fsm": "Called when transitioning from OperationalDiscovered to RecoveryCompleted upon receiving valid CommissioningComplete command"
+      },
+      {
+        "name": "reject_commissioning_complete",
+        "parameters": [
+          {
+            "name": "reason",
+            "type": "string",
+            "description": "Reason for rejection"
+          }
+        ],
+        "return_type": "void",
+        "description": "Rejects CommissioningComplete command that is not received over operational network",
+        "algorithm_detail": "Per specification, Recovery Node SHALL reject CommissioningComplete that is not received over operational network. Validates that command was received over operational network and over CASE session. If not, rejects command and generates error response",
+        "usage_in_fsm": "Called in stay transition in OperationalDiscovered state when CommissioningComplete received over wrong channel or without proper session"
+      },
+      {
+        "name": "reset_recovery_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resets all recovery-related state variables and cleans up recovery resources",
+        "algorithm_detail": "Clears recovery_mode flag, resets timers, clears recovery_identifier, removes temporary state, and finalizes transition back to normal operation. Called after successful recovery completion to clean up all recovery resources",
+        "usage_in_fsm": "Called when transitioning from RecoveryCompleted to NormalOperation to finalize recovery and return to normal operational state"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "RecoveryIdentifier",
+        "definition": "An attribute of the GeneralCommissioning cluster that uniquely identifies a node for Network Recovery purposes. Administrator retrieves this value before operational network credentials change to enable identification of the correct node during recovery.",
+        "security_relevance": "Critical for preventing credential provisioning to wrong devices. Non-unique or predictable RecoveryIdentifiers enable imposter attacks where attacker receives credentials meant for victim node."
+      },
+      {
+        "term": "CASE (Certificate Authenticated Session Establishment)",
+        "definition": "A protocol for establishing mutually authenticated secure sessions using X.509 certificates. Both parties verify each other's certificates and derive shared session keys using ECDH for subsequent encrypted communication.",
+        "security_relevance": "Provides authentication and confidentiality for recovery messages. All recovery messages MUST be encrypted with CASE-derived keys to prevent credential interception. CASE session over commissioning channel must be used only for recovery, not steady-state operations."
+      },
+      {
+        "term": "Fail-safe Timer",
+        "definition": "A countdown timer that triggers automatic rollback if recovery procedure does not complete within timeout period. Recovery Node autonomously arms for 60 seconds upon CASE session establishment; Administrator must re-arm within 60 seconds to continue.",
+        "security_relevance": "Guards against incomplete recovery leaving node in inconsistent state. Prevents Administrator abandonment from causing permanent misconfiguration. Ensures atomic recovery semantics."
+      },
+      {
+        "term": "Extended Announcement",
+        "definition": "A period during which Recovery Node actively announces its recovery availability over commissioning channels. Duration is defined by specification or implementation. After expiry, node continues reconnection attempts but stops active announcement.",
+        "security_relevance": "Limits exposure window of RecoveryIdentifier to reduce attack opportunities. Balances recoverability with minimizing wireless spectrum pollution and security exposure."
+      },
+      {
+        "term": "Operational Discovery",
+        "definition": "Service discovery mechanism (Section 4.3.2) for nodes to find each other on operational network after connection established. Uses mDNS or similar to enable Administrator and Recovery Node to establish operational communication path.",
+        "security_relevance": "Required to establish operational CASE session for CommissioningComplete exchange. Ensures final recovery steps occur over operational network, preventing premature completion attacks via recovery channel."
+      },
+      {
+        "term": "CommissioningModeInitialStepsHint",
+        "definition": "A set of steps (e.g., button press, device reset) that trigger restart of Network Recovery procedure after Extended Announcement ends. Allows user to manually re-initiate recovery.",
+        "security_relevance": "Provides recovery from Extended Announcement timeout without requiring device reset. User-controlled trigger ensures legitimate recovery attempts can be restarted."
+      },
+      {
+        "term": "Autonomous Reconnection Attempts",
+        "definition": "Background process where Recovery Node continuously attempts to connect to operational network using old credentials. Runs in parallel with recovery announcement and is suspended during active recovery procedure.",
+        "security_relevance": "Enables recovery from transient network outages without Administrator intervention. Must be suspended during recovery to prevent interference with recovery procedure. Resumes upon recovery failure per specification."
+      },
+      {
+        "term": "User Consent",
+        "definition": "Explicit user approval obtained by Administrator before provisioning credentials to Recovery Node. Required to prevent credential provisioning to imposter devices or during temporary outages when user doesn't intend recovery.",
+        "security_relevance": "Critical security control to prevent unauthorized credential provisioning. Administrator SHALL obtain consent and SHALL NOT proceed without it. Prevents automated systems from provisioning attackers."
+      },
+      {
+        "term": "Operational Network",
+        "definition": "The primary WiFi or Thread network on which Matter nodes communicate during normal operation. Distinguished from commissioning channels (BLE, WiFi Public Action Frame) used during setup and recovery.",
+        "security_relevance": "Final recovery steps MUST occur over operational network to prevent Man-in-the-Middle attacks. CommissioningComplete MUST be over operational network and CASE session, rejected otherwise."
+      },
+      {
+        "term": "Recovery Connection",
+        "definition": "Connection established over commissioning channel (BLE or WiFi) between Administrator and Recovery Node for recovery procedure. Terminated once operational network connection established.",
+        "security_relevance": "Must be terminated after operational connection to prevent security bypass via dual-channel access. Attacker with physical proximity could send commands over recovery channel to bypass operational network security."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "RECOVERY_MESSAGE_CONFIDENTIALITY",
+        "type": "confidentiality",
+        "description": "All messages exchanged over recovery connection are encrypted using CASE-derived keys, preventing eavesdropping on network credentials",
+        "fsm_states_involved": [
+          "CASESessionEstablished",
+          "NodeFailSafeArmed",
+          "AdminFailSafeArmed",
+          "CredentialsProvisioned",
+          "ConnectingToOperational"
+        ],
+        "critical_transitions": [
+          "RecoveryConnectionEstablished -> CASESessionEstablished",
+          "AdminFailSafeArmed -> CredentialsProvisioned"
+        ]
+      },
+      {
+        "property_name": "MUTUAL_AUTHENTICATION",
+        "type": "authenticity",
+        "description": "CASE session establishes mutual authentication between Administrator and Recovery Node using certificates before credential exchange",
+        "fsm_states_involved": [
+          "RecoveryConnectionEstablished",
+          "CASESessionEstablished"
+        ],
+        "critical_transitions": [
+          "RecoveryConnectionEstablished -> CASESessionEstablished"
+        ]
+      },
+      {
+        "property_name": "USER_CONSENT_ENFORCEMENT",
+        "type": "access_control",
+        "description": "Administrator must obtain user consent before provisioning credentials, preventing automated attacks and wrong device provisioning",
+        "fsm_states_involved": [
+          "AwaitingAdministrator",
+          "RecoveryConnectionEstablished",
+          "RecoveryAborted"
+        ],
+        "critical_transitions": [
+          "AwaitingAdministrator -> RecoveryConnectionEstablished",
+          "AwaitingAdministrator -> RecoveryAborted"
+        ]
+      },
+      {
+        "property_name": "COMPLETION_CHANNEL_ENFORCEMENT",
+        "type": "security",
+        "description": "CommissioningComplete must be received over operational network and CASE session, rejected otherwise, preventing premature completion attacks",
+        "fsm_states_involved": [
+          "OperationalDiscovered",
+          "RecoveryCompleted"
+        ],
+        "critical_transitions": [
+          "OperationalDiscovered -> RecoveryCompleted",
+          "OperationalDiscovered -> OperationalDiscovered (rejection)"
+        ]
+      },
+      {
+        "property_name": "RECOVERY_PREEMPTION",
+        "type": "consistency",
+        "description": "Network recovery procedure preempts autonomous reconnect attempts once CASE session established, preventing interference and race conditions",
+        "fsm_states_involved": [
+          "CASESessionEstablished",
+          "NodeFailSafeArmed",
+          "AdminFailSafeArmed",
+          "CredentialsProvisioned",
+          "ConnectingToOperational"
+        ],
+        "critical_transitions": [
+          "RecoveryConnectionEstablished -> CASESessionEstablished"
+        ]
+      },
+      {
+        "property_name": "FAILSAFE_PROTECTION",
+        "type": "consistency",
+        "description": "Fail-safe timer ensures atomic recovery by triggering rollback if recovery does not complete within timeout, preventing inconsistent state",
+        "fsm_states_involved": [
+          "NodeFailSafeArmed",
+          "AdminFailSafeArmed",
+          "FailSafeExpired",
+          "RecoveryAborted"
+        ],
+        "critical_transitions": [
+          "NodeFailSafeArmed -> FailSafeExpired",
+          "NodeFailSafeArmed -> RecoveryAborted"
+        ]
+      },
+      {
+        "property_name": "MINIMUM_RECONNECT_DURATION",
+        "type": "timing",
+        "description": "Recovery Node must attempt reconnection for at least 120 seconds before entering recovery mode, avoiding unnecessary announcements for transient outages",
+        "fsm_states_involved": [
+          "WaitingReconnect",
+          "RecoveryAnnouncing"
+        ],
+        "critical_transitions": [
+          "WaitingReconnect -> RecoveryAnnouncing"
+        ]
+      },
+      {
+        "property_name": "RECOVERY_CONNECTION_TERMINATION",
+        "type": "security",
+        "description": "Recovery connection over commissioning channel is terminated once operational connection established, preventing dual-channel security bypass",
+        "fsm_states_involved": [
+          "ConnectingToOperational",
+          "OperationalConnected"
+        ],
+        "critical_transitions": [
+          "ConnectingToOperational -> OperationalConnected"
+        ]
+      },
+      {
+        "property_name": "AUTONOMOUS_RECONNECT_RESUME",
+        "type": "consistency",
+        "description": "Autonomous reconnection attempts resume if recovery fails, ensuring node continues attempting recovery per specification requirement",
+        "fsm_states_involved": [
+          "RecoveryAborted",
+          "FailSafeExpired",
+          "WaitingReconnect"
+        ],
+        "critical_transitions": [
+          "FailSafeExpired -> RecoveryAborted",
+          "RecoveryAborted -> WaitingReconnect"
+        ]
+      },
+      {
+        "property_name": "PARALLEL_RECOVERY_STRATEGIES",
+        "type": "consistency",
+        "description": "Node attempts autonomous reconnection in parallel with recovery announcement, maximizing recovery success probability",
+        "fsm_states_involved": [
+          "RecoveryAnnouncing",
+          "ExtendedAnnouncementEnded"
+        ],
+        "critical_transitions": [
+          "RecoveryAnnouncing -> RecoveryAnnouncing (stay)",
+          "ExtendedAnnouncementEnded -> ExtendedAnnouncementEnded (stay)"
+        ]
+      }
+    ],
+    "initial_state": "NormalOperation",
+    "all_states": [
+      "NormalOperation",
+      "ConnectivityLost",
+      "WaitingReconnect",
+      "RecoveryAnnouncing",
+      "ExtendedAnnouncementEnded",
+      "AwaitingAdministrator",
+      "RecoveryConnectionEstablished",
+      "CASESessionEstablished",
+      "NodeFailSafeArmed",
+      "AdminFailSafeArmed",
+      "CredentialsProvisioned",
+      "ConnectingToOperational",
+      "OperationalConnected",
+      "OperationalDiscovered",
+      "RecoveryCompleted",
+      "RecoveryAborted",
+      "FailSafeExpired"
+    ],
+    "all_triggers": [
+      "operational_credentials_changed",
+      "network_unreachable",
+      "connectivity_lost",
+      "reconnect_attempt_tick",
+      "successful_reconnect",
+      "reconnect_timer_expired",
+      "announcement_tick",
+      "extended_announcement_timer_expired",
+      "reconnect_interval_tick",
+      "commissioning_mode_initial_steps_performed",
+      "administrator_received_announcement",
+      "administrator_establish_connection",
+      "user_consent_not_granted",
+      "establish_case",
+      "case_session_established",
+      "admin_arm_failsafe_command",
+      "node_failsafe_timer_expired",
+      "add_or_update_wifi_network_command",
+      "add_or_update_thread_network_command",
+      "remove_network_then_add_or_update",
+      "connect_network_command",
+      "operational_connection_established",
+      "operational_connection_failed",
+      "initiate_operational_discovery",
+      "commissioning_complete_command",
+      "recovery_finalized",
+      "rollback_complete",
+      "resume_reconnect"
+    ],
+    "all_functions_used": [
+      "get_current_time",
+      "start_reconnect_attempts",
+      "retry_connection",
+      "get_recovery_identifier",
+      "get_error_codes",
+      "get_extended_announcement_duration",
+      "start_recovery_announcement",
+      "continue_reconnect_attempts",
+      "advertise_recovery_payload",
+      "attempt_reconnect",
+      "stop_recovery_announcement",
+      "stop_active_announcement",
+      "continue_periodic_reconnect",
+      "restart_recovery_procedure",
+      "establish_recovery_connection",
+      "get_admin_identity",
+      "terminate_recovery_flow",
+      "resume_autonomous_reconnect",
+      "establish_case_session",
+      "derive_case_keys",
+      "suspend_autonomous_reconnect",
+      "arm_failsafe",
+      "arm_admin_failsafe",
+      "terminate_session",
+      "rollback_state",
+      "provision_wifi_credentials",
+      "provision_thread_credentials",
+      "remove_network",
+      "provision_credentials",
+      "attempt_connection_to_operational_network",
+      "terminate_recovery_connection",
+      "perform_operational_discovery",
+      "send_commissioning_complete_response",
+      "reject_commissioning_complete",
+      "reset_recovery_state"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "CASE_Session_Establishment",
+        "algorithm": "Certificate Authenticated Session Establishment (CASE) protocol using X.509 certificates and ECDH key exchange",
+        "inputs": [
+          "Node X.509 certificate",
+          "Administrator X.509 certificate",
+          "Ephemeral ECDH key pairs (both parties)",
+          "Random nonces (both parties)"
+        ],
+        "output": "Authenticated secure session with derived symmetric session keys (encryption, authentication, IV generation keys)",
+        "assumptions": [
+          "X.509 certificates are trusted and validly signed by trusted Certificate Authority",
+          "ECDH provides forward secrecy",
+          "Certificate private keys are securely stored and not leaked",
+          "Random number generator for ephemeral keys and nonces is cryptographically secure"
+        ]
+      },
+      {
+        "operation": "Message_Encryption_CASE_Keys",
+        "algorithm": "AES-CCM (Counter with CBC-MAC) for authenticated encryption",
+        "inputs": [
+          "Plaintext message (network credentials, commands, responses)",
+          "Session encryption key (derived from CASE)",
+          "Initialization Vector (IV) derived from CASE session",
+          "Additional Authenticated Data (AAD) - message headers"
+        ],
+        "output": "Ciphertext with authentication tag, providing confidentiality and integrity",
+        "assumptions": [
+          "AES-CCM provides authenticated encryption with associated data (AEAD)",
+          "Session keys are not leaked or reused across sessions",
+          "IVs are never reused with same key",
+          "Authentication tag verification is always performed before using decrypted data"
+        ]
+      },
+      {
+        "operation": "CASE_Key_Derivation",
+        "algorithm": "HKDF (HMAC-based Key Derivation Function) with SHA-256",
+        "inputs": [
+          "Shared secret from ECDH key exchange",
+          "Session context information (nonces, identities)",
+          "Salt values",
+          "Info strings for key separation"
+        ],
+        "output": "Separate symmetric keys for encryption, authentication, and IV generation",
+        "assumptions": [
+          "HKDF provides cryptographic separation of derived keys",
+          "Different Info strings ensure key independence",
+          "HMAC-SHA256 is collision-resistant and unpredictable",
+          "Shared secret from ECDH has sufficient entropy"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "CASE protocol is secure and provides mutual authentication with forward secrecy",
+        "type": "explicit",
+        "if_violated": "Attacker can impersonate Administrator or Recovery Node, decrypt recovery messages, and extract network credentials. Man-in-the-middle attacks become feasible."
+      },
+      {
+        "assumption": "RecoveryIdentifier is globally unique across all nodes in all fabrics",
+        "type": "implicit",
+        "if_violated": "Non-unique RecoveryIdentifiers allow attacker to impersonate victim node by advertising colliding identifier and receiving credentials meant for victim."
+      },
+      {
+        "assumption": "User can correctly identify legitimate nodes requiring recovery and distinguish from imposter devices",
+        "type": "explicit",
+        "if_violated": "User may grant consent for credential provisioning to attacker-controlled devices advertising fake RecoveryIdentifiers."
+      },
+      {
+        "assumption": "Administrator is not compromised and behaves according to specification",
+        "type": "implicit",
+        "if_violated": "Compromised Administrator can provision malicious credentials, extract RecoveryIdentifiers for later attacks, or deny service by refusing legitimate recovery."
+      },
+      {
+        "assumption": "Fail-safe mechanism reliably triggers rollback when timer expires",
+        "type": "implicit",
+        "if_violated": "Incomplete recovery procedures leave node in inconsistent state with partial credential updates, requiring manual intervention to restore functionality."
+      },
+      {
+        "assumption": "Operational discovery mechanism is secure and cannot be spoofed",
+        "type": "implicit",
+        "if_violated": "Attacker can inject fake discovery responses causing Administrator and Recovery Node to establish operational CASE session with attacker-controlled endpoint."
+      },
+      {
+        "assumption": "No race conditions exist between recovery channel messages and operational network messages",
+        "type": "implicit",
+        "if_violated": "Node may accept CommissioningComplete over recovery channel before operational network transition completes, or process commands from both channels simultaneously."
+      },
+      {
+        "assumption": "Recovery connection is reliably terminated after operational connection establishment",
+        "type": "implicit",
+        "if_violated": "Attacker with physical proximity can send commands over recovery channel (BLE/WiFi) after node is on operational network, bypassing network security policies."
+      },
+      {
+        "assumption": "Clock drift or lack of time synchronization does not significantly affect timeout durations (120s, 60s)",
+        "type": "implicit",
+        "if_violated": "Nodes may enter recovery mode too early/late, fail-safe may expire prematurely causing legitimate recovery to fail, or automatic fail-safe may expire before Administrator can re-arm."
+      },
+      {
+        "assumption": "Network connectivity loss is reliably detectable and distinguishable from transient failures",
+        "type": "implicit",
+        "if_violated": "False positives cause unnecessary recovery mode entry exposing RecoveryIdentifier. False negatives prevent recovery when actually needed leaving node permanently disconnected."
+      },
+      {
+        "assumption": "BLE and WiFi commissioning channels are available and functional on both Administrator and Recovery Node",
+        "type": "implicit",
+        "if_violated": "Recovery mechanism cannot function. Nodes become unrecoverable without physical access or out-of-band recovery methods."
+      },
+      {
+        "assumption": "Autonomous reconnection attempts do not interfere with recovery procedure when suspended",
+        "type": "implicit",
+        "if_violated": "Race conditions between autonomous reconnection and recovery procedure cause unpredictable behavior, partial configuration updates, or connection to wrong network."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

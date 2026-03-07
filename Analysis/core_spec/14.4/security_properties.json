@@ -1,0 +1,657 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Fabric_Isolation_Root_Certificates",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "A fabric can only access, modify, or remove root certificates that are associated with that fabric.",
+      "formal": "∀fabric_A, fabric_B, cert_C. access(fabric_A, cert_C) ∧ associated(cert_C, fabric_B) ⟹ fabric_A = fabric_B",
+      "violation": "Cross-fabric access allows attacker from fabric_A to compromise fabric_B by reading, rotating, or removing fabric_B's root certificates. This breaks multi-tenant isolation and enables privilege escalation across fabric boundaries.",
+      "proverifQuery": "query f1:fabric, f2:fabric, c:cert, op:operation ⊢ event perform_operation(f1, c, op) ∧ associated_fabric(c, f2) ==> f1 = f2"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Fabric_Isolation_Client_Certificates",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "A fabric can only access, modify, or remove client certificates and key pairs that are associated with that fabric.",
+      "formal": "∀fabric_A, fabric_B, ccdid_C. access(fabric_A, ccdid_C) ∧ associated(ccdid_C, fabric_B) ⟹ fabric_A = fabric_B",
+      "violation": "Cross-fabric access allows attacker to steal private keys from another fabric, impersonate clients, or corrupt certificate chains. Enables lateral movement across fabric boundaries and breaks cryptographic authentication.",
+      "proverifQuery": "query f1:fabric, f2:fabric, ccdid:id, op:operation ⊢ event perform_operation(f1, ccdid, op) ∧ associated_fabric(ccdid, f2) ==> f1 = f2"
+    },
+    {
+      "id": "PROP_003",
+      "name": "CAID_Uniqueness_Per_Node",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Every TLSCAID value must be unique across all fabrics on a node, with collision detection enforced.",
+      "formal": "∀caid_X, cert_A, cert_B. assign(caid_X, cert_A) ∧ assign(caid_X, cert_B) ⟹ cert_A = cert_B",
+      "violation": "CAID collision causes certificate mismatch where commands reference wrong certificate. Attacker exploits by triggering ID wraparound to overwrite victim's certificate entry, enabling certificate substitution attacks.",
+      "proverifQuery": "query c1:cert, c2:cert, id:caid ⊢ event assign_caid(id, c1) ∧ event assign_caid(id, c2) ==> c1 = c2"
+    },
+    {
+      "id": "PROP_004",
+      "name": "CCDID_Uniqueness_Per_Node",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Every TLSCCDID value must be unique across all fabrics on a node, with collision detection enforced.",
+      "formal": "∀ccdid_X, client_A, client_B. assign(ccdid_X, client_A) ∧ assign(ccdid_X, client_B) ⟹ client_A = client_B",
+      "violation": "CCDID collision causes private key mismatch. Attacker triggers collision to associate victim's private key with attacker's certificate, enabling impersonation and man-in-the-middle attacks.",
+      "proverifQuery": "query c1:clientcert, c2:clientcert, id:ccdid ⊢ event assign_ccdid(id, c1) ∧ event assign_ccdid(id, c2) ==> c1 = c2"
+    },
+    {
+      "id": "PROP_005",
+      "name": "Certificate_Fingerprint_Uniqueness_Per_Fabric",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Within a fabric, no two provisioned certificates (root or client) can have the same fingerprint.",
+      "formal": "∀fabric_F, cert_A, cert_B. provisioned(cert_A, fabric_F) ∧ provisioned(cert_B, fabric_F) ∧ fingerprint(cert_A) = fingerprint(cert_B) ⟹ cert_A = cert_B",
+      "violation": "Duplicate fingerprints enable certificate confusion attacks where lookup commands return ambiguous results. Attacker provisions duplicate to hijack certificate references, breaking TLS authentication.",
+      "proverifQuery": "query f:fabric, c1:cert, c2:cert, fp:fingerprint ⊢ event provision(c1, f) ∧ event provision(c2, f) ∧ fingerprint_of(c1, fp) ∧ fingerprint_of(c2, fp) ==> c1 = c2"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Time_Synchronization_Prerequisite",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Root certificate provisioning requires UTCTime attribute to be non-null, preventing provisioning before time synchronization.",
+      "formal": "∀cert_C. provision_root(cert_C) ⟹ UTCTime ≠ null",
+      "violation": "Provisioning certificates without synchronized time breaks validity checking. Attacker provisions expired certificates before time sync, bypassing temporal security controls and enabling replay attacks.",
+      "proverifQuery": "query c:cert ⊢ event provision_root_cert(c) ==> event time_synchronized()"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Certificate_Format_Validation",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "All provisioned certificates must be valid DER-encoded TLS certificates, verified before storage.",
+      "formal": "∀cert_C. provision(cert_C) ⟹ valid_DER(cert_C) ∧ valid_TLS_cert(cert_C)",
+      "violation": "Invalid certificates corrupt storage and cause parsing errors. Attacker provisions malformed certificate to trigger buffer overflows, denial of service, or bypass validation in certificate chain processing.",
+      "proverifQuery": "query c:cert ⊢ event provisioned(c) ==> event validated(c)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Public_Private_Key_Correspondence",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "When provisioning a client certificate, the certificate's public key must correspond to the stored private key for that CCDID.",
+      "formal": "∀ccdid_X, cert_C, privkey_K. provision_client(ccdid_X, cert_C) ∧ has_privkey(ccdid_X, privkey_K) ⟹ corresponds(pubkey(cert_C), privkey_K)",
+      "violation": "Mismatched key pairs break TLS authentication. Node cannot prove possession of private key, causing connection failures. Attacker provisions certificate with different public key to cause denial of service or enable key substitution attacks.",
+      "proverifQuery": "query ccdid:id, c:cert, priv:key ⊢ event provision_client_cert(ccdid, c) ∧ event has_private_key(ccdid, priv) ==> event key_correspondence(c, priv)"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Nonce_Signature_Proof_of_Possession",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "ClientCSRResponse must include a valid signature of the nonce using the private key corresponding to the CSR public key.",
+      "formal": "∀ccdid_X, nonce_N, csr_R, sig_S. ClientCSRResponse(ccdid_X, csr_R, sig_S) ⟹ verify(sig_S, nonce_N, pubkey(csr_R))",
+      "violation": "Missing or invalid nonce signature allows CSR substitution attacks. Attacker submits victim's CSR without possessing private key, enabling certificate issuance for keys attacker doesn't control, breaking non-repudiation.",
+      "proverifQuery": "query ccdid:id, n:nonce, csr:request, sig:signature ⊢ event csr_response(ccdid, csr, sig) ==> event valid_signature(sig, n, pubkey(csr))"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Resource_Exhaustion_Root_Certificates",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Node enforces maximum of 5 root certificates per fabric (configurable), rejecting new provisions when limit reached.",
+      "formal": "∀fabric_F. count(root_certs(fabric_F)) = MaxRootCertificates ⟹ ¬provision_new_root(fabric_F)",
+      "violation": "Exceeding limit causes memory corruption or overwrites existing certificates. Attacker floods provisioning to trigger resource exhaustion denial of service or certificate table corruption.",
+      "proverifQuery": "query f:fabric, c:cert ⊢ event provision_new_root(f, c) ==> event count_below_max(f, MaxRootCerts)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "Resource_Exhaustion_Client_Certificates",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Node enforces maximum of 2 client certificates per fabric (configurable), rejecting new provisions when limit reached.",
+      "formal": "∀fabric_F. count(client_certs(fabric_F)) = MaxClientCertificates ⟹ ¬provision_new_client(fabric_F)",
+      "violation": "Exceeding limit causes memory corruption or private key storage exhaustion. Attacker floods CSR requests to exhaust key storage, triggering denial of service or private key exposure via memory corruption.",
+      "proverifQuery": "query f:fabric, ccdid:id ⊢ event provision_new_client(f, ccdid) ==> event count_below_max(f, MaxClientCerts)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Certificate_Rotation_State_Consistency",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "When rotating certificates (updating existing CAID/CCDID), old certificate is atomically replaced, and only new TLS connections use updated certificate.",
+      "formal": "∀caid_X, cert_old, cert_new. rotate(caid_X, cert_old, cert_new) ⟹ (∀conn. established(conn) after rotate ⟹ uses(conn, cert_new)) ∧ (∀conn. established(conn) before rotate ⟹ uses(conn, cert_old))",
+      "violation": "Incomplete rotation causes mixed certificate usage. Active connections may break if certificate changes mid-session. Attacker triggers rotation during connection establishment to cause authentication failures or protocol confusion.",
+      "proverifQuery": "query id:caid, old:cert, new:cert, conn:connection ⊢ event rotate(id, old, new) ∧ event establish_connection(conn) ∧ event after(rotate, establish_connection) ==> event uses_cert(conn, new)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Dependency_Check_Root_Certificate_Removal",
+      "category": "Revocation",
+      "importance": "CRITICAL",
+      "claim": "Root certificate cannot be removed if any provisioned endpoint in TLS Client Management Cluster references its CAID.",
+      "formal": "∀caid_X. (∃endpoint. uses_caid(endpoint, caid_X)) ⟹ ¬remove_root_cert(caid_X)",
+      "violation": "Removing referenced certificate breaks active TLS endpoints, causing connection failures. Attacker removes root cert to disable endpoints, triggering denial of service or forcing fallback to weaker authentication.",
+      "proverifQuery": "query id:caid ⊢ event remove_root_cert(id) ==> ¬(∃e:endpoint. event endpoint_uses_caid(e, id))"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Dependency_Check_Client_Certificate_Removal",
+      "category": "Revocation",
+      "importance": "CRITICAL",
+      "claim": "Client certificate cannot be removed if any provisioned endpoint in TLS Client Management Cluster references its CCDID.",
+      "formal": "∀ccdid_X. (∃endpoint. uses_ccdid(endpoint, ccdid_X)) ⟹ ¬remove_client_cert(ccdid_X)",
+      "violation": "Removing referenced certificate breaks active TLS endpoints and orphans private keys. Attacker removes client cert to disable authentication or create dangling endpoint references, causing service disruption.",
+      "proverifQuery": "query id:ccdid ⊢ event remove_client_cert(id) ==> ¬(∃e:endpoint. event endpoint_uses_ccdid(e, id))"
+    },
+    {
+      "id": "PROP_015",
+      "name": "Private_Key_Cleanup_On_Removal",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When client certificate is removed, associated private key must be securely deleted from storage.",
+      "formal": "∀ccdid_X, privkey_K. remove_client_cert(ccdid_X) ∧ has_privkey(ccdid_X, privkey_K) ⟹ deleted(privkey_K)",
+      "violation": "Orphaned private keys remain in storage after certificate removal, enabling key extraction attacks. Attacker recovers deleted certificate's private key from memory to impersonate removed client.",
+      "proverifQuery": "query id:ccdid, priv:key ⊢ event remove_client_cert(id) ∧ event had_private_key(id, priv) ==> event key_deleted(priv)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "CSR_Certificate_Provisioning_Sequence",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "ClientCSR must be invoked before ProvisionClientCertificate, establishing the CCDID and key pair first.",
+      "formal": "∀ccdid_X, cert_C. provision_client_cert(ccdid_X, cert_C) ⟹ (∃csr. ClientCSR(ccdid_X, csr) ∧ happens_before(ClientCSR, provision_client_cert))",
+      "violation": "Out-of-order provisioning fails NOT_FOUND check or associates certificate with wrong key pair. Attacker provisions certificate to non-existent CCDID to corrupt certificate-key mapping or cause state inconsistency.",
+      "proverifQuery": "query id:ccdid, c:cert ⊢ event provision_client_cert(id, c) ==> (∃csr:request. event client_csr(id, csr) ∧ event before(client_csr, provision_client_cert))"
+    },
+    {
+      "id": "PROP_017",
+      "name": "NULL_Client_Certificate_State",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "After ClientCSR but before ProvisionClientCertificate, ClientCertificate field is NULL, indicating CSR pending completion.",
+      "formal": "∀ccdid_X. (ClientCSR(ccdid_X) ∧ ¬ProvisionClientCertificate(ccdid_X)) ⟹ client_cert_field(ccdid_X) = NULL",
+      "violation": "Non-NULL certificate before provisioning indicates state corruption. Attacker exploits to bypass provisioning checks or use incomplete certificate entries, breaking CSR validation flow.",
+      "proverifQuery": "query id:ccdid ⊢ event client_csr(id) ∧ ¬event provision_client_cert(id) ==> event cert_field_null(id)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Large_Message_Transport_Certificate_Inclusion",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When reading certificate attributes over Large Message capable transport, Certificate/ClientCertificate/IntermediateCertificates fields SHALL be included.",
+      "formal": "∀transport_T, cert_C. reads_cert(transport_T, cert_C) ∧ large_message_capable(transport_T) ⟹ includes_cert_data(response)",
+      "violation": "Missing certificate data forces client to issue additional FindRootCertificate/FindClientCertificate commands, degrading performance. No direct security impact but enables denial of service via excessive command overhead.",
+      "proverifQuery": "query t:transport, c:cert ⊢ event read_cert(t, c) ∧ event large_msg_capable(t) ==> event response_includes_cert(c)"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Non_Large_Message_Transport_Certificate_Exclusion",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When reading certificate attributes over non-Large Message capable transport, Certificate/ClientCertificate/IntermediateCertificates fields SHALL NOT be included.",
+      "formal": "∀transport_T, cert_C. reads_cert(transport_T, cert_C) ∧ ¬large_message_capable(transport_T) ⟹ ¬includes_cert_data(response)",
+      "violation": "Including large certificate data on limited transport causes message truncation or protocol errors. Attacker floods non-large message queries to trigger buffer overflows or denial of service via message fragmentation attacks.",
+      "proverifQuery": "query t:transport, c:cert ⊢ event read_cert(t, c) ∧ ¬event large_msg_capable(t) ==> ¬event response_includes_cert(c)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "Root_Certificate_Provision_Null_CAID_Creates_New",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "ProvisionRootCertificate with NULL CAID generates new TLSCAID and adds new certificate; non-NULL CAID updates existing.",
+      "formal": "(provision_root_cert(NULL, cert_C) ⟹ ∃new_id. generate_caid(new_id) ∧ add_new(new_id, cert_C)) ∧ (provision_root_cert(caid_X, cert_C) ∧ caid_X ≠ NULL ⟹ update_existing(caid_X, cert_C))",
+      "violation": "Misinterpreting NULL vs non-NULL causes incorrect operation: new CAID created when rotation intended, or NOT_FOUND when new certificate expected. Attacker exploits to overwrite unintended certificates or exhaust ID space.",
+      "proverifQuery": "query c:cert, id:caid ⊢ (event provision_root_cert(null, c) ==> (∃new:caid. event generate_caid(new) ∧ event add_cert(new, c))) ∧ (event provision_root_cert(id, c) ∧ id ≠ null ==> event update_cert(id, c))"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Client_CSR_Null_CCDID_Generates_Key_Pair",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "ClientCSR with NULL CCDID generates new key pair; non-NULL CCDID reuses existing key pair for rotation.",
+      "formal": "(ClientCSR(NULL, nonce_N) ⟹ ∃new_keypair, new_id. generate_keypair(new_keypair) ∧ generate_ccdid(new_id) ∧ associate(new_id, new_keypair)) ∧ (ClientCSR(ccdid_X, nonce_N) ∧ ccdid_X ≠ NULL ⟹ reuse_keypair(ccdid_X))",
+      "violation": "New key generation when rotation intended breaks certificate chain continuity. Old certificates become orphaned. Attacker exploits to force key regeneration, invalidating existing certificates and causing authentication failures.",
+      "proverifQuery": "query n:nonce, id:ccdid ⊢ (event client_csr(null, n) ==> (∃k:keypair, new:ccdid. event generate_keypair(k) ∧ event generate_ccdid(new))) ∧ (event client_csr(id, n) ∧ id ≠ null ==> event reuse_keypair(id))"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Key_Collision_Detection_And_Rejection",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Newly generated TLS key pair must not collide with any existing TLS key pair or operational credential key pair; collisions trigger rejection.",
+      "formal": "∀keypair_new, keypair_existing. generate_keypair(keypair_new) ∧ exists(keypair_existing) ∧ collides(keypair_new, keypair_existing) ⟹ reject_generation() ∧ delete(keypair_new)",
+      "violation": "Key collision enables impersonation attacks. Two entities share same private key, breaking authentication and non-repudiation. Attacker exploits weak DRBG to predict key generation and trigger collisions, gaining access to victim's sessions.",
+      "proverifQuery": "query k_new:keypair, k_exist:keypair ⊢ event generate_keypair(k_new) ∧ event exists_keypair(k_exist) ∧ event collision(k_new, k_exist) ==> event reject_keypair(k_new) ∧ event delete_keypair(k_new)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "PKCS10_CSR_Format_Compliance",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "Generated CSR must conform to PKCS #10 format (RFC 2986) with valid signature using TLS private key.",
+      "formal": "∀csr_R, privkey_K. generate_csr(csr_R, privkey_K) ⟹ pkcs10_compliant(csr_R) ∧ valid_signature(csr_R.signature, csr_R.body, privkey_K)",
+      "violation": "Invalid CSR format causes CA rejection or signature verification failures. Attacker submits malformed CSR to trigger parsing vulnerabilities in CA systems or bypass signature validation.",
+      "proverifQuery": "query csr:request, priv:key ⊢ event generate_csr(csr, priv) ==> event pkcs10_valid(csr) ∧ event signature_valid(csr, priv)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Intermediate_Certificate_Chain_Validation",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "Intermediate certificates must form valid chain from client certificate to root CA, with maximum 10 intermediates.",
+      "formal": "∀icac_list, client_cert, root_ca. provision_client_cert(client_cert, icac_list) ⟹ (valid_chain(client_cert, icac_list, root_ca) ∧ length(icac_list) ≤ 10)",
+      "violation": "Invalid chain breaks TLS handshake, causing connection failures. Attacker provisions unrelated intermediates to cause denial of service or exploits deep chain validation to trigger stack exhaustion in certificate verification.",
+      "proverifQuery": "query c:cert, icacs:certlist, root:cert ⊢ event provision_client_cert(c, icacs) ==> event valid_cert_chain(c, icacs, root) ∧ event chain_length_valid(icacs)"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Empty_Intermediate_Certificates_Allowed",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Empty IntermediateCertificates list is valid, indicating client certificate is directly signed by root CA.",
+      "formal": "∀client_cert, root_ca. provision_client_cert(client_cert, []) ⟹ directly_signed_by(client_cert, root_ca)",
+      "violation": "Rejecting empty list forces unnecessary intermediates, increasing attack surface. Attacker exploits by injecting malicious intermediate when direct signing is intended, enabling man-in-the-middle via compromised intermediate CA.",
+      "proverifQuery": "query c:cert, root:cert ⊢ event provision_client_cert(c, []) ==> event directly_signed(c, root)"
+    },
+    {
+      "id": "PROP_026",
+      "name": "FindRootCertificate_Null_Returns_All_Fabric_Certs",
+      "category": "AccessControl",
+      "importance": "MEDIUM",
+      "claim": "FindRootCertificate with NULL CAID returns all root certificates for accessing fabric only, not other fabrics.",
+      "formal": "∀fabric_F. FindRootCertificate(NULL, fabric_F) ⟹ returns({cert | associated(cert, fabric_F)})",
+      "violation": "Returning certificates from other fabrics leaks cross-fabric certificate information. Attacker enumerates certificates across fabrics to map trust relationships or identify targets for certificate substitution attacks.",
+      "proverifQuery": "query f:fabric ⊢ event find_root_cert(null, f) ==> (∀c:cert. event returned(c) ==> event associated_fabric(c, f))"
+    },
+    {
+      "id": "PROP_027",
+      "name": "FindClientCertificate_Null_Returns_All_Fabric_Certs",
+      "category": "AccessControl",
+      "importance": "MEDIUM",
+      "claim": "FindClientCertificate with NULL CCDID returns all client certificates for accessing fabric only, not other fabrics.",
+      "formal": "∀fabric_F. FindClientCertificate(NULL, fabric_F) ⟹ returns({ccdid | associated(ccdid, fabric_F)})",
+      "violation": "Returning client certificates from other fabrics leaks private key metadata and certificate details. Attacker enumerates client certificates to identify impersonation targets or map client authentication topology.",
+      "proverifQuery": "query f:fabric ⊢ event find_client_cert(null, f) ==> (∀id:ccdid. event returned(id) ==> event associated_fabric(id, f))"
+    },
+    {
+      "id": "PROP_028",
+      "name": "NOT_FOUND_On_Empty_Certificate_List",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Find/Lookup/Remove commands return NOT_FOUND when no certificates exist for accessing fabric.",
+      "formal": "∀fabric_F, op. execute(op, fabric_F) ∧ count(certs(fabric_F)) = 0 ⟹ returns(NOT_FOUND)",
+      "violation": "Returning success or different error code leaks information about other fabrics' certificate states. Attacker probes empty fabric state to infer certificate provisioning status across fabrics.",
+      "proverifQuery": "query f:fabric, op:operation ⊢ event execute(op, f) ∧ event empty_cert_list(f) ==> event returns(NOT_FOUND)"
+    },
+    {
+      "id": "PROP_029",
+      "name": "Lookup_By_Fingerprint_Unambiguous",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "LookupRootCertificate and LookupClientCertificate return unique CAID/CCDID for a given fingerprint within a fabric.",
+      "formal": "∀fabric_F, fp_X, id_A, id_B. lookup(fp_X, fabric_F) = id_A ∧ lookup(fp_X, fabric_F) = id_B ⟹ id_A = id_B",
+      "violation": "Ambiguous lookup enables certificate substitution. If multiple IDs map to same fingerprint, attacker triggers wrong certificate selection, breaking certificate pinning and enabling downgrade attacks.",
+      "proverifQuery": "query f:fabric, fp:fingerprint, id1:id, id2:id ⊢ event lookup_fingerprint(fp, f, id1) ∧ event lookup_fingerprint(fp, f, id2) ==> id1 = id2"
+    },
+    {
+      "id": "PROP_030",
+      "name": "Admin_Privilege_Required_For_Mutations",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "All mutation commands (Provision, Remove) require Admin privilege (A access modifier).",
+      "formal": "∀op, principal_P. mutation(op) ∧ execute(op, principal_P) ⟹ has_privilege(principal_P, ADMIN)",
+      "violation": "Unprivileged access to mutations enables rogue nodes to inject malicious certificates, remove trusted CAs, or corrupt certificate storage. Attacker gains control of trust anchors, enabling full man-in-the-middle compromise.",
+      "proverifQuery": "query op:operation, p:principal ⊢ event mutation_operation(op) ∧ event execute(op, p) ==> event has_admin_privilege(p)"
+    },
+    {
+      "id": "PROP_031",
+      "name": "Fabric_Scoped_Commands_Enforce_Isolation",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "All commands marked 'F' (Fabric scoped) enforce fabric isolation: only accessing fabric can operate on its certificates.",
+      "formal": "∀cmd, fabric_accessing, fabric_target. fabric_scoped(cmd) ∧ execute(cmd, fabric_accessing, fabric_target) ⟹ fabric_accessing = fabric_target",
+      "violation": "Fabric scope bypass enables cross-fabric attacks. Attacker from fabric_A manipulates certificates in fabric_B, breaking multi-tenancy isolation and enabling privilege escalation across trust boundaries.",
+      "proverifQuery": "query cmd:command, f_access:fabric, f_target:fabric ⊢ event fabric_scoped_command(cmd) ∧ event execute_on_fabric(cmd, f_access, f_target) ==> f_access = f_target"
+    },
+    {
+      "id": "PROP_032",
+      "name": "Certificate_Rotation_Preserves_Active_Connections",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Certificate rotation does not disrupt active TLS connections; only new connections post-rotation use updated certificate.",
+      "formal": "∀caid_X, cert_old, cert_new, conn_active. rotate(caid_X, cert_old, cert_new) ∧ active_before_rotate(conn_active) ⟹ continues_using(conn_active, cert_old) ∧ ¬interrupted(conn_active)",
+      "violation": "Disrupting active connections causes service outage. Attacker triggers frequent rotations to force connection resets, enabling denial of service or session hijacking during re-authentication.",
+      "proverifQuery": "query id:caid, old:cert, new:cert, conn:connection ⊢ event rotate_cert(id, old, new) ∧ event connection_active_before(conn, rotate) ==> event connection_continues(conn, old) ∧ ¬event connection_interrupted(conn)"
+    },
+    {
+      "id": "PROP_033",
+      "name": "CSR_Subject_DN_Not_Trusted_In_Final_Certificate",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "Device SHOULD NOT expect final certificate to contain CSR subject DN attributes; CA may override.",
+      "formal": "∀csr_R, cert_final. issued_from_csr(cert_final, csr_R) ⟹ ¬guaranteed(subject_dn(cert_final) = subject_dn(csr_R))",
+      "violation": "Trusting CSR subject DN creates validation bypass. Attacker submits CSR with privileged subject DN; if device trusts it, attacker gains unauthorized privileges. CA override is security feature, not bug.",
+      "proverifQuery": "query csr:request, c:cert ⊢ event certificate_issued(c, csr) ==> ¬event guaranteed_subject_match(c, csr)"
+    },
+    {
+      "id": "PROP_034",
+      "name": "Root_Certificate_Required_Before_Client_Provisioning",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Provisioning client certificate requires corresponding root CA already provisioned (for chain validation).",
+      "formal": "∀ccdid_X, client_cert, root_ca. provision_client_cert(ccdid_X, client_cert) ⟹ ∃caid. provisioned(root_ca) ∧ signs_chain(root_ca, client_cert)",
+      "violation": "Client certificate without root CA cannot be validated, causing all TLS connections to fail. Attacker exploits by provisioning client cert first, then removing root CA, leaving orphaned client cert that breaks authentication.",
+      "proverifQuery": "query id:ccdid, c:cert, root:cert ⊢ event provision_client_cert(id, c) ==> (∃ca_id:caid. event provisioned_root(ca_id, root) ∧ event signs_chain(root, c))"
+    },
+    {
+      "id": "PROP_035",
+      "name": "Cluster_Placement_Root_Node_Endpoint_Only",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "TLS Certificate Management Cluster SHALL be present only on root node endpoint, not on other endpoints.",
+      "formal": "∀endpoint_E. has_cluster(endpoint_E, TLS_CERT_MGMT) ⟹ endpoint_E = ROOT_NODE_ENDPOINT",
+      "violation": "Cluster on non-root endpoint bypasses centralized certificate management. Attacker accesses cluster from compromised non-root endpoint to manipulate certificates without administrator oversight.",
+      "proverifQuery": "query e:endpoint ⊢ event has_tls_cert_cluster(e) ==> event is_root_endpoint(e)"
+    },
+    {
+      "id": "PROP_036",
+      "name": "Large_Message_Qualifier_Uniform_Usage",
+      "category": "Correctness",
+      "importance": "LOW",
+      "claim": "All commands use Large Message qualifier uniformly, even when not required, to reduce testing matrix complexity.",
+      "formal": "∀cmd. cluster_command(cmd, TLS_CERT_MGMT) ⟹ has_qualifier(cmd, LARGE_MESSAGE)",
+      "violation": "Missing Large Message qualifier causes protocol mismatch on large message transports. No direct security impact, but inconsistent handling may lead to message truncation or parsing errors.",
+      "proverifQuery": "query cmd:command ⊢ event cluster_command(cmd, TLS_CERT_MGMT) ==> event has_large_msg_qualifier(cmd)"
+    },
+    {
+      "id": "PROP_037",
+      "name": "CAID_Wraparound_Uniqueness_Preserved",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When CAID wraps from 65534 to 0, uniqueness verification ensures no collision with existing IDs.",
+      "formal": "∀caid_new. caid_new = 0 ∧ wrapped_from_65534 ⟹ ¬(∃caid_existing. caid_existing = 0 ∧ still_provisioned(caid_existing))",
+      "violation": "Wraparound collision overwrites active certificate entry. Attacker triggers rapid certificate provisioning to force wraparound into predictable ID, enabling certificate substitution or denial of service.",
+      "proverifQuery": "query id_new:caid, id_exist:caid ⊢ event wraparound(id_new) ∧ event generated_caid(id_new) ==> ¬(event exists_active_caid(id_exist) ∧ id_new = id_exist)"
+    },
+    {
+      "id": "PROP_038",
+      "name": "CCDID_Wraparound_Uniqueness_Preserved",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When CCDID wraps from 65534 to 0, uniqueness verification ensures no collision with existing IDs.",
+      "formal": "∀ccdid_new. ccdid_new = 0 ∧ wrapped_from_65534 ⟹ ¬(∃ccdid_existing. ccdid_existing = 0 ∧ still_provisioned(ccdid_existing))",
+      "violation": "Wraparound collision associates new certificate with existing private key. Attacker exploits to gain access to victim's private key by triggering predictable wraparound collision.",
+      "proverifQuery": "query id_new:ccdid, id_exist:ccdid ⊢ event wraparound(id_new) ∧ event generated_ccdid(id_new) ==> ¬(event exists_active_ccdid(id_exist) ∧ id_new = id_exist)"
+    },
+    {
+      "id": "PROP_039",
+      "name": "Minimum_Storage_Root_Certificates_Per_Fabric",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Node SHALL provide storage for at least 5 root certificates per fabric (minimum requirement).",
+      "formal": "∀node_N. MaxRootCertificates(node_N) ≥ 5",
+      "violation": "Insufficient storage limits trust anchor diversity, forcing single CA dependency. Attacker compromises single CA to control all trust decisions, negating multi-CA security model.",
+      "proverifQuery": "query n:node ⊢ event node_deployed(n) ==> event storage_capacity(n, RootCerts, ≥5)"
+    },
+    {
+      "id": "PROP_040",
+      "name": "Minimum_Storage_Client_Certificates_Per_Fabric",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Node SHALL provide storage for at least 2 client certificates per fabric (minimum requirement).",
+      "formal": "∀node_N. MaxClientCertificates(node_N) ≥ 2",
+      "violation": "Insufficient storage prevents certificate rotation. Node cannot hold old and new certificates simultaneously, forcing service interruption during rotation. Attacker exploits rotation window to trigger authentication failures.",
+      "proverifQuery": "query n:node ⊢ event node_deployed(n) ==> event storage_capacity(n, ClientCerts, ≥2)"
+    },
+    {
+      "id": "PROP_041",
+      "name": "Minimum_TLS_Endpoints_Per_Fabric",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Node SHALL provide storage for at least 2 TLS Endpoints per fabric.",
+      "formal": "∀node_N. MaxTLSEndpoints(node_N) ≥ 2",
+      "violation": "Insufficient endpoints limit concurrent connections. Node cannot serve multiple services or perform endpoint rotation. Attacker targets single endpoint to disable all TLS connectivity.",
+      "proverifQuery": "query n:node ⊢ event node_deployed(n) ==> event storage_capacity(n, TLSEndpoints, ≥2)"
+    },
+    {
+      "id": "PROP_042",
+      "name": "Minimum_Concurrent_TLS_Connections_Per_Fabric",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Node SHALL support at least 2 concurrent TLS client connections per fabric using provisioned endpoints.",
+      "formal": "∀node_N, fabric_F. concurrent_connections(node_N, fabric_F) ≥ 2",
+      "violation": "Insufficient concurrency causes connection queuing and timeouts. Attacker floods with connection requests to exhaust connection slots, triggering denial of service via connection starvation.",
+      "proverifQuery": "query n:node, f:fabric ⊢ event connection_capacity(n, f) ==> event supports_concurrent(n, f, ≥2)"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "Time Synchronization cluster provides accurate, monotonic UTCTime before certificate provisioning.",
+      "type": "Explicit",
+      "impact_if_violated": "Properties PROP_006 breaks: certificates can be provisioned without valid timestamps, enabling expired certificate attacks and replay vulnerabilities. Certificate validity checking becomes unreliable."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "TLS Client Management Cluster (0x0802) enforces referential integrity with this cluster's CAID/CCDID values.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_013, PROP_014 break: certificates can be removed while endpoints reference them, causing dangling pointers. Active TLS connections fail with authentication errors, enabling denial of service."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "Cryptographic primitives (ECDSA signature verification, DER parsing, fingerprint computation) are implemented correctly without vulnerabilities.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_007, PROP_008, PROP_009, PROP_023 break: malformed certificates bypass validation, invalid signatures are accepted, key correspondence check fails. Enables certificate forgery and impersonation attacks."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "DRBG (Deterministic Random Bit Generator) provides sufficient entropy for key generation without predictable outputs.",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_022 breaks: key collision probability increases dramatically. Attacker predicts key generation to trigger collisions or directly compute private keys, breaking all cryptographic security."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Fabric isolation is enforced at transport layer; accessing fabric identity is authenticated and cannot be spoofed.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_001, PROP_002, PROP_026, PROP_027, PROP_030, PROP_031 break: attacker spoofs fabric identity to access cross-fabric certificates. Complete isolation failure enables lateral movement and privilege escalation across all fabrics."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Admin privilege (A access modifier) is securely granted and cannot be escalated by unprivileged principals.",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_030 breaks: unprivileged attacker gains mutation access to inject malicious certificates, remove trust anchors, or corrupt certificate storage. Complete compromise of certificate infrastructure."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Memory used for private key storage is protected against unauthorized read access and securely erased on deletion.",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_015 breaks: deleted private keys remain in memory or swap. Attacker with memory access reads orphaned keys to impersonate deleted clients or decrypt past TLS sessions."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "Certificate Authority (external to this cluster) validates CSRs properly and issues certificates with correct subjectPublicKey matching CSR.",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_008 breaks indirectly: CA issues certificate with wrong public key. ProvisionClientCertificate succeeds but TLS handshake fails due to key mismatch, causing service disruption."
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "Large Message capability detection is reliable; transport correctly reports its capabilities.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_018, PROP_019 break: certificate data included on limited transport causes truncation; excluded on capable transport forces extra round trips. Protocol errors or denial of service via bandwidth exhaustion."
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "Certificate fingerprint computation (hash algorithm) is collision-resistant and consistently implemented.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_005, PROP_029 break: fingerprint collisions create ambiguous certificate identification. Attacker finds collision to substitute malicious certificate, bypassing certificate pinning and trust verification."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Fabric Isolation Bypass - Cross-Fabric Certificate Access",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker from fabric_A sends FindRootCertificate/RemoveRootCertificate commands with spoofed or bypassed fabric identity to access fabric_B certificates. Enables certificate theft, rotation hijacking, or removal of trust anchors across fabric boundaries."
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Fabric Isolation Bypass - Cross-Fabric Private Key Access",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker from fabric_A sends FindClientCertificate with bypassed fabric check to enumerate fabric_B's CCDIDs, then uses RemoveClientCertificate to trigger key cleanup race condition and extract private keys via memory forensics."
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "CAID Collision - Certificate Substitution Attack",
+      "severity": "HIGH",
+      "attack_vector": "Attacker rapidly provisions certificates to force CAID wraparound, then times new provision to collide with victim's CAID. Subsequent certificate operations target attacker's certificate instead of victim's, enabling trust anchor substitution."
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "CCDID Collision - Private Key Mismatch Attack",
+      "severity": "HIGH",
+      "attack_vector": "Attacker triggers CCDID collision to associate attacker's certificate with victim's private key entry. ProvisionClientCertificate succeeds with wrong key-cert binding, causing TLS handshake failures or exposing victim's private key operations."
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Duplicate Fingerprint - Certificate Confusion Attack",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker finds hash collision or exploits weak fingerprint algorithm to provision duplicate. LookupRootCertificate/LookupClientCertificate return ambiguous results; subsequent operations target wrong certificate, breaking trust pinning."
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "Time-of-Check Time-of-Use - Expired Certificate Attack",
+      "severity": "HIGH",
+      "attack_vector": "Attacker provisions expired certificate before Time Synchronization completes. UTCTime null check passes during provision, then time sync activates invalid certificate. System uses expired cert until next validation cycle."
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Malformed Certificate - Buffer Overflow / DoS",
+      "severity": "HIGH",
+      "attack_vector": "Attacker provisions DER-encoded certificate with crafted length fields or invalid ASN.1 structure. Parser triggers buffer overflow, arbitrary code execution, or crashes during certificate read operations."
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Key Mismatch - TLS Handshake Failure / Impersonation",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker provisions client certificate with public key not matching stored private key. TLS server accepts certificate but node cannot complete handshake (no proof of possession). Or worse: attacker possesses matching private key, enabling impersonation."
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "CSR Substitution - Certificate Issuance Without Key Possession",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker intercepts victim's CSR, submits to CA, and receives certificate for victim's public key without possessing private key. Missing NonceSignature check allows attacker to provision certificate they cannot use, causing DoS or enabling certificate confusion."
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Root Certificate Exhaustion - Memory Corruption / DoS",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker floods ProvisionRootCertificate with rapid requests after limit reached. Weak enforcement allows buffer overflow past MaxRootCertificates, corrupting adjacent memory or exhausting storage."
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Client Certificate Exhaustion - Private Key Storage Corruption",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker floods ClientCSR requests after limit reached. Key generation continues despite limit, exhausting secure key storage or overwriting existing private keys, breaking authentication for legitimate clients."
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Certificate Rotation Race - Mixed Certificate Usage",
+      "severity": "HIGH",
+      "attack_vector": "Attacker times certificate rotation to coincide with connection establishment. Race condition causes new connection to use mix of old/new certificates, breaking TLS handshake or enabling downgrade attack via certificate confusion."
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Dangling Endpoint Reference - TLS Connection Failure",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker bypasses dependency check to remove root certificate still referenced by active endpoint. Endpoint attempts TLS handshake with missing root CA, fails authentication. DoS via trust anchor removal."
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Dangling Endpoint Private Key - Authentication Failure",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker removes client certificate+key still referenced by active endpoint. Endpoint cannot present client certificate during TLS handshake, causing authentication failure. DoS via credential removal."
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Private Key Leakage - Post-Deletion Key Recovery",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker triggers RemoveClientCertificate, then uses memory dump or cold boot attack to recover non-erased private key. Impersonates deleted client or decrypts past sessions if key was used for encryption."
+    },
+    {
+      "property_id": "PROP_016",
+      "vulnerability": "Out-of-Order Provisioning - Key-Certificate Mismatch",
+      "severity": "HIGH",
+      "attack_vector": "Attacker sends ProvisionClientCertificate before ClientCSR, exploiting race condition where CCDID exists from prior fabric member. Certificate associates with wrong private key, breaking authentication or enabling key theft."
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Key Collision - Duplicate Private Key Attack",
+      "severity": "CRITICAL",
+      "attack_vector": "Weak DRBG or insufficient entropy causes key collision. Two entities share same private key, breaking non-repudiation and enabling cross-entity impersonation. Attacker predicts key generation to force collision with victim."
+    },
+    {
+      "property_id": "PROP_030",
+      "vulnerability": "Privilege Escalation - Unprivileged Certificate Injection",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker without admin privilege exploits missing access control check to call ProvisionRootCertificate. Injects malicious root CA to MITM all TLS connections trusting that CA. Complete compromise of certificate trust."
+    },
+    {
+      "property_id": "PROP_031",
+      "vulnerability": "Fabric Isolation Bypass - Cross-Fabric Command Execution",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker exploits missing fabric scope enforcement to execute commands targeting other fabric's certificates. Steals root CAs, rotates certificates, or removes trust anchors across fabric boundaries, breaking multi-tenant isolation."
+    },
+    {
+      "property_id": "PROP_034",
+      "vulnerability": "Orphaned Client Certificate - Broken Certificate Chain",
+      "severity": "HIGH",
+      "attack_vector": "Attacker provisions client certificate before root CA or removes root CA after client cert provisioning. TLS handshake fails due to incomplete trust chain. DoS via broken certificate validation path."
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "certificate_lifecycle",
+      "properties_enforcing_transitions": ["PROP_016", "PROP_020", "PROP_021"],
+      "critical_property": "PROP_016 violated if state machine allows ProvisionClientCertificate before ClientCSR completes. States: [UNPROVISIONED] --ClientCSR--> [CSR_GENERATED] --ProvisionClientCertificate--> [PROVISIONED] --RemoveClientCertificate--> [UNPROVISIONED]"
+    },
+    {
+      "state_name": "certificate_rotation",
+      "properties_enforcing_transitions": ["PROP_012", "PROP_032"],
+      "critical_property": "PROP_012 violated if state machine allows certificate to change during active connection. States: [CERT_ACTIVE_V1] --rotation_triggered--> [ROTATION_IN_PROGRESS] --new_connections_only--> [CERT_ACTIVE_V2]. Invariant: active_connections use v1, new_connections use v2."
+    },
+    {
+      "state_name": "dependency_management",
+      "properties_enforcing_transitions": ["PROP_013", "PROP_014"],
+      "critical_property": "PROP_013/PROP_014 violated if state allows transition from [CERT_REFERENCED] to [CERT_REMOVED] without checking endpoint references. States: [PROVISIONED] --endpoint_add--> [REFERENCED] --endpoint_remove--> [PROVISIONED] --remove_cert--> [REMOVED]. Guard: cannot transition REFERENCED->REMOVED."
+    },
+    {
+      "state_name": "fabric_isolation_fsm",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_002", "PROP_031"],
+      "critical_property": "PROP_001/PROP_002 violated if FSM allows transitions between fabric states. Each fabric has isolated state machine. States per fabric: [FABRIC_A_CERTS] ⊥ [FABRIC_B_CERTS]. No transitions between fabrics. Cross-fabric transition = isolation violation."
+    },
+    {
+      "state_name": "csr_client_certificate_workflow",
+      "properties_enforcing_transitions": ["PROP_016", "PROP_017", "PROP_021"],
+      "critical_property": "PROP_017 violated if ClientCertificate field non-NULL before ProvisionClientCertificate completes. States: [NO_KEY] --ClientCSR(NULL)--> [KEY_GENERATED, CERT=NULL] --ProvisionClientCertificate--> [KEY_GENERATED, CERT=VALID] --RemoveClientCertificate--> [NO_KEY]. For rotation: [CERT=VALID] --ClientCSR(CCDID)--> [CERT=VALID, CSR_PENDING] --ProvisionClientCertificate--> [CERT=VALID_NEW]"
+    }
+  ],
+  "additionalInsights": "**Emergent Vulnerability Pattern Detected:** The specification creates a vulnerable time window during certificate rotation where old and new certificates coexist. Properties PROP_012 and PROP_032 attempt to isolate impact to 'new connections only', but the specification does not define mechanisms for: (1) atomic certificate switchover, (2) notification to active endpoints about rotation completion, or (3) grace period handling. **Attack Scenario:** Attacker monitors ProvisionRootCertificate completion, immediately initiates connection during rotation window, and exploits race condition to negotiate with mixed certificate state (old root CA, new client cert). Recommendation: Add explicit synchronization command or event notification when rotation completes. **SHOULD Statement Risk - ID Wraparound:** Properties PROP_037 and PROP_038 rely on 'SHOULD wrap to 0' and uniqueness checking, but specification does not mandate exhaustive search on collision. With 65535 possible IDs and potentially sparse allocation, wraparound collision probability is low (2^-16) but exploitable via rapid provisioning floods. Attacker provisions ~32K certificates to increase collision probability to ~50%, then exploits predictable collision. **Implicit Assumption Cascade:** Property PROP_034 (root CA required before client cert) is derived but not explicitly stated. Specification separately defines ProvisionRootCertificate and ProvisionClientCertificate without ordering constraint. Certificate chain validation implicitly requires root CA exists, but no explicit check prevents provisioning client cert first. Creates temporal vulnerability where client cert exists but cannot validate. **Fabric Isolation Design Flaw:** Properties PROP_001, PROP_002, PROP_026, PROP_027, PROP_031 all assume fabric scoping enforced by transport/access control layer external to this cluster. Specification uses 'accessing fabric' without defining isolation mechanism. If fabric identity is mutable or spoofable, entire isolation model collapses. Recommendation: Add explicit fabric identity binding to command context with cryptographic verification.",
+  "summary": {
+    "total_properties": 42,
+    "by_importance": {
+      "CRITICAL": 13,
+      "HIGH": 18,
+      "MEDIUM": 10,
+      "LOW": 1
+    },
+    "by_category": {
+      "AccessControl": 7,
+      "Security": 5,
+      "Correctness": 12,
+      "Cryptography": 6,
+      "Consistency": 5,
+      "Timing": 1,
+      "Atomicity": 0,
+      "Revocation": 2
+    },
+    "total_assumptions": 10,
+    "vulnerabilities_identified": 21
+  }
+}

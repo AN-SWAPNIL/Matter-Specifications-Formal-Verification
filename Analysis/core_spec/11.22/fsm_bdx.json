@@ -1,0 +1,1632 @@
+{
+  "fsm_model": {
+    "section_name": "11.22 Bulk Data Exchange Protocol (BDX)",
+    "section_ref": "Matter 1.4 Core Spec §11.22",
+    "states": [
+      {
+        "name": "Idle",
+        "description": "No active BDX session. Node is ready to initiate or respond to a transfer request.",
+        "attributes": {
+          "session_active": "false",
+          "role": "none",
+          "transfer_mode": "none",
+          "block_counter": "0",
+          "exchange_active": "false"
+        }
+      },
+      {
+        "name": "SenderInitiatorWaitingAccept",
+        "description": "Initiator has sent SendInit and is waiting for SendAccept or StatusReport from responder.",
+        "attributes": {
+          "session_active": "true",
+          "role": "initiator_sender",
+          "proposed_params_sent": "true",
+          "waiting_for_response": "true"
+        }
+      },
+      {
+        "name": "ReceiverInitiatorWaitingAccept",
+        "description": "Initiator has sent ReceiveInit and is waiting for ReceiveAccept or StatusReport from responder.",
+        "attributes": {
+          "session_active": "true",
+          "role": "initiator_receiver",
+          "proposed_params_sent": "true",
+          "waiting_for_response": "true"
+        }
+      },
+      {
+        "name": "SenderSyncSenderDrive",
+        "description": "Sender is actively transferring data in synchronous mode with sender as driver. Sender sends Block/BlockEOF and waits for BlockAck/BlockAckEOF before proceeding.",
+        "attributes": {
+          "session_active": "true",
+          "role": "sender",
+          "transfer_mode": "sender_drive_sync",
+          "is_driver": "true",
+          "block_counter": "uint32",
+          "expecting_ack": "bool",
+          "data_remaining": "bool"
+        }
+      },
+      {
+        "name": "SenderSyncReceiverDrive",
+        "description": "Sender is in synchronous mode with receiver as driver. Sender waits for BlockQuery/BlockQueryWithSkip and responds with Block/BlockEOF.",
+        "attributes": {
+          "session_active": "true",
+          "role": "sender",
+          "transfer_mode": "receiver_drive_sync",
+          "is_driver": "false",
+          "block_counter": "uint32",
+          "waiting_for_query": "true",
+          "data_remaining": "bool"
+        }
+      },
+      {
+        "name": "ReceiverSyncSenderDrive",
+        "description": "Receiver is in synchronous mode with sender as driver. Receiver receives Block/BlockEOF and sends BlockAck/BlockAckEOF.",
+        "attributes": {
+          "session_active": "true",
+          "role": "receiver",
+          "transfer_mode": "sender_drive_sync",
+          "is_driver": "false",
+          "block_counter": "uint32",
+          "expecting_block": "true",
+          "bytes_received": "uint64"
+        }
+      },
+      {
+        "name": "ReceiverSyncReceiverDrive",
+        "description": "Receiver is actively receiving data in synchronous mode as driver. Receiver sends BlockQuery/BlockQueryWithSkip and receives Block/BlockEOF.",
+        "attributes": {
+          "session_active": "true",
+          "role": "receiver",
+          "transfer_mode": "receiver_drive_sync",
+          "is_driver": "true",
+          "block_counter": "uint32",
+          "waiting_for_block": "bool",
+          "bytes_received": "uint64"
+        }
+      },
+      {
+        "name": "SenderAsync",
+        "description": "Sender is in asynchronous mode. Sends Block/BlockEOF without waiting for BlockAck. NOTE: Provisional mode, SHALL NOT be chosen by responder.",
+        "attributes": {
+          "session_active": "true",
+          "role": "sender",
+          "transfer_mode": "async",
+          "is_driver": "none",
+          "block_counter": "uint32",
+          "data_remaining": "bool",
+          "provisional_mode": "true"
+        }
+      },
+      {
+        "name": "ReceiverAsync",
+        "description": "Receiver is in asynchronous mode. Receives Block/BlockEOF without sending BlockAck, sends BlockAckEOF at end. NOTE: Provisional mode.",
+        "attributes": {
+          "session_active": "true",
+          "role": "receiver",
+          "transfer_mode": "async",
+          "is_driver": "none",
+          "block_counter": "uint32",
+          "bytes_received": "uint64",
+          "provisional_mode": "true"
+        }
+      },
+      {
+        "name": "TransferComplete",
+        "description": "BDX transfer completed successfully. BlockAckEOF has been sent/received confirming all data transferred.",
+        "attributes": {
+          "session_active": "false",
+          "transfer_successful": "true",
+          "exchange_closing": "true"
+        }
+      },
+      {
+        "name": "TransferFailed",
+        "description": "BDX transfer failed due to error. StatusReport sent/received or protocol violation detected.",
+        "attributes": {
+          "session_active": "false",
+          "transfer_successful": "false",
+          "error_code": "StatusCode",
+          "exchange_closing": "true"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from": "Idle",
+        "to": "SenderInitiatorWaitingAccept",
+        "trigger": "send_SendInit",
+        "guard": "!session_active && secure_session_established && (PASE_active || CASE_active) && reliable_transport",
+        "actions": [
+          "session_active := true",
+          "role := initiator_sender",
+          "generate_send_init(version, transfer_modes, max_block_size, start_offset, length, file_designator, metadata)",
+          "send_message(SendInit)",
+          "start_response_timer()"
+        ],
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "from": "Idle",
+        "to": "ReceiverInitiatorWaitingAccept",
+        "trigger": "send_ReceiveInit",
+        "guard": "!session_active && secure_session_established && (PASE_active || CASE_active) && reliable_transport",
+        "actions": [
+          "session_active := true",
+          "role := initiator_receiver",
+          "generate_receive_init(version, transfer_modes, max_block_size, start_offset, length, file_designator, metadata)",
+          "send_message(ReceiveInit)",
+          "start_response_timer()"
+        ],
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "from": "Idle",
+        "to": "Idle",
+        "trigger": "receive_SendInit",
+        "guard": "!session_active && !check_responder_busy() && validate_message_security()",
+        "actions": [
+          "extract_proposed_params(SendInit)",
+          "version_ok := validate_version(proposed_version)",
+          "modes_ok := validate_transfer_mode(proposed_modes)",
+          "block_size_ok := validate_block_size(proposed_block_size)",
+          "start_offset_ok := validate_start_offset(proposed_start_offset)",
+          "length_ok := validate_length(proposed_length)",
+          "file_designator_ok := validate_file_designator(proposed_file_designator)"
+        ],
+        "spec_ref": "11.22.5.1",
+        "note": "Validation step, actual state transition follows based on results"
+      },
+      {
+        "from": "Idle",
+        "to": "SenderSyncSenderDrive",
+        "trigger": "after_SendInit_validation",
+        "guard": "validation_successful && chosen_mode == SENDER_DRIVE",
+        "actions": [
+          "session_active := true",
+          "role := responder_sender",
+          "transfer_mode := sender_drive_sync",
+          "is_driver := true",
+          "chosen_version := choose_version(proposed_version, supported_versions)",
+          "chosen_block_size := min(proposed_block_size, max_supported_block_size)",
+          "generate_receive_accept(chosen_version, SENDER_DRIVE, chosen_block_size, definite_length, metadata)",
+          "send_message(ReceiveAccept)",
+          "block_counter := 0"
+        ],
+        "spec_ref": "11.22.5.3"
+      },
+      {
+        "from": "Idle",
+        "to": "SenderSyncReceiverDrive",
+        "trigger": "after_SendInit_validation",
+        "guard": "validation_successful && chosen_mode == RECEIVER_DRIVE",
+        "actions": [
+          "session_active := true",
+          "role := responder_sender",
+          "transfer_mode := receiver_drive_sync",
+          "is_driver := false",
+          "chosen_version := choose_version(proposed_version, supported_versions)",
+          "chosen_block_size := min(proposed_block_size, max_supported_block_size)",
+          "generate_receive_accept(chosen_version, RECEIVER_DRIVE, chosen_block_size, definite_length, metadata)",
+          "send_message(ReceiveAccept)",
+          "block_counter := 0"
+        ],
+        "spec_ref": "11.22.5.3"
+      },
+      {
+        "from": "Idle",
+        "to": "TransferFailed",
+        "trigger": "after_SendInit_validation",
+        "guard": "!validation_successful || check_responder_busy()",
+        "actions": [
+          "error_code := determine_error_code(validation_results)",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.5.1, 11.22.3.2",
+        "note": "Possible error codes: FILE_DESIGNATOR_UNKNOWN, LENGTH_TOO_LARGE, LENGTH_TOO_SHORT, LENGTH_REQUIRED, START_OFFSET_NOT_SUPPORTED, VERSION_NOT_SUPPORTED, RESPONDER_BUSY, TRANSFER_METHOD_NOT_SUPPORTED"
+      },
+      {
+        "from": "Idle",
+        "to": "Idle",
+        "trigger": "receive_ReceiveInit",
+        "guard": "!session_active && !check_responder_busy() && validate_message_security()",
+        "actions": [
+          "extract_proposed_params(ReceiveInit)",
+          "version_ok := validate_version(proposed_version)",
+          "modes_ok := validate_transfer_mode(proposed_modes)",
+          "block_size_ok := validate_block_size(proposed_block_size)",
+          "start_offset_ok := validate_start_offset(proposed_start_offset)",
+          "length_ok := validate_length(proposed_length)",
+          "file_designator_ok := validate_file_designator(proposed_file_designator)"
+        ],
+        "spec_ref": "11.22.5.1",
+        "note": "Validation step for ReceiveInit"
+      },
+      {
+        "from": "Idle",
+        "to": "ReceiverSyncSenderDrive",
+        "trigger": "after_ReceiveInit_validation",
+        "guard": "validation_successful && chosen_mode == SENDER_DRIVE",
+        "actions": [
+          "session_active := true",
+          "role := responder_receiver",
+          "transfer_mode := sender_drive_sync",
+          "is_driver := false",
+          "chosen_version := choose_version(proposed_version, supported_versions)",
+          "chosen_block_size := min(proposed_block_size, max_supported_block_size)",
+          "generate_send_accept(chosen_version, SENDER_DRIVE, chosen_block_size, metadata)",
+          "send_message(SendAccept)",
+          "block_counter := 0"
+        ],
+        "spec_ref": "11.22.5.2"
+      },
+      {
+        "from": "Idle",
+        "to": "ReceiverSyncReceiverDrive",
+        "trigger": "after_ReceiveInit_validation",
+        "guard": "validation_successful && chosen_mode == RECEIVER_DRIVE",
+        "actions": [
+          "session_active := true",
+          "role := responder_receiver",
+          "transfer_mode := receiver_drive_sync",
+          "is_driver := true",
+          "chosen_version := choose_version(proposed_version, supported_versions)",
+          "chosen_block_size := min(proposed_block_size, max_supported_block_size)",
+          "generate_send_accept(chosen_version, RECEIVER_DRIVE, chosen_block_size, metadata)",
+          "send_message(SendAccept)",
+          "block_counter := 0"
+        ],
+        "spec_ref": "11.22.5.2"
+      },
+      {
+        "from": "Idle",
+        "to": "TransferFailed",
+        "trigger": "after_ReceiveInit_validation",
+        "guard": "!validation_successful || check_responder_busy()",
+        "actions": [
+          "error_code := determine_error_code(validation_results)",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.5.1, 11.22.3.2"
+      },
+      {
+        "from": "SenderInitiatorWaitingAccept",
+        "to": "SenderSyncSenderDrive",
+        "trigger": "receive_SendAccept",
+        "guard": "validate_message_context() && accepted_mode == SENDER_DRIVE && accepted_version_compatible && accepted_block_size <= proposed_block_size",
+        "actions": [
+          "cancel_response_timer()",
+          "transfer_mode := sender_drive_sync",
+          "is_driver := true",
+          "negotiated_version := extract_version(SendAccept)",
+          "negotiated_block_size := extract_block_size(SendAccept)",
+          "extract_metadata(SendAccept)",
+          "block_counter := 0"
+        ],
+        "spec_ref": "11.22.5.2"
+      },
+      {
+        "from": "SenderInitiatorWaitingAccept",
+        "to": "SenderSyncReceiverDrive",
+        "trigger": "receive_SendAccept",
+        "guard": "validate_message_context() && accepted_mode == RECEIVER_DRIVE && accepted_version_compatible && accepted_block_size <= proposed_block_size",
+        "actions": [
+          "cancel_response_timer()",
+          "transfer_mode := receiver_drive_sync",
+          "is_driver := false",
+          "negotiated_version := extract_version(SendAccept)",
+          "negotiated_block_size := extract_block_size(SendAccept)",
+          "extract_metadata(SendAccept)",
+          "block_counter := 0"
+        ],
+        "spec_ref": "11.22.5.2"
+      },
+      {
+        "from": "SenderInitiatorWaitingAccept",
+        "to": "TransferFailed",
+        "trigger": "receive_SendAccept",
+        "guard": "!validate_message_context() || !accepted_version_compatible || accepted_block_size > proposed_block_size || unacceptable_params",
+        "actions": [
+          "cancel_response_timer()",
+          "error_code := TRANSFER_METHOD_NOT_SUPPORTED",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.5.2"
+      },
+      {
+        "from": "SenderInitiatorWaitingAccept",
+        "to": "TransferFailed",
+        "trigger": "receive_StatusReport",
+        "guard": "true",
+        "actions": [
+          "cancel_response_timer()",
+          "error_code := extract_protocol_code(StatusReport)",
+          "log_error(error_code)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "from": "SenderInitiatorWaitingAccept",
+        "to": "TransferFailed",
+        "trigger": "response_timeout",
+        "guard": "true",
+        "actions": [
+          "error_code := TRANSFER_FAILED_UNKNOWN_ERROR",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.2.6"
+      },
+      {
+        "from": "ReceiverInitiatorWaitingAccept",
+        "to": "ReceiverSyncSenderDrive",
+        "trigger": "receive_ReceiveAccept",
+        "guard": "validate_message_context() && accepted_mode == SENDER_DRIVE && accepted_version_compatible && accepted_block_size <= proposed_block_size",
+        "actions": [
+          "cancel_response_timer()",
+          "transfer_mode := sender_drive_sync",
+          "is_driver := false",
+          "negotiated_version := extract_version(ReceiveAccept)",
+          "negotiated_block_size := extract_block_size(ReceiveAccept)",
+          "expected_length := extract_length(ReceiveAccept)",
+          "extract_metadata(ReceiveAccept)",
+          "block_counter := 0",
+          "bytes_received := 0"
+        ],
+        "spec_ref": "11.22.5.3"
+      },
+      {
+        "from": "ReceiverInitiatorWaitingAccept",
+        "to": "ReceiverSyncReceiverDrive",
+        "trigger": "receive_ReceiveAccept",
+        "guard": "validate_message_context() && accepted_mode == RECEIVER_DRIVE && accepted_version_compatible && accepted_block_size <= proposed_block_size",
+        "actions": [
+          "cancel_response_timer()",
+          "transfer_mode := receiver_drive_sync",
+          "is_driver := true",
+          "negotiated_version := extract_version(ReceiveAccept)",
+          "negotiated_block_size := extract_block_size(ReceiveAccept)",
+          "expected_length := extract_length(ReceiveAccept)",
+          "extract_metadata(ReceiveAccept)",
+          "block_counter := 0",
+          "bytes_received := 0"
+        ],
+        "spec_ref": "11.22.5.3"
+      },
+      {
+        "from": "ReceiverInitiatorWaitingAccept",
+        "to": "TransferFailed",
+        "trigger": "receive_ReceiveAccept",
+        "guard": "!validate_message_context() || !accepted_version_compatible || accepted_block_size > proposed_block_size || unacceptable_params",
+        "actions": [
+          "cancel_response_timer()",
+          "error_code := TRANSFER_METHOD_NOT_SUPPORTED",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.5.3"
+      },
+      {
+        "from": "ReceiverInitiatorWaitingAccept",
+        "to": "TransferFailed",
+        "trigger": "receive_StatusReport",
+        "guard": "true",
+        "actions": [
+          "cancel_response_timer()",
+          "error_code := extract_protocol_code(StatusReport)",
+          "log_error(error_code)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "from": "ReceiverInitiatorWaitingAccept",
+        "to": "TransferFailed",
+        "trigger": "response_timeout",
+        "guard": "true",
+        "actions": [
+          "error_code := TRANSFER_FAILED_UNKNOWN_ERROR",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.2.6"
+      },
+      {
+        "from": "SenderSyncSenderDrive",
+        "to": "SenderSyncSenderDrive",
+        "trigger": "send_next_block",
+        "guard": "!expecting_ack && data_remaining && more_data_after_this_block",
+        "actions": [
+          "data := extract_block_data(block_counter, negotiated_block_size)",
+          "generate_block(block_counter, data)",
+          "send_message(Block)",
+          "expecting_ack := true"
+        ],
+        "spec_ref": "11.22.6.4"
+      },
+      {
+        "from": "SenderSyncSenderDrive",
+        "to": "SenderSyncSenderDrive",
+        "trigger": "receive_BlockAck",
+        "guard": "expecting_ack && validate_block_counter_order(received_counter, block_counter) && more_data_remaining",
+        "actions": [
+          "expecting_ack := false",
+          "block_counter := increment_block_counter(block_counter)"
+        ],
+        "spec_ref": "11.22.6.6"
+      },
+      {
+        "from": "SenderSyncSenderDrive",
+        "to": "SenderSyncSenderDrive",
+        "trigger": "send_BlockEOF",
+        "guard": "!expecting_ack && data_remaining && !more_data_after_this_block",
+        "actions": [
+          "data := extract_remaining_data(block_counter)",
+          "generate_block_eof(block_counter, data)",
+          "send_message(BlockEOF)",
+          "expecting_ack := true",
+          "data_remaining := false"
+        ],
+        "spec_ref": "11.22.6.5"
+      },
+      {
+        "from": "SenderSyncSenderDrive",
+        "to": "TransferComplete",
+        "trigger": "receive_BlockAckEOF",
+        "guard": "expecting_ack && validate_block_counter_order(received_counter, block_counter) && !data_remaining",
+        "actions": [
+          "session_active := false",
+          "transfer_successful := true"
+        ],
+        "spec_ref": "11.22.6.7"
+      },
+      {
+        "from": "SenderSyncSenderDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_BlockAck",
+        "guard": "!validate_block_counter_order(received_counter, block_counter)",
+        "actions": [
+          "error_code := BAD_BLOCK_COUNTER",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.6.1"
+      },
+      {
+        "from": "SenderSyncSenderDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_unexpected_message",
+        "guard": "true",
+        "actions": [
+          "error_code := UNEXPECTED_MESSAGE",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "from": "SenderSyncSenderDrive",
+        "to": "TransferFailed",
+        "trigger": "response_timeout",
+        "guard": "expecting_ack",
+        "actions": [
+          "error_code := TRANSFER_FAILED_UNKNOWN_ERROR",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.2.6"
+      },
+      {
+        "from": "SenderSyncReceiverDrive",
+        "to": "SenderSyncReceiverDrive",
+        "trigger": "receive_BlockQuery",
+        "guard": "validate_block_counter_order(received_counter, expected_counter) && more_data_remaining",
+        "actions": [
+          "data := extract_block_data(received_counter, negotiated_block_size)",
+          "generate_block(received_counter, data)",
+          "send_message(Block)",
+          "block_counter := received_counter"
+        ],
+        "spec_ref": "11.22.6.2"
+      },
+      {
+        "from": "SenderSyncReceiverDrive",
+        "to": "SenderSyncReceiverDrive",
+        "trigger": "receive_BlockAck",
+        "guard": "validate_block_counter_order(received_counter, block_counter)",
+        "actions": [
+          "log_explicit_ack(received_counter)"
+        ],
+        "spec_ref": "11.22.6.6",
+        "note": "Explicit BlockAck is optional in receiver-drive mode"
+      },
+      {
+        "from": "SenderSyncReceiverDrive",
+        "to": "SenderSyncReceiverDrive",
+        "trigger": "receive_BlockQueryWithSkip",
+        "guard": "validate_block_counter_order(received_counter, expected_counter) && more_data_remaining_after_skip(bytes_to_skip)",
+        "actions": [
+          "bytes_to_skip := extract_skip_amount(BlockQueryWithSkip)",
+          "skip_bytes(bytes_to_skip)",
+          "data := extract_block_data(received_counter, negotiated_block_size)",
+          "generate_block(received_counter, data)",
+          "send_message(Block)",
+          "block_counter := received_counter"
+        ],
+        "spec_ref": "11.22.6.3",
+        "note": "After skip, if data remains, send Block"
+      },
+      {
+        "from": "SenderSyncReceiverDrive",
+        "to": "SenderSyncReceiverDrive",
+        "trigger": "receive_BlockQueryWithSkip",
+        "guard": "validate_block_counter_order(received_counter, expected_counter) && !more_data_remaining_after_skip(bytes_to_skip)",
+        "actions": [
+          "bytes_to_skip := extract_skip_amount(BlockQueryWithSkip)",
+          "skip_bytes(bytes_to_skip)",
+          "generate_block_eof(received_counter, empty_data)",
+          "send_message(BlockEOF)",
+          "block_counter := received_counter",
+          "data_remaining := false"
+        ],
+        "spec_ref": "11.22.6.3",
+        "note": "After skip, if at/past EOF, send empty BlockEOF per spec requirement"
+      },
+      {
+        "from": "SenderSyncReceiverDrive",
+        "to": "TransferComplete",
+        "trigger": "receive_BlockQuery_send_EOF",
+        "guard": "validate_block_counter_order(received_counter, expected_counter) && !more_data_remaining",
+        "actions": [
+          "data := extract_remaining_data(received_counter)",
+          "generate_block_eof(received_counter, data)",
+          "send_message(BlockEOF)",
+          "block_counter := received_counter"
+        ],
+        "spec_ref": "11.22.6.5",
+        "note": "Waits for BlockAckEOF in next transition"
+      },
+      {
+        "from": "SenderSyncReceiverDrive",
+        "to": "TransferComplete",
+        "trigger": "receive_BlockAckEOF",
+        "guard": "validate_block_counter_order(received_counter, block_counter) && !data_remaining",
+        "actions": [
+          "session_active := false",
+          "transfer_successful := true"
+        ],
+        "spec_ref": "11.22.6.7"
+      },
+      {
+        "from": "SenderSyncReceiverDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_BlockQuery",
+        "guard": "!validate_block_counter_order(received_counter, expected_counter)",
+        "actions": [
+          "error_code := BAD_BLOCK_COUNTER",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.6.1"
+      },
+      {
+        "from": "SenderSyncReceiverDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_unexpected_message",
+        "guard": "true",
+        "actions": [
+          "error_code := UNEXPECTED_MESSAGE",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "from": "ReceiverSyncSenderDrive",
+        "to": "ReceiverSyncSenderDrive",
+        "trigger": "receive_Block",
+        "guard": "validate_block_counter_order(received_counter, expected_counter) && validate_block_length(data_length, negotiated_block_size)",
+        "actions": [
+          "data := extract_data(Block)",
+          "store_data(data)",
+          "bytes_received := bytes_received + length(data)",
+          "generate_block_ack(received_counter)",
+          "send_message(BlockAck)",
+          "block_counter := increment_block_counter(received_counter)"
+        ],
+        "spec_ref": "11.22.6.4, 11.22.6.6"
+      },
+      {
+        "from": "ReceiverSyncSenderDrive",
+        "to": "TransferComplete",
+        "trigger": "receive_BlockEOF",
+        "guard": "validate_block_counter_order(received_counter, expected_counter) && validate_transfer_length(bytes_received, expected_length)",
+        "actions": [
+          "data := extract_data(BlockEOF)",
+          "store_data(data)",
+          "bytes_received := bytes_received + length(data)",
+          "verify_transfer_complete(bytes_received, expected_length)",
+          "generate_block_ack_eof(received_counter)",
+          "send_message(BlockAckEOF)",
+          "session_active := false",
+          "transfer_successful := true"
+        ],
+        "spec_ref": "11.22.6.5, 11.22.6.7"
+      },
+      {
+        "from": "ReceiverSyncSenderDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_BlockEOF",
+        "guard": "validate_block_counter_order(received_counter, expected_counter) && !validate_transfer_length(bytes_received, expected_length)",
+        "actions": [
+          "data := extract_data(BlockEOF)",
+          "bytes_received := bytes_received + length(data)",
+          "error_code := LENGTH_MISMATCH",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.6.5"
+      },
+      {
+        "from": "ReceiverSyncSenderDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_Block",
+        "guard": "!validate_block_counter_order(received_counter, expected_counter)",
+        "actions": [
+          "error_code := BAD_BLOCK_COUNTER",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.6.1"
+      },
+      {
+        "from": "ReceiverSyncSenderDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_unexpected_message",
+        "guard": "true",
+        "actions": [
+          "error_code := UNEXPECTED_MESSAGE",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "from": "ReceiverSyncReceiverDrive",
+        "to": "ReceiverSyncReceiverDrive",
+        "trigger": "send_BlockQuery",
+        "guard": "!waiting_for_block",
+        "actions": [
+          "generate_block_query(block_counter)",
+          "send_message(BlockQuery)",
+          "waiting_for_block := true"
+        ],
+        "spec_ref": "11.22.6.2"
+      },
+      {
+        "from": "ReceiverSyncReceiverDrive",
+        "to": "ReceiverSyncReceiverDrive",
+        "trigger": "send_BlockQueryWithSkip",
+        "guard": "!waiting_for_block && skip_requested",
+        "actions": [
+          "generate_block_query_with_skip(block_counter, skip_amount)",
+          "send_message(BlockQueryWithSkip)",
+          "waiting_for_block := true"
+        ],
+        "spec_ref": "11.22.6.3"
+      },
+      {
+        "from": "ReceiverSyncReceiverDrive",
+        "to": "ReceiverSyncReceiverDrive",
+        "trigger": "receive_Block",
+        "guard": "waiting_for_block && validate_block_counter_order(received_counter, expected_counter) && validate_block_length(data_length, negotiated_block_size)",
+        "actions": [
+          "data := extract_data(Block)",
+          "store_data(data)",
+          "bytes_received := bytes_received + length(data)",
+          "block_counter := increment_block_counter(received_counter)",
+          "waiting_for_block := false"
+        ],
+        "spec_ref": "11.22.6.4",
+        "note": "Receiver may optionally send BlockAck before next query"
+      },
+      {
+        "from": "ReceiverSyncReceiverDrive",
+        "to": "ReceiverSyncReceiverDrive",
+        "trigger": "send_optional_BlockAck",
+        "guard": "!waiting_for_block && want_explicit_ack",
+        "actions": [
+          "generate_block_ack(block_counter - 1)",
+          "send_message(BlockAck)"
+        ],
+        "spec_ref": "11.22.6.6",
+        "note": "Optional explicit ack, e.g., before going to sleep"
+      },
+      {
+        "from": "ReceiverSyncReceiverDrive",
+        "to": "TransferComplete",
+        "trigger": "receive_BlockEOF",
+        "guard": "waiting_for_block && validate_block_counter_order(received_counter, expected_counter) && validate_transfer_length(bytes_received, expected_length)",
+        "actions": [
+          "data := extract_data(BlockEOF)",
+          "store_data(data)",
+          "bytes_received := bytes_received + length(data)",
+          "verify_transfer_complete(bytes_received, expected_length)",
+          "generate_block_ack_eof(received_counter)",
+          "send_message(BlockAckEOF)",
+          "session_active := false",
+          "transfer_successful := true"
+        ],
+        "spec_ref": "11.22.6.5, 11.22.6.7"
+      },
+      {
+        "from": "ReceiverSyncReceiverDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_BlockEOF",
+        "guard": "waiting_for_block && validate_block_counter_order(received_counter, expected_counter) && !validate_transfer_length(bytes_received, expected_length)",
+        "actions": [
+          "data := extract_data(BlockEOF)",
+          "bytes_received := bytes_received + length(data)",
+          "error_code := LENGTH_MISMATCH",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.6.5"
+      },
+      {
+        "from": "ReceiverSyncReceiverDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_Block",
+        "guard": "!validate_block_counter_order(received_counter, expected_counter)",
+        "actions": [
+          "error_code := BAD_BLOCK_COUNTER",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.6.1"
+      },
+      {
+        "from": "ReceiverSyncReceiverDrive",
+        "to": "TransferFailed",
+        "trigger": "receive_unexpected_message",
+        "guard": "true",
+        "actions": [
+          "error_code := UNEXPECTED_MESSAGE",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "from": "ReceiverSyncReceiverDrive",
+        "to": "TransferFailed",
+        "trigger": "response_timeout",
+        "guard": "waiting_for_block",
+        "actions": [
+          "error_code := TRANSFER_FAILED_UNKNOWN_ERROR",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.2.6"
+      },
+      {
+        "from": "SenderAsync",
+        "to": "SenderAsync",
+        "trigger": "send_Block_async",
+        "guard": "data_remaining && more_data_after_this_block",
+        "actions": [
+          "data := extract_block_data(block_counter, negotiated_block_size)",
+          "generate_block(block_counter, data)",
+          "send_message(Block)",
+          "block_counter := increment_block_counter(block_counter)"
+        ],
+        "spec_ref": "11.22.6.4",
+        "note": "PROVISIONAL MODE - SHALL NOT be chosen by responder"
+      },
+      {
+        "from": "SenderAsync",
+        "to": "TransferComplete",
+        "trigger": "send_BlockEOF_async",
+        "guard": "data_remaining && !more_data_after_this_block",
+        "actions": [
+          "data := extract_remaining_data(block_counter)",
+          "generate_block_eof(block_counter, data)",
+          "send_message(BlockEOF)",
+          "data_remaining := false"
+        ],
+        "spec_ref": "11.22.6.5",
+        "note": "PROVISIONAL MODE - waits for BlockAckEOF"
+      },
+      {
+        "from": "SenderAsync",
+        "to": "TransferComplete",
+        "trigger": "receive_BlockAckEOF_async",
+        "guard": "!data_remaining",
+        "actions": [
+          "session_active := false",
+          "transfer_successful := true"
+        ],
+        "spec_ref": "11.22.6.7",
+        "note": "PROVISIONAL MODE"
+      },
+      {
+        "from": "ReceiverAsync",
+        "to": "ReceiverAsync",
+        "trigger": "receive_Block_async",
+        "guard": "validate_block_counter_order(received_counter, expected_counter)",
+        "actions": [
+          "data := extract_data(Block)",
+          "store_data(data)",
+          "bytes_received := bytes_received + length(data)",
+          "block_counter := increment_block_counter(received_counter)"
+        ],
+        "spec_ref": "11.22.6.4",
+        "note": "PROVISIONAL MODE - no BlockAck sent"
+      },
+      {
+        "from": "ReceiverAsync",
+        "to": "TransferComplete",
+        "trigger": "receive_BlockEOF_async",
+        "guard": "validate_block_counter_order(received_counter, expected_counter) && validate_transfer_length(bytes_received, expected_length)",
+        "actions": [
+          "data := extract_data(BlockEOF)",
+          "store_data(data)",
+          "bytes_received := bytes_received + length(data)",
+          "verify_transfer_complete(bytes_received, expected_length)",
+          "generate_block_ack_eof(received_counter)",
+          "send_message(BlockAckEOF)",
+          "session_active := false",
+          "transfer_successful := true"
+        ],
+        "spec_ref": "11.22.6.5, 11.22.6.7",
+        "note": "PROVISIONAL MODE"
+      },
+      {
+        "from": "ReceiverAsync",
+        "to": "TransferFailed",
+        "trigger": "receive_BlockEOF_async",
+        "guard": "validate_block_counter_order(received_counter, expected_counter) && !validate_transfer_length(bytes_received, expected_length)",
+        "actions": [
+          "error_code := LENGTH_MISMATCH",
+          "generate_status_report(FAILURE, PROTOCOL_ID_BDX, error_code)",
+          "send_message(StatusReport)",
+          "session_active := false"
+        ],
+        "spec_ref": "11.22.6.5",
+        "note": "PROVISIONAL MODE"
+      },
+      {
+        "from": "*",
+        "to": "TransferFailed",
+        "trigger": "receive_StatusReport",
+        "guard": "session_active",
+        "actions": [
+          "error_code := extract_protocol_code(StatusReport)",
+          "log_error(error_code)",
+          "session_active := false",
+          "abort_transfer()"
+        ],
+        "spec_ref": "11.22.3.2",
+        "note": "StatusReport can occur at any time to abort transfer"
+      },
+      {
+        "from": "*",
+        "to": "TransferFailed",
+        "trigger": "transport_failure",
+        "guard": "session_active",
+        "actions": [
+          "error_code := TRANSFER_FAILED_UNKNOWN_ERROR",
+          "session_active := false",
+          "abort_transfer()"
+        ],
+        "spec_ref": "11.22.2.6",
+        "note": "Transport layer reliability failure"
+      }
+    ],
+    "functions": [
+      {
+        "name": "validate_version",
+        "parameters": ["proposed_version: uint8"],
+        "returns": "bool",
+        "behavior": "Checks if the proposed protocol version is supported by this node. Returns true if the version is less than or equal to the maximum supported version.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "name": "choose_version",
+        "parameters": ["proposed_version: uint8", "supported_versions: list<uint8>"],
+        "returns": "uint8",
+        "behavior": "Selects the newest version that is supported by the responder and not newer than the proposed version. If no common version exists, returns 0 to signal version negotiation failure.",
+        "spec_ref": "11.22.5.4"
+      },
+      {
+        "name": "validate_transfer_mode",
+        "parameters": ["proposed_modes: bitfield"],
+        "returns": "bool",
+        "behavior": "Checks if at least one of the proposed transfer modes (SENDER_DRIVE, RECEIVER_DRIVE, ASYNC) is supported by this node. Returns false if no modes are set or none are supported.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "name": "choose_transfer_mode",
+        "parameters": ["proposed_modes: bitfield", "supported_modes: bitfield"],
+        "returns": "uint8",
+        "behavior": "Selects exactly one transfer mode from the intersection of proposed and supported modes. Prefers SENDER_DRIVE over RECEIVER_DRIVE for request/response semantics. SHALL NOT choose ASYNC mode (provisional). Returns chosen mode or 0 if no common mode.",
+        "spec_ref": "11.22.5.4"
+      },
+      {
+        "name": "validate_block_size",
+        "parameters": ["proposed_block_size: uint16"],
+        "returns": "bool",
+        "behavior": "Checks if the proposed maximum block size is acceptable. Returns true if within supported range.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "name": "validate_start_offset",
+        "parameters": ["start_offset: uint32/uint64", "start_offset_present: bool"],
+        "returns": "bool",
+        "behavior": "Checks if non-zero start offset is supported and if the specific offset value is valid for the requested file. Returns true if offset is 0 or if non-zero offsets are supported and valid.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "name": "validate_length",
+        "parameters": ["proposed_length: uint32/uint64", "definite_length_present: bool", "file_designator: bytes"],
+        "returns": "bool",
+        "behavior": "Validates the proposed transfer length. Checks if length is too large, too short, or if definite length is required but not provided. Returns true if length is acceptable.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "name": "validate_file_designator",
+        "parameters": ["file_designator: bytes"],
+        "returns": "bool",
+        "behavior": "Checks if the file designator is known and supported by this node. Returns true if the designator is valid and the file/data can be accessed.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "name": "check_responder_busy",
+        "parameters": [],
+        "returns": "bool",
+        "behavior": "Determines if the node is too busy to accept a new BDX transfer at this moment. Returns true if busy, false if available.",
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "name": "validate_message_security",
+        "parameters": [],
+        "returns": "bool",
+        "behavior": "Verifies that the message is being received over a PASE or CASE encrypted session with proper authentication. Returns false if security requirements not met.",
+        "spec_ref": "11.22.4"
+      },
+      {
+        "name": "validate_message_context",
+        "parameters": ["message_type: uint8", "current_state: string"],
+        "returns": "bool",
+        "behavior": "Checks if the received message is contextually appropriate for the current state of the transfer. Returns false for UNEXPECTED_MESSAGE scenarios.",
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "name": "validate_block_counter_order",
+        "parameters": ["received_counter: uint32", "expected_counter: uint32"],
+        "returns": "bool",
+        "behavior": "Validates that the block counter is exactly the expected sequential value. For Block/BlockEOF, expects exactly the next counter. For BlockAck/BlockAckEOF, expects the same counter as the last sent block. For BlockQuery, expects exactly next_counter = (last_counter + 1) mod 2^32. Returns false if out of order.",
+        "spec_ref": "11.22.6.1"
+      },
+      {
+        "name": "increment_block_counter",
+        "parameters": ["current_counter: uint32"],
+        "returns": "uint32",
+        "behavior": "Increments the block counter using modulo 2^32 arithmetic. If current_counter is 0xFFFFFFFF, returns 0x00000000.",
+        "spec_ref": "11.22.6.1"
+      },
+      {
+        "name": "validate_block_length",
+        "parameters": ["data_length: uint16", "max_block_size: uint16"],
+        "returns": "bool",
+        "behavior": "For Block messages: validates 0 < data_length <= max_block_size. For BlockEOF messages: validates 0 <= data_length <= max_block_size. Returns true if valid.",
+        "spec_ref": "11.22.6.4, 11.22.6.5"
+      },
+      {
+        "name": "validate_transfer_length",
+        "parameters": ["bytes_received: uint64", "expected_length: uint64", "definite_length_specified: bool"],
+        "returns": "bool",
+        "behavior": "If a definite length was pre-negotiated, verifies that the total bytes received matches the expected length exactly. If indefinite length, returns true. Used when receiving BlockEOF.",
+        "spec_ref": "11.22.6.5"
+      },
+      {
+        "name": "generate_send_init",
+        "parameters": ["version: uint8", "transfer_modes: bitfield", "max_block_size: uint16", "start_offset: uint32/uint64/null", "length: uint32/uint64/null", "file_designator: bytes", "metadata: TLV/null"],
+        "returns": "SendInit_message",
+        "behavior": "Constructs a SendInit message with the specified parameters. Sets PTC and RC fields appropriately based on which optional fields are present and their sizes.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "name": "generate_receive_init",
+        "parameters": ["version: uint8", "transfer_modes: bitfield", "max_block_size: uint16", "start_offset: uint32/uint64/null", "length: uint32/uint64/null", "file_designator: bytes", "metadata: TLV/null"],
+        "returns": "ReceiveInit_message",
+        "behavior": "Constructs a ReceiveInit message with the specified parameters. Sets PTC and RC fields appropriately based on which optional fields are present and their sizes.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "name": "generate_send_accept",
+        "parameters": ["version: uint8", "transfer_mode: uint8", "max_block_size: uint16", "metadata: TLV/null"],
+        "returns": "SendAccept_message",
+        "behavior": "Constructs a SendAccept message accepting the proposed SendInit. Sets TC field with exactly one transfer mode selected and the negotiated version. Max block size must be <= proposed max block size.",
+        "spec_ref": "11.22.5.2"
+      },
+      {
+        "name": "generate_receive_accept",
+        "parameters": ["version: uint8", "transfer_mode: uint8", "max_block_size: uint16", "length: uint32/uint64/null", "metadata: TLV/null"],
+        "returns": "ReceiveAccept_message",
+        "behavior": "Constructs a ReceiveAccept message accepting the proposed ReceiveInit. Sets TC and RC fields appropriately. Includes definite length if known. Max block size must be <= proposed max block size.",
+        "spec_ref": "11.22.5.3"
+      },
+      {
+        "name": "generate_status_report",
+        "parameters": ["general_code: uint16", "protocol_id: uint32", "protocol_code: uint16"],
+        "returns": "StatusReport_message",
+        "behavior": "Constructs a StatusReport message with the specified error codes. For BDX errors, protocol_id is PROTOCOL_ID_BDX and protocol_code is from Table 109.",
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "name": "generate_block",
+        "parameters": ["block_counter: uint32", "data: bytes"],
+        "returns": "Block_message",
+        "behavior": "Constructs a Block message containing the block counter and data. Data length must be in range (0, max_block_size].",
+        "spec_ref": "11.22.6.4"
+      },
+      {
+        "name": "generate_block_eof",
+        "parameters": ["block_counter: uint32", "data: bytes"],
+        "returns": "BlockEOF_message",
+        "behavior": "Constructs a BlockEOF message containing the final block counter and remaining data (may be empty). Data length must be in range [0, max_block_size].",
+        "spec_ref": "11.22.6.5"
+      },
+      {
+        "name": "generate_block_ack",
+        "parameters": ["block_counter: uint32"],
+        "returns": "BlockAck_message",
+        "behavior": "Constructs a BlockAck message acknowledging receipt of a Block. Block counter must match the counter from the acknowledged Block.",
+        "spec_ref": "11.22.6.6"
+      },
+      {
+        "name": "generate_block_ack_eof",
+        "parameters": ["block_counter: uint32"],
+        "returns": "BlockAckEOF_message",
+        "behavior": "Constructs a BlockAckEOF message acknowledging receipt of BlockEOF and signaling successful transfer completion. Block counter must match the counter from the acknowledged BlockEOF.",
+        "spec_ref": "11.22.6.7"
+      },
+      {
+        "name": "generate_block_query",
+        "parameters": ["block_counter: uint32"],
+        "returns": "BlockQuery_message",
+        "behavior": "Constructs a BlockQuery message requesting the next block with the specified counter. Implies acknowledgement of previous block if no explicit BlockAck was sent.",
+        "spec_ref": "11.22.6.2"
+      },
+      {
+        "name": "generate_block_query_with_skip",
+        "parameters": ["block_counter: uint32", "bytes_to_skip: uint64"],
+        "returns": "BlockQueryWithSkip_message",
+        "behavior": "Constructs a BlockQueryWithSkip message requesting the sender to skip forward by bytes_to_skip before sending the next block. Enables seeking within the transfer without terminating the session.",
+        "spec_ref": "11.22.6.3"
+      },
+      {
+        "name": "extract_proposed_params",
+        "parameters": ["init_message: SendInit/ReceiveInit"],
+        "returns": "ProposedParams_struct",
+        "behavior": "Extracts all proposed parameters from a SendInit or ReceiveInit message including version, transfer modes, block size, offsets, lengths, file designator, and metadata.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "name": "extract_version",
+        "parameters": ["accept_message: SendAccept/ReceiveAccept"],
+        "returns": "uint8",
+        "behavior": "Extracts the negotiated protocol version from the TC field of a SendAccept or ReceiveAccept message.",
+        "spec_ref": "11.22.5.4"
+      },
+      {
+        "name": "extract_block_size",
+        "parameters": ["accept_message: SendAccept/ReceiveAccept"],
+        "returns": "uint16",
+        "behavior": "Extracts the negotiated max block size from a SendAccept or ReceiveAccept message.",
+        "spec_ref": "11.22.5.4"
+      },
+      {
+        "name": "extract_length",
+        "parameters": ["accept_message: ReceiveAccept"],
+        "returns": "uint64/null",
+        "behavior": "Extracts the definite transfer length from a ReceiveAccept message if RC[DEFLEN] is set, otherwise returns null for indefinite length.",
+        "spec_ref": "11.22.5.3"
+      },
+      {
+        "name": "extract_metadata",
+        "parameters": ["message: SendInit/ReceiveInit/SendAccept/ReceiveAccept"],
+        "returns": "TLV/null",
+        "behavior": "Extracts optional TLV metadata from the message if present.",
+        "spec_ref": "11.22.5.1, 11.22.5.4"
+      },
+      {
+        "name": "extract_data",
+        "parameters": ["block_message: Block/BlockEOF"],
+        "returns": "bytes",
+        "behavior": "Extracts the data payload from a Block or BlockEOF message. Data field length is the remainder of the message after the block counter.",
+        "spec_ref": "11.22.6.4, 11.22.6.5"
+      },
+      {
+        "name": "extract_block_data",
+        "parameters": ["block_counter: uint32", "max_size: uint16"],
+        "returns": "bytes",
+        "behavior": "Retrieves the data to be sent for the specified block counter. Returns up to max_size bytes from the source file/stream based on current transfer position.",
+        "spec_ref": "11.22.6.4"
+      },
+      {
+        "name": "extract_remaining_data",
+        "parameters": ["block_counter: uint32"],
+        "returns": "bytes",
+        "behavior": "Retrieves the final remaining data for BlockEOF. May return empty bytes if no data remains (e.g., after skip operation reaches EOF).",
+        "spec_ref": "11.22.6.5"
+      },
+      {
+        "name": "extract_skip_amount",
+        "parameters": ["skip_message: BlockQueryWithSkip"],
+        "returns": "uint64",
+        "behavior": "Extracts the BytesToSkip field from a BlockQueryWithSkip message indicating how many bytes to skip forward in the stream.",
+        "spec_ref": "11.22.6.3"
+      },
+      {
+        "name": "extract_protocol_code",
+        "parameters": ["status_report: StatusReport"],
+        "returns": "uint16",
+        "behavior": "Extracts the protocol-specific error code from a StatusReport message for the BDX protocol.",
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "name": "skip_bytes",
+        "parameters": ["bytes_to_skip: uint64"],
+        "returns": "void",
+        "behavior": "Advances the cursor within the underlying data stream by the specified number of bytes. If skip reaches or exceeds EOF, cursor is positioned at EOF and next operation returns empty BlockEOF.",
+        "spec_ref": "11.22.6.3"
+      },
+      {
+        "name": "more_data_remaining_after_skip",
+        "parameters": ["bytes_to_skip: uint64"],
+        "returns": "bool",
+        "behavior": "Determines if data will remain after skipping the specified number of bytes. Returns false if skip would reach or exceed EOF. Used to decide whether to send Block or empty BlockEOF after BlockQueryWithSkip.",
+        "spec_ref": "11.22.6.3"
+      },
+      {
+        "name": "check_if_cursor_at_end",
+        "parameters": [],
+        "returns": "bool",
+        "behavior": "Returns true if the current cursor position in the data stream is at or beyond the end of the transferable data.",
+        "spec_ref": "11.22.6.3"
+      },
+      {
+        "name": "store_data",
+        "parameters": ["data: bytes"],
+        "returns": "void",
+        "behavior": "Stores received block data to the destination (file, memory buffer, etc.). May trigger I/O operations.",
+        "spec_ref": "11.22.6.4, 11.22.6.5"
+      },
+      {
+        "name": "verify_transfer_complete",
+        "parameters": ["bytes_received: uint64", "expected_length: uint64/null"],
+        "returns": "void",
+        "behavior": "Performs final verification that the transfer is complete and valid. If definite length was specified, asserts that bytes_received matches expected_length exactly.",
+        "spec_ref": "11.22.6.5"
+      },
+      {
+        "name": "determine_error_code",
+        "parameters": ["validation_results: map<string, bool>"],
+        "returns": "uint16",
+        "behavior": "Maps validation failure reasons to appropriate BDX protocol error codes from Table 109. Returns codes like FILE_DESIGNATOR_UNKNOWN, LENGTH_TOO_LARGE, VERSION_NOT_SUPPORTED, etc.",
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "name": "start_response_timer",
+        "parameters": [],
+        "returns": "void",
+        "behavior": "Starts an application-determined timeout timer for waiting for response messages. If timer expires before response received, transfer SHOULD be aborted.",
+        "spec_ref": "11.22.2.6"
+      },
+      {
+        "name": "cancel_response_timer",
+        "parameters": [],
+        "returns": "void",
+        "behavior": "Cancels the response timeout timer when expected response is received.",
+        "spec_ref": "11.22.2.6"
+      },
+      {
+        "name": "send_message",
+        "parameters": ["message: BDX_message"],
+        "returns": "void",
+        "behavior": "Sends a BDX protocol message over the active encrypted session using the reliable transport. Message is protected by PASE/CASE session security.",
+        "spec_ref": "11.22.4"
+      },
+      {
+        "name": "abort_transfer",
+        "parameters": [],
+        "returns": "void",
+        "behavior": "Immediately terminates the BDX transfer session, releases resources, and invalidates the exchange. Called on errors or protocol violations.",
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "name": "log_error",
+        "parameters": ["error_code: uint16"],
+        "returns": "void",
+        "behavior": "Records error information for debugging and diagnostics.",
+        "spec_ref": "General"
+      },
+      {
+        "name": "log_explicit_ack",
+        "parameters": ["block_counter: uint32"],
+        "returns": "void",
+        "behavior": "Records that an explicit (optional) BlockAck was received in receiver-drive mode.",
+        "spec_ref": "11.22.6.6"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "BDX Sender",
+        "definition": "The node that has bulk data to send to another node.",
+        "spec_ref": "11.22.2.1"
+      },
+      {
+        "term": "BDX Receiver",
+        "definition": "The node that receives bulk data from a Sender.",
+        "spec_ref": "11.22.2.2"
+      },
+      {
+        "term": "BDX Initiator",
+        "definition": "The node that initiates a bulk data transfer. Can be either Sender (upload via SendInit) or Receiver (download via ReceiveInit).",
+        "spec_ref": "11.22.2.3"
+      },
+      {
+        "term": "BDX Responder",
+        "definition": "The node that responds to the initiator by accepting or rejecting the proposed transfer and choosing final parameters. Can be either Sender or Receiver depending on the init message received.",
+        "spec_ref": "11.22.2.4"
+      },
+      {
+        "term": "BDX Synchronous Mode",
+        "definition": "Transfer mode where one party (Driver) controls the rate and each message SHALL be acknowledged before the next is sent. Enables intermittently connected devices to complete transfers.",
+        "spec_ref": "11.22.2.5"
+      },
+      {
+        "term": "BDX Asynchronous Mode",
+        "definition": "Transfer mode with no driver where successive messages are freely sent without waiting for BlockAck. Flow control provided by underlying transport. NOTE: Provisional mode, SHALL NOT be chosen by responder.",
+        "spec_ref": "11.22.2.5"
+      },
+      {
+        "term": "BDX Driver",
+        "definition": "In synchronous mode, the node (Sender or Receiver) that controls transfer rate by sending Block or BlockQuery messages. Transfer consists of request/response pairs initiated by driver.",
+        "spec_ref": "11.22.2.6"
+      },
+      {
+        "term": "BDX Follower",
+        "definition": "In synchronous mode, the node that follows the driver. Never sleepy. Either receives BlockQuery and sends data, or receives Block and sends BlockAck.",
+        "spec_ref": "11.22.2.7"
+      },
+      {
+        "term": "BDX Session",
+        "definition": "A series of BDX messages within a single Exchange, beginning with SendInit/ReceiveInit and ending with BlockAckEOF. Only one BDX session per Exchange.",
+        "spec_ref": "11.22.2.8"
+      },
+      {
+        "term": "PROTOCOL_ID_BDX",
+        "definition": "Protocol identifier for BDX protocol. VendorID=0x0000, ProtocolID=specific value for BDX.",
+        "spec_ref": "11.22.3.1"
+      },
+      {
+        "term": "Block Counter",
+        "definition": "32-bit unsigned integer identifying blocks in sequential order. Uses modulo 2^32 arithmetic (wraps from 0xFFFFFFFF to 0x00000000). Starts at 0 for each transfer.",
+        "spec_ref": "11.22.6.1"
+      },
+      {
+        "term": "File Designator",
+        "definition": "Variable-length identifier chosen by Initiator to identify the payload to be transferred. May be pre-negotiated or interpreted with metadata.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "term": "Metadata",
+        "definition": "Optional TLV-encoded application-specific information about the transfer, allowing decisions without additional round-trips.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "term": "Max Block Size",
+        "definition": "Maximum data payload size (in bytes) for each Block/BlockEOF message, exclusive of headers like block counter. Negotiated between initiator and responder.",
+        "spec_ref": "11.22.5.1, 11.22.5.4"
+      },
+      {
+        "term": "Definite Length",
+        "definition": "Pre-negotiated total transfer size. For SendInit, number of bytes sender commits to send. For ReceiveInit, max bytes receiver wishes to receive. Presence indicated by RC[DEFLEN] bit.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "term": "Indefinite Length",
+        "definition": "Transfer with unknown or unlimited size (length=0 or field absent). Final size determined when BlockEOF is sent.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "term": "Start Offset",
+        "definition": "Offset in bytes from start of file where transfer begins. Enables segmented large file transfers across multiple sessions. Presence indicated by RC[STARTOFS] bit.",
+        "spec_ref": "11.22.5.1"
+      },
+      {
+        "term": "Wide Range",
+        "definition": "When RC[WIDERANGE]=1, offset and length fields use 64-bit values. When 0, fields use 32-bit values.",
+        "spec_ref": "11.22.5.1"
+      }
+    ],
+    "security_properties": [
+      {
+        "property": "Confidentiality",
+        "description": "All BDX messages SHALL be transmitted only over PASE or CASE encrypted sessions. Data in transit is protected from eavesdropping.",
+        "enforcement": "Protocol requirement: BDX SHALL only execute over PASE/CASE. Enforced by only allowing BDX messages within secured sessions.",
+        "spec_ref": "11.22.4"
+      },
+      {
+        "property": "Authentication",
+        "description": "All BDX messages are authenticated through the underlying PASE or CASE session. Peer identity is cryptographically verified.",
+        "enforcement": "Provided by PASE/CASE session establishment. BDX inherits authentication from session layer.",
+        "spec_ref": "11.22.4"
+      },
+      {
+        "property": "Integrity",
+        "description": "All BDX messages are protected against tampering through PASE/CASE encryption and MACs. Any modification detected results in message rejection.",
+        "enforcement": "Provided by PASE/CASE message security. BDX inherits integrity protection from session layer.",
+        "spec_ref": "11.22.4"
+      },
+      {
+        "property": "Reliability",
+        "description": "BDX SHALL be used only over reliable transports (MRP, TCP) to ensure delivery and ordering of messages.",
+        "enforcement": "Protocol requirement: BDX SHALL use reliable transport. Not allowed over UDP without MRP.",
+        "spec_ref": "11.22.4"
+      },
+      {
+        "property": "At-Most-Once Delivery",
+        "description": "Transport-level reliability provides at-most-once delivery semantics. Duplicate messages are prevented by underlying message layer.",
+        "enforcement": "Provided by Matter messaging layer and reliable transport protocols.",
+        "spec_ref": "11.22.2.6"
+      },
+      {
+        "property": "Sequential Ordering",
+        "description": "Block counters must be strictly sequential. Out-of-order blocks are rejected with BAD_BLOCK_COUNTER error.",
+        "enforcement": "FSM validates block counter order on every Block/BlockAck/BlockQuery/BlockEOF message. Any deviation triggers immediate abort.",
+        "spec_ref": "11.22.6.1"
+      },
+      {
+        "property": "Session Isolation",
+        "description": "Only one BDX session can be active within a single Exchange. Multiple concurrent BDX sessions require separate Exchanges.",
+        "enforcement": "Protocol requirement: single session per Exchange. Attempting to start new session in active exchange results in rejection.",
+        "spec_ref": "11.22.2.8"
+      },
+      {
+        "property": "Length Validation",
+        "description": "If definite length is pre-negotiated, receiver must verify exact match between expected and received data. Mismatch results in LENGTH_MISMATCH error.",
+        "enforcement": "FSM checks bytes_received == expected_length when receiving BlockEOF. Transfer fails if mismatch detected.",
+        "spec_ref": "11.22.6.5"
+      },
+      {
+        "property": "Resource Control",
+        "description": "Responder can reject transfers with RESPONDER_BUSY if unable to handle new transfer. Provides DoS protection.",
+        "enforcement": "Responder checks availability before accepting init. Returns RESPONDER_BUSY status if cannot proceed.",
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "property": "Block Size Validation",
+        "description": "Block data length must not exceed negotiated max block size. Enforces agreed-upon resource limits.",
+        "enforcement": "FSM validates received block data length <= max_block_size for all Block/BlockEOF messages.",
+        "spec_ref": "11.22.6.4, 11.22.6.5"
+      },
+      {
+        "property": "Immediate Error Termination",
+        "description": "Any protocol violation or error condition results in immediate transfer abort and exchange invalidation. Fail-fast behavior.",
+        "enforcement": "FSM transitions to TransferFailed state and aborts on any validation failure, unexpected message, or error condition.",
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "property": "Version Negotiation",
+        "description": "Prevents version downgrade attacks. Responder selects highest common version not exceeding initiator's proposal. Rejects if no common version.",
+        "enforcement": "FSM validates version compatibility. Returns VERSION_NOT_SUPPORTED if no common version exists.",
+        "spec_ref": "11.22.5.1, 11.22.5.4"
+      },
+      {
+        "property": "Transfer Mode Agreement",
+        "description": "Both parties must agree on exactly one transfer mode. Prevents protocol confusion.",
+        "enforcement": "Responder selects exactly one mode from initiator's proposals. Initiator must accept or abort. Mode mismatch triggers TRANSFER_METHOD_NOT_SUPPORTED.",
+        "spec_ref": "11.22.5.1, 11.22.5.4"
+      }
+    ],
+    "initial_state": "Idle",
+    "all_states": [
+      "Idle",
+      "SenderInitiatorWaitingAccept",
+      "ReceiverInitiatorWaitingAccept",
+      "SenderSyncSenderDrive",
+      "SenderSyncReceiverDrive",
+      "ReceiverSyncSenderDrive",
+      "ReceiverSyncReceiverDrive",
+      "SenderAsync",
+      "ReceiverAsync",
+      "TransferComplete",
+      "TransferFailed"
+    ],
+    "all_triggers": [
+      "send_SendInit",
+      "send_ReceiveInit",
+      "receive_SendInit",
+      "receive_ReceiveInit",
+      "after_SendInit_validation",
+      "after_ReceiveInit_validation",
+      "receive_SendAccept",
+      "receive_ReceiveAccept",
+      "receive_StatusReport",
+      "response_timeout",
+      "send_next_block",
+      "send_BlockEOF",
+      "receive_Block",
+      "receive_BlockEOF",
+      "receive_BlockAck",
+      "receive_BlockAckEOF",
+      "send_BlockQuery",
+      "send_BlockQueryWithSkip",
+      "receive_BlockQuery",
+      "receive_BlockQueryWithSkip",
+      "send_optional_BlockAck",
+      "receive_unexpected_message",
+      "transport_failure",
+      "send_Block_async",
+      "send_BlockEOF_async",
+      "receive_BlockAckEOF_async",
+      "receive_Block_async",
+      "receive_BlockEOF_async",
+      "receive_BlockQuery_send_EOF",
+      "after_SendInit_validation",
+      "after_ReceiveInit_validation"
+    ],
+    "all_functions_used": [
+      "validate_version",
+      "choose_version",
+      "validate_transfer_mode",
+      "choose_transfer_mode",
+      "validate_block_size",
+      "validate_start_offset",
+      "validate_length",
+      "validate_file_designator",
+      "check_responder_busy",
+      "validate_message_security",
+      "validate_message_context",
+      "validate_block_counter_order",
+      "increment_block_counter",
+      "validate_block_length",
+      "validate_transfer_length",
+      "generate_send_init",
+      "generate_receive_init",
+      "generate_send_accept",
+      "generate_receive_accept",
+      "generate_status_report",
+      "generate_block",
+      "generate_block_eof",
+      "generate_block_ack",
+      "generate_block_ack_eof",
+      "generate_block_query",
+      "generate_block_query_with_skip",
+      "extract_proposed_params",
+      "extract_version",
+      "extract_block_size",
+      "extract_length",
+      "extract_metadata",
+      "extract_data",
+      "extract_block_data",
+      "extract_remaining_data",
+      "extract_skip_amount",
+      "extract_protocol_code",
+      "skip_bytes",
+      "more_data_remaining_after_skip",
+      "check_if_cursor_at_end",
+      "store_data",
+      "verify_transfer_complete",
+      "determine_error_code",
+      "start_response_timer",
+      "cancel_response_timer",
+      "send_message",
+      "abort_transfer",
+      "log_error",
+      "log_explicit_ack"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "Session Encryption (PASE/CASE)",
+        "description": "All BDX messages are encrypted and authenticated via the underlying PASE or CASE session. BDX does not perform cryptographic operations directly.",
+        "algorithm": "Determined by PASE/CASE session (AES-CCM typically)",
+        "inputs": "BDX protocol messages (plaintext)",
+        "outputs": "Encrypted and authenticated messages",
+        "purpose": "Provides confidentiality, integrity, and authenticity for all BDX communications",
+        "spec_ref": "11.22.4"
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "PASE/CASE Session Security",
+        "description": "BDX relies entirely on the underlying PASE or CASE session for all cryptographic security (encryption, authentication, integrity). The session must be properly established and maintained.",
+        "justification": "BDX protocol specification mandates execution only over PASE/CASE sessions.",
+        "spec_ref": "11.22.4"
+      },
+      {
+        "assumption": "Reliable Transport",
+        "description": "BDX assumes the underlying transport (MRP, TCP) provides reliable, ordered delivery. Protocol correctness depends on messages not being lost, duplicated, or reordered by transport.",
+        "justification": "Specification requires BDX SHALL use reliable transport. Application-level flow control depends on this guarantee.",
+        "spec_ref": "11.22.4"
+      },
+      {
+        "assumption": "Single Exchange per Session",
+        "description": "BDX assumes only one session is active within an Exchange. Concurrent sessions would violate protocol state machine.",
+        "justification": "Specification states only one BDX session can be in progress at any time during an Exchange.",
+        "spec_ref": "11.22.2.8"
+      },
+      {
+        "assumption": "Sequential Block Counters",
+        "description": "Protocol assumes block counters are strictly sequential and uses this for implicit acknowledgements and ordering. Breaking this assumption leads to BAD_BLOCK_COUNTER errors.",
+        "justification": "Block ordering rules mandate sequential counters with modulo 2^32 arithmetic.",
+        "spec_ref": "11.22.6.1"
+      },
+      {
+        "assumption": "Timeout-Based Error Detection",
+        "description": "Driver in synchronous mode relies on application-determined timeouts to detect failures when expected responses don't arrive.",
+        "justification": "Specification states driver SHOULD abort if response not received within application-determined time.",
+        "spec_ref": "11.22.2.6"
+      },
+      {
+        "assumption": "Follower Always Available",
+        "description": "Follower in synchronous mode is assumed to be non-sleepy and always able to respond when driver sends messages.",
+        "justification": "Protocol defines followers as devices that can never be sleepy.",
+        "spec_ref": "11.22.2.7"
+      },
+      {
+        "assumption": "Proper Resource Management",
+        "description": "Nodes are expected to properly manage resources and indicate RESPONDER_BUSY when unable to accept transfers, preventing resource exhaustion.",
+        "justification": "Specification provides RESPONDER_BUSY error code for this purpose.",
+        "spec_ref": "11.22.3.2"
+      },
+      {
+        "assumption": "Length Pre-Negotiation Accuracy",
+        "description": "When definite length is specified, it is assumed to be accurate. Sender must send exactly that amount; receiver validates this.",
+        "justification": "Protocol requires LENGTH_MISMATCH error if pre-negotiated size not fulfilled.",
+        "spec_ref": "11.22.6.5"
+      }
+    ],
+    "validation_checklist": {
+      "all_conditions_modeled": true,
+      "all_conditions_notes": "All conditional flows from spec modeled: version negotiation, mode selection, validation checks, block ordering rules, length validation, error conditions, optional vs required fields, synchronous vs asynchronous modes (provisional), driver vs follower roles, sender vs receiver roles.",
+      "cryptographic_details_complete": true,
+      "cryptographic_notes": "BDX does not perform direct cryptographic operations. All security inherited from PASE/CASE session encryption and authentication, which is detailed in security_assumptions.",
+      "error_states_included": true,
+      "error_states_notes": "TransferFailed state captures all error scenarios. All status codes from Table 109 modeled: LENGTH_TOO_LARGE, LENGTH_TOO_SHORT, LENGTH_MISMATCH, LENGTH_REQUIRED, BAD_MESSAGE_CONTENTS, BAD_BLOCK_COUNTER, UNEXPECTED_MESSAGE, RESPONDER_BUSY, TRANSFER_FAILED_UNKNOWN_ERROR, TRANSFER_METHOD_NOT_SUPPORTED, FILE_DESIGNATOR_UNKNOWN, START_OFFSET_NOT_SUPPORTED, VERSION_NOT_SUPPORTED, UNKNOWN.",
+      "timers_modeled": true,
+      "timers_notes": "Response timeouts modeled via start_response_timer/cancel_response_timer functions and response_timeout trigger. Application-determined timeout for driver waiting for responses. Transport-level timeouts inherited from reliable transport.",
+      "functions_complete": true,
+      "functions_notes": "All 43 functions defined with parameters, return types, and behavior. Covers validation, generation, extraction, error handling, timer management, and transport operations. Includes more_data_remaining_after_skip for proper BlockQueryWithSkip response handling. All functions actually used in transitions are listed in all_functions_used.",
+      "guards_exhaustive": true,
+      "guards_notes": "Guards cover all decision points: validation success/failure, mode selection, counter ordering, length checks, timeout conditions, busy states, security validation. Complementary guards ensure all cases handled, including separate guards for BlockQueryWithSkip depending on whether skip reaches EOF.",
+      "actions_atomic": true,
+      "actions_notes": "All actions are atomic assignments, function calls, or event generation. No conditionals or loops in actions. Complex logic encapsulated in functions.",
+      "security_properties_identified": true,
+      "security_properties_notes": "13 security properties identified covering confidentiality, authentication, integrity, reliability, ordering, session isolation, validation requirements, resource control, and error handling.",
+      "spec_coverage_complete": true,
+      "spec_coverage_notes": "FSM covers all message types (8 opcodes: SendInit, SendAccept, ReceiveInit, ReceiveAccept, BlockQuery, BlockQueryWithSkip, Block, BlockEOF, BlockAck, BlockAckEOF), all status codes, all roles (sender/receiver/initiator/responder/driver/follower), all modes (sender-drive, receiver-drive, async-provisional), all validation rules, all error conditions, all sequence diagrams from section 11.22.7. BlockQueryWithSkip properly modeled with sender immediately responding with Block or empty BlockEOF based on whether skip reaches EOF, per section 11.22.6.3 requirements.",
+      "proverif_tamarin_compatible": true,
+      "proverif_tamarin_notes": "FSM structure compatible: states with explicit attributes, transitions with guards and atomic actions, functions with clear signatures, security properties explicitly enumerated. Block counter modulo arithmetic may need special encoding. PASE/CASE session security would be modeled as symbolic encryption in ProVerif."
+    }
+  }
+}

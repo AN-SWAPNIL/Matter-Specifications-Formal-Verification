@@ -1,0 +1,1635 @@
+{
+  "fsm_model": {
+    "section_name": "Joint Commissioning Method (JCM)",
+    "section_ref": "Matter 1.4 Core Specification, Chapter 12.2.5",
+    "description": "Complete FSM for Joint Fabric creation between two ecosystems using Joint Commissioning Method. Models the entire flow from initial discovery through ICA cross-signing to final Joint Fabric activation.",
+    "states": [
+      {
+        "name": "JCM_Idle",
+        "description": "Initial state where no Joint Commissioning is active. Both ecosystems operate independently on their own fabrics.",
+        "is_initial": true,
+        "invariants": [
+          "no_active_jcm_session",
+          "ecosystem_b_on_own_fabric",
+          "ecosystem_a_on_own_fabric"
+        ],
+        "state_variables": {
+          "jcm_session_active": "boolean",
+          "ecosystem_b_fabric_id": "64-bit",
+          "ecosystem_a_fabric_id": "64-bit"
+        }
+      },
+      {
+        "name": "JCM_Discovery",
+        "description": "Ecosystem B Administrator advertises via DNS-SD with JF TXT key. Provides QR code and Manual Pairing Code to user. Awaiting Ecosystem A discovery.",
+        "is_initial": false,
+        "invariants": [
+          "dns_sd_active",
+          "jf_txt_key_advertised",
+          "pairing_codes_available"
+        ],
+        "state_variables": {
+          "dns_sd_advertising": "boolean",
+          "qr_code": "string",
+          "manual_pairing_code": "string",
+          "jf_txt_key": "string"
+        }
+      },
+      {
+        "name": "JCM_ECM_BCM_InProgress",
+        "description": "Ecosystem A is commissioning Ecosystem B Administrator using ECM or BCM. PASE session is active and device attestation is in progress.",
+        "is_initial": false,
+        "invariants": [
+          "pase_session_active",
+          "device_attestation_pending",
+          "commissioning_flow_active"
+        ],
+        "state_variables": {
+          "pase_session_id": "identifier",
+          "device_attestation_status": "enum(pending, validating, complete)",
+          "commissioning_method": "enum(ECM, BCM)",
+          "eco_a_commissioner_node_id": "64-bit"
+        }
+      },
+      {
+        "name": "JCM_ECM_Complete_AwaitingCATVerification",
+        "description": "ECM/BCM commissioning completed. Ecosystem B now has Fabric A NOC, RCAC, ICAC. Must verify that Ecosystem A's NOC contains Anchor CAT or Anchor/Datastore CAT.",
+        "is_initial": false,
+        "invariants": [
+          "ecm_complete",
+          "eco_a_credentials_received",
+          "anchor_cat_verification_pending"
+        ],
+        "state_variables": {
+          "eco_a_noc": "X.509_certificate",
+          "eco_a_rcac": "X.509_certificate",
+          "eco_a_icac": "X.509_certificate",
+          "eco_a_vendor_id": "16-bit",
+          "sigma_2_tbsdata": "bitstring"
+        }
+      },
+      {
+        "name": "JCM_UserConsent_Pending",
+        "description": "Anchor CAT verified successfully. Now awaiting user consent on Ecosystem B to proceed with Joint Fabric creation.",
+        "is_initial": false,
+        "invariants": [
+          "anchor_cat_verified",
+          "user_consent_pending"
+        ],
+        "state_variables": {
+          "anchor_cat_present": "boolean",
+          "user_consent_requested": "boolean",
+          "user_consent_obtained": "boolean"
+        }
+      },
+      {
+        "name": "JCM_RCAC_Validation_InProgress",
+        "description": "User consent obtained. Performing RCAC-based Vendor ID validation via DCL. Validating Ecosystem A's RCAC authenticity.",
+        "is_initial": false,
+        "invariants": [
+          "user_consent_obtained",
+          "dcl_query_sent",
+          "rcac_validation_pending"
+        ],
+        "state_variables": {
+          "dcl_query_id": "identifier",
+          "rcac_ec_pub_key": "ECC_public_key_P256",
+          "rcac_pub_key_algo": "string",
+          "rcac_ec_curve_id": "string",
+          "dcl_validation_status": "enum(pending, validating, complete)"
+        }
+      },
+      {
+        "name": "JCM_RCAC_Validated_AwaitingICACSR",
+        "description": "RCAC validation successful via DCL. Returned certificate is confirmed to be a valid RCAC (cA=TRUE). Ready to prepare and send ICA CSR.",
+        "is_initial": false,
+        "invariants": [
+          "rcac_validated",
+          "dcl_returned_valid_rcac",
+          "icacsr_not_sent"
+        ],
+        "state_variables": {
+          "dcl_returned_certificate": "X.509_certificate",
+          "rcac_basic_constraint_ca": "boolean",
+          "ica_csr_prepared": "boolean"
+        }
+      },
+      {
+        "name": "JCM_ICACSR_Sent_AwaitingEcoA_UserConsent",
+        "description": "ICA CSR generated and sent to Ecosystem A via ICACSRRequest command. Awaiting user consent on Ecosystem A to proceed with cross-signing.",
+        "is_initial": false,
+        "invariants": [
+          "icacsr_sent",
+          "eco_a_user_consent_pending"
+        ],
+        "state_variables": {
+          "ica_csr": "PKCS10_CSR_DER_encoded",
+          "ica_csr_subject_dn": "string",
+          "ica_csr_public_key": "ECC_public_key_P256",
+          "ica_csr_signature": "ECDSA_signature",
+          "icacsr_request_id": "identifier"
+        }
+      },
+      {
+        "name": "JCM_ICACSR_EcoA_Validating",
+        "description": "Ecosystem A received ICA CSR and user consent obtained. Now validating CSR format (PKCS#10), signature, and performing ICAC-based Vendor ID validation via DCL.",
+        "is_initial": false,
+        "invariants": [
+          "eco_a_user_consent_obtained",
+          "csr_validation_in_progress"
+        ],
+        "state_variables": {
+          "csr_format_valid": "boolean",
+          "csr_signature_valid": "boolean",
+          "dcl_icac_query_sent": "boolean",
+          "dcl_icac_validation_status": "enum(pending, validating, complete)"
+        }
+      },
+      {
+        "name": "JCM_ICACSR_CrossSigning_InProgress",
+        "description": "All ICA CSR validations passed. Ecosystem A Root CA is now signing the ICA CSR to create cross-signed ICAC.",
+        "is_initial": false,
+        "invariants": [
+          "csr_validated",
+          "dcl_icac_validated",
+          "signing_in_progress"
+        ],
+        "state_variables": {
+          "root_ca_signing_request_id": "identifier",
+          "signing_status": "enum(pending, signing, complete)"
+        }
+      },
+      {
+        "name": "JCM_CrossSigned_ICAC_Received",
+        "description": "Cross-signed ICAC received by Ecosystem B via ICACSRResponse command. ICAC is in PEM format and ready for fabric update operations.",
+        "is_initial": false,
+        "invariants": [
+          "cross_signed_icac_received",
+          "icac_in_pem_format",
+          "fabric_update_pending"
+        ],
+        "state_variables": {
+          "cross_signed_icac": "X.509_certificate_PEM",
+          "cross_signed_icac_subject_public_key": "ECC_public_key_P256",
+          "cross_signed_icac_issuer": "Anchor_RCAC",
+          "cross_signed_icac_matter_fabric_id": "64-bit"
+        }
+      },
+      {
+        "name": "JCM_FabricUpdate_InProgress",
+        "description": "Ecosystem B updating all nodes in Fabric B to join Joint Fabric. Adding Anchor RCAC, issuing new NOCs with Anchor Fabric ID, preparing to remove old fabric.",
+        "is_initial": false,
+        "invariants": [
+          "cross_signed_icac_valid",
+          "nodes_updating",
+          "fabric_transition_active"
+        ],
+        "state_variables": {
+          "nodes_to_update": "array_of_node_ids",
+          "nodes_updated_count": "integer",
+          "add_rcac_complete": "boolean",
+          "add_noc_complete": "boolean",
+          "remove_fabric_pending": "boolean"
+        }
+      },
+      {
+        "name": "JCM_Complete_JointFabric_Active",
+        "description": "All Fabric B nodes successfully updated. Old fabric removed. Joint Fabric now operational with all devices communicating under Anchor CA trust hierarchy.",
+        "is_initial": false,
+        "invariants": [
+          "all_nodes_updated",
+          "old_fabric_removed",
+          "joint_fabric_active",
+          "single_trust_hierarchy"
+        ],
+        "state_variables": {
+          "joint_fabric_id": "64-bit",
+          "anchor_ca": "X.509_certificate",
+          "active_nodes_count": "integer",
+          "joint_fabric_operational": "boolean"
+        }
+      },
+      {
+        "name": "JCM_Failed_CAT_Verification",
+        "description": "Error state: Anchor CAT or Anchor/Datastore CAT not found in Ecosystem A Administrator's NOC. JCM cannot proceed without valid Anchor.",
+        "is_initial": false,
+        "invariants": [
+          "anchor_cat_missing",
+          "jcm_aborted",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "string",
+          "error_reason": "Anchor CAT not present in responder NOC",
+          "noc_analyzed": "X.509_certificate"
+        }
+      },
+      {
+        "name": "JCM_Failed_UserConsent_Denied",
+        "description": "Error state: User denied consent for Joint Fabric creation. JCM aborted. Can occur at Ecosystem B or Ecosystem A consent stage.",
+        "is_initial": false,
+        "invariants": [
+          "user_consent_denied",
+          "jcm_aborted",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "string",
+          "error_reason": "User consent not obtained",
+          "consent_stage": "enum(ecosystem_b, ecosystem_a)"
+        }
+      },
+      {
+        "name": "JCM_Failed_RCAC_Validation",
+        "description": "Error state: DCL validation failed for Ecosystem A's RCAC, or returned certificate is not a valid RCAC (cA field not TRUE). Trust cannot be established.",
+        "is_initial": false,
+        "invariants": [
+          "rcac_validation_failed",
+          "jcm_aborted",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "string",
+          "error_reason": "DCL validation failed or certificate not RCAC",
+          "dcl_result": "string",
+          "returned_cert_ca_field": "boolean"
+        }
+      },
+      {
+        "name": "JCM_Failed_ICACSR_Format",
+        "description": "Error state: ICA CSR does not follow PKCS#10 encoding and rules. Format validation failed at Ecosystem A.",
+        "is_initial": false,
+        "invariants": [
+          "csr_format_invalid",
+          "jcm_aborted",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "InvalidIcaCsrFormat",
+          "error_reason": "ICA CSR does not follow PKCS#10 format",
+          "csr_received": "bitstring"
+        }
+      },
+      {
+        "name": "JCM_Failed_ICACSR_Signature",
+        "description": "Error state: ICA CSR signature cannot be validated using the CSR's public key. Signature verification failed at Ecosystem A.",
+        "is_initial": false,
+        "invariants": [
+          "csr_signature_invalid",
+          "jcm_aborted",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "InvalidIcaCsrSignature",
+          "error_reason": "CSR signature verification failed",
+          "csr_signature": "ECDSA_signature",
+          "csr_public_key": "ECC_public_key_P256"
+        }
+      },
+      {
+        "name": "JCM_Failed_DCL_VendorID_Validation",
+        "description": "Error state: ICAC-based Vendor ID validation failed via DCL (empty list returned), or returned certificate is not a valid ICAC (cA field not FALSE).",
+        "is_initial": false,
+        "invariants": [
+          "vendor_id_validation_failed",
+          "jcm_aborted",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "enum(FailedDCLVendorIdValidation, NotAnIcac)",
+          "error_reason": "DCL vendor ID validation failed or certificate not ICAC",
+          "dcl_icac_result": "string",
+          "returned_cert_ca_field": "boolean"
+        }
+      },
+      {
+        "name": "JCM_Failed_CrossSigning",
+        "description": "Error state: Root CA failed to sign the ICA CSR. Cross-signing operation failed at Ecosystem A.",
+        "is_initial": false,
+        "invariants": [
+          "cross_signing_failed",
+          "jcm_aborted",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "IcaCsrSigningFailed",
+          "error_reason": "Root CA signing operation failed",
+          "signing_error_detail": "string"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "JCM_Idle",
+        "to_state": "JCM_Discovery",
+        "trigger": "user_initiates_jcm",
+        "guard_condition": "ecosystem_b_supports_joint_fabric == true",
+        "actions": [
+          "advertise_dns_sd_with_jf_txt_key()",
+          "qr_code := generate_qr_code()",
+          "manual_pairing_code := generate_manual_pairing_code()",
+          "dns_sd_advertising := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_Discovery",
+        "to_state": "JCM_ECM_BCM_InProgress",
+        "trigger": "ecosystem_a_initiates_commissioning",
+        "guard_condition": "dns_sd_discovered == true && (pairing_code_entered == true || qr_code_scanned == true)",
+        "actions": [
+          "pase_session_id := establish_pase_session()",
+          "device_attestation_status := begin_device_attestation()",
+          "commissioning_flow_active := true"
+        ],
+        "timing_requirement": "PASE session establishment timeout: 60 seconds"
+      },
+      {
+        "from_state": "JCM_ECM_BCM_InProgress",
+        "to_state": "JCM_ECM_Complete_AwaitingCATVerification",
+        "trigger": "ecm_bcm_complete_event",
+        "guard_condition": "device_attestation_status == complete && noc_received == true",
+        "actions": [
+          "eco_a_noc := extract_noc_from_sigma2(sigma_2_tbsdata)",
+          "eco_a_rcac := store_rcac_received()",
+          "eco_a_icac := store_icac_received()",
+          "eco_a_vendor_id := extract_vendor_id(eco_a_noc)",
+          "ecm_complete := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_ECM_Complete_AwaitingCATVerification",
+        "to_state": "JCM_UserConsent_Pending",
+        "trigger": "verify_anchor_cat_command",
+        "guard_condition": "has_anchor_cat(eco_a_noc) == true || has_anchor_datastore_cat(eco_a_noc) == true",
+        "actions": [
+          "anchor_cat_present := true",
+          "anchor_cat_verified := true",
+          "prompt_user_consent()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_ECM_Complete_AwaitingCATVerification",
+        "to_state": "JCM_Failed_CAT_Verification",
+        "trigger": "verify_anchor_cat_command",
+        "guard_condition": "has_anchor_cat(eco_a_noc) == false && has_anchor_datastore_cat(eco_a_noc) == false",
+        "actions": [
+          "abort_jcm()",
+          "generate_error_event(anchor_cat_missing)",
+          "error_reason := 'Anchor CAT or Anchor/Datastore CAT not found in Ecosystem A NOC'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_UserConsent_Pending",
+        "to_state": "JCM_RCAC_Validation_InProgress",
+        "trigger": "user_consent_obtained",
+        "guard_condition": "user_consent_obtained == true",
+        "actions": [
+          "rcac_ec_pub_key := extract_rcac_pubkey(eco_a_rcac)",
+          "rcac_pub_key_algo := extract_pub_key_algo(eco_a_rcac)",
+          "rcac_ec_curve_id := extract_ec_curve_id(eco_a_rcac)",
+          "dcl_query_id := dcl_vendor_id_validate_rcac(rcac_ec_pub_key, rcac_pub_key_algo, rcac_ec_curve_id, eco_a_vendor_id)",
+          "dcl_validation_status := pending"
+        ],
+        "timing_requirement": "DCL query timeout: 30 seconds"
+      },
+      {
+        "from_state": "JCM_UserConsent_Pending",
+        "to_state": "JCM_Failed_UserConsent_Denied",
+        "trigger": "user_consent_denied",
+        "guard_condition": "user_consent_obtained == false",
+        "actions": [
+          "abort_jcm()",
+          "generate_error_event(user_consent_denied)",
+          "error_reason := 'User consent not obtained on Ecosystem B'",
+          "consent_stage := ecosystem_b"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_RCAC_Validation_InProgress",
+        "to_state": "JCM_RCAC_Validated_AwaitingICACSR",
+        "trigger": "dcl_validation_result",
+        "guard_condition": "dcl_result == success && is_valid_rcac(dcl_returned_certificate) == true",
+        "actions": [
+          "rcac_validated := true",
+          "rcac_basic_constraint_ca := extract_basic_constraint_ca(dcl_returned_certificate)",
+          "ica_csr_prepared := prepare_ica_csr()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_RCAC_Validation_InProgress",
+        "to_state": "JCM_Failed_RCAC_Validation",
+        "trigger": "dcl_validation_result",
+        "guard_condition": "dcl_result == failure || is_valid_rcac(dcl_returned_certificate) == false",
+        "actions": [
+          "abort_jcm()",
+          "generate_error_event(rcac_validation_failed)",
+          "error_reason := 'DCL validation failed or returned certificate is not RCAC'",
+          "returned_cert_ca_field := extract_basic_constraint_ca(dcl_returned_certificate)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_RCAC_Validated_AwaitingICACSR",
+        "to_state": "JCM_ICACSR_Sent_AwaitingEcoA_UserConsent",
+        "trigger": "send_icacsr_request",
+        "guard_condition": "ica_csr_prepared == true",
+        "actions": [
+          "ica_csr := generate_ica_csr(eco_b_ica_private_key, anchor_fabric_id)",
+          "ica_csr_subject_dn := encode_subject_dn(anchor_fabric_id)",
+          "ica_csr_public_key := extract_public_key(ica_csr)",
+          "ica_csr_signature := extract_signature(ica_csr)",
+          "icacsr_request_id := send_icacsr_request_command(ica_csr)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_ICACSR_Sent_AwaitingEcoA_UserConsent",
+        "to_state": "JCM_ICACSR_EcoA_Validating",
+        "trigger": "eco_a_user_consent_obtained",
+        "guard_condition": "eco_a_user_consent_obtained == true",
+        "actions": [
+          "csr_format_valid := validate_ica_csr_format(ica_csr)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_ICACSR_Sent_AwaitingEcoA_UserConsent",
+        "to_state": "JCM_Failed_UserConsent_Denied",
+        "trigger": "eco_a_user_consent_denied",
+        "guard_condition": "eco_a_user_consent_obtained == false",
+        "actions": [
+          "send_icacsr_response(IcaCsrRequestNoUserConsent)",
+          "abort_jcm()",
+          "error_reason := 'User consent not obtained on Ecosystem A'",
+          "consent_stage := ecosystem_a"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_ICACSR_EcoA_Validating",
+        "to_state": "JCM_Failed_ICACSR_Format",
+        "trigger": "csr_format_validation_complete",
+        "guard_condition": "is_valid_pkcs10_format(ica_csr) == false",
+        "actions": [
+          "send_icacsr_response(InvalidIcaCsrFormat)",
+          "abort_jcm()",
+          "error_reason := 'ICA CSR does not follow PKCS#10 format'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_ICACSR_EcoA_Validating",
+        "to_state": "JCM_Failed_ICACSR_Signature",
+        "trigger": "csr_signature_validation_complete",
+        "guard_condition": "is_valid_pkcs10_format(ica_csr) == true && verify_signature(ica_csr_signature, ica_csr_public_key) == false",
+        "actions": [
+          "send_icacsr_response(InvalidIcaCsrSignature)",
+          "abort_jcm()",
+          "error_reason := 'ICA CSR signature verification failed'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_ICACSR_EcoA_Validating",
+        "to_state": "JCM_Failed_DCL_VendorID_Validation",
+        "trigger": "dcl_icac_validation_result",
+        "guard_condition": "is_valid_pkcs10_format(ica_csr) == true && verify_signature(ica_csr_signature, ica_csr_public_key) == true && (dcl_icac_result == empty_list || is_valid_icac(dcl_returned_cert) == false)",
+        "actions": [
+          "send_icacsr_response_error(dcl_icac_result, dcl_returned_cert)",
+          "abort_jcm()",
+          "error_code := determine_error_code(dcl_icac_result, dcl_returned_cert)",
+          "error_reason := 'DCL vendor ID validation failed or returned certificate is not ICAC'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_ICACSR_EcoA_Validating",
+        "to_state": "JCM_ICACSR_CrossSigning_InProgress",
+        "trigger": "dcl_icac_validation_result",
+        "guard_condition": "is_valid_pkcs10_format(ica_csr) == true && verify_signature(ica_csr_signature, ica_csr_public_key) == true && dcl_icac_result == valid && is_valid_icac(dcl_returned_cert) == true",
+        "actions": [
+          "root_ca_signing_request_id := request_root_ca_sign(ica_csr)",
+          "signing_status := pending"
+        ],
+        "timing_requirement": "Root CA signing timeout: 60 seconds"
+      },
+      {
+        "from_state": "JCM_ICACSR_CrossSigning_InProgress",
+        "to_state": "JCM_CrossSigned_ICAC_Received",
+        "trigger": "cross_signing_complete",
+        "guard_condition": "signing_status == complete",
+        "actions": [
+          "cross_signed_icac := convert_to_pem(signed_certificate)",
+          "send_icacsr_response(cross_signed_icac)",
+          "cross_signed_icac_subject_public_key := extract_public_key(cross_signed_icac)",
+          "cross_signed_icac_issuer := extract_issuer(cross_signed_icac)",
+          "cross_signed_icac_matter_fabric_id := extract_fabric_id(cross_signed_icac)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_ICACSR_CrossSigning_InProgress",
+        "to_state": "JCM_Failed_CrossSigning",
+        "trigger": "cross_signing_failed",
+        "guard_condition": "signing_status == failed",
+        "actions": [
+          "send_icacsr_response(IcaCsrSigningFailed)",
+          "abort_jcm()",
+          "error_reason := 'Root CA signing operation failed'",
+          "signing_error_detail := get_signing_error_detail()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "JCM_CrossSigned_ICAC_Received",
+        "to_state": "JCM_FabricUpdate_InProgress",
+        "trigger": "begin_fabric_update",
+        "guard_condition": "verify_cross_signed_icac_valid(cross_signed_icac) == true && cross_signed_icac_matter_fabric_id == anchor_fabric_id",
+        "actions": [
+          "nodes_to_update := get_all_fabric_b_nodes()",
+          "nodes_updated_count := 0",
+          "foreach_node_in_fabric_b(add_trusted_root_certificate(anchor_rcac))",
+          "foreach_node_in_fabric_b(add_noc_with_anchor_fabric_id(cross_signed_icac, anchor_fabric_id))"
+        ],
+        "timing_requirement": "Fabric update timeout: 300 seconds (5 minutes)"
+      },
+      {
+        "from_state": "JCM_FabricUpdate_InProgress",
+        "to_state": "JCM_Complete_JointFabric_Active",
+        "trigger": "all_nodes_updated",
+        "guard_condition": "add_rcac_complete == true && add_noc_complete == true && nodes_updated_count == length(nodes_to_update)",
+        "actions": [
+          "foreach_node_in_fabric_b(remove_fabric(old_rcac))",
+          "joint_fabric_id := anchor_fabric_id",
+          "anchor_ca := anchor_rcac",
+          "active_nodes_count := nodes_updated_count",
+          "joint_fabric_operational := true",
+          "generate_event(jcm_complete)"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "advertise_dns_sd_with_jf_txt_key",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Advertises Ecosystem B Administrator's presence over DNS-SD with JF TXT key indicating Joint Fabric support. Broadcasts service record using mDNS protocol on local network.",
+        "algorithm_detail": "Uses DNS-SD protocol (RFC 6763) with Matter-specific service type. Sets TXT record with key 'JF' indicating Joint Fabric capability. Includes device type, vendor ID, and commissioning mode in TXT fields. Advertisement interval: 1 second initially, then exponential backoff to 60 seconds.",
+        "usage_in_fsm": "Called in transition JCM_Idle → JCM_Discovery to initiate discovery phase. Required for Ecosystem A to discover Ecosystem B."
+      },
+      {
+        "name": "generate_qr_code",
+        "parameters": [],
+        "return_type": "string (QR code payload)",
+        "description": "Generates QR code payload containing Manual Pairing Code, discriminator, and device information. Follows Matter QR code format specification.",
+        "algorithm_detail": "Encodes Manual Pairing Code (11 digits), setup PIN code, discriminator (12 bits), vendor ID (16 bits), product ID (16 bits) into QR-code-compatible string using Matter TLV format. Returns base-38 encoded string suitable for QR code generation.",
+        "usage_in_fsm": "Called in transition JCM_Idle → JCM_Discovery to provide user-friendly commissioning initiation method."
+      },
+      {
+        "name": "generate_manual_pairing_code",
+        "parameters": [],
+        "return_type": "string (11-digit code)",
+        "description": "Generates Manual Pairing Code for commissioning. 11-digit decimal code encoding setup PIN and discriminator.",
+        "algorithm_detail": "Combines setup PIN (27-bit passcode), discriminator (12-bit), and vendor/product hints into 11-digit decimal representation. Includes checksum digit for error detection. Format: XXXX-XXXX-XXX where last digit is Verhoeff checksum.",
+        "usage_in_fsm": "Called in transition JCM_Idle → JCM_Discovery as alternative to QR code for commissioning initiation."
+      },
+      {
+        "name": "establish_pase_session",
+        "parameters": [],
+        "return_type": "session_id (identifier)",
+        "description": "Establishes Password-Authenticated Session Establishment (PASE) session between Ecosystem A Commissioner and Ecosystem B Administrator. Derives session keys using SPAKE2+ protocol.",
+        "algorithm_detail": "SPAKE2+ key exchange protocol: Uses setup PIN as shared secret. Performs elliptic curve operations on Curve25519. Derives session encryption keys using HKDF-SHA256. Establishes secure channel for subsequent commissioning messages. Session keys used for AES-128-CCM encryption.",
+        "usage_in_fsm": "Called in transition JCM_Discovery → JCM_ECM_BCM_InProgress to establish secure commissioning channel."
+      },
+      {
+        "name": "begin_device_attestation",
+        "parameters": [],
+        "return_type": "attestation_status (enum)",
+        "description": "Initiates device attestation procedure to verify Ecosystem B Administrator's authenticity. Validates Device Attestation Certificate (DAC) and Certification Declaration (CD).",
+        "algorithm_detail": "Requests DAC and Product Attestation Intermediate (PAI) certificates from device. Verifies certificate chain to Product Attestation Authority (PAA). Validates Certification Declaration signature using CD signing key. Queries Device Conformance List (DCL) for certificate validation. Returns attestation_status: pending/validating/complete.",
+        "usage_in_fsm": "Called in transition JCM_Discovery → JCM_ECM_BCM_InProgress as part of ECM/BCM commissioning flow."
+      },
+      {
+        "name": "has_anchor_cat",
+        "parameters": [
+          {
+            "name": "noc",
+            "type": "X.509_certificate",
+            "description": "Node Operational Certificate to check for Anchor CAT presence"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if provided NOC contains Anchor CASE Authenticated Tag (CAT) in its Subject DN. Anchor CAT is a reserved OID value indicating Anchor Administrator role.",
+        "algorithm_detail": "Parses X.509 certificate Subject DN field. Searches for Matter-specific OID 1.3.6.1.4.1.37244.1.4 (CASE Authenticated Tag). Extracts CAT value and checks if it matches reserved Anchor CAT identifier. Returns true if Anchor CAT present, false otherwise.",
+        "usage_in_fsm": "Called in transition guard condition JCM_ECM_Complete_AwaitingCATVerification → JCM_UserConsent_Pending to verify Ecosystem A is legitimate Anchor."
+      },
+      {
+        "name": "has_anchor_datastore_cat",
+        "parameters": [
+          {
+            "name": "noc",
+            "type": "X.509_certificate",
+            "description": "Node Operational Certificate to check for Anchor/Datastore CAT presence"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if provided NOC contains combined Anchor/Datastore CASE Authenticated Tag. This CAT indicates node serves dual role as both Anchor and Datastore provider.",
+        "algorithm_detail": "Parses X.509 certificate Subject DN field. Searches for Matter-specific CAT OID. Extracts CAT value and checks if it matches reserved Anchor/Datastore CAT identifier. Returns true if Anchor/Datastore CAT present, false otherwise.",
+        "usage_in_fsm": "Called in transition guard condition JCM_ECM_Complete_AwaitingCATVerification → JCM_UserConsent_Pending as alternative to Anchor CAT check."
+      },
+      {
+        "name": "extract_rcac_pubkey",
+        "parameters": [
+          {
+            "name": "rcac",
+            "type": "X.509_certificate",
+            "description": "Root Certificate Authority Certificate"
+          }
+        ],
+        "return_type": "ECC_public_key_P256",
+        "description": "Extracts public key from RCAC certificate. Returns ECC public key in uncompressed format (04 || X || Y).",
+        "algorithm_detail": "Parses X.509 certificate SubjectPublicKeyInfo field. Extracts ECC public key coordinates (X, Y) from ASN.1 BIT STRING. Verifies curve is P-256 (secp256r1). Returns 65-byte uncompressed public key: 0x04 || 32-byte X || 32-byte Y.",
+        "usage_in_fsm": "Called in transition JCM_UserConsent_Pending → JCM_RCAC_Validation_InProgress to prepare RCAC for DCL validation."
+      },
+      {
+        "name": "dcl_vendor_id_validate_rcac",
+        "parameters": [
+          {
+            "name": "pubkey",
+            "type": "ECC_public_key_P256",
+            "description": "RCAC public key to validate"
+          },
+          {
+            "name": "algo",
+            "type": "string",
+            "description": "Public key algorithm (e.g., 'id-ecPublicKey')"
+          },
+          {
+            "name": "curve",
+            "type": "string",
+            "description": "Elliptic curve identifier (e.g., 'prime256v1')"
+          },
+          {
+            "name": "vendor_id",
+            "type": "16-bit",
+            "description": "Vendor ID to validate against DCL"
+          }
+        ],
+        "return_type": "query_id (identifier)",
+        "description": "Performs RCAC-based Vendor ID validation by querying Device Conformance List (DCL). Verifies that provided RCAC public key and vendor ID match DCL records.",
+        "algorithm_detail": "Constructs DCL query with RCAC public key hash (SHA-256), algorithm OID, curve OID, and vendor ID. Sends query to DCL ledger (distributed ledger on blockchain or centralized database). DCL returns matching certificate if vendor ID is authorized for this RCAC. Query timeout: 30 seconds. Returns query ID for tracking asynchronous result.",
+        "usage_in_fsm": "Called in transition JCM_UserConsent_Pending → JCM_RCAC_Validation_InProgress to validate Ecosystem A's trust credentials."
+      },
+      {
+        "name": "is_valid_rcac",
+        "parameters": [
+          {
+            "name": "cert",
+            "type": "X.509_certificate",
+            "description": "Certificate returned from DCL to validate"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that certificate returned from DCL is a valid Root Certificate Authority Certificate (RCAC). Checks Basic Constraints extension.",
+        "algorithm_detail": "Parses X.509 certificate extensions. Locates Basic Constraints extension (OID 2.5.29.19). Verifies extension is marked 'critical'. Checks 'cA' field is set to TRUE. Verifies pathLenConstraint is absent or appropriate for root. Returns true if all checks pass, false otherwise.",
+        "usage_in_fsm": "Called in transition guard JCM_RCAC_Validation_InProgress → JCM_RCAC_Validated_AwaitingICACSR to confirm DCL returned valid RCAC."
+      },
+      {
+        "name": "prepare_ica_csr",
+        "parameters": [],
+        "return_type": "boolean (preparation_status)",
+        "description": "Prepares internal state for ICA Certificate Signing Request generation. Verifies Ecosystem B has access to its pre-installed ICAC private key.",
+        "algorithm_detail": "Verifies access to Ecosystem B's ICAC private key stored in secure key storage. Retrieves Anchor Fabric ID from validated RCAC. Prepares Subject DN components for CSR. Sets preparation flag to true if all prerequisites available, false otherwise.",
+        "usage_in_fsm": "Called in transition JCM_RCAC_Validation_InProgress → JCM_RCAC_Validated_AwaitingICACSR to prepare for CSR generation."
+      },
+      {
+        "name": "generate_ica_csr",
+        "parameters": [
+          {
+            "name": "private_key",
+            "type": "ECC_private_key_P256",
+            "description": "Ecosystem B's ICAC private key for signing CSR"
+          },
+          {
+            "name": "fabric_id",
+            "type": "64-bit",
+            "description": "Anchor Fabric ID to encode in Subject DN"
+          }
+        ],
+        "return_type": "PKCS10_CSR_DER_encoded (bitstring)",
+        "description": "Generates PKCS#10 Certificate Signing Request for Ecosystem B's ICAC. CSR includes Subject DN with matter-fabric-id attribute set to Anchor Fabric ID.",
+        "algorithm_detail": "Constructs PKCS#10 CSR structure: Version=0, Subject DN='1.3.6.1.4.1.37244.1.5=<Anchor Fabric ID>'. SubjectPublicKeyInfo contains ECC P-256 public key derived from private_key. SignatureAlgorithm=ecdsa-with-SHA256. Signature computed over CertificationRequestInfo using private_key. Returns DER-encoded CSR per RFC 2986.",
+        "usage_in_fsm": "Called in transition JCM_RCAC_Validated_AwaitingICACSR → JCM_ICACSR_Sent_AwaitingEcoA_UserConsent to generate cross-signing request."
+      },
+      {
+        "name": "validate_ica_csr_format",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "PKCS10_CSR_DER_encoded",
+            "description": "ICA CSR to validate"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Validates that ICA CSR follows PKCS#10 encoding and structural rules per RFC 2986.",
+        "algorithm_detail": "Parses DER-encoded ASN.1 structure. Verifies CertificationRequest ::= SEQUENCE structure. Checks CertificationRequestInfo contains Version, Subject, SubjectPKInfo, Attributes. Verifies Subject DN contains matter-fabric-id OID. Validates SignatureAlgorithm is ecdsa-with-SHA256. Returns true if format valid, false otherwise.",
+        "usage_in_fsm": "Called in transition JCM_ICACSR_Sent_AwaitingEcoA_UserConsent → JCM_ICACSR_EcoA_Validating to validate CSR before signature check."
+      },
+      {
+        "name": "is_valid_pkcs10_format",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "PKCS10_CSR_DER_encoded",
+            "description": "CSR to check"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if CSR conforms to PKCS#10 format. Wrapper around validate_ica_csr_format for use in guard conditions.",
+        "algorithm_detail": "Calls validate_ica_csr_format(csr) and returns result. Provides boolean interface for transition guards.",
+        "usage_in_fsm": "Used in multiple transition guards in JCM_ICACSR_EcoA_Validating state to check CSR format validity."
+      },
+      {
+        "name": "verify_signature",
+        "parameters": [
+          {
+            "name": "signature",
+            "type": "ECDSA_signature_DER_encoded",
+            "description": "Signature to verify"
+          },
+          {
+            "name": "public_key",
+            "type": "ECC_public_key_P256",
+            "description": "Public key for signature verification"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies ECDSA signature using provided public key. Generic signature verification function used for CSR and certificate validation.",
+        "algorithm_detail": "ECDSA signature verification using P-256 curve and SHA-256 hash. Parses DER-encoded signature to extract (r, s) values. Computes message hash using SHA-256. Performs ECC point operations to verify signature equation: s*G = r*P + hash*Q where G is generator, P is public key point, Q is signature point. Returns true if verification succeeds, false otherwise.",
+        "usage_in_fsm": "Called in transition guard JCM_ICACSR_EcoA_Validating to verify ICA CSR signature authenticity."
+      },
+      {
+        "name": "dcl_vendor_id_validate_icac",
+        "parameters": [
+          {
+            "name": "pubkey",
+            "type": "ECC_public_key_P256",
+            "description": "ICAC public key from CSR to validate"
+          },
+          {
+            "name": "algo",
+            "type": "string",
+            "description": "Public key algorithm"
+          },
+          {
+            "name": "curve",
+            "type": "string",
+            "description": "Elliptic curve identifier"
+          },
+          {
+            "name": "vendor_id",
+            "type": "16-bit",
+            "description": "Vendor ID of administrator requesting ICA cross-signing"
+          }
+        ],
+        "return_type": "query_result (enum: valid, empty_list, error)",
+        "description": "Performs ICAC-based Vendor ID validation via DCL. Verifies that Ecosystem B's ICAC public key and vendor ID are authorized.",
+        "algorithm_detail": "Similar to dcl_vendor_id_validate_rcac but queries for ICAC records. Constructs DCL query with ICAC public key hash, algorithm, curve, and vendor ID. DCL returns matching ICAC certificate if vendor ID is authorized. Validates returned certificate has Basic Constraints cA=FALSE. Returns validation result: valid, empty_list (no match), or error.",
+        "usage_in_fsm": "Called during JCM_ICACSR_EcoA_Validating state to validate Ecosystem B's authority to request cross-signing."
+      },
+      {
+        "name": "is_valid_icac",
+        "parameters": [
+          {
+            "name": "cert",
+            "type": "X.509_certificate",
+            "description": "Certificate to validate as ICAC"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that certificate is a valid Intermediate Certificate Authority Certificate (ICAC). Checks Basic Constraints extension has cA=FALSE.",
+        "algorithm_detail": "Parses X.509 certificate extensions. Locates Basic Constraints extension (OID 2.5.29.19). Verifies extension is marked 'critical'. Checks 'cA' field is set to FALSE (distinguishes ICAC from RCAC). Verifies pathLenConstraint is 0 or absent. Returns true if valid ICAC, false otherwise.",
+        "usage_in_fsm": "Called in transition guard JCM_ICACSR_EcoA_Validating to verify DCL returned valid ICAC certificate."
+      },
+      {
+        "name": "request_root_ca_sign",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "PKCS10_CSR_DER_encoded",
+            "description": "ICA CSR to be signed by Root CA"
+          }
+        ],
+        "return_type": "signing_request_id (identifier)",
+        "description": "Requests Ecosystem A Root CA to sign ICA CSR. This is vendor-specific operation to invoke Root CA signing functionality.",
+        "algorithm_detail": "Vendor-specific protocol to communicate with Root CA (may be HSM, cloud service, or local CA software). Submits CSR to Root CA signing endpoint. Root CA validates CSR, generates X.509 certificate with Issuer=Anchor RCAC, Subject=CSR Subject DN, SubjectPublicKey=CSR public key. Signs certificate using Root CA private key with ECDSA-SHA256. Returns signing request ID for tracking asynchronous operation. Timeout: 60 seconds.",
+        "usage_in_fsm": "Called in transition JCM_ICACSR_EcoA_Validating → JCM_ICACSR_CrossSigning_InProgress to initiate certificate signing."
+      },
+      {
+        "name": "foreach_node_in_fabric_b",
+        "parameters": [
+          {
+            "name": "action",
+            "type": "function_reference",
+            "description": "Action to perform on each node (e.g., add_trusted_root_certificate, add_noc)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Iterates over all nodes in Fabric B and applies specified action. Used for fabric-wide updates during Joint Fabric transition.",
+        "algorithm_detail": "Retrieves list of all nodes in Fabric B from fabric table. For each node: establishes CASE session, invokes specified action function (add_trusted_root_certificate or add_noc_with_anchor_fabric_id), waits for acknowledgment, handles errors. Tracks success/failure count. Updates nodes_updated_count state variable. May run actions in parallel for efficiency.",
+        "usage_in_fsm": "Called in transition JCM_CrossSigned_ICAC_Received → JCM_FabricUpdate_InProgress to update all Fabric B nodes with new trust anchors."
+      },
+      {
+        "name": "add_trusted_root_certificate",
+        "parameters": [
+          {
+            "name": "rcac",
+            "type": "X.509_certificate",
+            "description": "Anchor RCAC to add to node's trusted root store"
+          }
+        ],
+        "return_type": "status_code (success, failure, timeout)",
+        "description": "Adds Anchor RCAC to node's TrustedRootCertificates list via Node Operational Credentials cluster AddTrustedRootCertificate command.",
+        "algorithm_detail": "Invokes AddTrustedRootCertificate command on Node Operational Credentials cluster (cluster ID 0x003E). Command payload contains DER-encoded RCAC certificate. Node validates certificate format, stores in non-volatile memory as trusted root. Returns NOCResponse with StatusCode. Command executed over CASE-secured session.",
+        "usage_in_fsm": "Called via foreach_node_in_fabric_b during JCM_FabricUpdate_InProgress state to establish Anchor CA trust."
+      },
+      {
+        "name": "add_noc_with_anchor_fabric_id",
+        "parameters": [
+          {
+            "name": "cross_signed_icac",
+            "type": "X.509_certificate",
+            "description": "Cross-signed ICAC for issuing new NOCs"
+          },
+          {
+            "name": "anchor_fabric_id",
+            "type": "64-bit",
+            "description": "Anchor Fabric ID to encode in new NOCs"
+          }
+        ],
+        "return_type": "status_code (success, failure, timeout)",
+        "description": "Issues new NOC to node with Subject DN containing Anchor Fabric ID. Uses AddNOC command from Node Operational Credentials cluster.",
+        "algorithm_detail": "Generates new NOC for node: Subject DN includes matter-fabric-id=anchor_fabric_id. Issuer=cross_signed_icac. Signs NOC using cross-signed ICAC private key. Invokes AddNOC command with NOC, ICAC, IP address, port, CaseAdminSubject=Administrator CAT. Node validates NOC chains to trusted Anchor RCAC, activates new fabric. Returns NOCResponse with StatusCode and assigned Fabric Index.",
+        "usage_in_fsm": "Called via foreach_node_in_fabric_b during JCM_FabricUpdate_InProgress state to transition nodes to Joint Fabric."
+      },
+      {
+        "name": "remove_fabric",
+        "parameters": [
+          {
+            "name": "old_rcac",
+            "type": "X.509_certificate",
+            "description": "Old RCAC identifying fabric to remove"
+          }
+        ],
+        "return_type": "status_code (success, failure, timeout)",
+        "description": "Removes old fabric from node using RemoveFabric command. Deletes all fabric-scoped data including NOC, RCAC, ACLs, and operational state.",
+        "algorithm_detail": "Identifies fabric to remove by matching RCAC certificate. Invokes RemoveFabric command on Node Operational Credentials cluster with FabricIndex parameter. Node deletes NOC, RCAC, ICAC, fabric-scoped ACL entries, group keys, bindings. Frees Fabric Index slot. Returns NOCResponse with StatusCode. WARNING: Removes all fabric-scoped data - irreversible operation.",
+        "usage_in_fsm": "Called via foreach_node_in_fabric_b during JCM_FabricUpdate_InProgress → JCM_Complete_JointFabric_Active transition to clean up old Fabric B."
+      },
+      {
+        "name": "abort_jcm",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Aborts Joint Commissioning Method procedure. Cleans up session state, notifies user, and returns to idle state.",
+        "algorithm_detail": "Tears down PASE session if active. Clears all JCM state variables (NOCs, RCACs, ICACs, CSRs). Stops DNS-SD advertising if active. Generates user notification event with error reason. Resets jcm_session_active flag to false. Does not modify any node's fabric configuration (safe abort).",
+        "usage_in_fsm": "Called in all error transitions to cleanly terminate JCM procedure and return to idle state."
+      },
+      {
+        "name": "generate_error_event",
+        "parameters": [
+          {
+            "name": "error_type",
+            "type": "enum (error identifier)",
+            "description": "Type of error that occurred"
+          }
+        ],
+        "return_type": "void",
+        "description": "Generates error event for logging and user notification. Includes error type, timestamp, and contextual information.",
+        "algorithm_detail": "Creates error event structure with error_type, timestamp, current_state, error_reason string. Logs event to system log. Notifies user interface layer for display. May trigger telemetry reporting if configured. Error types: anchor_cat_missing, user_consent_denied, rcac_validation_failed, csr_format_invalid, csr_signature_invalid, vendor_id_validation_failed, cross_signing_failed.",
+        "usage_in_fsm": "Called in error transitions to provide visibility into failure reasons."
+      },
+      {
+        "name": "extract_noc_from_sigma2",
+        "parameters": [
+          {
+            "name": "sigma_2_tbsdata",
+            "type": "bitstring",
+            "description": "Sigma-2 TBS (To Be Signed) data from CASE handshake"
+          }
+        ],
+        "return_type": "X.509_certificate (NOC)",
+        "description": "Extracts responder NOC from Sigma-2 TBS data structure during CASE handshake. Sigma-2 is part of CASE session establishment protocol.",
+        "algorithm_detail": "Parses Sigma-2 TBS structure: sigma-2-tbsdata ::= responderNOC || responderICAC || initiatorRandom || responderRandom || responderSessionId || ecdhPublicKey. Extracts responderNOC field which is DER-encoded X.509 certificate. Validates certificate format before returning. Used to obtain Ecosystem A's NOC for CAT verification.",
+        "usage_in_fsm": "Called in transition JCM_ECM_BCM_InProgress → JCM_ECM_Complete_AwaitingCATVerification to extract Eco A's NOC."
+      },
+      {
+        "name": "store_rcac_received",
+        "parameters": [],
+        "return_type": "X.509_certificate (RCAC)",
+        "description": "Stores received Anchor RCAC from commissioning flow. Retrieves RCAC from commissioning session context.",
+        "algorithm_detail": "Retrieves RCAC from commissioning message payload (AddTrustedRootCertificate or NOC chain). Validates RCAC format and signature self-consistency. Stores in temporary session storage (not yet trusted). Returns RCAC certificate for further validation.",
+        "usage_in_fsm": "Called in transition JCM_ECM_BCM_InProgress → JCM_ECM_Complete_AwaitingCATVerification to store Eco A's RCAC."
+      },
+      {
+        "name": "store_icac_received",
+        "parameters": [],
+        "return_type": "X.509_certificate (ICAC)",
+        "description": "Stores received ICAC from commissioning flow. Retrieves ICAC from commissioning session context.",
+        "algorithm_detail": "Retrieves ICAC from commissioning message payload (typically in AddNOC command). Validates ICAC format and that it chains to RCAC. Stores in temporary session storage. Returns ICAC certificate for reference.",
+        "usage_in_fsm": "Called in transition JCM_ECM_BCM_InProgress → JCM_ECM_Complete_AwaitingCATVerification to store Eco A's ICAC."
+      },
+      {
+        "name": "extract_vendor_id",
+        "parameters": [
+          {
+            "name": "noc",
+            "type": "X.509_certificate",
+            "description": "NOC from which to extract Vendor ID"
+          }
+        ],
+        "return_type": "16-bit (Vendor ID)",
+        "description": "Extracts Matter Vendor ID from NOC Subject DN. Vendor ID is encoded as Matter-specific OID attribute.",
+        "algorithm_detail": "Parses NOC Subject DN field. Searches for Matter Vendor ID OID 1.3.6.1.4.1.37244.1.1. Extracts 16-bit Vendor ID value from OID attribute. Returns vendor ID for DCL validation. If not found, returns error.",
+        "usage_in_fsm": "Called in transition JCM_ECM_BCM_InProgress → JCM_ECM_Complete_AwaitingCATVerification to extract Eco A's Vendor ID."
+      },
+      {
+        "name": "send_icacsr_request_command",
+        "parameters": [
+          {
+            "name": "ica_csr",
+            "type": "PKCS10_CSR_DER_encoded",
+            "description": "ICA CSR to send"
+          }
+        ],
+        "return_type": "request_id (identifier)",
+        "description": "Sends ICACSRRequest command to Ecosystem A's Joint Fabric PKI Cluster. Command carries DER-encoded ICA CSR.",
+        "algorithm_detail": "Invokes ICACSRRequest command on Joint Fabric PKI cluster (vendor-specific cluster ID). Command payload: ICACSR field=DER-encoded CSR string. Sends over CASE-secured session to Ecosystem A Administrator. Returns request ID for tracking response. Command timeout: 120 seconds (user consent + validation time).",
+        "usage_in_fsm": "Called in transition JCM_RCAC_Validated_AwaitingICACSR → JCM_ICACSR_Sent_AwaitingEcoA_UserConsent to request ICA cross-signing."
+      },
+      {
+        "name": "send_icacsr_response",
+        "parameters": [
+          {
+            "name": "response_content",
+            "type": "variant (cross_signed_icac_PEM or error_code)",
+            "description": "Either cross-signed ICAC in PEM format (success) or error code (failure)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sends ICACSRResponse command back to Ecosystem B. Contains either cross-signed ICAC (success) or error status code (failure).",
+        "algorithm_detail": "Constructs ICACSRResponse command on Joint Fabric PKI cluster. On success: ICAC field=PEM-encoded cross-signed certificate, StatusCode=Success. On failure: StatusCode=error code (IcaCsrRequestNoUserConsent, InvalidIcaCsrFormat, InvalidIcaCsrSignature, FailedDCLVendorIdValidation, NotAnIcac, IcaCsrSigningFailed). Sends over CASE-secured session.",
+        "usage_in_fsm": "Called in multiple transitions from JCM_ICACSR_CrossSigning_InProgress state to return result to Ecosystem B."
+      },
+      {
+        "name": "send_icacsr_response_error",
+        "parameters": [
+          {
+            "name": "dcl_result",
+            "type": "string",
+            "description": "DCL validation result"
+          },
+          {
+            "name": "returned_cert",
+            "type": "X.509_certificate",
+            "description": "Certificate returned by DCL (may be invalid)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sends ICACSRResponse with appropriate error code based on DCL validation failure. Determines specific error code from DCL result.",
+        "algorithm_detail": "Analyzes DCL result and returned certificate. If dcl_result==empty_list: error=FailedDCLVendorIdValidation. If returned_cert has cA=TRUE (not ICAC): error=NotAnIcac. Calls send_icacsr_response with determined error code.",
+        "usage_in_fsm": "Called in transition JCM_ICACSR_EcoA_Validating → JCM_Failed_DCL_VendorID_Validation to send appropriate error."
+      },
+      {
+        "name": "determine_error_code",
+        "parameters": [
+          {
+            "name": "dcl_result",
+            "type": "string",
+            "description": "DCL validation result"
+          },
+          {
+            "name": "returned_cert",
+            "type": "X.509_certificate",
+            "description": "Certificate returned by DCL"
+          }
+        ],
+        "return_type": "enum (FailedDCLVendorIdValidation, NotAnIcac)",
+        "description": "Determines specific error code for ICAC validation failure. Analyzes DCL result and certificate properties.",
+        "algorithm_detail": "If dcl_result==empty_list or dcl_result==error: return FailedDCLVendorIdValidation. If returned_cert exists but extract_basic_constraint_ca(returned_cert)==TRUE: return NotAnIcac. Otherwise return FailedDCLVendorIdValidation.",
+        "usage_in_fsm": "Called in transition JCM_ICACSR_EcoA_Validating → JCM_Failed_DCL_VendorID_Validation to determine error code."
+      },
+      {
+        "name": "convert_to_pem",
+        "parameters": [
+          {
+            "name": "certificate",
+            "type": "X.509_certificate_DER",
+            "description": "Certificate in DER format to convert"
+          }
+        ],
+        "return_type": "string (PEM-encoded certificate)",
+        "description": "Converts DER-encoded X.509 certificate to PEM format. PEM format is base64-encoded DER with header/footer.",
+        "algorithm_detail": "Base64-encodes DER certificate. Wraps with '-----BEGIN CERTIFICATE-----' header and '-----END CERTIFICATE-----' footer. Inserts line breaks every 64 characters. Returns PEM string per RFC 7468.",
+        "usage_in_fsm": "Called in transition JCM_ICACSR_CrossSigning_InProgress → JCM_CrossSigned_ICAC_Received to convert signed certificate to PEM."
+      },
+      {
+        "name": "extract_public_key",
+        "parameters": [
+          {
+            "name": "certificate_or_csr",
+            "type": "X.509_certificate or PKCS10_CSR",
+            "description": "Certificate or CSR from which to extract public key"
+          }
+        ],
+        "return_type": "ECC_public_key_P256",
+        "description": "Extracts ECC P-256 public key from X.509 certificate or PKCS#10 CSR SubjectPublicKeyInfo field.",
+        "algorithm_detail": "Parses SubjectPublicKeyInfo ASN.1 structure. Verifies algorithm is id-ecPublicKey with curve prime256v1. Extracts BIT STRING containing uncompressed ECC point (0x04 || X || Y). Returns 65-byte public key.",
+        "usage_in_fsm": "Called in multiple transitions to extract public keys from certificates and CSRs for validation and storage."
+      },
+      {
+        "name": "extract_issuer",
+        "parameters": [
+          {
+            "name": "certificate",
+            "type": "X.509_certificate",
+            "description": "Certificate from which to extract issuer DN"
+          }
+        ],
+        "return_type": "string (Issuer Distinguished Name)",
+        "description": "Extracts Issuer Distinguished Name from X.509 certificate.",
+        "algorithm_detail": "Parses certificate Issuer field (ASN.1 Name structure). Converts to string representation. Returns issuer DN for chain validation and logging.",
+        "usage_in_fsm": "Called in transition JCM_ICACSR_CrossSigning_InProgress → JCM_CrossSigned_ICAC_Received to verify issuer is Anchor RCAC."
+      },
+      {
+        "name": "extract_fabric_id",
+        "parameters": [
+          {
+            "name": "certificate",
+            "type": "X.509_certificate",
+            "description": "Certificate from which to extract Matter Fabric ID"
+          }
+        ],
+        "return_type": "64-bit (Fabric ID)",
+        "description": "Extracts Matter Fabric ID from certificate Subject DN. Fabric ID is encoded as Matter-specific OID attribute.",
+        "algorithm_detail": "Parses certificate Subject DN field. Searches for Matter Fabric ID OID 1.3.6.1.4.1.37244.1.5. Extracts 64-bit Fabric ID value. Returns fabric ID for validation and storage. If not found, returns error.",
+        "usage_in_fsm": "Called in transition JCM_ICACSR_CrossSigning_InProgress → JCM_CrossSigned_ICAC_Received to extract and verify Anchor Fabric ID."
+      },
+      {
+        "name": "verify_cross_signed_icac_valid",
+        "parameters": [
+          {
+            "name": "icac",
+            "type": "X.509_certificate",
+            "description": "Cross-signed ICAC to validate"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Validates cross-signed ICAC certificate. Checks signature, chain to Anchor RCAC, and Basic Constraints.",
+        "algorithm_detail": "Verifies ICAC signature using Anchor RCAC public key. Checks ICAC Issuer DN matches Anchor RCAC Subject DN. Validates Basic Constraints extension: cA=FALSE. Verifies SubjectPublicKey matches Ecosystem B's original ICAC public key (cross-signing requirement). Returns true if all checks pass.",
+        "usage_in_fsm": "Called in transition guard JCM_CrossSigned_ICAC_Received → JCM_FabricUpdate_InProgress to validate received ICAC before fabric update."
+      },
+      {
+        "name": "get_all_fabric_b_nodes",
+        "parameters": [],
+        "return_type": "array of node_ids",
+        "description": "Retrieves list of all nodes currently in Fabric B. Used for fabric-wide update operations.",
+        "algorithm_detail": "Queries Ecosystem B's fabric table. Returns array of Node IDs for all commissioned nodes in Fabric B. May include administrators, end devices, and bridged devices. Used to iterate for AddTrustedRootCertificate, AddNOC, RemoveFabric operations.",
+        "usage_in_fsm": "Called in transition JCM_CrossSigned_ICAC_Received → JCM_FabricUpdate_InProgress to identify all nodes requiring update."
+      },
+      {
+        "name": "extract_basic_constraint_ca",
+        "parameters": [
+          {
+            "name": "certificate",
+            "type": "X.509_certificate",
+            "description": "Certificate from which to extract Basic Constraints cA field"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Extracts cA (Certificate Authority) field from Basic Constraints extension. Distinguishes CA certificates (RCAC, ICAC) from end-entity certificates (NOC).",
+        "algorithm_detail": "Parses certificate extensions. Locates Basic Constraints extension (OID 2.5.29.19). Extracts cA BOOLEAN field. Returns TRUE for CA certificates, FALSE for end-entity certificates. If extension not present, returns FALSE per X.509 spec.",
+        "usage_in_fsm": "Called in multiple validation functions to verify certificate type (RCAC has cA=TRUE, ICAC has cA=FALSE)."
+      },
+      {
+        "name": "encode_subject_dn",
+        "parameters": [
+          {
+            "name": "fabric_id",
+            "type": "64-bit",
+            "description": "Fabric ID to encode in Subject DN"
+          }
+        ],
+        "return_type": "string (Subject DN)",
+        "description": "Encodes Matter Fabric ID into X.509 Subject Distinguished Name format for ICA CSR.",
+        "algorithm_detail": "Creates Subject DN string with Matter Fabric ID OID 1.3.6.1.4.1.37244.1.5 = <fabric_id>. Encodes fabric_id as 64-bit integer in ASN.1 format. Returns DN string suitable for PKCS#10 CSR Subject field.",
+        "usage_in_fsm": "Called in transition JCM_RCAC_Validated_AwaitingICACSR → JCM_ICACSR_Sent_AwaitingEcoA_UserConsent to prepare CSR Subject DN."
+      },
+      {
+        "name": "extract_signature",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "PKCS10_CSR_DER_encoded",
+            "description": "CSR from which to extract signature"
+          }
+        ],
+        "return_type": "ECDSA_signature_DER_encoded",
+        "description": "Extracts ECDSA signature from PKCS#10 CSR. Signature is located in SignatureValue field.",
+        "algorithm_detail": "Parses PKCS#10 CertificationRequest structure. Extracts SignatureValue BIT STRING. Converts to ECDSA signature (r, s) pair in DER encoding. Returns DER-encoded signature for verification.",
+        "usage_in_fsm": "Called in transition JCM_RCAC_Validated_AwaitingICACSR → JCM_ICACSR_Sent_AwaitingEcoA_UserConsent to extract CSR signature for storage."
+      },
+      {
+        "name": "extract_pub_key_algo",
+        "parameters": [
+          {
+            "name": "certificate",
+            "type": "X.509_certificate",
+            "description": "Certificate from which to extract public key algorithm"
+          }
+        ],
+        "return_type": "string (algorithm OID)",
+        "description": "Extracts public key algorithm OID from certificate SubjectPublicKeyInfo.",
+        "algorithm_detail": "Parses SubjectPublicKeyInfo AlgorithmIdentifier. Extracts algorithm OID (e.g., '1.2.840.10045.2.1' for id-ecPublicKey). Returns OID string for DCL validation.",
+        "usage_in_fsm": "Called in transition JCM_UserConsent_Pending → JCM_RCAC_Validation_InProgress to prepare DCL query parameters."
+      },
+      {
+        "name": "extract_ec_curve_id",
+        "parameters": [
+          {
+            "name": "certificate",
+            "type": "X.509_certificate",
+            "description": "Certificate from which to extract ECC curve ID"
+          }
+        ],
+        "return_type": "string (curve OID)",
+        "description": "Extracts elliptic curve identifier from certificate SubjectPublicKeyInfo. For Matter, this is always P-256 (prime256v1).",
+        "algorithm_detail": "Parses SubjectPublicKeyInfo AlgorithmIdentifier parameters. Extracts curve OID (e.g., '1.2.840.10045.3.1.7' for prime256v1/secp256r1/P-256). Returns OID string for DCL validation.",
+        "usage_in_fsm": "Called in transition JCM_UserConsent_Pending → JCM_RCAC_Validation_InProgress to prepare DCL query parameters."
+      },
+      {
+        "name": "prompt_user_consent",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Prompts user for consent to proceed with Joint Fabric creation. Displays information about ecosystems being joined and security implications.",
+        "algorithm_detail": "Generates user interface prompt explaining Joint Fabric creation. Displays Ecosystem A and B vendor information. Asks user to approve or deny. Sets user_consent_requested flag. Waits for user response (approve/deny) with timeout (default 120 seconds). User response generates event triggering next transition.",
+        "usage_in_fsm": "Called in transition JCM_ECM_Complete_AwaitingCATVerification → JCM_UserConsent_Pending to obtain user authorization."
+      },
+      {
+        "name": "get_signing_error_detail",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Retrieves detailed error information from Root CA signing operation failure. Used for diagnostics and logging.",
+        "algorithm_detail": "Queries Root CA interface for last signing error. Returns error detail string (e.g., 'HSM timeout', 'Invalid CSR', 'CA key unavailable'). Used for troubleshooting signing failures.",
+        "usage_in_fsm": "Called in transition JCM_ICACSR_CrossSigning_InProgress → JCM_Failed_CrossSigning to populate error details."
+      }
+    ],
+    "definitions": [
+      {
+        "term": "Joint Fabric",
+        "definition": "A Matter fabric where multiple vendors or companies use the same CA hierarchy, governed under a single Trusted Root Certificate Authority (Anchor CA). Enables devices from different ecosystems to communicate using unified trust structure while maintaining separate administrative domains.",
+        "security_relevance": "Joint Fabric creates single point of trust (Anchor CA). Compromise of Anchor CA or Anchor Administrator affects all participating ecosystems. Requires careful Anchor selection and transfer procedures to maintain security."
+      },
+      {
+        "term": "Anchor Fabric",
+        "definition": "The fabric that becomes the trust anchor when creating a Joint Fabric. Its TRCA (Trusted Root Certificate Authority) becomes the Anchor CA for the Joint Fabric. In JCM, Ecosystem A's fabric becomes the Anchor Fabric.",
+        "security_relevance": "Anchor Fabric's RCAC becomes root of trust for entire Joint Fabric. Selection of Anchor Fabric determines which ecosystem controls ultimate certificate issuance authority."
+      },
+      {
+        "term": "CASE Authenticated Tag (CAT)",
+        "definition": "Special subject distinguished name attribute within NOC used for group-based access control in Joint Fabric. Encoded as Matter-specific OID in certificate Subject DN. Types: Administrator CAT, Anchor CAT, Datastore CAT, Anchor/Datastore CAT.",
+        "security_relevance": "CAT presence in NOC proves node's role without checking individual Node IDs. Simplifies ACL management and enables role-based authorization. CAT version increments enable administrator revocation without certificate revocation lists."
+      },
+      {
+        "term": "ICA Cross-Signing",
+        "definition": "Process where Anchor CA signs an Intermediate Certificate Authority (ICAC) from another ecosystem, creating a cross-signed ICAC. The cross-signed ICAC has the same SubjectPublicKey as the original ICAC but is issued by the Anchor CA. Enables ecosystem to issue NOCs chaining to Anchor CA while retaining its original ICAC key.",
+        "security_relevance": "Cross-signing establishes trust between independent ecosystems without sharing private keys. SubjectPublicKey consistency requirement proves requesting ecosystem controls the ICAC key. Vendor ID validation via DCL prevents unauthorized cross-signing requests."
+      },
+      {
+        "term": "Device Conformance List (DCL)",
+        "definition": "Distributed ledger or centralized database containing vendor credentials, device attestation certificates, and certification declarations. Used for Vendor ID validation during Joint Fabric creation. Queries return certificates matching public key hash and vendor ID.",
+        "security_relevance": "DCL is critical trust anchor for preventing unauthorized Joint Fabric creation. Compromise or spoofing of DCL enables attackers to join Joint Fabrics with fraudulent vendor credentials. Validation against DCL is mandatory security step in JCM."
+      },
+      {
+        "term": "Vendor ID Validation",
+        "definition": "Procedure to verify authenticity of Vendor ID claims using Device Conformance List. Two types: RCAC-based (validates root CA), ICAC-based (validates intermediate CA). Prevents unauthorized vendors from joining Joint Fabric by requiring DCL proof of vendor credential ownership.",
+        "security_relevance": "Vendor ID validation prevents impersonation attacks where attacker claims to be legitimate vendor. Without validation, malicious ecosystems could join Joint Fabrics and issue fraudulent NOCs to compromised devices."
+      },
+      {
+        "term": "PKCS#10 Certificate Signing Request (CSR)",
+        "definition": "Standard format (RFC 2986) for requesting certificate issuance. Contains subject identity, public key, and signature. In JCM, ICA CSR must include Matter Fabric ID in Subject DN and be signed with ICAC private key to prove key possession.",
+        "security_relevance": "CSR signature verification prevents attackers from requesting certificates for keys they don't control. Signature validation using CSR's own public key is critical security check before cross-signing."
+      },
+      {
+        "term": "matter-fabric-id Attribute",
+        "definition": "Matter-specific X.509 Subject DN attribute (OID 1.3.6.1.4.1.37244.1.5) encoding Fabric ID. Present in NOCs and ICACs to identify fabric membership. Value must be identical across ICAC and all NOCs in a fabric.",
+        "security_relevance": "Fabric ID consistency requirement ensures all nodes in Joint Fabric have matching fabric identifiers, preventing fabric fragmentation. Mismatched fabric IDs break mutual authentication between nodes."
+      },
+      {
+        "term": "PASE (Password-Authenticated Session Establishment)",
+        "definition": "Secure session establishment protocol using password-based authentication. Uses SPAKE2+ key exchange to derive session keys from shared setup PIN. Used during device commissioning before certificates are available.",
+        "security_relevance": "PASE enables secure commissioning channel without pre-existing PKI credentials. Setup PIN provides authentication factor. SPAKE2+ resists offline dictionary attacks. Compromise of setup PIN enables MITM attacks during commissioning."
+      },
+      {
+        "term": "Enhanced Commissioning Method (ECM)",
+        "definition": "Mandatory commissioning method requiring device attestation verification. Commissioner validates Device Attestation Certificate (DAC) and Certification Declaration (CD) before issuing NOC. Provides cryptographic proof of device authenticity.",
+        "security_relevance": "ECM prevents commissioning of counterfeit or unauthorized devices. Device attestation ties physical device to vendor credentials. Skipping ECM (using BCM) reduces security by not verifying device authenticity."
+      },
+      {
+        "term": "Basic Commissioning Method (BCM)",
+        "definition": "Optional simplified commissioning method that skips device attestation verification. Faster but less secure than ECM. Should only be used for trusted devices or development scenarios.",
+        "security_relevance": "BCM enables commissioning of devices without valid attestation credentials (development devices, test devices). Using BCM in production Joint Fabric reduces security by not verifying device authenticity."
+      },
+      {
+        "term": "Node Operational Certificate (NOC)",
+        "definition": "X.509 certificate issued to Matter node for operational communication. Contains Node ID, Fabric ID, and CASE Authenticated Tags in Subject DN. Signed by ICAC (or RCAC if no ICAC present). Used for CASE session establishment and fabric membership proof.",
+        "security_relevance": "NOC is node's identity credential within fabric. Compromise of NOC private key enables impersonation. NOC Subject DN CATs determine node's roles and privileges. NOC issuance is administrative action requiring proper authorization."
+      },
+      {
+        "term": "Fabric Index",
+        "definition": "Local integer identifier (1-255) assigned by node to track each fabric it's commissioned to. Used to access fabric-scoped data (NOC, keys, ACLs). Fabric Index is node-local only - different nodes use different indices for same fabric.",
+        "security_relevance": "Fabric Index isolation ensures fabric-scoped data doesn't leak between fabrics on multi-fabric nodes. Incorrect Fabric Index handling enables cross-fabric attacks where data from one fabric is accessed in context of another."
+      },
+      {
+        "term": "CompressedFabricIdentifier",
+        "definition": "64-bit hash derived from Fabric ID and Root Public Key using HKDF-SHA256. Used as compact fabric identifier in operational messages where full Fabric ID is impractical. Enables fabric identification without transmitting full RCAC.",
+        "security_relevance": "CompressedFabricIdentifier uniqueness depends on HKDF collision resistance. Hash collisions enable fabric confusion attacks where node processes message from wrong fabric. 64-bit hash provides acceptable collision resistance for Matter scale."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "PROP_010_JCM_Anchor_CAT_Verification",
+        "type": "authenticity",
+        "description": "During Joint Commissioning, Ecosystem B MUST verify Ecosystem A Administrator's NOC contains Anchor CAT or Anchor/Datastore CAT before proceeding. This ensures only legitimate Anchor Administrators can initiate Joint Fabric creation.",
+        "fsm_states_involved": [
+          "JCM_ECM_Complete_AwaitingCATVerification",
+          "JCM_UserConsent_Pending",
+          "JCM_Failed_CAT_Verification"
+        ],
+        "critical_transitions": [
+          "JCM_ECM_Complete_AwaitingCATVerification → JCM_UserConsent_Pending (guard: has_anchor_cat || has_anchor_datastore_cat)",
+          "JCM_ECM_Complete_AwaitingCATVerification → JCM_Failed_CAT_Verification (guard: !has_anchor_cat && !has_anchor_datastore_cat)"
+        ]
+      },
+      {
+        "property_name": "PROP_011_JCM_User_Consent",
+        "type": "authorization",
+        "description": "User consent MUST be obtained on Ecosystem B before proceeding with Joint Fabric creation after ECM/BCM completion. Prevents unauthorized fabric merging without user awareness.",
+        "fsm_states_involved": [
+          "JCM_UserConsent_Pending",
+          "JCM_RCAC_Validation_InProgress",
+          "JCM_Failed_UserConsent_Denied"
+        ],
+        "critical_transitions": [
+          "JCM_UserConsent_Pending → JCM_RCAC_Validation_InProgress (guard: user_consent_obtained == true)",
+          "JCM_UserConsent_Pending → JCM_Failed_UserConsent_Denied (guard: user_consent_obtained == false)"
+        ]
+      },
+      {
+        "property_name": "PROP_012_RCAC_Vendor_ID_Validation",
+        "type": "authenticity",
+        "description": "Ecosystem B MUST perform RCAC-based Vendor ID validation via DCL using Ecosystem A's RCAC public key and Vendor ID. Returned certificate MUST be valid RCAC (cA=TRUE). Prevents accepting fraudulent root CAs.",
+        "fsm_states_involved": [
+          "JCM_RCAC_Validation_InProgress",
+          "JCM_RCAC_Validated_AwaitingICACSR",
+          "JCM_Failed_RCAC_Validation"
+        ],
+        "critical_transitions": [
+          "JCM_RCAC_Validation_InProgress → JCM_RCAC_Validated_AwaitingICACSR (guard: dcl_result == success && is_valid_rcac)",
+          "JCM_RCAC_Validation_InProgress → JCM_Failed_RCAC_Validation (guard: dcl_result == failure || !is_valid_rcac)"
+        ]
+      },
+      {
+        "property_name": "PROP_013_ICA_CSR_Signature_Validation",
+        "type": "cryptography",
+        "description": "Ecosystem A MUST verify ICA CSR signature using the CSR's public key before cross-signing. Signature validation proves Ecosystem B possesses private key for requested ICAC. Prevents attacker from requesting ICAC for keys they don't control.",
+        "fsm_states_involved": [
+          "JCM_ICACSR_EcoA_Validating",
+          "JCM_ICACSR_CrossSigning_InProgress",
+          "JCM_Failed_ICACSR_Signature"
+        ],
+        "critical_transitions": [
+          "JCM_ICACSR_EcoA_Validating → JCM_Failed_ICACSR_Signature (guard: !verify_signature(csr_signature, csr_public_key))",
+          "JCM_ICACSR_EcoA_Validating → JCM_ICACSR_CrossSigning_InProgress (guard: verify_signature && dcl_validated)"
+        ]
+      },
+      {
+        "property_name": "PROP_014_Matter_Fabric_ID_Consistency",
+        "type": "consistency",
+        "description": "ICA CSR, cross-signed ICAC, and all issued NOCs MUST contain identical matter-fabric-id attribute value equal to Anchor Fabric ID. Ensures fabric integrity and prevents fragmentation.",
+        "fsm_states_involved": [
+          "JCM_CrossSigned_ICAC_Received",
+          "JCM_FabricUpdate_InProgress",
+          "JCM_Complete_JointFabric_Active"
+        ],
+        "critical_transitions": [
+          "JCM_CrossSigned_ICAC_Received → JCM_FabricUpdate_InProgress (guard: cross_signed_icac_matter_fabric_id == anchor_fabric_id)"
+        ]
+      },
+      {
+        "property_name": "PROP_015_ICAC_Vendor_ID_Validation",
+        "type": "authenticity",
+        "description": "Ecosystem A MUST perform ICAC-based Vendor ID validation via DCL using ICA CSR's public key and Ecosystem B's Vendor ID. Returned certificate MUST be valid ICAC (cA=FALSE). Prevents unauthorized ecosystems from obtaining cross-signed ICACs.",
+        "fsm_states_involved": [
+          "JCM_ICACSR_EcoA_Validating",
+          "JCM_ICACSR_CrossSigning_InProgress",
+          "JCM_Failed_DCL_VendorID_Validation"
+        ],
+        "critical_transitions": [
+          "JCM_ICACSR_EcoA_Validating → JCM_Failed_DCL_VendorID_Validation (guard: dcl_icac_result == empty_list || !is_valid_icac)",
+          "JCM_ICACSR_EcoA_Validating → JCM_ICACSR_CrossSigning_InProgress (guard: dcl_icac_result == valid && is_valid_icac)"
+        ]
+      },
+      {
+        "property_name": "PROP_016_ICA_Cross_Signing_User_Consent",
+        "type": "authorization",
+        "description": "Ecosystem A MUST check that user consent has been obtained before proceeding with ICA cross-signing. If not obtained, MUST return IcaCsrRequestNoUserConsent error. Prevents silent Joint Fabric formation.",
+        "fsm_states_involved": [
+          "JCM_ICACSR_Sent_AwaitingEcoA_UserConsent",
+          "JCM_ICACSR_EcoA_Validating",
+          "JCM_Failed_UserConsent_Denied"
+        ],
+        "critical_transitions": [
+          "JCM_ICACSR_Sent_AwaitingEcoA_UserConsent → JCM_ICACSR_EcoA_Validating (guard: eco_a_user_consent_obtained == true)",
+          "JCM_ICACSR_Sent_AwaitingEcoA_UserConsent → JCM_Failed_UserConsent_Denied (guard: eco_a_user_consent_obtained == false)"
+        ]
+      }
+    ],
+    "initial_state": "JCM_Idle",
+    "all_states": [
+      "JCM_Idle",
+      "JCM_Discovery",
+      "JCM_ECM_BCM_InProgress",
+      "JCM_ECM_Complete_AwaitingCATVerification",
+      "JCM_UserConsent_Pending",
+      "JCM_RCAC_Validation_InProgress",
+      "JCM_RCAC_Validated_AwaitingICACSR",
+      "JCM_ICACSR_Sent_AwaitingEcoA_UserConsent",
+      "JCM_ICACSR_EcoA_Validating",
+      "JCM_ICACSR_CrossSigning_InProgress",
+      "JCM_CrossSigned_ICAC_Received",
+      "JCM_FabricUpdate_InProgress",
+      "JCM_Complete_JointFabric_Active",
+      "JCM_Failed_CAT_Verification",
+      "JCM_Failed_UserConsent_Denied",
+      "JCM_Failed_RCAC_Validation",
+      "JCM_Failed_ICACSR_Format",
+      "JCM_Failed_ICACSR_Signature",
+      "JCM_Failed_DCL_VendorID_Validation",
+      "JCM_Failed_CrossSigning"
+    ],
+    "all_triggers": [
+      "user_initiates_jcm",
+      "ecosystem_a_initiates_commissioning",
+      "ecm_bcm_complete_event",
+      "verify_anchor_cat_command",
+      "user_consent_obtained",
+      "user_consent_denied",
+      "dcl_validation_result",
+      "send_icacsr_request",
+      "eco_a_user_consent_obtained",
+      "eco_a_user_consent_denied",
+      "csr_format_validation_complete",
+      "csr_signature_validation_complete",
+      "dcl_icac_validation_result",
+      "cross_signing_complete",
+      "cross_signing_failed",
+      "begin_fabric_update",
+      "all_nodes_updated"
+    ],
+    "all_functions_used": [
+      "advertise_dns_sd_with_jf_txt_key",
+      "generate_qr_code",
+      "generate_manual_pairing_code",
+      "establish_pase_session",
+      "begin_device_attestation",
+      "has_anchor_cat",
+      "has_anchor_datastore_cat",
+      "extract_rcac_pubkey",
+      "dcl_vendor_id_validate_rcac",
+      "is_valid_rcac",
+      "prepare_ica_csr",
+      "generate_ica_csr",
+      "validate_ica_csr_format",
+      "is_valid_pkcs10_format",
+      "verify_signature",
+      "dcl_vendor_id_validate_icac",
+      "is_valid_icac",
+      "request_root_ca_sign",
+      "foreach_node_in_fabric_b",
+      "add_trusted_root_certificate",
+      "add_noc_with_anchor_fabric_id",
+      "remove_fabric",
+      "abort_jcm",
+      "generate_error_event",
+      "extract_noc_from_sigma2",
+      "store_rcac_received",
+      "store_icac_received",
+      "extract_vendor_id",
+      "send_icacsr_request_command",
+      "send_icacsr_response",
+      "send_icacsr_response_error",
+      "determine_error_code",
+      "convert_to_pem",
+      "extract_public_key",
+      "extract_issuer",
+      "extract_fabric_id",
+      "verify_cross_signed_icac_valid",
+      "get_all_fabric_b_nodes",
+      "extract_basic_constraint_ca",
+      "encode_subject_dn",
+      "extract_signature",
+      "extract_pub_key_algo",
+      "extract_ec_curve_id",
+      "prompt_user_consent",
+      "get_signing_error_detail"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "SPAKE2+ Key Exchange",
+        "algorithm": "SPAKE2+ on Curve25519",
+        "inputs": [
+          "setup_pin (27-bit passcode)",
+          "verifier (derived from setup PIN)",
+          "random_values (ephemeral keys)"
+        ],
+        "output": "Shared session key (256-bit) for AES-128-CCM encryption",
+        "assumptions": [
+          "Setup PIN has sufficient entropy and not disclosed to attackers",
+          "SPAKE2+ implementation resists offline dictionary attacks",
+          "Random number generator provides cryptographically secure randomness"
+        ]
+      },
+      {
+        "operation": "ECDSA Signature Generation",
+        "algorithm": "ECDSA with SHA-256 on P-256 curve",
+        "inputs": [
+          "message (data to sign)",
+          "private_key (ECC private key, P-256)"
+        ],
+        "output": "DER-encoded signature containing (r, s) values",
+        "assumptions": [
+          "Private key is securely stored and never disclosed",
+          "Random k value for signature is cryptographically secure and never reused",
+          "SHA-256 is collision-resistant"
+        ]
+      },
+      {
+        "operation": "ECDSA Signature Verification",
+        "algorithm": "ECDSA with SHA-256 on P-256 curve",
+        "inputs": [
+          "message (signed data)",
+          "signature (r, s values)",
+          "public_key (ECC public key, P-256)"
+        ],
+        "output": "Boolean (true if signature valid, false otherwise)",
+        "assumptions": [
+          "Public key authenticity verified (e.g., from trusted certificate)",
+          "P-256 discrete logarithm problem is computationally hard",
+          "SHA-256 is collision-resistant"
+        ]
+      },
+      {
+        "operation": "PKCS#10 CSR Generation",
+        "algorithm": "PKCS#10 with ECDSA-SHA256 signature",
+        "inputs": [
+          "subject_dn (Distinguished Name with matter-fabric-id)",
+          "public_key (ECC P-256 public key to certify)",
+          "private_key (ECC P-256 private key for signing)"
+        ],
+        "output": "DER-encoded Certificate Signing Request",
+        "assumptions": [
+          "Private key used for signing matches public key in CSR (cross-signing requirement)",
+          "Subject DN accurately represents requesting entity's identity",
+          "CSR is transmitted over secure channel (CASE session)"
+        ]
+      },
+      {
+        "operation": "X.509 Certificate Signing",
+        "algorithm": "ECDSA-SHA256 signature on X.509 certificate",
+        "inputs": [
+          "csr (Certificate Signing Request)",
+          "issuer_private_key (Root CA or ICAC private key)",
+          "validity_period (NotBefore, NotAfter dates)",
+          "extensions (Basic Constraints, Key Usage, etc.)"
+        ],
+        "output": "DER-encoded X.509 certificate",
+        "assumptions": [
+          "Issuer private key is securely stored (HSM, secure enclave)",
+          "CSR has been validated before signing",
+          "Issuer is authorized to issue certificates for this subject"
+        ]
+      },
+      {
+        "operation": "X.509 Certificate Chain Validation",
+        "algorithm": "X.509 path validation per RFC 5280",
+        "inputs": [
+          "end_entity_cert (NOC or ICAC to validate)",
+          "intermediate_certs (ICAC if present)",
+          "trust_anchor (RCAC)"
+        ],
+        "output": "Boolean (true if chain valid, false otherwise)",
+        "assumptions": [
+          "Trust anchor (RCAC) is securely stored and trusted",
+          "Certificate validity periods are checked against current time",
+          "Certificate revocation is not required (Matter doesn't use CRLs/OCSP)"
+        ]
+      },
+      {
+        "operation": "SHA-256 Hash",
+        "algorithm": "SHA-256 cryptographic hash function",
+        "inputs": [
+          "data (arbitrary length bitstring)"
+        ],
+        "output": "256-bit hash value",
+        "assumptions": [
+          "SHA-256 is collision-resistant (infeasible to find two inputs with same hash)",
+          "SHA-256 is pre-image resistant (infeasible to find input from hash)"
+        ]
+      },
+      {
+        "operation": "HKDF-SHA256 Key Derivation",
+        "algorithm": "HMAC-based Key Derivation Function with SHA-256",
+        "inputs": [
+          "input_key_material (source key)",
+          "salt (optional salt value)",
+          "info (context string)",
+          "output_length (desired key length in bytes)"
+        ],
+        "output": "Derived key of specified length",
+        "assumptions": [
+          "Input key material has sufficient entropy",
+          "HKDF-SHA256 provides computationally independent output keys",
+          "Salt value is non-secret but unique per derivation context"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "Certificate Authorities (RCAC, ICAC) are not compromised and do not issue fraudulent certificates outside protocol constraints.",
+        "type": "Implicit",
+        "if_violated": "All properties relying on certificate trust chains fail. Attacker with compromised CA keys can issue arbitrary certificates, impersonate any node, bypass all access controls, and gain complete fabric control without detection. Entire Joint Fabric security collapses."
+      },
+      {
+        "assumption": "Device Conformance List (DCL) returns accurate, untampered vendor validation results and DCL infrastructure is not compromised.",
+        "type": "Implicit",
+        "if_violated": "Properties PROP_012 and PROP_015 fail. Compromised DCL allows attackers to validate arbitrary vendor IDs without legitimate credentials. Fake vendors join Joint Fabrics, issue fraudulent ICACs, and commission attacker-controlled devices with full trust."
+      },
+      {
+        "assumption": "CASE handshake correctly verifies certificate chains and CAT presence without implementation flaws.",
+        "type": "Implicit",
+        "if_violated": "Property PROP_010 fails. Flawed CASE implementations accept invalid certificates or skip CAT verification. Attackers bypass authentication, establish unauthorized sessions, and execute administrative commands with forged credentials."
+      },
+      {
+        "assumption": "DNS-SD service discovery records are not spoofed by on-path attackers, and discovered service identities match advertised capabilities.",
+        "type": "Implicit",
+        "if_violated": "Attackers spoof DNS-SD to advertise fake Anchor or Administrator services. Victims connect to attacker-controlled nodes, disclose sensitive information (CSRs, vendor IDs), and accept malicious credentials as authoritative."
+      },
+      {
+        "assumption": "User consent mechanisms are secure and cannot be bypassed, spoofed, or coerced programmatically.",
+        "type": "Explicit",
+        "if_violated": "Properties PROP_011 and PROP_016 fail. Attackers bypass consent checks via software exploits, UI manipulation, or race conditions. Unauthorized fabric operations (commissioning, cross-signing) execute without user awareness, enabling silent compromise."
+      },
+      {
+        "assumption": "Setup PIN used for PASE has sufficient entropy and is not disclosed to attackers during QR code display or manual entry.",
+        "type": "Explicit",
+        "if_violated": "PASE session security collapses. Attacker with setup PIN can establish PASE session, impersonate commissioner, intercept commissioning messages, and obtain NOC credentials. Enables man-in-the-middle attacks during Joint Fabric setup."
+      },
+      {
+        "assumption": "Cryptographic primitives (ECDSA, SHA-256, HKDF, SPAKE2+) are implemented correctly per specifications and remain secure against known attacks.",
+        "type": "Explicit",
+        "if_violated": "Property PROP_013 and all cryptographic operations fail. Weak signature validation allows forged CSRs. Implementation flaws enable cryptographic attacks breaking foundational trust: signature forgery, hash collisions, key recovery."
+      },
+      {
+        "assumption": "Private keys (ICAC, NOC, Root CA) are securely stored in hardware security modules or secure enclaves and never disclosed.",
+        "type": "Explicit",
+        "if_violated": "Complete security collapse. Disclosed private keys enable attackers to: sign arbitrary certificates, impersonate any node, decrypt all communications, forge signatures. No recovery possible without rotating all affected keys and re-commissioning entire fabric."
+      },
+      {
+        "assumption": "Network communications between nodes are protected from active attackers who can inject, modify, or replay messages.",
+        "type": "Implicit",
+        "if_violated": "Although CASE and PASE provide session encryption, active network attackers can disrupt commissioning flows by dropping messages, causing denial-of-service. Replay attacks against commands lacking sequence numbers may succeed. State machine may reach inconsistent states due to message reordering."
+      },
+      {
+        "assumption": "Time synchronization across nodes is sufficient such that certificate validity periods and timing-sensitive operations complete within expected windows without exploitable race conditions.",
+        "type": "Implicit",
+        "if_violated": "Clock drift creates temporal windows where inconsistent states exist. Expired certificates may be accepted. Timing attacks on user consent prompts succeed. Operations depending on sequencing (CAT updates, anchor transfer) suffer race conditions enabling unauthorized access."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": false,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

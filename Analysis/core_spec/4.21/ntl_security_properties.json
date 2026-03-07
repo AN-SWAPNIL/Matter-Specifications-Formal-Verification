@@ -1,0 +1,659 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Commissioning_Mode_Access_Control",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "SELECT command SHALL only succeed when device is in commissioning mode.",
+      "formal": "∀device. event receive_select(device) ∧ ¬in_commissioning_mode(device) ⟹ (ignore_command ∨ send_error(0x69, 0x85))",
+      "violation": "Attacker could initiate commissioning session with device not in commissioning mode, bypassing user intent and physical proximity requirements. This breaks the fundamental assumption that commissioning requires explicit user action and physical presence, enabling remote commissioning attacks.",
+      "proverifQuery": "query d:device ⊢ event commissioning_started(d) ==> event commissioning_mode_active(d)"
+    },
+    {
+      "id": "PROP_002",
+      "name": "AID_Authentication",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Matter commissioning SHALL only be initiated with exact AID 'A0 00 00 09 09 8A 77 E4 01'.",
+      "formal": "∀device, aid. event select_command(device, aid) ⟹ (aid = 0xA00000090989A77E401 ∨ reject_command)",
+      "violation": "Without AID authentication, any NFC application could masquerade as Matter commissioning protocol. Attacker could send different AID to trigger unintended protocol handlers or bypass Matter-specific security controls, leading to protocol confusion attacks.",
+      "proverifQuery": "query d:device, a:aid ⊢ event accept_select(d, a) ==> a = matter_aid"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Role_Asymmetry_Enforcement",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Commissioner always initiates commands, Commissionee always responds; roles are immutable during session.",
+      "formal": "∀session. (is_commissioner(node) ⟹ ∀msg. sends_first(node, msg)) ∧ (is_commissionee(node) ⟹ ∀msg. responds_only(node, msg)) ∧ ¬role_swap(session)",
+      "violation": "If roles could be swapped or confused, attacker could trick Commissioner into accepting commands from Commissionee, or force Commissionee to initiate commands. This breaks command authority model and enables man-in-the-middle attacks where attacker impersonates either role.",
+      "proverifQuery": "query n:node, cmd:command ⊢ event send_command(n, cmd) ==> is_commissioner(n)"
+    },
+    {
+      "id": "PROP_004",
+      "name": "State_Transition_Ordering",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "TRANSPORT command can only be issued after successful SELECT command completion.",
+      "formal": "∀session. event send_transport(session) ⟹ event before(select_success(session), send_transport(session))",
+      "violation": "Attacker could send TRANSPORT command without prior SELECT, bypassing protocol version negotiation and commissioning mode verification. This could lead to protocol version mismatch, undefined behavior, or exploitation of uninitialized protocol state.",
+      "proverifQuery": "query s:session ⊢ event transport_received(s) ==> event select_completed(s)"
+    },
+    {
+      "id": "PROP_005",
+      "name": "Protocol_Version_Binding",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Commissioner SHALL use the NTL protocol version advertised by Commissionee in SELECT response.",
+      "formal": "∀session, v_advertised, v_used. event select_response(session, v_advertised) ⟹ protocol_version(session) = v_advertised",
+      "violation": "Commissioner ignoring advertised version could lead to protocol version downgrade attacks or version confusion. Attacker could force use of older protocol versions with known vulnerabilities, or cause protocol mismatches leading to exploitable parsing errors.",
+      "proverifQuery": "query s:session, v1:version, v2:version ⊢ event advertised_version(s, v1) ∧ event used_version(s, v2) ==> v1 = v2"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Version_Value_Constraint",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "NTL protocol version in SELECT response SHALL be 0x01; other values are reserved.",
+      "formal": "∀device. event send_select_response(device, version) ⟹ version = 0x01",
+      "violation": "Device advertising non-0x01 version violates specification. Commissioner may not know how to handle unknown versions, leading to undefined behavior, protocol parsing errors, or acceptance of malicious/experimental protocol variants.",
+      "proverifQuery": "query d:device, v:version ⊢ event select_response_sent(d, v) ==> v = 0x01"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Vendor_Product_ID_Consistency",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Device SHALL NOT set Vendor ID to 0 when providing non-zero Product ID.",
+      "formal": "∀device, vid, pid. event advertise_ids(device, vid, pid) ⟹ (pid ≠ 0 ⟹ vid ≠ 0)",
+      "violation": "Non-zero Product ID with zero Vendor ID creates ambiguous device identity. Multiple vendors could claim same Product ID, enabling device impersonation attacks or confusion in device catalogs, potentially leading to wrong device policies being applied.",
+      "proverifQuery": "query d:device, vid:id, pid:id ⊢ event advertise(d, vid, pid) ∧ pid ≠ 0 ==> vid ≠ 0"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Chaining_Parameter_Consistency",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "P1 and P2 parameters SHALL have identical values across all chained TRANSPORT commands in same message.",
+      "formal": "∀session, msg, fragments. is_chained(msg, fragments) ⟹ ∀f1, f2 ∈ fragments. P1P2(f1) = P1P2(f2)",
+      "violation": "Inconsistent P1/P2 values across chained fragments breaks message length integrity. Attacker could manipulate fragment parameters to cause buffer overflows, incorrect memory allocation, or message truncation/extension attacks. Receiver cannot validate complete message length.",
+      "proverifQuery": "query s:session, m:message, f1:fragment, f2:fragment ⊢ event chain_fragment(s, m, f1) ∧ event chain_fragment(s, m, f2) ==> length_param(f1) = length_param(f2)"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Fragment_Reassembly_Atomicity",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "Chained message fragments must be completely reassembled before processing or entirely discarded on error.",
+      "formal": "∀msg, fragments. reassemble(msg, fragments) ⟹ (all_received(fragments) ∧ process(msg)) ∨ discard(fragments)",
+      "violation": "Partial fragment processing could expose device to incomplete or malformed messages. Attacker could send partial message chains to trigger parsing of incomplete data structures, causing memory corruption, information leakage from uninitialized memory, or bypassing validation checks that require complete message context.",
+      "proverifQuery": "query m:message, fs:fragments ⊢ event process_message(m) ==> event all_fragments_received(fs, m)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Memory_Bounds_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Device SHALL reject chained messages exceeding maximum supported size with error 0x6A84.",
+      "formal": "∀device, msg, max_size. msg_size(msg) > max_size(device) ⟹ event send_error(device, 0x6A, 0x84)",
+      "violation": "Without memory bounds checking, attacker could send oversized chained messages to exhaust device memory, cause buffer overflows, or trigger denial of service. This is critical for resource-constrained IoT devices where memory exhaustion can crash the device or overwrite security-critical data structures.",
+      "proverifQuery": "query d:device, m:message ⊢ event accept_message(d, m) ==> size(m) ≤ max_memory(d)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "GET_RESPONSE_Sequencing",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "GET RESPONSE command SHALL only be accepted immediately after receiving incomplete response (SW1=0x61).",
+      "formal": "∀session. event receive_get_response(session) ⟹ event immediately_after(incomplete_response(session, 0x61), receive_get_response(session))",
+      "violation": "Out-of-sequence GET RESPONSE could cause commissionee to send wrong data, replay previous responses, or expose internal state. Attacker could send GET RESPONSE at arbitrary times to probe device state, extract buffered data from previous sessions, or cause protocol state confusion.",
+      "proverifQuery": "query s:session ⊢ event get_response_accepted(s) ==> event previous(incomplete_response(s))"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Short_Field_Encoding_Mandatory",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Both Commissioner and Commissionee SHALL always use short field coding of APDUs.",
+      "formal": "∀node, apdu. is_commissioner(node) ∨ is_commissionee(node) ⟹ encoding(apdu) = short_field",
+      "violation": "Mixed encoding (short/extended) could cause parsing errors, buffer overflows, or interoperability failures. Attacker could exploit devices that incorrectly handle extended encoding to bypass length checks, send oversized payloads to devices expecting short encoding, or cause protocol confusion.",
+      "proverifQuery": "query n:node, a:apdu ⊢ event send_apdu(n, a) ==> is_short_field(a)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Chaining_Support_Mandatory",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Both Commissioner and Commissionee SHALL support C-APDU and R-APDU chaining per ISO/IEC 7816-4.",
+      "formal": "∀node. (is_commissioner(node) ∨ is_commissionee(node)) ⟹ supports_chaining(node, C-APDU) ∧ supports_chaining(node, R-APDU)",
+      "violation": "Lack of chaining support prevents transmission of messages larger than single APDU limit (~250 bytes), making commissioning impossible. Attacker could exploit devices with incomplete chaining implementation to cause message truncation, protocol deadlock, or force use of vulnerable fallback mechanisms.",
+      "proverifQuery": "query n:node, m:message ⊢ event send_large_message(n, m) ==> supports_chaining(n)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "ISO_DEP_Compliance",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Full ISO-DEP protocol SHALL be implemented in compliance with NFC Forum Digital Specification.",
+      "formal": "∀device. implements_ntl(device) ⟹ implements_iso_dep(device) ∧ compliant_with_nfc_forum(device)",
+      "violation": "Incomplete ISO-DEP implementation could break retransmission, chaining, or timing protocols. Attacker could exploit non-compliant implementations to bypass frame checksums, replay frames, cause timing-based denial of service, or corrupt chained message reassembly.",
+      "proverifQuery": "query d:device ⊢ event ntl_active(d) ==> iso_dep_compliant(d)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "NFC_Forum_Commissioner_Compliance",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Commissioner SHALL comply with NFC Forum requirements for Reader/Writer Module supporting Type 4A Tag Operation.",
+      "formal": "∀device. is_commissioner(device) ⟹ complies_with(device, NFC_Forum_Reader_Writer_Type_4A)",
+      "violation": "Non-compliant Commissioner may use incorrect RF parameters, timing, or frame formats, causing interoperability failures or security issues. Attacker using non-compliant reader could bypass collision detection, use excessive RF power to eavesdrop at greater distances, or cause unintended device activation.",
+      "proverifQuery": "query d:device ⊢ event acts_as_commissioner(d) ==> nfc_forum_compliant(d)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "NFC_Forum_Commissionee_Compliance",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Commissionee SHALL comply with NFC Forum requirements for Type 4A Tag Module or Type 4A Tag Platform Module.",
+      "formal": "∀device. is_commissionee(device) ⟹ complies_with(device, NFC_Forum_Type_4A_Tag) ∨ complies_with(device, NFC_Forum_Type_4A_Tag_Platform)",
+      "violation": "Non-compliant Commissionee may not respond correctly to standard NFC activation sequences, use wrong RF parameters, or violate timing requirements. This causes interoperability failures with compliant readers and may expose device to RF-level attacks or eavesdropping.",
+      "proverifQuery": "query d:device ⊢ event acts_as_commissionee(d) ==> nfc_type4a_compliant(d)"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Commissioner_Poll_Mode",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Commissioners SHALL act as NFC Forum Type 4A Tag Platform in Poll Mode.",
+      "formal": "∀device. is_commissioner(device) ⟹ acts_in_mode(device, Poll_Mode) ∧ type_4a_platform(device)",
+      "violation": "Commissioner operating in Listen Mode instead of Poll Mode breaks role asymmetry. This could confuse NFC protocol stack, enable bidirectional attacks where both devices try to poll each other, or allow commissioner to be activated by external readers, leaking information or enabling denial of service.",
+      "proverifQuery": "query d:device ⊢ event commissioner_active(d) ==> poll_mode(d)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Commissionee_Listen_Mode",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Commissionees SHALL act as NFC Forum Type 4A Tag Platform in Listen Mode.",
+      "formal": "∀device. is_commissionee(device) ⟹ acts_in_mode(device, Listen_Mode) ∧ type_4a_platform(device)",
+      "violation": "Commissionee operating in Poll Mode instead of Listen Mode breaks protocol asymmetry. Device would attempt to poll instead of respond, causing protocol deadlock or collision. Attacker could exploit mode confusion to make device initiate unauthorized polling, potentially activating unintended devices or leaking commissioning status.",
+      "proverifQuery": "query d:device ⊢ event commissionee_active(d) ==> listen_mode(d)"
+    },
+    {
+      "id": "PROP_019",
+      "name": "TRANSPORT_Command_Exclusivity",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Matter messages SHALL be exchanged using TRANSPORT command only after successful SELECT.",
+      "formal": "∀session, msg. event exchange_matter_message(session, msg) ⟹ uses_transport_command(session) ∧ event before(select_success(session), exchange_matter_message(session, msg))",
+      "violation": "Accepting Matter messages via non-TRANSPORT commands or before SELECT bypasses session establishment. Attacker could use other ISO/IEC 7816-4 commands to inject messages, bypass protocol version negotiation, or exploit parsing differences between command types.",
+      "proverifQuery": "query s:session, m:message ⊢ event matter_message_sent(s, m) ==> event transport_command_used(s) ∧ event select_completed(s)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "Lc_Field_Correct_Encoding",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Lc field SHALL correctly encode the actual length of Data field in TRANSPORT command.",
+      "formal": "∀cmd, data. Lc_field(cmd) = length(data_field(cmd))",
+      "violation": "Incorrect Lc encoding causes buffer overflows or underflows. If Lc is larger than actual data, receiver reads beyond buffer boundary exposing memory contents or crashing. If Lc is smaller, data is truncated enabling message manipulation attacks or parsing confusion.",
+      "proverifQuery": "query c:command, d:data ⊢ event process_command(c, d) ==> lc_value(c) = length(d)"
+    },
+    {
+      "id": "PROP_021",
+      "name": "P1_P2_Message_Length_Encoding",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "P1 and P2 SHALL correctly encode total message length as 2-byte big-endian integer.",
+      "formal": "∀msg, p1, p2. encode_length(msg, p1, p2) ⟹ (p1 << 8 | p2) = total_length(msg)",
+      "violation": "Incorrect P1/P2 encoding causes receiver to allocate wrong buffer size. Oversized allocation wastes memory enabling DoS; undersized allocation causes buffer overflow when fragments arrive. Attacker can manipulate length encoding to trigger memory corruption or exhaust resources.",
+      "proverifQuery": "query m:message, p1:byte, p2:byte ⊢ event length_encoded(m, p1, p2) ==> (p1 * 256 + p2) = length(m)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Le_Field_Correct_Encoding",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Le field SHALL correctly encode maximum response length Commissioner can receive.",
+      "formal": "∀cmd, max_recv. Le_field(cmd) = max_receive_length(commissioner)",
+      "violation": "Incorrect Le encoding causes Commissioner to receive more data than it can handle, causing buffer overflow. Or if Le is too small, forces unnecessary fragmentation increasing attack surface. Attacker exploiting Le confusion could send oversized responses to crash Commissioner.",
+      "proverifQuery": "query c:command ⊢ event response_size(r) ∧ event command_le(c, le) ==> size(r) ≤ le"
+    },
+    {
+      "id": "PROP_023",
+      "name": "Data_Field_Fragment_Containment",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Data field SHALL contain valid message fragment (possibly complete message).",
+      "formal": "∀cmd, data. data_field(cmd) = data ⟹ is_valid_fragment(data) ∨ is_complete_message(data)",
+      "violation": "Invalid or malformed fragment data could exploit message parser vulnerabilities. Attacker could send crafted fragments containing malicious payloads that exploit parsing bugs during reassembly, inject control characters, or include invalid encodings to trigger buffer overflows or code execution.",
+      "proverifQuery": "query c:command, f:fragment ⊢ event send_fragment(c, f) ==> is_valid(f)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Success_Status_Code_Correctness",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Complete successful response SHALL use status codes SW1=0x90, SW2=0x00.",
+      "formal": "∀response. is_complete(response) ∧ is_success(response) ⟹ SW1(response) = 0x90 ∧ SW2(response) = 0x00",
+      "violation": "Incorrect success status codes confuse protocol state machine. Commissioner may incorrectly interpret response as incomplete or error, causing unnecessary retries, session termination, or incorrect error handling. Attacker could exploit status code confusion to cause protocol deadlock or bypass error detection.",
+      "proverifQuery": "query r:response ⊢ event successful_complete(r) ==> sw1(r) = 0x90 ∧ sw2(r) = 0x00"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Incomplete_Status_Code_Correctness",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Incomplete response SHALL use SW1=0x61 and SW2 SHALL encode remaining bytes.",
+      "formal": "∀response, remaining. is_incomplete(response) ⟹ SW1(response) = 0x61 ∧ SW2(response) = remaining_bytes(response)",
+      "violation": "Incorrect incomplete status codes break GET RESPONSE protocol. Wrong SW1 causes Commissioner to not issue GET RESPONSE, truncating message. Wrong SW2 causes incorrect buffer allocation or fragment reassembly errors. Attacker exploiting this could cause message truncation or buffer overflows.",
+      "proverifQuery": "query r:response, sw2:byte ⊢ event incomplete_response(r, sw2) ==> sw1(r) = 0x61 ∧ sw2 = remaining(r)"
+    },
+    {
+      "id": "PROP_026",
+      "name": "Memory_Error_Code_Correctness",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Memory exceeded error SHALL use status codes SW1=0x6A, SW2=0x84.",
+      "formal": "∀device, msg. exceeds_memory(device, msg) ⟹ error_code(device) = 0x6A84",
+      "violation": "Wrong error code for memory exhaustion prevents Commissioner from distinguishing memory errors from other failures. Commissioner may retry with same oversized message causing repeated resource exhaustion (DoS), or may incorrectly fail over to alternative protocol, bypassing security controls.",
+      "proverifQuery": "query d:device, m:message ⊢ event memory_exceeded(d, m) ==> error_code(d) = 0x6A84"
+    },
+    {
+      "id": "PROP_027",
+      "name": "Condition_Not_Satisfied_Error",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Out-of-sequence GET RESPONSE SHALL return error SW1=0x69, SW2=0x85.",
+      "formal": "∀session. event receive_get_response(session) ∧ ¬has_incomplete_response(session) ⟹ error_code(session) = 0x6985",
+      "violation": "Wrong error code for out-of-sequence GET RESPONSE confuses Commissioner about error cause. Commissioner may not correctly identify protocol sequencing errors versus other conditions, leading to incorrect retry logic, session corruption, or failure to detect attacker attempting protocol manipulation.",
+      "proverifQuery": "query s:session ⊢ event get_response_received(s) ∧ ¬event incomplete_pending(s) ==> error(s) = 0x6985"
+    },
+    {
+      "id": "PROP_028",
+      "name": "Commissioning_Mode_Error_Response",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "When not in commissioning mode, SELECT SHALL be ignored or return error 0x6985.",
+      "formal": "∀device. event receive_select(device) ∧ ¬in_commissioning_mode(device) ⟹ (no_response(device) ∨ error_code(device) = 0x6985)",
+      "violation": "Responding with wrong error code or success when not in commissioning mode leaks device state information. Attacker can probe whether device is in commissioning mode, track commissioning windows, or exploit devices that incorrectly transition to active state despite not being in commissioning mode.",
+      "proverifQuery": "query d:device ⊢ event select_received(d) ∧ ¬in_commissioning_mode(d) ==> (no_response(d) ∨ error(d) = 0x6985)"
+    },
+    {
+      "id": "PROP_029",
+      "name": "Fragment_Order_Preservation",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "Chained fragments must be processed in transmission order for correct message reassembly.",
+      "formal": "∀msg, fragments. reassemble(msg, fragments) ⟹ ∀i < j. process_order(fragment[i]) < process_order(fragment[j])",
+      "violation": "Out-of-order fragment processing corrupts message content. Attacker could exploit reordering vulnerabilities to cause message corruption, inject malicious content by swapping fragments, or trigger parsing errors in reassembled message leading to code execution or information disclosure.",
+      "proverifQuery": "query m:message, f1:fragment, f2:fragment, i:nat, j:nat ⊢ event fragment_order(m, f1, i) ∧ event fragment_order(m, f2, j) ∧ i < j ==> processed_before(f1, f2)"
+    },
+    {
+      "id": "PROP_030",
+      "name": "No_Replay_Protection_Awareness",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "NTL provides no inherent replay protection; must be provided by higher layers.",
+      "formal": "∀msg. ¬provides_replay_protection(NTL, msg) ⟹ requires_protection(higher_layer, msg)",
+      "violation": "Without replay protection at NTL, attacker can capture and replay entire commissioning sessions. This enables replay attacks where attacker reuses legitimate commissioning messages to impersonate devices, repeat administrative commands, or bypass time-based access controls if higher layers don't implement replay protection.",
+      "proverifQuery": "query m:message ⊢ event accept_message(m) ==> (replay_protected_by_higher_layer(m) ∨ vulnerable_to_replay)"
+    },
+    {
+      "id": "PROP_031",
+      "name": "Physical_Proximity_Assumption",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "NFC range (~10cm) provides physical proximity authentication; security model assumes attacker is not within NFC range during commissioning.",
+      "formal": "∀session. valid_session(session) ⟹ physical_distance(commissioner, commissionee) ≤ 10cm ∧ ¬attacker_in_range",
+      "violation": "Attacker within NFC range breaks physical proximity assumption. Using powerful NFC antenna or relay attack, attacker can eavesdrop on commissioning session, perform man-in-the-middle attack, or commission device without user awareness. Long-range NFC attacks have been demonstrated with specialized equipment.",
+      "proverifQuery": "query s:session ⊢ event commissioning_active(s) ==> proximity(commissioner, commissionee) ∧ ¬attacker_presence"
+    },
+    {
+      "id": "PROP_032",
+      "name": "PAFTP_ACK_Timeout_Enforcement",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "Stand-alone ACK must be sent within 15 seconds after segment receipt (PAFTP_ACK_TIMEOUT).",
+      "formal": "∀segment, ack. event receive_segment(segment, t) ⟹ event send_ack(ack, t') ∧ (t' - t) ≤ 15 seconds",
+      "violation": "Violating ACK timeout causes sender timeout and retransmission, degrading performance. More critically, attacker could exploit timeout handling bugs to cause resource exhaustion through repeated retransmissions, or use timing analysis to infer device state or processing load.",
+      "proverifQuery": "query seg:segment, t1:time, t2:time ⊢ event received(seg, t1) ∧ event ack_sent(seg, t2) ==> t2 - t1 ≤ 15"
+    },
+    {
+      "id": "PROP_033",
+      "name": "PAFTP_Connection_Idle_Timeout",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Commissioner must close PAFTP session after 30 seconds with no unique data (PAFTP_CONN_IDLE_TIMEOUT).",
+      "formal": "∀session, t_last_data. no_unique_data_since(session, t_last_data) ∧ (current_time - t_last_data) ≥ 30 seconds ⟹ event close_session(session)",
+      "violation": "Failure to close idle sessions causes resource leakage on Commissioner. Attacker could open many sessions and keep them idle to exhaust connection pool, memory, or file descriptors, causing denial of service. Also enables unauthorized access if session remains open beyond intended commissioning window.",
+      "proverifQuery": "query s:session, t:time ⊢ event idle_duration(s, t) ∧ t ≥ 30 ==> event session_closed(s)"
+    },
+    {
+      "id": "PROP_034",
+      "name": "CLA_Byte_Chaining_Indication",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "CLA byte in TRANSPORT SHALL be 0x80 for unchained, 0x90 for chained commands.",
+      "formal": "∀cmd. is_unchained(cmd) ⟹ CLA(cmd) = 0x80 ∧ is_chained(cmd) ⟹ CLA(cmd) = 0x90",
+      "violation": "Incorrect CLA byte causes receiver to misinterpret chaining state. If chained command uses 0x80, receiver processes incomplete fragment as complete message. If unchained uses 0x90, receiver incorrectly waits for more fragments causing timeout. Attacker can exploit to inject partial messages or cause DoS.",
+      "proverifQuery": "query c:command ⊢ event chained(c) ==> cla(c) = 0x90"
+    },
+    {
+      "id": "PROP_035",
+      "name": "INS_Code_Command_Identification",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "TRANSPORT command identified by INS=0x20; SELECT by INS=0xA4; GET RESPONSE by INS=0xC0.",
+      "formal": "∀cmd. command_type(cmd, TRANSPORT) ⟺ INS(cmd) = 0x20 ∧ command_type(cmd, SELECT) ⟺ INS(cmd) = 0xA4 ∧ command_type(cmd, GET_RESPONSE) ⟺ INS(cmd) = 0xC0",
+      "violation": "Wrong INS code causes command confusion. Device might execute wrong command handler, bypass security checks specific to command type, or trigger unintended protocol logic. Attacker could use wrong INS codes to probe for command handling vulnerabilities or bypass command-specific validation.",
+      "proverifQuery": "query c:command, t:cmdtype ⊢ event command_executed(c, t) ==> correct_ins(c, t)"
+    },
+    {
+      "id": "PROP_036",
+      "name": "SELECT_Command_Parameters",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "SELECT command SHALL have exact parameters: CLA=0x00, INS=0xA4, P1=0x04, P2=0x0C, Lc=0x09, Le=0x00.",
+      "formal": "∀cmd. command_type(cmd, SELECT) ⟹ CLA(cmd)=0x00 ∧ INS(cmd)=0xA4 ∧ P1(cmd)=0x04 ∧ P2(cmd)=0x0C ∧ Lc(cmd)=0x09 ∧ Le(cmd)=0x00",
+      "violation": "Wrong SELECT parameters indicate malformed command or non-compliant implementation. Device may accept SELECT with wrong parameters leading to protocol confusion, or reject valid SELECTs causing interoperability failures. Attacker could probe parameter handling to find parsing vulnerabilities.",
+      "proverifQuery": "query c:command ⊢ event select_command(c) ==> valid_select_params(c)"
+    },
+    {
+      "id": "PROP_037",
+      "name": "GET_RESPONSE_Command_Parameters",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "GET RESPONSE command SHALL have CLA=0x00, INS=0xC0, P1=0x00, P2=0x00.",
+      "formal": "∀cmd. command_type(cmd, GET_RESPONSE) ⟹ CLA(cmd)=0x00 ∧ INS(cmd)=0xC0 ∧ P1(cmd)=0x00 ∧ P2(cmd)=0x00",
+      "violation": "Wrong GET RESPONSE parameters indicate malformed command. Device may process GET RESPONSE incorrectly, return wrong buffered data, or expose internal state. Attacker could use non-zero P1/P2 to access unintended data buffers or exploit parameter parsing vulnerabilities.",
+      "proverifQuery": "query c:command ⊢ event get_response_command(c) ==> valid_get_response_params(c)"
+    },
+    {
+      "id": "PROP_038",
+      "name": "Privacy_Device_ID_Suppression",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "Devices MAY suppress Vendor ID and Product ID in SELECT response for privacy.",
+      "formal": "∀device, privacy_mode. privacy_enabled(device) ⟹ (VID(device)=0 ∧ PID(device)=0) ∨ PID(device)=0",
+      "violation": "Always advertising Vendor/Product IDs enables device tracking and fingerprinting. Attacker can identify specific device models at distance, track device locations by scanning for known VID/PID combinations, or use device identity to select targeted exploits for known vulnerabilities.",
+      "proverifQuery": "query d:device ⊢ event privacy_required(d) ==> (vid(d) = 0 ∨ pid(d) = 0)"
+    },
+    {
+      "id": "PROP_039",
+      "name": "Extended_Data_Optional",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Extended Data field in SELECT response MAY be omitted.",
+      "formal": "∀device, response. ¬includes_extended_data(response) is_valid",
+      "violation": "Requiring extended data when optional causes interoperability failures with minimal implementations. However, optionality means Commissioner must handle both cases. Attacker could exploit inconsistent extended data parsing to cause crashes, trigger buffer handling bugs, or bypass validation in implementations assuming extended data presence.",
+      "proverifQuery": "query r:response ⊢ event valid_select_response(r) ==> (has_extended_data(r) ∨ ¬has_extended_data(r))"
+    },
+    {
+      "id": "PROP_040",
+      "name": "Single_Session_Concurrency_Limitation",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Specification implies single session at a time; no concurrent session handling specified.",
+      "formal": "∀device, s1, s2. active_session(device, s1) ∧ active_session(device, s2) ⟹ s1 = s2",
+      "violation": "Concurrent sessions could cause state confusion, race conditions, or resource exhaustion. Attacker could open multiple sessions simultaneously to corrupt protocol state, bypass single-session assumptions in code, cause data races in shared state, or exhaust per-session resources for DoS.",
+      "proverifQuery": "query d:device, s1:session, s2:session ⊢ event active(d, s1) ∧ event active(d, s2) ==> s1 = s2"
+    },
+    {
+      "id": "PROP_041",
+      "name": "ISO_DEP_Reliability_Guarantee",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "ISO-DEP provides reliable transport through retransmission of lost/corrupted frames.",
+      "formal": "∀frame. (lost(frame) ∨ corrupted(frame)) ⟹ event retransmit(frame) until received_correctly(frame)",
+      "violation": "Without reliable retransmission, APDU chaining breaks on any frame loss, corrupting message reassembly. Attacker causing RF interference can force frame drops to trigger protocol errors, cause DoS through repeated failures, or exploit retry limit exhaustion to corrupt partial message state.",
+      "proverifQuery": "query f:frame ⊢ event delivered_to_apdu_layer(f) ==> ¬corrupted(f)"
+    },
+    {
+      "id": "PROP_042",
+      "name": "Message_Size_Limit_65535",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "APDU chaining can handle Matter messages up to 65535 bytes (P1/P2 16-bit encoding).",
+      "formal": "∀msg. valid_message(msg) ⟹ size(msg) ≤ 65535",
+      "violation": "Messages exceeding 65535 bytes cannot be encoded in P1/P2 16-bit field, causing length field overflow. Attacker sending oversized messages could exploit modulo arithmetic bugs where length wraps around, causing allocation of insufficient buffer leading to buffer overflow during fragment reassembly.",
+      "proverifQuery": "query m:message ⊢ event encode_length(m, p1, p2) ==> length(m) ≤ 65535"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "ISO-DEP protocol implementation is correct and compliant with NFC Forum Digital Specification, providing reliable frame delivery, correct chaining, and proper error detection.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_041 (ISO_DEP_Reliability_Guarantee), PROP_014 (ISO_DEP_Compliance) fail. Frame corruption, loss, or reordering could propagate to APDU layer, breaking message reassembly integrity and enabling message injection or corruption attacks."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "NFC physical layer provides implicit authentication through ~10cm range limitation, preventing remote attackers from participating in NTL sessions.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_031 (Physical_Proximity_Assumption) fails. Attacker with relay attack or powerful antenna can conduct man-in-the-middle attacks, eavesdrop on commissioning, or commission devices without physical presence, breaking core security assumption of NFC commissioning."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "Higher protocol layers provide cryptographic authentication, confidentiality, and replay protection for Matter messages transported via NTL.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_030 (No_Replay_Protection_Awareness) fails. Without higher-layer protection, NTL provides no message authenticity or confidentiality. Attacker can eavesdrop, replay, modify, or inject messages. Entire security model depends on higher layers."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Device has sufficient memory to handle maximum message size (65535 bytes) or correctly enforces memory limits with error 0x6A84.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_010 (Memory_Bounds_Enforcement), PROP_042 (Message_Size_Limit_65535) fail. Memory exhaustion from oversized messages could crash device, overwrite security-critical data, or cause buffer overflows. Resource-constrained IoT devices particularly vulnerable."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Commissioning mode is controlled by higher protocol layers or user interaction, and only activated when user intends to commission device.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_001 (Commissioning_Mode_Access_Control), PROP_028 (Commissioning_Mode_Error_Response) fail. If commissioning mode incorrectly triggered, attacker can commission device without user consent. If mode persists too long, expands attack window."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "ISO/IEC 7816-4 APDU chaining implementation is correct and prevents fragment injection, reordering, or truncation attacks.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_008 (Chaining_Parameter_Consistency), PROP_009 (Fragment_Reassembly_Atomicity), PROP_029 (Fragment_Order_Preservation) fail. Incorrect chaining implementation allows message corruption, buffer overflows, or injection of malicious fragments."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Single NTL session active at any time; no concurrent commissioning sessions on same device.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_040 (Single_Session_Concurrency_Limitation) fails. Concurrent sessions could cause race conditions in protocol state, fragment buffer corruption, or session confusion enabling message misdirection or state machine exploitation."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "NFC Reader/Writer (Commissioner) and Listener (Commissionee) implementations are compliant with NFC Forum specifications for Type 4A operation.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_015 (NFC_Forum_Commissioner_Compliance), PROP_016 (NFC_Forum_Commissionee_Compliance) fail. Non-compliant implementations cause interoperability failures, timing violations, or RF parameter mismatches enabling eavesdropping or collision exploits."
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "Time synchronization is adequate for enforcing PAFTP_ACK_TIMEOUT (15s) and PAFTP_CONN_IDLE_TIMEOUT (30s) constraints.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_032 (PAFTP_ACK_Timeout_Enforcement), PROP_033 (PAFTP_Connection_Idle_Timeout) fail. Clock drift or time manipulation could cause premature session closure (DoS) or allow sessions to persist beyond timeout (resource leakage, unauthorized access)."
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "Protocol version 0x01 is fixed for current NTL implementation; version negotiation assumes Commissioner correctly uses advertised version.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_005 (Protocol_Version_Binding), PROP_006 (Version_Value_Constraint) fail. Version confusion could cause protocol parsing errors, enable downgrade attacks to vulnerable versions, or allow exploitation of version-specific bugs."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Attacker initiates commissioning without device being in commissioning mode, bypassing user consent and physical proximity verification.",
+      "severity": "CRITICAL",
+      "attack_vector": "Send SELECT command to device not in commissioning mode; if device incorrectly accepts, establish unauthorized commissioning session and take control of device."
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Protocol confusion attack using wrong AID to trigger unintended application handlers or bypass Matter-specific security controls.",
+      "severity": "CRITICAL",
+      "attack_vector": "Send SELECT with non-Matter AID to exploit device's multi-application support; trigger other protocol handlers that may lack commissioning mode checks or have different vulnerabilities."
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Role confusion attack where Commissionee sends commands or Commissioner accepts commands, breaking command authority model.",
+      "severity": "CRITICAL",
+      "attack_vector": "Exploit role ambiguity by sending attacker-crafted commands from Commissionee role, or induce Commissioner to accept commands by corrupting role field in NFC activation."
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "State confusion by sending TRANSPORT before SELECT, bypassing protocol version negotiation and commissioning mode checks.",
+      "severity": "CRITICAL",
+      "attack_vector": "Send TRANSPORT command immediately after NFC activation without SELECT; exploit uninitialized protocol state or default protocol version assumptions to inject malicious messages."
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Protocol version downgrade attack forcing use of older NTL versions with known vulnerabilities.",
+      "severity": "CRITICAL",
+      "attack_vector": "Advertise old protocol version in SELECT response; if Commissioner doesn't validate or incorrectly uses old version, exploit version-specific parsing bugs or weaker security controls."
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Message length manipulation causing buffer overflow or incorrect memory allocation during fragment reassembly.",
+      "severity": "CRITICAL",
+      "attack_vector": "Send chained fragments with inconsistent P1/P2 values; first fragment declares small size (small buffer allocated), subsequent fragments declare larger size, overflowing buffer during reassembly."
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "Partial message processing exposes device to malformed data, causing parser exploits or information leakage from uninitialized memory.",
+      "severity": "CRITICAL",
+      "attack_vector": "Send partial fragment chain and abort; if device processes incomplete fragments, trigger parsing of malformed data structures containing attacker-controlled payloads or expose memory contents."
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Memory exhaustion denial of service or buffer overflow from oversized chained messages.",
+      "severity": "CRITICAL",
+      "attack_vector": "Send chained message with P1/P2=65535 but continue sending fragments beyond device memory limits; exploit lack of bounds checking to crash device or overflow buffers."
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Out-of-sequence GET RESPONSE exposes buffered data from previous sessions or causes protocol state corruption.",
+      "severity": "HIGH",
+      "attack_vector": "Send GET RESPONSE without prior incomplete response; exploit devices that don't enforce sequencing to retrieve buffered data from earlier sessions or corrupt response state machine."
+    },
+    {
+      "property_id": "PROP_029",
+      "vulnerability": "Fragment reordering attack corrupting message content during reassembly, potentially injecting malicious payloads.",
+      "severity": "CRITICAL",
+      "attack_vector": "Capture fragments during transmission and replay in different order; exploit devices that don't enforce fragment sequencing to corrupt message or inject attacker-controlled content."
+    },
+    {
+      "property_id": "PROP_030",
+      "vulnerability": "Replay attack reusing captured commissioning messages to impersonate devices or repeat administrative commands.",
+      "severity": "HIGH",
+      "attack_vector": "Capture legitimate NTL commissioning session; replay entire session or specific TRANSPORT messages to re-execute commands, impersonate devices, or bypass time-based access controls if higher layers lack replay protection."
+    },
+    {
+      "property_id": "PROP_031",
+      "vulnerability": "Long-range NFC attack or relay attack breaking physical proximity assumption, enabling remote man-in-the-middle.",
+      "severity": "HIGH",
+      "attack_vector": "Use high-gain NFC antenna to eavesdrop from distance >10cm, or relay NFC signals between geographically separated devices to conduct man-in-the-middle attack without physical presence."
+    },
+    {
+      "property_id": "PROP_033",
+      "vulnerability": "Resource exhaustion by opening multiple idle sessions, leaking connections or memory until device DoS.",
+      "severity": "HIGH",
+      "attack_vector": "Initiate multiple commissioning sessions with SELECT but send no subsequent data; exploit devices not enforcing idle timeout to exhaust connection pool, memory, or file descriptors."
+    },
+    {
+      "property_id": "PROP_040",
+      "vulnerability": "Concurrent session race condition causing state corruption, fragment buffer confusion, or message misdirection.",
+      "severity": "HIGH",
+      "attack_vector": "Open two simultaneous commissioning sessions if device allows; exploit race conditions in shared protocol state to corrupt one session's state using actions from other session."
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Encoding confusion attack exploiting devices incorrectly handling extended APDU encoding, causing buffer overflows.",
+      "severity": "HIGH",
+      "attack_vector": "Send extended field encoding APDU to device expecting short encoding; exploit length field parsing differences to bypass length checks or overflow fixed-size buffers."
+    },
+    {
+      "property_id": "PROP_020",
+      "vulnerability": "Buffer overflow or underflow from incorrect Lc encoding, exposing memory contents or causing crash.",
+      "severity": "CRITICAL",
+      "attack_vector": "Send TRANSPORT command with Lc larger than actual data length; receiver reads beyond buffer boundary exposing memory. Or Lc smaller causing data truncation and parsing confusion."
+    },
+    {
+      "property_id": "PROP_021",
+      "vulnerability": "Integer overflow in P1/P2 handling causing wrong buffer allocation, leading to overflow during fragment reassembly.",
+      "severity": "CRITICAL",
+      "attack_vector": "Send P1/P2 encoding message length near 65535 but send fragments totaling less; or manipulate P1/P2 across fragments to cause integer overflow in length calculation."
+    },
+    {
+      "property_id": "PROP_038",
+      "vulnerability": "Device tracking and fingerprinting by scanning for specific Vendor/Product ID combinations, enabling targeted exploits.",
+      "severity": "MEDIUM",
+      "attack_vector": "Scan environment for NFC devices advertising specific VID/PID; track device locations, identify vulnerable models for targeted attacks, or profile user's device inventory."
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "IDLE",
+      "properties_enforcing_transitions": ["PROP_001"],
+      "critical_property": "Device SHALL only respond to SELECT when in commissioning mode. Violation allows transition to SELECTED state without authorization."
+    },
+    {
+      "state_name": "COMMISSIONING_MODE",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_028"],
+      "critical_property": "Commissioning mode acts as guard for SELECT acceptance. Must be explicitly activated by user/higher layer. Violation breaks access control model."
+    },
+    {
+      "state_name": "SELECTED",
+      "properties_enforcing_transitions": ["PROP_002", "PROP_004", "PROP_005"],
+      "critical_property": "Only reachable via successful SELECT with correct AID and protocol version negotiation. TRANSPORT commands only valid in this state. Violation causes state confusion."
+    },
+    {
+      "state_name": "TRANSPORT_ACTIVE",
+      "properties_enforcing_transitions": ["PROP_004", "PROP_019"],
+      "critical_property": "Reached after SELECT. Matter messages exchanged via TRANSPORT commands. Premature entry bypasses session establishment."
+    },
+    {
+      "state_name": "CHAINING_IN_PROGRESS",
+      "properties_enforcing_transitions": ["PROP_008", "PROP_009", "PROP_029"],
+      "critical_property": "Fragment chaining active. P1/P2 must remain constant, fragments processed in order. Violation corrupts message reassembly."
+    },
+    {
+      "state_name": "INCOMPLETE_RESPONSE_PENDING",
+      "properties_enforcing_transitions": ["PROP_011", "PROP_025"],
+      "critical_property": "Response data exceeds Le limit. GET RESPONSE expected next. Entering this state incorrectly or sending GET RESPONSE from wrong state causes protocol error."
+    },
+    {
+      "state_name": "ERROR_STATE",
+      "properties_enforcing_transitions": ["PROP_026", "PROP_027", "PROP_028"],
+      "critical_property": "Terminal state after protocol error. Correct error codes critical for Commissioner error handling. Wrong error codes confuse error recovery."
+    },
+    {
+      "state_name": "SESSION_TIMEOUT",
+      "properties_enforcing_transitions": ["PROP_033"],
+      "critical_property": "Reached after 30s idle. Commissioner SHALL close session. Failure to transition leaks resources or enables unauthorized access beyond timeout."
+    }
+  ],
+  "additionalInsights": "**Note on Cryptographic Security**: NTL provides NO cryptographic protection - no authentication, confidentiality, or integrity at transport layer. All security depends on higher-layer protocols. NTL's security model relies entirely on physical proximity assumption (10cm NFC range) and commissioning mode access control. However, relay attacks and long-range NFC have been demonstrated, breaking proximity assumption. **Fragment Injection Risk**: Specification doesn't explicitly require fragment authenticity or prevent injection during chaining. Attacker within NFC range could potentially inject fragments during multi-fragment transmission if ISO-DEP doesn't provide adequate frame sequence protection. **Concurrent Session Handling**: Specification is silent on concurrent sessions. Implementations may incorrectly allow multiple simultaneous sessions, creating race conditions in protocol state machine. This is especially dangerous if fragment buffers, protocol state, or session identifiers are shared. **Version Negotiation Attack Surface**: Fixed version 0x01 with 'reserved for future use' clause creates future downgrade attack risk. When new versions introduced, ensure downgrade protection prevents attacker forcing use of old version. **Privacy vs Security Tradeoff**: Optional VID/PID suppression improves privacy but may reduce security if device identity needed for security decisions. Commissioners should not rely on VID/PID for security checks since they can be suppressed or spoofed. **Memory Exhaustion Windows**: 65535 byte message size limit seems safe, but resource-constrained IoT devices may have much smaller limits. Gap between specification maximum (65535) and device capability creates DoS attack surface. Attackers can probe device limits by gradually increasing message sizes. **Timing Attack Surface**: PAFTP timeouts (15s ACK, 30s idle) create timing side channels. Attacker could use timing analysis to infer device processing load, detect presence of commissioning sessions, or distinguish between different error conditions. **State Machine Incompleteness**: Specification describes happy path but not all error transitions. Examples: What if SELECT received during TRANSPORT_ACTIVE? What if TRANSPORT received after error state? Implementations may handle inconsistently, creating interoperability issues or security gaps. **ISO/IEC 7816-4 Dependency Risk**: Heavy reliance on ISO/IEC 7816-4 APDU chaining correctness. Any implementation bugs in chaining logic (common in smartcard stacks ported to IoT context) directly compromise NTL security. Recommend additional validation layer above ISO-DEP to verify fragment integrity.",
+  "summary": {
+    "total_properties": 42,
+    "by_importance": {
+      "CRITICAL": 17,
+      "HIGH": 19,
+      "MEDIUM": 6
+    },
+    "by_category": {
+      "Security": 6,
+      "AccessControl": 3,
+      "Correctness": 18,
+      "Consistency": 2,
+      "Atomicity": 1,
+      "Timing": 2,
+      "Cryptography": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 10,
+    "vulnerabilities_identified": 18
+  }
+}

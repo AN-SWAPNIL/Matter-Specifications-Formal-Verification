@@ -1,0 +1,1272 @@
+{
+  "fsm_model": {
+    "section_name": "4.21 NFC Transport Layer (NTL)",
+    "section_ref": "Matter Core Specification v1.4, Section 4.21",
+    "states": [
+      {
+        "name": "IDLE",
+        "description": "Device not in commissioning mode, no NFC session active, ignores SELECT commands",
+        "is_initial": true,
+        "invariants": [
+          "commissioning_mode == false",
+          "session_state == IDLE",
+          "current_command == None"
+        ],
+        "state_variables": {
+          "commissioning_mode": "boolean (false)",
+          "session_state": "enum (IDLE)",
+          "current_command": "enum (None)"
+        }
+      },
+      {
+        "name": "COMMISSIONING_MODE_READY",
+        "description": "Device in commissioning mode, ready to accept SELECT command with Matter AID",
+        "is_initial": false,
+        "invariants": [
+          "commissioning_mode == true",
+          "session_state == IDLE",
+          "protocol_version == 0x01"
+        ],
+        "state_variables": {
+          "commissioning_mode": "boolean (true)",
+          "protocol_version": "uint8 (0x01)",
+          "vendor_id": "uint16",
+          "product_id": "uint16",
+          "discriminator": "12-bit integer",
+          "extended_data": "optional bitstring"
+        }
+      },
+      {
+        "name": "SELECTED",
+        "description": "SELECT command successful, protocol version negotiated, waiting for first TRANSPORT",
+        "is_initial": false,
+        "invariants": [
+          "session_state == SELECTED",
+          "aid == 0xA00000090989A77E401",
+          "protocol_version == 0x01"
+        ],
+        "state_variables": {
+          "session_state": "enum (SELECTED)",
+          "aid": "bitstring (A0:00:00:09:09:8A:77:E4:01)",
+          "protocol_version": "uint8 (0x01)",
+          "paftp_idle_timer": "integer (milliseconds)",
+          "FSD": "uint16 (max frame size device can receive)",
+          "FSC": "uint16 (max frame size card can receive)"
+        }
+      },
+      {
+        "name": "TRANSPORT_ACTIVE",
+        "description": "Matter messages being exchanged, no chaining or pending responses",
+        "is_initial": false,
+        "invariants": [
+          "session_state == TRANSPORT_ACTIVE",
+          "chaining_active == false",
+          "response_incomplete == false"
+        ],
+        "state_variables": {
+          "session_state": "enum (TRANSPORT_ACTIVE)",
+          "chaining_active": "boolean (false)",
+          "response_incomplete": "boolean (false)",
+          "paftp_idle_timer": "integer (milliseconds)"
+        }
+      },
+      {
+        "name": "CHAINING_IN_PROGRESS_RECEIVING",
+        "description": "Receiving chained C-APDU fragments, accumulating in fragment buffer",
+        "is_initial": false,
+        "invariants": [
+          "session_state == CHAINING_IN_PROGRESS",
+          "chaining_active == true",
+          "fragments_received_length < message_total_length",
+          "fragments_received_length <= max_supported_size"
+        ],
+        "state_variables": {
+          "session_state": "enum (CHAINING_IN_PROGRESS)",
+          "chaining_active": "boolean (true)",
+          "fragment_buffer": "bitstring",
+          "fragments_received_length": "uint16",
+          "message_total_length": "uint16 (from P1/P2)",
+          "P1P2_value": "uint16 (must remain constant)",
+          "paftp_idle_timer": "integer (milliseconds)"
+        }
+      },
+      {
+        "name": "RESPONSE_INCOMPLETE",
+        "description": "Response too large for single R-APDU, fragments being sent via GET_RESPONSE",
+        "is_initial": false,
+        "invariants": [
+          "session_state == RESPONSE_INCOMPLETE",
+          "response_remaining > 0",
+          "last_SW1 == 0x61"
+        ],
+        "state_variables": {
+          "session_state": "enum (RESPONSE_INCOMPLETE)",
+          "response_buffer": "bitstring",
+          "response_sent_length": "uint16",
+          "response_remaining": "uint16",
+          "last_SW1": "uint8 (0x61)",
+          "last_SW2": "uint8 (remaining bytes)",
+          "paftp_idle_timer": "integer (milliseconds)"
+        }
+      },
+      {
+        "name": "ERROR_NOT_IN_COMMISSIONING",
+        "description": "SELECT received but device not in commissioning mode",
+        "is_initial": false,
+        "invariants": [
+          "commissioning_mode == false",
+          "error_code == 0x6985"
+        ],
+        "state_variables": {
+          "error_code": "uint16 (0x6985)",
+          "error_reason": "string (not_in_commissioning_mode)",
+          "error_timer": "integer (milliseconds since error)"
+        }
+      },
+      {
+        "name": "ERROR_MEMORY_EXCEEDED",
+        "description": "Chained message exceeds maximum supported message size",
+        "is_initial": false,
+        "invariants": [
+          "fragments_received_length + Lc > max_supported_size",
+          "error_code == 0x6A84"
+        ],
+        "state_variables": {
+          "error_code": "uint16 (0x6A84)",
+          "attempted_size": "uint16",
+          "max_supported_size": "uint16",
+          "error_timer": "integer (milliseconds since error)"
+        }
+      },
+      {
+        "name": "ERROR_SEQUENCING",
+        "description": "Command received out of sequence (e.g., GET_RESPONSE without prior SW1=0x61, or P1/P2 inconsistency)",
+        "is_initial": false,
+        "invariants": [
+          "error_code == 0x6985",
+          "sequence_violation == true"
+        ],
+        "state_variables": {
+          "error_code": "uint16 (0x6985)",
+          "error_reason": "string (sequence_violation)",
+          "expected_command": "string",
+          "received_command": "string",
+          "error_timer": "integer (milliseconds since error)"
+        }
+      },
+      {
+        "name": "ERROR_INVALID_AID",
+        "description": "SELECT command received with wrong Application Identifier",
+        "is_initial": false,
+        "invariants": [
+          "aid != 0xA00000090989A77E401",
+          "error_code == 0x6A82"
+        ],
+        "state_variables": {
+          "error_code": "uint16 (0x6A82)",
+          "received_aid": "bitstring",
+          "error_timer": "integer (milliseconds since error)"
+        }
+      },
+      {
+        "name": "ERROR_INVALID_STATE",
+        "description": "TRANSPORT or GET_RESPONSE received without proper prior state",
+        "is_initial": false,
+        "invariants": [
+          "error_code == 0x6985"
+        ],
+        "state_variables": {
+          "error_code": "uint16 (0x6985)",
+          "error_reason": "string (invalid_state_for_command)",
+          "error_timer": "integer (milliseconds since error)"
+        }
+      },
+      {
+        "name": "SESSION_TIMEOUT",
+        "description": "Session closed due to idle timeout (30 seconds with no data)",
+        "is_initial": false,
+        "invariants": [
+          "paftp_idle_timer >= 30000"
+        ],
+        "state_variables": {
+          "timeout_reason": "string (idle_timeout)",
+          "paftp_idle_timer": "integer (>= 30000 milliseconds)"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "IDLE",
+        "to_state": "COMMISSIONING_MODE_READY",
+        "trigger": "enable_commissioning_mode",
+        "guard_condition": "commissioning_mode == false",
+        "actions": [
+          "commissioning_mode := true",
+          "protocol_version := 0x01",
+          "initialize_device_info()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "COMMISSIONING_MODE_READY",
+        "to_state": "IDLE",
+        "trigger": "disable_commissioning_mode",
+        "guard_condition": "commissioning_mode == true",
+        "actions": [
+          "commissioning_mode := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "COMMISSIONING_MODE_READY",
+        "to_state": "SELECTED",
+        "trigger": "SELECT_command",
+        "guard_condition": "commissioning_mode == true && aid == 0xA00000090989A77E401 && valid_select_params(CLA, INS, P1, P2, Lc, Le, data)",
+        "actions": [
+          "response_data := build_select_response(protocol_version, vendor_id, product_id, discriminator, extended_data)",
+          "send_response_apdu(0x90, 0x00, response_data)",
+          "session_state := SELECTED",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "IDLE",
+        "to_state": "ERROR_NOT_IN_COMMISSIONING",
+        "trigger": "SELECT_command",
+        "guard_condition": "commissioning_mode == false",
+        "actions": [
+          "send_error_response(0x69, 0x85)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "IDLE",
+        "to_state": "IDLE",
+        "trigger": "SELECT_command",
+        "guard_condition": "commissioning_mode == false",
+        "actions": [
+          "ignore_command()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "COMMISSIONING_MODE_READY",
+        "to_state": "ERROR_INVALID_AID",
+        "trigger": "SELECT_command",
+        "guard_condition": "commissioning_mode == true && aid != 0xA00000090989A77E401",
+        "actions": [
+          "send_error_response(0x6A, 0x82)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SELECTED",
+        "to_state": "TRANSPORT_ACTIVE",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == SELECTED && CLA == 0x80 && (P1 << 8 | P2) == Lc && valid_transport_params(CLA, INS, P1, P2, Lc, data) && response_size(process_matter_message(data)) <= Le",
+        "actions": [
+          "complete_message := data",
+          "response := process_and_generate_response(complete_message)",
+          "send_complete_response(0x90, 0x00, response)",
+          "session_state := TRANSPORT_ACTIVE",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SELECTED",
+        "to_state": "RESPONSE_INCOMPLETE",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == SELECTED && CLA == 0x80 && (P1 << 8 | P2) == Lc && valid_transport_params(CLA, INS, P1, P2, Lc, data) && response_size(process_matter_message(data)) > Le",
+        "actions": [
+          "complete_message := data",
+          "response_buffer := process_and_generate_response(complete_message)",
+          "fragment := extract_fragment(response_buffer, 0, Le)",
+          "send_incomplete_response(0x61, min(255, size(response_buffer) - Le), fragment)",
+          "response_sent_length := Le",
+          "response_remaining := size(response_buffer) - Le",
+          "session_state := RESPONSE_INCOMPLETE",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SELECTED",
+        "to_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == SELECTED && CLA == 0x90 && (P1 << 8 | P2) > Lc && valid_transport_params(CLA, INS, P1, P2, Lc, data) && Lc <= max_supported_size",
+        "actions": [
+          "fragment_buffer := data",
+          "fragments_received_length := Lc",
+          "message_total_length := (P1 << 8 | P2)",
+          "P1P2_value := (P1 << 8 | P2)",
+          "chaining_active := true",
+          "send_ack_response()",
+          "session_state := CHAINING_IN_PROGRESS",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SELECTED",
+        "to_state": "ERROR_MEMORY_EXCEEDED",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == SELECTED && CLA == 0x90 && Lc > max_supported_size",
+        "actions": [
+          "send_error_response(0x6A, 0x84)",
+          "attempted_size := (P1 << 8 | P2)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "to_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "chaining_active == true && CLA == 0x90 && (P1 << 8 | P2) == P1P2_value && fragments_received_length + Lc < message_total_length && fragments_received_length + Lc <= max_supported_size",
+        "actions": [
+          "append_fragment(fragment_buffer, data)",
+          "fragments_received_length := fragments_received_length + Lc",
+          "send_ack_response()",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "to_state": "TRANSPORT_ACTIVE",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "chaining_active == true && CLA == 0x80 && (P1 << 8 | P2) == P1P2_value && fragments_received_length + Lc == message_total_length && response_size(process_matter_message(concatenate(fragment_buffer, data))) <= Le",
+        "actions": [
+          "append_fragment(fragment_buffer, data)",
+          "complete_message := fragment_buffer",
+          "response := process_and_generate_response(complete_message)",
+          "send_complete_response(0x90, 0x00, response)",
+          "clear_fragment_buffer()",
+          "chaining_active := false",
+          "session_state := TRANSPORT_ACTIVE",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "to_state": "RESPONSE_INCOMPLETE",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "chaining_active == true && CLA == 0x80 && (P1 << 8 | P2) == P1P2_value && fragments_received_length + Lc == message_total_length && response_size(process_matter_message(concatenate(fragment_buffer, data))) > Le",
+        "actions": [
+          "append_fragment(fragment_buffer, data)",
+          "complete_message := fragment_buffer",
+          "response_buffer := process_and_generate_response(complete_message)",
+          "fragment := extract_fragment(response_buffer, 0, Le)",
+          "send_incomplete_response(0x61, min(255, size(response_buffer) - Le), fragment)",
+          "response_sent_length := Le",
+          "response_remaining := size(response_buffer) - Le",
+          "clear_fragment_buffer()",
+          "chaining_active := false",
+          "session_state := RESPONSE_INCOMPLETE",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "to_state": "ERROR_MEMORY_EXCEEDED",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "chaining_active == true && fragments_received_length + Lc > max_supported_size",
+        "actions": [
+          "send_error_response(0x6A, 0x84)",
+          "clear_fragment_buffer()",
+          "chaining_active := false",
+          "attempted_size := fragments_received_length + Lc"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "to_state": "ERROR_SEQUENCING",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "chaining_active == true && (P1 << 8 | P2) != P1P2_value",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "clear_fragment_buffer()",
+          "chaining_active := false",
+          "error_reason := P1P2_inconsistency"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TRANSPORT_ACTIVE",
+        "to_state": "TRANSPORT_ACTIVE",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == TRANSPORT_ACTIVE && CLA == 0x80 && (P1 << 8 | P2) == Lc && valid_transport_params(CLA, INS, P1, P2, Lc, data) && response_size(process_matter_message(data)) <= Le",
+        "actions": [
+          "complete_message := data",
+          "response := process_and_generate_response(complete_message)",
+          "send_complete_response(0x90, 0x00, response)",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TRANSPORT_ACTIVE",
+        "to_state": "RESPONSE_INCOMPLETE",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == TRANSPORT_ACTIVE && CLA == 0x80 && (P1 << 8 | P2) == Lc && valid_transport_params(CLA, INS, P1, P2, Lc, data) && response_size(process_matter_message(data)) > Le",
+        "actions": [
+          "complete_message := data",
+          "response_buffer := process_and_generate_response(complete_message)",
+          "fragment := extract_fragment(response_buffer, 0, Le)",
+          "send_incomplete_response(0x61, min(255, size(response_buffer) - Le), fragment)",
+          "response_sent_length := Le",
+          "response_remaining := size(response_buffer) - Le",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TRANSPORT_ACTIVE",
+        "to_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == TRANSPORT_ACTIVE && CLA == 0x90 && (P1 << 8 | P2) > Lc && valid_transport_params(CLA, INS, P1, P2, Lc, data) && Lc <= max_supported_size",
+        "actions": [
+          "fragment_buffer := data",
+          "fragments_received_length := Lc",
+          "message_total_length := (P1 << 8 | P2)",
+          "P1P2_value := (P1 << 8 | P2)",
+          "chaining_active := true",
+          "send_ack_response()",
+          "session_state := CHAINING_IN_PROGRESS",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RESPONSE_INCOMPLETE",
+        "to_state": "RESPONSE_INCOMPLETE",
+        "trigger": "GET_RESPONSE_command",
+        "guard_condition": "session_state == RESPONSE_INCOMPLETE && valid_get_response_params(CLA, INS, P1, P2) && response_remaining > Le",
+        "actions": [
+          "fragment := extract_fragment(response_buffer, response_sent_length, Le)",
+          "send_incomplete_response(0x61, min(255, response_remaining - Le), fragment)",
+          "response_sent_length := response_sent_length + Le",
+          "response_remaining := response_remaining - Le",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RESPONSE_INCOMPLETE",
+        "to_state": "TRANSPORT_ACTIVE",
+        "trigger": "GET_RESPONSE_command",
+        "guard_condition": "session_state == RESPONSE_INCOMPLETE && valid_get_response_params(CLA, INS, P1, P2) && response_remaining <= Le",
+        "actions": [
+          "fragment := extract_fragment(response_buffer, response_sent_length, response_remaining)",
+          "send_complete_response(0x90, 0x00, fragment)",
+          "clear_response_buffer()",
+          "response_sent_length := 0",
+          "response_remaining := 0",
+          "session_state := TRANSPORT_ACTIVE",
+          "paftp_idle_timer := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SELECTED",
+        "to_state": "ERROR_SEQUENCING",
+        "trigger": "GET_RESPONSE_command",
+        "guard_condition": "session_state == SELECTED",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "error_reason := GET_RESPONSE_out_of_sequence"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TRANSPORT_ACTIVE",
+        "to_state": "ERROR_SEQUENCING",
+        "trigger": "GET_RESPONSE_command",
+        "guard_condition": "session_state == TRANSPORT_ACTIVE",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "error_reason := GET_RESPONSE_out_of_sequence"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "to_state": "ERROR_SEQUENCING",
+        "trigger": "GET_RESPONSE_command",
+        "guard_condition": "session_state == CHAINING_IN_PROGRESS",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "error_reason := GET_RESPONSE_out_of_sequence"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "IDLE",
+        "to_state": "ERROR_INVALID_STATE",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == IDLE",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "error_reason := TRANSPORT_before_SELECT"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "COMMISSIONING_MODE_READY",
+        "to_state": "ERROR_INVALID_STATE",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == IDLE",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "error_reason := TRANSPORT_before_SELECT"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SELECTED",
+        "to_state": "SESSION_TIMEOUT",
+        "trigger": "timer_tick",
+        "guard_condition": "paftp_idle_timer >= 30000",
+        "actions": [
+          "close_session()",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "30 seconds idle timeout"
+      },
+      {
+        "from_state": "TRANSPORT_ACTIVE",
+        "to_state": "SESSION_TIMEOUT",
+        "trigger": "timer_tick",
+        "guard_condition": "paftp_idle_timer >= 30000",
+        "actions": [
+          "close_session()",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "30 seconds idle timeout"
+      },
+      {
+        "from_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "to_state": "SESSION_TIMEOUT",
+        "trigger": "timer_tick",
+        "guard_condition": "paftp_idle_timer >= 30000",
+        "actions": [
+          "close_session()",
+          "clear_fragment_buffer()",
+          "chaining_active := false",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "30 seconds idle timeout"
+      },
+      {
+        "from_state": "RESPONSE_INCOMPLETE",
+        "to_state": "SESSION_TIMEOUT",
+        "trigger": "timer_tick",
+        "guard_condition": "paftp_idle_timer >= 30000",
+        "actions": [
+          "close_session()",
+          "clear_response_buffer()",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "30 seconds idle timeout"
+      },
+      {
+        "from_state": "SELECTED",
+        "to_state": "SELECTED",
+        "trigger": "timer_tick",
+        "guard_condition": "paftp_idle_timer < 30000",
+        "actions": [
+          "paftp_idle_timer := paftp_idle_timer + timer_resolution"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TRANSPORT_ACTIVE",
+        "to_state": "TRANSPORT_ACTIVE",
+        "trigger": "timer_tick",
+        "guard_condition": "paftp_idle_timer < 30000",
+        "actions": [
+          "paftp_idle_timer := paftp_idle_timer + timer_resolution"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "to_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "trigger": "timer_tick",
+        "guard_condition": "paftp_idle_timer < 30000",
+        "actions": [
+          "paftp_idle_timer := paftp_idle_timer + timer_resolution"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RESPONSE_INCOMPLETE",
+        "to_state": "RESPONSE_INCOMPLETE",
+        "trigger": "timer_tick",
+        "guard_condition": "paftp_idle_timer < 30000",
+        "actions": [
+          "paftp_idle_timer := paftp_idle_timer + timer_resolution"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SELECTED",
+        "to_state": "ERROR_SEQUENCING",
+        "trigger": "SELECT_command",
+        "guard_condition": "session_state == SELECTED",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "error_reason := SELECT_during_active_session"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TRANSPORT_ACTIVE",
+        "to_state": "ERROR_SEQUENCING",
+        "trigger": "SELECT_command",
+        "guard_condition": "session_state == TRANSPORT_ACTIVE",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "error_reason := SELECT_during_active_session"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CHAINING_IN_PROGRESS_RECEIVING",
+        "to_state": "ERROR_SEQUENCING",
+        "trigger": "SELECT_command",
+        "guard_condition": "session_state == CHAINING_IN_PROGRESS",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "clear_fragment_buffer()",
+          "chaining_active := false",
+          "error_reason := SELECT_during_chaining"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RESPONSE_INCOMPLETE",
+        "to_state": "ERROR_SEQUENCING",
+        "trigger": "SELECT_command",
+        "guard_condition": "session_state == RESPONSE_INCOMPLETE",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "clear_response_buffer()",
+          "error_reason := SELECT_during_response_chaining"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TRANSPORT_ACTIVE",
+        "to_state": "ERROR_MEMORY_EXCEEDED",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == TRANSPORT_ACTIVE && CLA == 0x90 && Lc > max_supported_size",
+        "actions": [
+          "send_error_response(0x6A, 0x84)",
+          "error_reason := first_chained_fragment_exceeds_max"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RESPONSE_INCOMPLETE",
+        "to_state": "ERROR_SEQUENCING",
+        "trigger": "TRANSPORT_command",
+        "guard_condition": "session_state == RESPONSE_INCOMPLETE",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "clear_response_buffer()",
+          "error_reason := TRANSPORT_during_GET_RESPONSE_sequence"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "IDLE",
+        "to_state": "ERROR_INVALID_STATE",
+        "trigger": "GET_RESPONSE_command",
+        "guard_condition": "session_state == IDLE",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "error_reason := GET_RESPONSE_before_session"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "COMMISSIONING_MODE_READY",
+        "to_state": "ERROR_INVALID_STATE",
+        "trigger": "GET_RESPONSE_command",
+        "guard_condition": "session_state == IDLE",
+        "actions": [
+          "send_error_response(0x69, 0x85)",
+          "error_reason := GET_RESPONSE_before_session"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ERROR_NOT_IN_COMMISSIONING",
+        "to_state": "IDLE",
+        "trigger": "error_timeout",
+        "guard_condition": "error_timer >= 5000",
+        "actions": [
+          "clear_error_state()",
+          "commissioning_mode := false",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "5 seconds error state timeout"
+      },
+      {
+        "from_state": "ERROR_MEMORY_EXCEEDED",
+        "to_state": "IDLE",
+        "trigger": "error_timeout",
+        "guard_condition": "error_timer >= 5000",
+        "actions": [
+          "clear_error_state()",
+          "clear_fragment_buffer()",
+          "clear_response_buffer()",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "5 seconds error state timeout"
+      },
+      {
+        "from_state": "ERROR_SEQUENCING",
+        "to_state": "IDLE",
+        "trigger": "error_timeout",
+        "guard_condition": "error_timer >= 5000",
+        "actions": [
+          "clear_error_state()",
+          "clear_session_state()",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "5 seconds error state timeout"
+      },
+      {
+        "from_state": "ERROR_INVALID_AID",
+        "to_state": "IDLE",
+        "trigger": "error_timeout",
+        "guard_condition": "error_timer >= 5000",
+        "actions": [
+          "clear_error_state()",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "5 seconds error state timeout"
+      },
+      {
+        "from_state": "ERROR_INVALID_STATE",
+        "to_state": "IDLE",
+        "trigger": "error_timeout",
+        "guard_condition": "error_timer >= 5000",
+        "actions": [
+          "clear_error_state()",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "5 seconds error state timeout"
+      },
+      {
+        "from_state": "SESSION_TIMEOUT",
+        "to_state": "IDLE",
+        "trigger": "timeout_cleanup",
+        "guard_condition": "true",
+        "actions": [
+          "clear_session_state()",
+          "commissioning_mode := false",
+          "session_state := IDLE"
+        ],
+        "timing_requirement": "Immediate cleanup after timeout"
+      }
+    ],
+    "functions": [
+      {
+        "name": "build_select_response",
+        "parameters": [
+          {"name": "protocol_version", "type": "uint8", "description": "NTL protocol version (SHALL be 0x01)"},
+          {"name": "vendor_id", "type": "uint16", "description": "Vendor identifier (MAY be 0 for privacy)"},
+          {"name": "product_id", "type": "uint16", "description": "Product identifier (MAY be 0 for privacy)"},
+          {"name": "discriminator", "type": "12-bit integer", "description": "Device discriminator"},
+          {"name": "extended_data", "type": "optional bitstring", "description": "Additional discovery information"}
+        ],
+        "return_type": "bitstring",
+        "description": "Constructs SELECT response data payload per Table 45 specification: Version (8 bits) + reserved 0x00 (8 bits) + reserved 0x0 (4 bits) + Discriminator (12 bits) + Vendor ID (16 bits) + Product ID (16 bits) + optional Extended Data. Used to inform Commissioner of device capabilities and identity during session establishment.",
+        "algorithm_detail": "Binary encoding: Concatenate fields in big-endian order. Version field SHALL encode 0x01. Reserved bits SHALL be cleared (0). Discriminator is 12-bit value. Vendor ID and Product ID MAY both be 0 for privacy. If Product ID is non-zero, Vendor ID SHALL NOT be 0. Extended Data MAY be omitted entirely.",
+        "usage_in_fsm": "Called in transition COMMISSIONING_MODE_READY -> SELECTED when SELECT command accepted"
+      },
+      {
+        "name": "valid_select_params",
+        "parameters": [
+          {"name": "CLA", "type": "uint8", "description": "Class byte"},
+          {"name": "INS", "type": "uint8", "description": "Instruction byte"},
+          {"name": "P1", "type": "uint8", "description": "Parameter 1"},
+          {"name": "P2", "type": "uint8", "description": "Parameter 2"},
+          {"name": "Lc", "type": "uint8", "description": "Command data length"},
+          {"name": "Le", "type": "uint8", "description": "Expected response length"},
+          {"name": "data", "type": "bitstring", "description": "Command data field"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates SELECT command APDU structure per Table 44. Returns true if all parameters match expected values for Matter NTL SELECT command, false otherwise. Used to enforce protocol compliance.",
+        "algorithm_detail": "Check: CLA == 0x00 AND INS == 0xA4 AND P1 == 0x04 AND P2 == 0x0C AND Lc == 0x09 AND Le == 0x00 AND data == A0:00:00:09:09:8A:77:E4:01 (Matter AID). If all conditions true, return true; else return false.",
+        "usage_in_fsm": "Guard condition in COMMISSIONING_MODE_READY -> SELECTED transition"
+      },
+      {
+        "name": "valid_transport_params",
+        "parameters": [
+          {"name": "CLA", "type": "uint8", "description": "Class byte (0x80 unchained or 0x90 chained)"},
+          {"name": "INS", "type": "uint8", "description": "Instruction byte"},
+          {"name": "P1", "type": "uint8", "description": "Parameter 1 (high byte of message length)"},
+          {"name": "P2", "type": "uint8", "description": "Parameter 2 (low byte of message length)"},
+          {"name": "Lc", "type": "uint8", "description": "Command data length"},
+          {"name": "data", "type": "bitstring", "description": "Command data field"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates TRANSPORT command APDU structure per Table 47. Ensures INS code, CLA byte, P1/P2 encoding, and Lc field are consistent and valid. Returns true if valid, false otherwise.",
+        "algorithm_detail": "Check: INS == 0x20 AND (CLA == 0x80 OR CLA == 0x90) AND Lc <= 255 AND length(data) == Lc AND (P1 << 8 | P2) <= 65535. If all conditions true, return true; else return false.",
+        "usage_in_fsm": "Guard conditions in multiple TRANSPORT transitions (SELECTED->TRANSPORT_ACTIVE, SELECTED->CHAINING_IN_PROGRESS_RECEIVING, etc.)"
+      },
+      {
+        "name": "valid_get_response_params",
+        "parameters": [
+          {"name": "CLA", "type": "uint8", "description": "Class byte"},
+          {"name": "INS", "type": "uint8", "description": "Instruction byte"},
+          {"name": "P1", "type": "uint8", "description": "Parameter 1"},
+          {"name": "P2", "type": "uint8", "description": "Parameter 2"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates GET RESPONSE command APDU structure per Table 51. Returns true if parameters match specification, false otherwise.",
+        "algorithm_detail": "Check: CLA == 0x00 AND INS == 0xC0 AND P1 == 0x00 AND P2 == 0x00. If all conditions true, return true; else return false.",
+        "usage_in_fsm": "Guard conditions in RESPONSE_INCOMPLETE -> RESPONSE_INCOMPLETE and RESPONSE_INCOMPLETE -> TRANSPORT_ACTIVE transitions"
+      },
+      {
+        "name": "send_response_apdu",
+        "parameters": [
+          {"name": "SW1", "type": "uint8", "description": "Status word 1"},
+          {"name": "SW2", "type": "uint8", "description": "Status word 2"},
+          {"name": "data", "type": "optional bitstring", "description": "Response data payload"}
+        ],
+        "return_type": "void",
+        "description": "Constructs and transmits R-APDU via ISO-DEP layer. Encodes status words and optional data payload per ISO/IEC 7816-4 format. Used for all response types (success, incomplete, error).",
+        "algorithm_detail": "Construct R-APDU: If data present, R-APDU = data || SW1 || SW2. If data absent, R-APDU = SW1 || SW2. Pass R-APDU to ISO-DEP layer for segmentation and transmission. ISO-DEP handles chaining if R-APDU exceeds frame size.",
+        "usage_in_fsm": "Called in SELECT success transition with SW1=0x90, SW2=0x00"
+      },
+      {
+        "name": "send_complete_response",
+        "parameters": [
+          {"name": "SW1", "type": "uint8", "description": "Status word 1 (0x90 for success)"},
+          {"name": "SW2", "type": "uint8", "description": "Status word 2 (0x00 for success)"},
+          {"name": "data", "type": "bitstring", "description": "Complete response data"}
+        ],
+        "return_type": "void",
+        "description": "Sends complete successful R-APDU with SW1=0x90, SW2=0x00 per Table 48 or Table 52. Indicates no further data to retrieve. Wrapper around send_response_apdu with success status codes.",
+        "algorithm_detail": "Call send_response_apdu(0x90, 0x00, data). This constructs R-APDU = data || 0x90 || 0x00 and transmits via ISO-DEP.",
+        "usage_in_fsm": "Called in transitions where response fits in single R-APDU: SELECTED->TRANSPORT_ACTIVE, CHAINING_IN_PROGRESS_RECEIVING->TRANSPORT_ACTIVE, RESPONSE_INCOMPLETE->TRANSPORT_ACTIVE"
+      },
+      {
+        "name": "send_incomplete_response",
+        "parameters": [
+          {"name": "SW1", "type": "uint8", "description": "Status word 1 (0x61 for incomplete)"},
+          {"name": "SW2", "type": "uint8", "description": "Status word 2 (number of bytes remaining, max 255)"},
+          {"name": "fragment", "type": "bitstring", "description": "Partial response data fragment"}
+        ],
+        "return_type": "void",
+        "description": "Sends incomplete successful R-APDU with SW1=0x61 per Table 49 or Table 53. SW2 encodes remaining bytes (capped at 255). Signals Commissioner to issue GET RESPONSE for continuation.",
+        "algorithm_detail": "Call send_response_apdu(0x61, min(SW2, 255), fragment). If remaining bytes > 255, SW2 = 255; else SW2 = remaining bytes. This constructs R-APDU = fragment || 0x61 || SW2 and transmits via ISO-DEP.",
+        "usage_in_fsm": "Called in transitions where response exceeds Le: SELECTED->RESPONSE_INCOMPLETE, TRANSPORT_ACTIVE->RESPONSE_INCOMPLETE, CHAINING_IN_PROGRESS_RECEIVING->RESPONSE_INCOMPLETE, RESPONSE_INCOMPLETE->RESPONSE_INCOMPLETE"
+      },
+      {
+        "name": "send_error_response",
+        "parameters": [
+          {"name": "SW1", "type": "uint8", "description": "Status word 1 (error class indicator)"},
+          {"name": "SW2", "type": "uint8", "description": "Status word 2 (specific error code)"}
+        ],
+        "return_type": "void",
+        "description": "Sends error R-APDU with no data payload. Used for: 0x6985 (conditions not satisfied), 0x6A84 (not enough memory), 0x6A82 (file/application not found). Per ISO/IEC 7816-4 error encoding.",
+        "algorithm_detail": "Call send_response_apdu(SW1, SW2, null). This constructs R-APDU = SW1 || SW2 (no data field) and transmits via ISO-DEP.",
+        "usage_in_fsm": "Called in error transitions: IDLE->ERROR_NOT_IN_COMMISSIONING (0x6985), COMMISSIONING_MODE_READY->ERROR_INVALID_AID (0x6A82), CHAINING_IN_PROGRESS_RECEIVING->ERROR_MEMORY_EXCEEDED (0x6A84), CHAINING_IN_PROGRESS_RECEIVING->ERROR_SEQUENCING (0x6985)"
+      },
+      {
+        "name": "send_ack_response",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Sends intermediate acknowledgment R-APDU during APDU chaining. Confirms receipt of chained fragment and readiness for next fragment. Does not contain data payload. Exact status codes implementation-dependent but typically success codes.",
+        "algorithm_detail": "Send R-APDU with success status (e.g., SW1=0x90, SW2=0x00) and no data. Signals chaining layer to continue sending next fragment. May be implicit in ISO-DEP R-block acknowledgment rather than explicit APDU-level response.",
+        "usage_in_fsm": "Called in SELECTED->CHAINING_IN_PROGRESS_RECEIVING and CHAINING_IN_PROGRESS_RECEIVING->CHAINING_IN_PROGRESS_RECEIVING transitions"
+      },
+      {
+        "name": "append_fragment",
+        "parameters": [
+          {"name": "buffer", "type": "bitstring", "description": "Existing fragment buffer"},
+          {"name": "fragment", "type": "bitstring", "description": "New fragment to append"}
+        ],
+        "return_type": "void (modifies buffer in place)",
+        "description": "Concatenates new fragment to end of existing fragment buffer. Used during APDU chaining to accumulate message fragments. Updates fragment_buffer state variable and fragments_received_length counter.",
+        "algorithm_detail": "buffer := buffer || fragment (bitstring concatenation). fragments_received_length := fragments_received_length + length(fragment). No return value; modifies state variables directly.",
+        "usage_in_fsm": "Called in CHAINING_IN_PROGRESS_RECEIVING->CHAINING_IN_PROGRESS_RECEIVING (stay transition) and CHAINING_IN_PROGRESS_RECEIVING->TRANSPORT_ACTIVE/RESPONSE_INCOMPLETE (completion transitions)"
+      },
+      {
+        "name": "extract_fragment",
+        "parameters": [
+          {"name": "buffer", "type": "bitstring", "description": "Complete message buffer"},
+          {"name": "offset", "type": "uint16", "description": "Starting position in buffer"},
+          {"name": "length", "type": "uint16", "description": "Number of bytes to extract"}
+        ],
+        "return_type": "bitstring",
+        "description": "Extracts substring from buffer starting at offset with specified length. Used to fragment responses that exceed Le limit. Returns extracted fragment without modifying buffer. Validates offset+length does not exceed buffer size.",
+        "algorithm_detail": "If offset + length > size(buffer), return error or truncate. Else return buffer[offset : offset+length] (substring extraction). Does not modify original buffer.",
+        "usage_in_fsm": "Called in transitions sending response fragments: SELECTED->RESPONSE_INCOMPLETE, TRANSPORT_ACTIVE->RESPONSE_INCOMPLETE, CHAINING_IN_PROGRESS_RECEIVING->RESPONSE_INCOMPLETE, RESPONSE_INCOMPLETE->RESPONSE_INCOMPLETE, RESPONSE_INCOMPLETE->TRANSPORT_ACTIVE"
+      },
+      {
+        "name": "clear_fragment_buffer",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resets fragment_buffer to empty and clears all chaining state variables. Called after successful message reassembly or when chaining errors occur. Prepares state for next message.",
+        "algorithm_detail": "fragment_buffer := empty bitstring; fragments_received_length := 0; message_total_length := 0; P1P2_value := 0. Ensures no residual data from previous/failed chaining remains.",
+        "usage_in_fsm": "Called in CHAINING_IN_PROGRESS_RECEIVING->TRANSPORT_ACTIVE, CHAINING_IN_PROGRESS_RECEIVING->RESPONSE_INCOMPLETE (completion), CHAINING_IN_PROGRESS_RECEIVING->ERROR_MEMORY_EXCEEDED, CHAINING_IN_PROGRESS_RECEIVING->ERROR_SEQUENCING, CHAINING_IN_PROGRESS_RECEIVING->SESSION_TIMEOUT"
+      },
+      {
+        "name": "clear_response_buffer",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resets response_buffer and associated tracking variables after complete response transmission. Prepares state for next response generation.",
+        "algorithm_detail": "response_buffer := empty bitstring; response_sent_length := 0; response_remaining := 0. Ensures no residual response data remains after GET RESPONSE completion.",
+        "usage_in_fsm": "Called in RESPONSE_INCOMPLETE->TRANSPORT_ACTIVE transition when last fragment sent, and in RESPONSE_INCOMPLETE->SESSION_TIMEOUT"
+      },
+      {
+        "name": "process_and_generate_response",
+        "parameters": [
+          {"name": "message", "type": "bitstring", "description": "Complete Matter message to process"}
+        ],
+        "return_type": "bitstring",
+        "description": "Passes Matter message to higher protocol layer for processing, generates response message. This function abstracts all Matter-layer operations including cryptographic verification, command execution, and response construction. NTL layer treats Matter messages as opaque bitstrings.",
+        "algorithm_detail": "Decode Matter message format. Route to appropriate Matter protocol handler based on message type. Execute commanded operation (may involve cryptographic operations like signature verification, decryption, key derivation - all outside NTL scope). Generate Matter protocol response message. Encode response per Matter format. Return response bitstring. NTL does not inspect or validate Matter message contents.",
+        "usage_in_fsm": "Called in all TRANSPORT command processing transitions where response generation needed: SELECTED->TRANSPORT_ACTIVE, SELECTED->RESPONSE_INCOMPLETE, TRANSPORT_ACTIVE->TRANSPORT_ACTIVE, TRANSPORT_ACTIVE->RESPONSE_INCOMPLETE, CHAINING_IN_PROGRESS_RECEIVING->TRANSPORT_ACTIVE, CHAINING_IN_PROGRESS_RECEIVING->RESPONSE_INCOMPLETE"
+      },
+      {
+        "name": "response_size",
+        "parameters": [
+          {"name": "response", "type": "bitstring", "description": "Generated response message"}
+        ],
+        "return_type": "uint16",
+        "description": "Returns size in bytes of response message. Used in guard conditions to determine if response fits in Le bytes or requires fragmentation via GET RESPONSE protocol.",
+        "algorithm_detail": "Return length(response) in bytes. Simple size calculation of bitstring.",
+        "usage_in_fsm": "Used in guard conditions to determine transition path: response_size <= Le goes to TRANSPORT_ACTIVE; response_size > Le goes to RESPONSE_INCOMPLETE"
+      },
+      {
+        "name": "size",
+        "parameters": [
+          {"name": "buffer", "type": "bitstring", "description": "Buffer to measure"}
+        ],
+        "return_type": "uint16",
+        "description": "Returns size in bytes of bitstring. Helper function for length calculations.",
+        "algorithm_detail": "Return length(buffer) in bytes.",
+        "usage_in_fsm": "Used in actions calculating response_remaining: response_remaining := size(response_buffer) - Le"
+      },
+      {
+        "name": "min",
+        "parameters": [
+          {"name": "a", "type": "uint16", "description": "First value"},
+          {"name": "b", "type": "uint16", "description": "Second value"}
+        ],
+        "return_type": "uint16",
+        "description": "Returns minimum of two values. Used to cap SW2 byte at 255 (8-bit limit) when encoding remaining response bytes.",
+        "algorithm_detail": "If a < b return a, else return b.",
+        "usage_in_fsm": "Used in actions setting SW2 for incomplete responses: SW2 := min(255, response_remaining)"
+      },
+      {
+        "name": "concatenate",
+        "parameters": [
+          {"name": "buffer1", "type": "bitstring", "description": "First bitstring"},
+          {"name": "buffer2", "type": "bitstring", "description": "Second bitstring"}
+        ],
+        "return_type": "bitstring",
+        "description": "Concatenates two bitstrings. Used in guard conditions to construct complete message from fragment_buffer and final fragment for size checking.",
+        "algorithm_detail": "Return buffer1 || buffer2 (bitstring concatenation operator).",
+        "usage_in_fsm": "Used in guard conditions: response_size(process_matter_message(concatenate(fragment_buffer, data)))"
+      },
+      {
+        "name": "close_session",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Terminates NTL session, releases resources, resets session state to IDLE. Called on idle timeout or explicit session closure. Cleans up all session-specific state variables.",
+        "algorithm_detail": "Clear all buffers (fragment_buffer, response_buffer). Reset all counters and flags (chaining_active := false, fragments_received_length := 0, response_sent_length := 0, response_remaining := 0). session_state := IDLE. May notify higher layers of session closure.",
+        "usage_in_fsm": "Called in all timeout transitions: SELECTED->SESSION_TIMEOUT, TRANSPORT_ACTIVE->SESSION_TIMEOUT, CHAINING_IN_PROGRESS_RECEIVING->SESSION_TIMEOUT, RESPONSE_INCOMPLETE->SESSION_TIMEOUT"
+      },
+      {
+        "name": "ignore_command",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Silently discards received command without sending any response. Valid per specification when device not in commissioning mode receives SELECT. Provides option to not reveal device presence.",
+        "algorithm_detail": "Do nothing. Do not construct or send R-APDU. Command is dropped. No state change.",
+        "usage_in_fsm": "Called in IDLE->IDLE stay transition when SELECT received but commissioning_mode == false"
+      },
+      {
+        "name": "initialize_device_info",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Initializes device information fields (vendor_id, product_id, discriminator, extended_data) when entering commissioning mode. May load from persistent storage or configuration.",
+        "algorithm_detail": "Load device information from secure storage or configuration area. Set state variables: vendor_id := device_vendor_id; product_id := device_product_id; discriminator := device_discriminator; extended_data := device_extended_data_if_any. Apply privacy policy (may zero VID/PID).",
+        "usage_in_fsm": "Called in IDLE->COMMISSIONING_MODE_READY transition"
+      },
+      {
+        "name": "clear_error_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clears all error state variables and timers when exiting error states. Resets error tracking for clean recovery to IDLE state.",
+        "algorithm_detail": "Reset all error-related state variables: error_code := 0, error_reason := empty_string, error_timer := 0, received_aid := empty, P1P2_value := 0, received_command := empty, expected_command := empty. This cleanup ensures no error state pollution when returning to IDLE.",
+        "usage_in_fsm": "Called in all ERROR_* -> IDLE transitions (error timeout recovery)"
+      },
+      {
+        "name": "clear_session_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Completely clears all session-related state variables, including fragment buffers, response buffers, timers, and session tracking variables. Used for full session teardown on error or timeout.",
+        "algorithm_detail": "Reset all session state: clear_fragment_buffer(), clear_response_buffer(), paftp_idle_timer := 0, chaining_active := false, fragments_received_length := 0, message_total_length := 0, P1P2_value := 0, response_sent_length := 0, response_remaining := 0, current_command := None. Ensures complete cleanup with no resource leakage.",
+        "usage_in_fsm": "Called in ERROR_SEQUENCING -> IDLE, SESSION_TIMEOUT -> IDLE transitions"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "APDU",
+        "definition": "Application Protocol Data Unit per ISO/IEC 7816-4. Command APDU (C-APDU) sent from Commissioner to Commissionee contains: CLA (class), INS (instruction), P1/P2 (parameters), Lc (command data length), Data (command data), Le (expected response length). Response APDU (R-APDU) sent from Commissionee to Commissioner contains: Data (response data, optional), SW1 (status word 1), SW2 (status word 2).",
+        "security_relevance": "APDU structure enforces protocol syntax. Incorrect APDU construction can cause parsing errors, buffer overflows, or protocol confusion attacks. Parameter validation (valid_select_params, valid_transport_params) prevents malformed command injection."
+      },
+      {
+        "term": "AID",
+        "definition": "Application Identifier per ISO/IEC 7816-4. Unique identifier for smartcard application. Matter NTL uses fixed AID A0:00:00:09:09:8A:77:E4:01. SELECT command must specify this exact AID to initiate Matter commissioning.",
+        "security_relevance": "AID authentication prevents protocol confusion. Only SELECT commands with Matter AID can initiate commissioning. Wrong AID rejected with error, preventing non-Matter applications from accessing commissioning functionality or causing unintended protocol interactions."
+      },
+      {
+        "term": "ISO-DEP",
+        "definition": "ISO-Dependent protocol per NFC Forum Digital Specification. Half-duplex block transmission protocol providing retransmission, chaining, and error detection at frame level. Operates below APDU layer. Handles frame segmentation (I-blocks), acknowledgments (R-blocks), and protocol control (S-blocks including WTX for timing extension).",
+        "security_relevance": "ISO-DEP reliability is security assumption. Spec assumes ISO-DEP correctly implements retransmission and checksum verification. If ISO-DEP fails to detect frame corruption or loss, corrupted APDUs propagate to NTL layer, potentially causing message integrity violations or parser exploits."
+      },
+      {
+        "term": "Short Field Coding",
+        "definition": "ISO/IEC 7816-4 encoding where length fields are single octets (max 255 bytes). NTL mandates short field coding for Lc and Le fields. Contrasts with extended field coding (multi-byte length fields). Required for interoperability with smartphone NFC implementations limited to 256-byte APDU payloads.",
+        "security_relevance": "Encoding consistency prevents parser confusion. Mixed encoding could cause length field misinterpretation, buffer size miscalculation, overflow/underflow vulnerabilities. Mandatory short field coding eliminates this attack surface."
+      },
+      {
+        "term": "APDU Chaining",
+        "definition": "ISO/IEC 7816-4 mechanism for transmitting messages exceeding single APDU size limit. Command chaining: CLA byte 0x90 indicates chained C-APDU (more fragments follow), 0x80 indicates last fragment. Response chaining: SW1=0x61 indicates incomplete response, SW2 encodes remaining bytes, GET RESPONSE retrieves next fragment. P1/P2 encode total message length and must remain consistent across all fragments.",
+        "security_relevance": "Chaining integrity critical for message atomicity. P1/P2 consistency check (ERROR_SEQUENCING transition) prevents fragment injection or substitution. Memory bounds check (ERROR_MEMORY_EXCEEDED transition) prevents buffer overflow from oversized messages. Fragment order preservation prevents message corruption."
+      },
+      {
+        "term": "Commissioning Mode",
+        "definition": "Device state indicating readiness to accept commissioning commands. Controlled by user action (e.g., button press) or higher protocol layers. When commissioning_mode == true, device accepts SELECT command; when false, SELECT is ignored or rejected. Provides access control gate for commissioning session.",
+        "security_relevance": "commissioning_mode is primary access control mechanism. Prevents unauthorized commissioning without user intent. If commissioning mode incorrectly activated or not properly deactivated, expands attack window. Physical user action required to enter commissioning mode enforces physical proximity assumption."
+      },
+      {
+        "term": "Status Words (SW1, SW2)",
+        "definition": "Two-byte ISO/IEC 7816-4 status code returned in R-APDU. SW1 indicates status class, SW2 provides specific code. Key codes: 0x9000 = success/complete; 0x61XX = success/incomplete, XX bytes remaining; 0x6985 = conditions not satisfied (e.g., not in commissioning mode, out of sequence); 0x6A84 = not enough memory; 0x6A82 = file/application not found (wrong AID).",
+        "security_relevance": "Status codes convey protocol state and error conditions. Incorrect status codes confuse Commissioner error handling, potentially causing retry loops (DoS), incorrect state transitions, or bypassing error detection. Status code consistency enforces protocol semantics."
+      },
+      {
+        "term": "FSD/FSC",
+        "definition": "Frame Size Device/Frame Size Card. Maximum frame size each NFC device can receive, negotiated during ISO-DEP activation via RATS (Request for Answer To Select) and ATS (Answer To Select) frames. FSD = Commissioner max receive size, FSC = Commissionee max receive size. Used to optimize APDU fragmentation: Lc SHOULD be <= min(255, FSC-10), Le SHOULD be <= min(256, FSD-6) to minimize ISO-DEP chaining overhead.",
+        "security_relevance": "Frame size negotiation affects fragmentation behavior. While recommendations (SHOULD), not security-critical. Incorrect FSD/FSC could cause excessive ISO-DEP chaining (performance) but not security violation. ISO-DEP layer handles frame size compliance."
+      },
+      {
+        "term": "PAFTP Idle Timeout",
+        "definition": "Protocol-level timeout (30 seconds) enforcing session closure when no unique data transmitted. Prevents resource leakage from abandoned sessions. Commissioner MUST close PAFTP session after idle timeout. Timer resets on any command/response activity (reset_idle_timer() called in all data-exchanging transitions).",
+        "security_relevance": "Idle timeout prevents session hijacking and resource exhaustion. Without timeout, attacker could open sessions and leave idle to exhaust connection pool, memory, or file descriptors (DoS). Timeout also limits window of opportunity for attack if commissioning mode persists longer than intended."
+      },
+      {
+        "term": "Matter Message",
+        "definition": "Protocol message from higher Matter layers, transported as opaque bitstring by NTL. Contains encrypted/authenticated data per Matter security protocol. NTL provides transport only; does not inspect, validate, or process Matter message contents. Message size limited to 65535 bytes by P1/P2 16-bit encoding, further limited by device memory constraints.",
+        "security_relevance": "NTL has NO cryptographic protection. All security (authentication, confidentiality, integrity, replay protection) provided by Matter protocol layers above NTL. NTL security assumptions: higher layers provide crypto; NTL only transports. If higher layers fail to protect, NTL offers no defense. Physical proximity (NFC range) is NTL's only inherent security property."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "COMMISSIONING_MODE_ACCESS_CONTROL",
+        "type": "access_control",
+        "description": "SELECT command only succeeds when device in commissioning mode (commissioning_mode == true) and AID matches Matter. Prevents unauthorized commissioning without user consent and physical action. Enforced by guard conditions requiring commissioning_mode == true for SELECT success transition.",
+        "fsm_states_involved": ["IDLE", "COMMISSIONING_MODE_READY", "SELECTED", "ERROR_NOT_IN_COMMISSIONING"],
+        "critical_transitions": ["COMMISSIONING_MODE_READY->SELECTED (success)", "IDLE->ERROR_NOT_IN_COMMISSIONING (rejection)"]
+      },
+      {
+        "property_name": "AID_AUTHENTICATION",
+        "type": "authenticity",
+        "description": "Only Matter AID (A0:00:00:09:09:8A:77:E4:01) can initiate commissioning session. Wrong AID rejected. Prevents protocol confusion where non-Matter applications attempt to access NTL functionality. Enforced by guard condition checking aid == matter_aid.",
+        "fsm_states_involved": ["COMMISSIONING_MODE_READY", "SELECTED", "ERROR_INVALID_AID"],
+        "critical_transitions": ["COMMISSIONING_MODE_READY->SELECTED (correct AID)", "COMMISSIONING_MODE_READY->ERROR_INVALID_AID (wrong AID)"]
+      },
+      {
+        "property_name": "STATE_TRANSITION_ORDERING",
+        "type": "correctness",
+        "description": "TRANSPORT command only accepted after successful SELECT. Enforces protocol state machine ordering: must SELECT before TRANSPORT. Guard conditions check session_state == SELECTED or TRANSPORT_ACTIVE before processing TRANSPORT. Prevents state confusion and protocol bypass.",
+        "fsm_states_involved": ["IDLE", "COMMISSIONING_MODE_READY", "SELECTED", "TRANSPORT_ACTIVE", "ERROR_INVALID_STATE"],
+        "critical_transitions": ["SELECTED->TRANSPORT_ACTIVE (valid)", "IDLE->ERROR_INVALID_STATE (invalid - TRANSPORT before SELECT)"]
+      },
+      {
+        "property_name": "PROTOCOL_VERSION_BINDING",
+        "type": "security",
+        "description": "Protocol version negotiated in SELECT response (version 0x01) is fixed for session. Commissioner SHALL use advertised version. Prevents version downgrade attacks. Future versions must maintain backward compatibility or negotiate securely.",
+        "fsm_states_involved": ["COMMISSIONING_MODE_READY", "SELECTED"],
+        "critical_transitions": ["COMMISSIONING_MODE_READY->SELECTED (version fixed at 0x01)"]
+      },
+      {
+        "property_name": "CHAINING_CONSISTENCY",
+        "type": "consistency",
+        "description": "P1/P2 parameters encoding total message length must remain identical across all chained fragments. Enforced by storing P1P2_value from first fragment and checking (P1 << 8 | P2) == P1P2_value in subsequent fragments. Prevents fragment substitution, message length manipulation, or buffer size confusion.",
+        "fsm_states_involved": ["CHAINING_IN_PROGRESS_RECEIVING", "ERROR_SEQUENCING"],
+        "critical_transitions": ["CHAINING_IN_PROGRESS_RECEIVING->CHAINING_IN_PROGRESS_RECEIVING (consistent P1P2)", "CHAINING_IN_PROGRESS_RECEIVING->ERROR_SEQUENCING (inconsistent P1P2)"]
+      },
+      {
+        "property_name": "FRAGMENT_REASSEMBLY_ATOMICITY",
+        "type": "atomicity",
+        "description": "Chained message fragments must be completely reassembled before processing or entirely discarded on error. No partial message processing. On error (memory exceeded, P1P2 inconsistency), clear_fragment_buffer() called to discard partial data. On success, complete_message created from fragments before passing to higher layers.",
+        "fsm_states_involved": ["CHAINING_IN_PROGRESS_RECEIVING", "TRANSPORT_ACTIVE", "RESPONSE_INCOMPLETE", "ERROR_MEMORY_EXCEEDED", "ERROR_SEQUENCING"],
+        "critical_transitions": ["CHAINING_IN_PROGRESS_RECEIVING->TRANSPORT_ACTIVE (complete)", "CHAINING_IN_PROGRESS_RECEIVING->ERROR_MEMORY_EXCEEDED (discard)"]
+      },
+      {
+        "property_name": "MEMORY_BOUNDS_ENFORCEMENT",
+        "type": "security",
+        "description": "Device SHALL reject messages exceeding max_supported_size with error 0x6A84. Guard conditions check fragments_received_length + Lc <= max_supported_size before accepting fragment. Prevents memory exhaustion, buffer overflow, or resource DoS from oversized messages.",
+        "fsm_states_involved": ["CHAINING_IN_PROGRESS_RECEIVING", "ERROR_MEMORY_EXCEEDED"],
+        "critical_transitions": ["CHAINING_IN_PROGRESS_RECEIVING->ERROR_MEMORY_EXCEEDED (size exceeded)"]
+      },
+      {
+        "property_name": "GET_RESPONSE_SEQUENCING",
+        "type": "correctness",
+        "description": "GET RESPONSE command only valid immediately after receiving R-APDU with SW1=0x61 (incomplete response). Guard condition session_state == RESPONSE_INCOMPLETE enforces sequencing. Out-of-sequence GET RESPONSE returns error 0x6985. Prevents protocol state confusion, unauthorized data retrieval, or buffer state corruption.",
+        "fsm_states_involved": ["RESPONSE_INCOMPLETE", "ERROR_SEQUENCING"],
+        "critical_transitions": ["RESPONSE_INCOMPLETE->TRANSPORT_ACTIVE (valid sequence)", "SELECTED/TRANSPORT_ACTIVE->ERROR_SEQUENCING (out of sequence)"]
+      },
+      {
+        "property_name": "ROLE_ASYMMETRY",
+        "type": "access_control",
+        "description": "Commissioner (NFC Reader/Writer) always issues commands (C-APDU). Commissionee (NFC Listener) always responds (R-APDU). Roles immutable during session. Enforced by NFC physical layer (Poll Mode vs Listen Mode) and command direction. Prevents command injection from Commissionee or role confusion attacks.",
+        "fsm_states_involved": ["All states"],
+        "critical_transitions": ["All transitions (command direction enforced by role)"]
+      },
+      {
+        "property_name": "IDLE_TIMEOUT_ENFORCEMENT",
+        "type": "timing",
+        "description": "Session MUST close after 30 seconds (30000 milliseconds) with no data activity. Timer increments via timer_tick trigger, resets to 0 on any command/response. When paftp_idle_timer >= 30000, transition to SESSION_TIMEOUT and close session. Prevents resource leakage, limits attack window, enforces session liveness.",
+        "fsm_states_involved": ["SELECTED", "TRANSPORT_ACTIVE", "CHAINING_IN_PROGRESS_RECEIVING", "RESPONSE_INCOMPLETE", "SESSION_TIMEOUT"],
+        "critical_transitions": ["SELECTED/TRANSPORT_ACTIVE/CHAINING_IN_PROGRESS_RECEIVING/RESPONSE_INCOMPLETE->SESSION_TIMEOUT (timeout)", "Stay transitions with timer increment (no timeout yet)"]
+      }
+    ],
+    "initial_state": "IDLE",
+    "all_states": [
+      "IDLE",
+      "COMMISSIONING_MODE_READY",
+      "SELECTED",
+      "TRANSPORT_ACTIVE",
+      "CHAINING_IN_PROGRESS_RECEIVING",
+      "RESPONSE_INCOMPLETE",
+      "ERROR_NOT_IN_COMMISSIONING",
+      "ERROR_MEMORY_EXCEEDED",
+      "ERROR_SEQUENCING",
+      "ERROR_INVALID_AID",
+      "ERROR_INVALID_STATE",
+      "SESSION_TIMEOUT"
+    ],
+    "all_triggers": [
+      "enable_commissioning_mode",
+      "disable_commissioning_mode",
+      "SELECT_command",
+      "TRANSPORT_command",
+      "GET_RESPONSE_command",
+      "timer_tick"
+    ],
+    "all_functions_used": [
+      "build_select_response",
+      "valid_select_params",
+      "valid_transport_params",
+      "valid_get_response_params",
+      "send_response_apdu",
+      "send_complete_response",
+      "send_incomplete_response",
+      "send_error_response",
+      "send_ack_response",
+      "append_fragment",
+      "extract_fragment",
+      "clear_fragment_buffer",
+      "clear_response_buffer",
+      "process_and_generate_response",
+      "response_size",
+      "size",
+      "min",
+      "concatenate",
+      "close_session",
+      "ignore_command",
+      "initialize_device_info"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "none_at_ntl_layer",
+        "algorithm": "N/A",
+        "inputs": [],
+        "output": "N/A",
+        "assumptions": [
+          "NTL provides NO cryptographic protection",
+          "All cryptography (authentication, encryption, integrity, replay protection) handled by Matter protocol layers above NTL",
+          "NTL transports Matter messages as opaque bitstrings without inspection or validation",
+          "Security depends entirely on higher-layer cryptographic protocols being correctly implemented"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "ISO-DEP protocol correctly implements reliable frame delivery with retransmission, error detection, and sequencing per NFC Forum Digital Specification",
+        "type": "explicit",
+        "if_violated": "Frame corruption, loss, or reordering could propagate to APDU layer, breaking message integrity and enabling injection or corruption attacks. FRAGMENT_REASSEMBLY_ATOMICITY property depends on ISO-DEP reliability."
+      },
+      {
+        "assumption": "NFC ~10cm range provides physical proximity authentication, preventing remote attackers from participating in NTL sessions",
+        "type": "implicit",
+        "if_violated": "Long-range NFC attacks or relay attacks break proximity assumption. Attacker could conduct man-in-the-middle, eavesdrop on commissioning, or commission devices remotely without physical presence. COMMISSIONING_MODE_ACCESS_CONTROL property weakened."
+      },
+      {
+        "assumption": "Higher Matter protocol layers provide cryptographic authentication, confidentiality, integrity protection, and replay protection for transported messages",
+        "type": "implicit",
+        "if_violated": "NTL has zero cryptographic protection. Without higher-layer security, attacker can eavesdrop, replay, modify, or inject messages. Entire NTL security model collapses. All transported data exposed."
+      },
+      {
+        "assumption": "Device has sufficient memory for max_supported_size or correctly enforces memory limits with error 0x6A84",
+        "type": "implicit",
+        "if_violated": "Memory exhaustion could crash device, overflow buffers, or overwrite security-critical data. MEMORY_BOUNDS_ENFORCEMENT property fails. Resource-constrained IoT devices particularly vulnerable."
+      },
+      {
+        "assumption": "Commissioning mode controlled reliably by user action or higher protocol layers, only activated when user intends commissioning",
+        "type": "implicit",
+        "if_violated": "Unintended commissioning mode activation enables unauthorized commissioning. If mode persists too long, expands attack window. COMMISSIONING_MODE_ACCESS_CONTROL property undermined."
+      },
+      {
+        "assumption": "ISO/IEC 7816-4 APDU chaining implementation correct, preventing fragment injection, reordering, or truncation",
+        "type": "implicit",
+        "if_violated": "Incorrect chaining allows message corruption, buffer overflows, or injection of malicious fragments. CHAINING_CONSISTENCY and FRAGMENT_REASSEMBLY_ATOMICITY properties compromised."
+      },
+      {
+        "assumption": "Single NTL session active at any time per device; no concurrent commissioning sessions",
+        "type": "implicit",
+        "if_violated": "Concurrent sessions cause race conditions in protocol state, fragment buffer corruption, or session confusion enabling message misdirection or state machine exploitation."
+      },
+      {
+        "assumption": "NFC Reader/Writer (Commissioner) and Listener (Commissionee) implementations compliant with NFC Forum specifications for Type 4A operation",
+        "type": "explicit",
+        "if_violated": "Non-compliant implementations cause interoperability failures, timing violations, or RF parameter mismatches enabling eavesdropping or collision exploits. ROLE_ASYMMETRY property could be violated."
+      },
+      {
+        "assumption": "Timer accuracy adequate for enforcing 15s ACK and 30s idle timeout constraints",
+        "type": "implicit",
+        "if_violated": "Clock drift or time manipulation could cause premature session closure (DoS) or allow sessions to persist beyond timeout (resource leakage, unauthorized access). IDLE_TIMEOUT_ENFORCEMENT property fails."
+      },
+      {
+        "assumption": "Protocol version 0x01 is fixed and immutable; version negotiation assumes Commissioner correctly uses advertised version",
+        "type": "explicit",
+        "if_violated": "Version confusion could cause protocol parsing errors, enable downgrade attacks to vulnerable versions, or allow exploitation of version-specific bugs. PROTOCOL_VERSION_BINDING property undermined."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

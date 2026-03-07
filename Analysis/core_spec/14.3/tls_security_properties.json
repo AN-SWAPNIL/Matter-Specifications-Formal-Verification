@@ -1,0 +1,634 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "TLS_Client_Only_Enforcement",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Only TLS Client Connections are permitted using clusters and commands in this specification; server connections are forbidden.",
+      "formal": "∀connection, cluster. uses_cluster(connection, cluster) ⟹ is_tls_client(connection) ∧ ¬is_tls_server(connection)",
+      "violation": "If TLS server connections are allowed, nodes may accept unauthorized incoming connections, bypassing authentication and authorization mechanisms. Attacker gains ability to impersonate legitimate servers and intercept or manipulate communications.",
+      "proverifQuery": "query conn:connection, c:cluster ⊢ event cluster_used(conn, c) ==> event is_client_connection(conn) ∧ ¬event is_server_connection(conn)"
+    },
+    {
+      "id": "PROP_002",
+      "name": "TLS_Cluster_Support_Mandatory",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "All nodes wishing to use TLS must support the TLS Certificate Management Cluster.",
+      "formal": "∀node. uses_tls(node) ⟹ supports_cluster(node, TLSCertMgmt)",
+      "violation": "Node attempts TLS operations without proper certificate management infrastructure, leading to certificate validation failures, inability to establish secure connections, or use of improperly provisioned certificates that could be rejected or compromised.",
+      "proverifQuery": "query n:node ⊢ event tls_operation(n) ==> event has_cluster(n, tlscert_cluster)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Time_Sync_Prerequisite_For_TLS",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Nodes supporting TLS Certificate Management must have Time Synchronization cluster with NTPClient or TimeSyncClient feature enabled for certificate time validation.",
+      "formal": "∀node. supports_cluster(node, TLSCertMgmt) ⟹ (supports_feature(node, NTPClient) ∨ supports_feature(node, TimeSyncClient))",
+      "violation": "Without time synchronization, certificate validity periods cannot be verified. Attacker can use expired certificates or certificates not yet valid, bypassing temporal access controls. Nodes may accept revoked or outdated certificates, enabling man-in-the-middle attacks.",
+      "proverifQuery": "query n:node ⊢ event has_tlscert_cluster(n) ==> (event has_ntp_client(n) ∨ event has_timesync_client(n))"
+    },
+    {
+      "id": "PROP_004",
+      "name": "CAID_Uniqueness_Per_Fabric",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Each Certificate Authority ID (CAID) uniquely identifies exactly one TLSRCAC per Fabric on a Node.",
+      "formal": "∀node, fabric, caid, ca1, ca2. identifies(caid, ca1, fabric, node) ∧ identifies(caid, ca2, fabric, node) ⟹ ca1 = ca2",
+      "violation": "If CAID maps to multiple root CAs, certificate validation becomes ambiguous. Node may validate using wrong CA, accepting certificates from untrusted issuers or rejecting valid certificates. Attacker can exploit this to inject malicious CA or cause denial of service.",
+      "proverifQuery": "query n:node, f:fabric, caid:id, ca1:cert, ca2:cert ⊢ event maps(caid, ca1, f, n) ∧ event maps(caid, ca2, f, n) ==> ca1 = ca2"
+    },
+    {
+      "id": "PROP_005",
+      "name": "CAID_Operations_Available",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Nodes must provide mechanisms to get, update, or remove TLSRCAC certificates using the CAID identifier.",
+      "formal": "∀node, caid. has_caid(node, caid) ⟹ (can_get(node, caid) ∧ can_update(node, caid) ∧ can_remove(node, caid))",
+      "violation": "Without removal capability, compromised CA certificates cannot be revoked, forcing reliance on expired certificates. Without update, certificate rotation fails, creating gap vulnerabilities. Without get, certificate audit and validation is impossible.",
+      "proverifQuery": "query n:node, caid:id ⊢ event caid_provisioned(n, caid) ==> event can_operate(n, caid, get) ∧ event can_operate(n, caid, update) ∧ event can_operate(n, caid, remove)"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Single_CCD_Per_CCDID",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "A Node stores exactly one Client Certificate Details (certificate + private key + chain) per CCDID.",
+      "formal": "∀node, ccdid, ccd1, ccd2. stored(node, ccdid, ccd1) ∧ stored(node, ccdid, ccd2) ⟹ ccd1 = ccd2",
+      "violation": "Multiple CCDs per CCDID creates race conditions where node uses wrong certificate-key pair combination, causing TLS handshake failures or key mismatches. Attacker can inject malicious CCD, causing node to authenticate with attacker-controlled credentials.",
+      "proverifQuery": "query n:node, ccdid:id, ccd1:certdetails, ccd2:certdetails ⊢ event stored_ccd(n, ccdid, ccd1) ∧ event stored_ccd(n, ccdid, ccd2) ==> ccd1 = ccd2"
+    },
+    {
+      "id": "PROP_007",
+      "name": "CCDID_Operations_Available",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Nodes must provide mechanisms to retrieve, update, or remove Client Certificate Details using CCDID.",
+      "formal": "∀node, ccdid. has_ccdid(node, ccdid) ⟹ (can_retrieve(node, ccdid) ∧ can_update(node, ccdid) ∧ can_remove(node, ccdid))",
+      "violation": "Without remove, compromised private keys remain active indefinitely. Without update, certificate rotation is impossible, forcing use of expired certificates. Without retrieve, debugging TLS failures and auditing become impossible.",
+      "proverifQuery": "query n:node, ccdid:id ⊢ event ccdid_provisioned(n, ccdid) ==> event can_operate(n, ccdid, retrieve) ∧ event can_operate(n, ccdid, update) ∧ event can_operate(n, ccdid, remove)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Nonce_Generation_Randomness",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "CSR nonce must be 32 bytes generated using cryptographically secure DRBG (Crypto_DRBG).",
+      "formal": "∀client, nonce. generates_nonce(client, nonce) ⟹ (length(nonce) = 32 ∧ source(nonce) = Crypto_DRBG)",
+      "violation": "Weak or predictable nonce allows attacker to replay or predict nonce values, defeating freshness check. Attacker can reuse old CSR responses or pre-compute nonces to forge certificate requests, bypassing authentication.",
+      "proverifQuery": "query c:client, n:nonce ⊢ event nonce_created(c, n) ==> event is_drbg_generated(n) ∧ event byte_length(n, 32)"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Nonce_Uniqueness_Per_CSR",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Each CSR request must use a unique nonce value to ensure freshness and prevent replay attacks.",
+      "formal": "∀client, csr1, csr2, nonce. (csr1 ≠ csr2) ∧ uses_nonce(csr1, nonce) ⟹ ¬uses_nonce(csr2, nonce)",
+      "violation": "Nonce reuse enables replay attacks where attacker captures CSRResponse and replays it for different certificate request, bypassing freshness validation. Attacker can obtain certificates without proper authorization or associate wrong public keys with certificates.",
+      "proverifQuery": "query c:client, csr1:request, csr2:request, n:nonce ⊢ event csr_uses_nonce(csr1, n) ∧ event csr_uses_nonce(csr2, n) ==> csr1 = csr2"
+    },
+    {
+      "id": "PROP_010",
+      "name": "CSR_Nonce_Transmission_Ordering",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Client must generate nonce before sending CSR request containing that nonce.",
+      "formal": "∀client, nonce, csr. sends(client, csr, nonce) ⟹ happens_before(generates_nonce(client, nonce), sends(client, csr, nonce))",
+      "violation": "If CSR is sent before nonce generation, the request contains uninitialized or predictable nonce values, defeating freshness guarantees. This creates timing window for race conditions or nonce prediction attacks.",
+      "proverifQuery": "query c:client, n:nonce, csr:request ⊢ event csr_sent(c, csr, n) ==> event_before(nonce_generated(c, n), csr_sent(c, csr, n))"
+    },
+    {
+      "id": "PROP_011",
+      "name": "CCDID_Provided_For_Rotation",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When rotating client certificates, existing CCDID must be provided in ClientCSR command.",
+      "formal": "∀client, csr, ccdid. is_rotation(csr) ⟹ provides(csr, ccdid) ∧ exists_before(ccdid)",
+      "violation": "Without existing CCDID during rotation, node cannot identify which certificate to replace, leading to orphaned old certificates or creation of duplicate CCDs. This wastes storage and creates confusion about which certificate is active.",
+      "proverifQuery": "query c:client, csr:request, ccdid:id ⊢ event certificate_rotation(csr) ==> event csr_contains(csr, ccdid) ∧ event ccdid_existed(ccdid)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "PKCS10_Signature_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Client must verify the inner signature in PKCS #10 CSR field according to PKCS #10 standard before accepting CSR.",
+      "formal": "∀client, csr, signature. receives(client, csr) ⟹ must_verify(client, signature(csr), PKCS10_standard) before accepts(client, csr)",
+      "violation": "Without PKCS #10 signature verification, attacker can submit tampered CSR with modified fields (subject name, extensions, public key). Client would provision certificate with attacker-controlled parameters, enabling impersonation or privilege escalation.",
+      "proverifQuery": "query c:client, csr:response, sig:signature ⊢ event csr_accepted(c, csr) ==> event verified_pkcs10(c, sig, csr)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Nonce_Signature_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Client must verify NonceSignature in ClientCSRResponse matches the nonce sent in the corresponding ClientCSR command.",
+      "formal": "∀client, nonce_sent, nonce_sig, csr. receives(client, csr, nonce_sig) ⟹ verify_signature(nonce_sig, nonce_sent, pubkey(csr))",
+      "violation": "Without nonce signature verification, attacker can replay old CSRResponse to different client or for different request, bypassing freshness check. This enables certificate substitution attacks where attacker obtains certificate for their own key but client provisions it under wrong CCDID.",
+      "proverifQuery": "query c:client, n:nonce, nsig:signature, csr:response ⊢ event csr_accepted(c, csr) ==> event signature_valid(nsig, n, pubkey(csr))"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Public_Key_Consistency_Across_Signatures",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The public key used for NonceSignature must be identical to the public key in the PKCS #10 CSR inner signature.",
+      "formal": "∀csr, nonce_sig, pkcs10_sig, pk1, pk2. uses_key(nonce_sig, pk1) ∧ uses_key(pkcs10_sig, pk2) ⟹ pk1 = pk2",
+      "violation": "If public keys differ, attacker performs key substitution attack: signs nonce with one key but embeds different public key in CSR. Client provisions certificate for key that didn't sign the nonce, enabling attacker to authenticate without possessing the actual private key used in CSR.",
+      "proverifQuery": "query csr:response, nsig:signature, csrsig:signature, pk1:pubkey, pk2:pubkey ⊢ event key_of_signature(nsig, pk1) ∧ event key_of_signature(csrsig, pk2) ==> pk1 = pk2"
+    },
+    {
+      "id": "PROP_015",
+      "name": "CSR_Validation_Before_Provisioning",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Client must complete all verification steps (PKCS #10 signature, nonce signature, public key consistency) before provisioning certificate.",
+      "formal": "∀client, cert, csr. provisions(client, cert, ccdid) ⟹ (verified_pkcs10(csr) ∧ verified_nonce(csr) ∧ verified_key_consistency(csr))",
+      "violation": "Provisioning unverified certificate allows attacker to inject malicious credentials. Node uses compromised certificate for TLS authentication, enabling attacker to impersonate node, intercept communications, or gain unauthorized access to servers.",
+      "proverifQuery": "query c:client, cert:certificate, ccdid:id ⊢ event certificate_provisioned(c, cert, ccdid) ==> event pkcs10_verified(c) ∧ event nonce_verified(c) ∧ event pubkey_verified(c)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "Certificate_Provisioning_Uses_Returned_CCDID",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Client must use the CCDID value returned in ClientCSRResponse when provisioning the certificate via ProvisionClientCertificate command.",
+      "formal": "∀client, csr_response, ccdid_returned, provision_cmd. returns(csr_response, ccdid_returned) ⟹ uses_ccdid(provision_cmd, ccdid_returned)",
+      "violation": "Using wrong CCDID causes certificate-to-identifier mismatch. Node may overwrite wrong certificate or fail to locate certificate when needed for TLS handshake. This leads to authentication failures or use of incorrect credentials for specific connections.",
+      "proverifQuery": "query c:client, csr:response, ccdid1:id, prov:command, ccdid2:id ⊢ event csr_returned(csr, ccdid1) ∧ event provision_uses(prov, ccdid2) ==> ccdid1 = ccdid2"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Three_Cluster_Support_For_TLS_Clients",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Nodes with TLS client connections must support all three clusters: TLS Client Management, TLS Certificate Management, and Time Synchronization.",
+      "formal": "∀node. uses_tls_client_connections(node) ⟹ (has_cluster(node, TLSClientMgmt) ∧ has_cluster(node, TLSCertMgmt) ∧ has_cluster(node, TimeSync))",
+      "violation": "Missing any cluster creates incomplete TLS infrastructure: no client management prevents endpoint provisioning, no certificate management prevents CA validation, no time sync prevents temporal certificate validation. Node cannot establish or validate TLS connections properly.",
+      "proverifQuery": "query n:node ⊢ event has_tls_client(n) ==> event has_cluster(n, tls_client_mgmt) ∧ event has_cluster(n, tls_cert_mgmt) ∧ event has_cluster(n, time_sync)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Endpoint_Provisioning_Via_Command",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "TLS endpoints must be provisioned exclusively using ProvisionEndpoint command and removed exclusively using RemoveEndpoint command.",
+      "formal": "∀node, endpoint. is_provisioned(node, endpoint) ⟺ used_command(ProvisionEndpoint, node, endpoint) ∧ ¬used_command(RemoveEndpoint, node, endpoint)",
+      "violation": "Provisioning via unauthorized methods bypasses validation and access control. Attacker may inject malicious endpoints or remove legitimate ones without proper authorization, causing denial of service or routing traffic to attacker-controlled servers.",
+      "proverifQuery": "query n:node, ep:endpoint ⊢ event endpoint_active(n, ep) ==> event provisioned_via_cmd(n, ep) ∧ ¬event removed_via_cmd(n, ep)"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Minimum_Root_Certificate_Storage_Per_Fabric",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Nodes must provide storage for at least 5 Root certificates per Fabric.",
+      "formal": "∀node, fabric. supports_tls(node) ⟹ capacity(node, fabric, root_certs) ≥ 5",
+      "violation": "Insufficient storage prevents provisioning multiple trusted CAs, limiting interoperability. Node forced to recycle certificates prematurely, invalidating active TLS connections or rejecting valid server certificates from alternate CAs. Causes service disruption.",
+      "proverifQuery": "query n:node, f:fabric ⊢ event supports_tls_cert(n) ==> event storage_capacity(n, f, root_cert, 5)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "Minimum_Client_Certificate_Storage_Per_Fabric",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Nodes must provide storage for at least 2 Client Certificate Details per Fabric.",
+      "formal": "∀node, fabric. supports_tls_client(node) ⟹ capacity(node, fabric, client_certs) ≥ 2",
+      "violation": "Insufficient storage prevents certificate rotation overlap (old cert remains valid while new cert is provisioned). Forces immediate cutover, creating service gap. Node cannot maintain redundant credentials for failover scenarios, reducing reliability.",
+      "proverifQuery": "query n:node, f:fabric ⊢ event supports_tls_client(n) ==> event storage_capacity(n, f, client_cert, 2)"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Minimum_Endpoint_Storage_Per_Fabric",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Nodes must provide storage for at least 2 TLS Endpoints per Fabric.",
+      "formal": "∀node, fabric. supports_tls_endpoints(node) ⟹ capacity(node, fabric, endpoints) ≥ 2",
+      "violation": "Single endpoint storage prevents redundancy and load distribution. Node cannot maintain primary and fallback servers. Single point of failure for TLS connections; if endpoint becomes unreachable, node loses all TLS connectivity for that Fabric.",
+      "proverifQuery": "query n:node, f:fabric ⊢ event supports_endpoints(n) ==> event storage_capacity(n, f, endpoint, 2)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Minimum_Concurrent_TLS_Connections_Per_Fabric",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Nodes must support at least 2 concurrent TLS client connections per Fabric using provisioned endpoints.",
+      "formal": "∀node, fabric. supports_tls(node) ⟹ concurrent_capacity(node, fabric) ≥ 2",
+      "violation": "Single connection limit creates bottleneck, forcing sequential operations. Node cannot perform parallel queries to multiple servers or maintain persistent connection while establishing new one. Performance degradation and timeout risks increase significantly.",
+      "proverifQuery": "query n:node, f:fabric ⊢ event supports_tls_client(n) ==> event concurrent_connections(n, f, 2)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "Cluster_Location_On_Root_Endpoint",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "TLS Certificate Management Cluster must be on root node endpoint when required and must not be present on any other endpoint.",
+      "formal": "∀node, cluster. is_tlscert_cluster(cluster) ⟹ (present(cluster, root_endpoint(node)) ∧ ∀ep. ep ≠ root_endpoint(node) ⟹ ¬present(cluster, ep))",
+      "violation": "Cluster on non-root endpoint fragments certificate management across multiple endpoints, creating inconsistent state and access control ambiguity. Attacker could exploit endpoint confusion to provision certificates through less-protected endpoints or bypass Fabric isolation.",
+      "proverifQuery": "query n:node, c:cluster, ep:endpoint ⊢ event cluster_present(c, ep) ∧ event is_tlscert(c) ==> event is_root_endpoint(ep) ∧ ∀ep2:endpoint. ep2 ≠ ep ==> ¬event cluster_present(c, ep2)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Sequential_CSR_Process_Ordering",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "CSR generation, validation, and provisioning must follow strict sequential ordering: nonce generation → CSR request → response validation → certificate creation → provisioning.",
+      "formal": "∀process. csr_process(process) ⟹ happens_in_order([gen_nonce, send_csr, verify_response, create_cert, provision_cert])",
+      "violation": "Out-of-order execution breaks freshness and validation guarantees. Provisioning before verification allows unvalidated certificates. Creating certificate before response allows timing attacks. Skipping nonce generation allows replay attacks. State machine corruption leads to authentication bypass.",
+      "proverifQuery": "query p:process ⊢ event csr_complete(p) ==> event_order(nonce_gen, csr_send, verify, create, provision)"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Server_Authentication_Via_Root_CA",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "TLS Root CA certificates must be used to authenticate servers during handshake, ensuring client connects to correct server and not impostor.",
+      "formal": "∀client, server, connection. establishes(client, connection, server) ⟹ authenticated_via_root_ca(server, root_ca(client))",
+      "violation": "Without Root CA authentication, client cannot verify server identity. Attacker performs man-in-the-middle attack, presenting self-signed certificate or certificate from untrusted CA. Client communicates with impostor, exposing sensitive data and commands to attacker.",
+      "proverifQuery": "query c:client, s:server, conn:connection ⊢ event connection_established(c, s, conn) ==> event server_authenticated(s, root_ca(c))"
+    },
+    {
+      "id": "PROP_026",
+      "name": "Fabric_Isolation_For_Certificates",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Certificates, CAID, and CCDID must be isolated per Fabric; certificates from one Fabric cannot be used to authenticate in another Fabric.",
+      "formal": "∀node, cert, fabric1, fabric2. (fabric1 ≠ fabric2) ∧ provisioned(cert, node, fabric1) ⟹ ¬usable(cert, node, fabric2)",
+      "violation": "Cross-Fabric certificate use breaks multi-tenancy isolation. Attacker with access to one Fabric can use those credentials to authenticate in another Fabric, escalating privileges and accessing unauthorized resources. Complete breakdown of Fabric security boundaries.",
+      "proverifQuery": "query n:node, cert:certificate, f1:fabric, f2:fabric ⊢ event provisioned(cert, n, f1) ∧ event used(cert, n, f2) ==> f1 = f2"
+    },
+    {
+      "id": "PROP_027",
+      "name": "Time_Validation_For_Certificate_Validity",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Certificate time and date validation must be performed using synchronized time from Time Synchronization cluster to verify notBefore and notAfter fields.",
+      "formal": "∀node, cert. validates(node, cert) ⟹ uses_synced_time(node) ∧ current_time ≥ notBefore(cert) ∧ current_time ≤ notAfter(cert)",
+      "violation": "Without time validation, expired or not-yet-valid certificates are accepted. Attacker uses revoked/expired certificate or future-dated certificate with long validity to maintain persistent access. Time-based revocation mechanisms become ineffective, preventing security updates.",
+      "proverifQuery": "query n:node, cert:certificate, t:time ⊢ event certificate_accepted(n, cert, t) ==> event time_synchronized(n, t) ∧ event in_validity_period(cert, t)"
+    },
+    {
+      "id": "PROP_028",
+      "name": "Atomicity_Of_Certificate_Update",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "Certificate update operations must be atomic: either the new certificate completely replaces the old one, or the operation fails and old certificate remains unchanged.",
+      "formal": "∀node, ccdid, cert_old, cert_new. update(node, ccdid, cert_new) ⟹ (success ∧ stored(ccdid, cert_new) ∧ ¬stored(ccdid, cert_old)) ∨ (failure ∧ stored(ccdid, cert_old) ∧ ¬stored(ccdid, cert_new))",
+      "violation": "Partial updates leave node in inconsistent state with certificate metadata pointing to old certificate but private key for new certificate. TLS handshakes fail due to key-certificate mismatch. Node cannot authenticate until manual intervention, causing service outage.",
+      "proverifQuery": "query n:node, ccdid:id, old:cert, new:cert ⊢ event update_attempted(n, ccdid, old, new) ==> (event stored(n, ccdid, new) ∧ ¬event stored(n, ccdid, old)) ∨ (event stored(n, ccdid, old) ∧ ¬event stored(n, ccdid, new))"
+    },
+    {
+      "id": "PROP_029",
+      "name": "Atomicity_Of_Certificate_Removal",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "Certificate removal must atomically delete certificate, private key, and entire intermediate chain; partial removal is forbidden.",
+      "formal": "∀node, ccdid, ccd. remove(node, ccdid) ⟹ ¬exists_after(ccd.cert) ∧ ¬exists_after(ccd.key) ∧ ¬exists_after(ccd.chain)",
+      "violation": "Partial removal leaves orphaned private key or certificate without corresponding key. Orphaned private key creates security risk if not properly zeroed. Orphaned certificate wastes storage and may be reused with wrong key, causing authentication failures or security breaches.",
+      "proverifQuery": "query n:node, ccdid:id, ccd:certdetails ⊢ event removed(n, ccdid) ==> ¬event exists(ccd.cert) ∧ ¬event exists(ccd.key) ∧ ¬event exists(ccd.chain)"
+    },
+    {
+      "id": "PROP_030",
+      "name": "Private_Key_Protection_In_CCD",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Private keys in Client Certificate Details must be protected and never exposed outside secure storage; only used internally for TLS handshake signing.",
+      "formal": "∀node, ccdid, privkey. stored(node, ccdid, privkey) ⟹ ¬disclosed(privkey) ∧ used_only_for_handshake(privkey)",
+      "violation": "Private key exposure allows attacker to impersonate node indefinitely. Attacker clones credentials and authenticates as legitimate node to any server in the Fabric. Complete compromise of node identity without detection until certificate expires or is manually revoked.",
+      "proverifQuery": "query n:node, ccdid:id, pk:privkey ⊢ event key_stored(n, ccdid, pk) ==> ¬event key_disclosed(pk) ∧ event key_internal_use(pk)"
+    },
+    {
+      "id": "PROP_031",
+      "name": "Certificate_Chain_Completeness",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Client Certificate Details must include complete chain of intermediate certificates from client certificate to root CA for proper validation.",
+      "formal": "∀ccd, client_cert, root_ca. contains(ccd, client_cert) ⟹ ∃chain. complete_path(chain, client_cert, root_ca) ∧ contains(ccd, chain)",
+      "violation": "Incomplete chain prevents server from validating client certificate, causing authentication failures. Server lacks intermediate CAs needed to build trust path to root CA. All TLS connections using incomplete CCD fail, causing service outage.",
+      "proverifQuery": "query ccd:certdetails, cc:cert, rc:cert ⊢ event ccd_contains(ccd, cc) ==> ∃chain:certchain. event complete_chain(chain, cc, rc) ∧ event ccd_contains_chain(ccd, chain)"
+    },
+    {
+      "id": "PROP_032",
+      "name": "CAID_Persistence_Across_Operations",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "CAID identifiers must remain stable across get, update, and remove operations; the same CAID always refers to the same certificate slot.",
+      "formal": "∀node, caid, time1, time2. identifies(caid, slot, time1) ⟹ identifies(caid, slot, time2) ∧ ¬identifies(caid, slot', time2) where slot ≠ slot'",
+      "violation": "CAID instability causes operations to target wrong certificate. Remove command deletes wrong CA, breaking TLS validation for active connections. Update command overwrites wrong certificate, causing validation failures or using certificates from different trust chains.",
+      "proverifQuery": "query n:node, caid:id, s1:slot, s2:slot, t1:time, t2:time ⊢ event identifies(caid, s1, t1) ∧ event identifies(caid, s2, t2) ==> s1 = s2"
+    },
+    {
+      "id": "PROP_033",
+      "name": "CCDID_Persistence_Across_Operations",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "CCDID identifiers must remain stable across retrieve, update, and remove operations; the same CCDID always refers to the same certificate details slot.",
+      "formal": "∀node, ccdid, time1, time2. identifies(ccdid, slot, time1) ⟹ identifies(ccdid, slot, time2) ∧ ¬identifies(ccdid, slot', time2) where slot ≠ slot'",
+      "violation": "CCDID instability causes operations to target wrong certificate details. TLS connections use wrong credentials, causing authentication failures or exposing wrong private key. Update operations corrupt unrelated certificates, creating widespread authentication failures.",
+      "proverifQuery": "query n:node, ccdid:id, s1:slot, s2:slot, t1:time, t2:time ⊢ event identifies(ccdid, s1, t1) ∧ event identifies(ccdid, s2, t2) ==> s1 = s2"
+    },
+    {
+      "id": "PROP_034",
+      "name": "Endpoint_Fabric_Association",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "TLS endpoints must be associated with specific Fabric; endpoints from one Fabric cannot be used for connections in another Fabric.",
+      "formal": "∀endpoint, fabric1, fabric2. (fabric1 ≠ fabric2) ∧ provisioned(endpoint, fabric1) ⟹ ¬usable(endpoint, fabric2)",
+      "violation": "Cross-Fabric endpoint use breaks network isolation. Node connects to servers in wrong Fabric using credentials from different Fabric, causing authentication failures or unauthorized cross-Fabric access. Violates multi-tenancy security model.",
+      "proverifQuery": "query ep:endpoint, f1:fabric, f2:fabric ⊢ event endpoint_used(ep, f1) ∧ event endpoint_configured(ep, f2) ==> f1 = f2"
+    },
+    {
+      "id": "PROP_035",
+      "name": "Large_Message_Qualifier_Uniformity",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "All commands in TLS Certificate Management cluster must use Large Message qualifier uniformly, even when not required by command size.",
+      "formal": "∀command. in_cluster(command, TLSCertMgmt) ⟹ has_qualifier(command, LargeMessage)",
+      "violation": "Non-uniform message handling complicates protocol implementation and testing. Nodes may fail to allocate sufficient buffer space for unexpectedly large messages, causing truncation or message rejection. Reduces interoperability and increases implementation complexity.",
+      "proverifQuery": "query cmd:command ⊢ event cluster_command(cmd, tlscert_cluster) ==> event has_large_msg_qualifier(cmd)"
+    },
+    {
+      "id": "PROP_036",
+      "name": "GET_Operation_Via_CAID_Available",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Nodes must provide GET operation mechanism via CAID to retrieve root CA certificate data without modifying state.",
+      "formal": "∀node, caid. has_caid(node, caid) ⟹ can_get(node, caid) ∧ ¬modifies_state(get_operation)",
+      "violation": "Without GET capability, certificate audit, validation, and debugging operations impossible. Administrators cannot verify which root CAs are provisioned or inspect certificate details. Compliance checking and troubleshooting severely impaired.",
+      "proverifQuery": "query n:node, caid:id ⊢ event caid_provisioned(n, caid) ==> event can_query(n, caid, get) ∧ ¬event state_modified(get)"
+    },
+    {
+      "id": "PROP_037",
+      "name": "RETRIEVE_Operation_Via_CCDID_Available",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Nodes must provide RETRIEVE operation mechanism via CCDID to query client certificate details (excluding private key) without modifying state.",
+      "formal": "∀node, ccdid. has_ccdid(node, ccdid) ⟹ can_retrieve(node, ccdid) ∧ ¬modifies_state(retrieve_operation) ∧ ¬returns_private_key(retrieve_operation)",
+      "violation": "Without RETRIEVE capability, certificate management operations blind. Cannot verify certificate validity periods, check intermediate chains, or diagnose client authentication failures. Private key exposure risk if retrieval not properly restricted.",
+      "proverifQuery": "query n:node, ccdid:id, pk:privkey ⊢ event ccdid_provisioned(n, ccdid) ==> event can_query(n, ccdid, retrieve) ∧ ¬event state_modified(retrieve) ∧ ¬event returns_key(retrieve, pk)"
+    },
+    {
+      "id": "PROP_038",
+      "name": "Private_Key_Never_Returned_By_Query",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "RETRIEVE operations via CCDID must never return private key; only certificate and chain metadata can be queried.",
+      "formal": "∀node, ccdid, retrieve_result. retrieves(node, ccdid, retrieve_result) ⟹ ¬contains_private_key(retrieve_result)",
+      "violation": "If RETRIEVE returns private key, any entity with query access can extract credentials and impersonate node. Complete breach of private key protection. Attacker clones node identity without needing write access or compromising secure storage.",
+      "proverifQuery": "query n:node, ccdid:id, result:data, pk:privkey ⊢ event retrieve_executed(n, ccdid, result) ==> ¬event contains(result, pk)"
+    },
+    {
+      "id": "PROP_039",
+      "name": "TLS_Client_Management_Cluster_Required",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Nodes with TLS client connections must support TLS Client Management Cluster (separate from TLS Certificate Management Cluster) as required by specification.",
+      "formal": "∀node. uses_tls_client_connections(node) ⟹ has_cluster(node, TLSClientMgmt) ∧ has_cluster(node, TLSCertMgmt) ∧ has_cluster(node, TimeSync)",
+      "violation": "Missing TLS Client Management Cluster prevents proper client connection management. Specification requires three clusters but TLS Client Management details not provided in section 14.3, creating implementation ambiguity. Nodes may fail interoperability if cluster not implemented.",
+      "proverifQuery": "query n:node ⊢ event has_tls_client(n) ==> event has_cluster(n, tls_client_mgmt) ∧ event has_cluster(n, tls_cert_mgmt) ∧ event has_cluster(n, time_sync)"
+    },
+    {
+      "id": "PROP_040",
+      "name": "Optional_CCD_Provisioning",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Client Certificate Details provisioning is optional; nodes may skip CCD provisioning if client certificate authentication not required by target TLS servers.",
+      "formal": "∀node. may_provision_ccd(node) ∨ may_skip_ccd(node) based_on client_auth_requirement",
+      "violation": "If CCD provisioning treated as mandatory when optional, forces unnecessary resource allocation and complexity. Nodes connecting only to servers not requiring client authentication waste storage and processing on unused credentials.",
+      "proverifQuery": "query n:node ⊢ event tls_client_capable(n) ==> (event ccd_provisioned(n) ∨ event ccd_skipped(n))"
+    },
+    {
+      "id": "PROP_041",
+      "name": "Query_Operations_Idempotent_And_Side_Effect_Free",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "GET, RETRIEVE, and query operations must be idempotent and produce no side effects; multiple queries return same result without state modification.",
+      "formal": "∀node, id, query1, query2. query(node, id, query1) ∧ query(node, id, query2) ⟹ result(query1) = result(query2) ∧ state_before = state_after",
+      "violation": "Non-idempotent queries create race conditions and unpredictable results. State modification during query operations corrupts data or changes behavior unexpectedly. Debugging and auditing compromised if queries alter system state.",
+      "proverifQuery": "query n:node, id:identifier, r1:result, r2:result, s1:state, s2:state ⊢ event query_executed(n, id, r1, s1) ∧ event query_executed(n, id, r2, s2) ==> r1 = r2 ∧ s1 = s2"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "Crypto_DRBG() provides cryptographically secure random number generation with sufficient entropy for nonce uniqueness.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_008 (Nonce_Generation_Randomness) and PROP_009 (Nonce_Uniqueness_Per_CSR) fail. Nonces become predictable, enabling replay attacks and CSR forgery. Attacker can predict future nonces or force nonce collisions."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "Time Synchronization cluster maintains accurate time within acceptable clock drift tolerances for certificate validation.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_003 (Time_Sync_Prerequisite_For_TLS) and PROP_027 (Time_Validation_For_Certificate_Validity) fail. Certificate temporal validation becomes unreliable. Nodes may accept expired certificates or reject valid ones due to clock skew, creating authentication failures or security vulnerabilities."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "PKCS #10 signature verification correctly validates CSR authenticity and prevents tampering.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_012 (PKCS10_Signature_Verification) fails. Attacker can forge or tamper with CSR contents without detection. Enables submission of CSRs with attacker-controlled subject names, extensions, or public keys, leading to certificate misissuance."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Storage mechanisms provide integrity guarantees preventing unauthorized modification or corruption of stored certificates and keys.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_006 (Single_CCD_Per_CCDID), PROP_028 (Atomicity_Of_Certificate_Update), PROP_029 (Atomicity_Of_Certificate_Removal), PROP_030 (Private_Key_Protection_In_CCD) fail. Attacker with storage access can corrupt certificates, replace keys, or extract private keys. Complete compromise of node credentials and TLS security."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Fabric isolation mechanisms prevent cross-Fabric resource access and information leakage.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_026 (Fabric_Isolation_For_Certificates) and PROP_034 (Endpoint_Fabric_Association) fail. Multi-tenancy security boundary breaks down. Node in one Fabric can access certificates, keys, or endpoints from another Fabric, enabling privilege escalation and unauthorized cross-Fabric operations."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Certificate provisioning and update operations execute with appropriate access control, preventing unauthorized certificate management.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_005 (CAID_Operations_Available), PROP_007 (CCDID_Operations_Available), PROP_018 (Endpoint_Provisioning_Via_Command) fail. Attacker can inject malicious certificates, remove legitimate ones, or provision unauthorized endpoints. Complete compromise of TLS trust infrastructure."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "TLS handshake implementation correctly uses provisioned certificates and validates server certificates according to standard TLS protocol.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_025 (Server_Authentication_Via_Root_CA), PROP_031 (Certificate_Chain_Completeness) fail. Even with correct certificate provisioning, flawed TLS implementation may accept invalid server certificates, skip chain validation, or fail to detect man-in-the-middle attacks. TLS security guarantees break down."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "Certificate signing authority creates valid TLS client certificates from CSR without introducing vulnerabilities (Step 6: external procedure).",
+      "type": "Explicit",
+      "impact_if_violated": "Even with perfect CSR process (PROP_012-PROP_016), compromised or malicious certificate authority can issue certificates with incorrect extensions, weak keys, or unauthorized subject names. These defective certificates undermine TLS authentication security when provisioned on nodes."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Attacker establishes TLS server connection to node, bypassing client-only restriction and authentication mechanisms",
+      "severity": "CRITICAL",
+      "attack_vector": "Send TLS ServerHello message to node initiating server handshake; node accepts incoming server role, allowing attacker to inject commands or extract data"
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Attacker uses expired or not-yet-valid certificate to establish connection, bypassing temporal access controls",
+      "severity": "CRITICAL",
+      "attack_vector": "Present revoked certificate to node with unsynchronized time; node accepts certificate due to incorrect time validation"
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "Attacker injects second CCD for same CCDID, causing node to use attacker-controlled credentials",
+      "severity": "CRITICAL",
+      "attack_vector": "Send ProvisionClientCertificate with existing CCDID but attacker's certificate/key; node stores both, uses attacker's credentials in TLS handshake"
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Attacker predicts weak nonce values and pre-computes valid CSR responses for replay attacks",
+      "severity": "CRITICAL",
+      "attack_vector": "Observe pattern in non-random nonce generation; compute valid nonce signatures in advance; replay during certificate rotation to inject malicious certificate"
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "Attacker captures CSRResponse and replays it for different certificate request, bypassing freshness validation",
+      "severity": "CRITICAL",
+      "attack_vector": "Monitor CSR transaction; capture CSRResponse with nonce signature; replay same response when client initiates new CSR with reused nonce"
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Attacker tampers with CSR fields (subject name, public key, extensions) without detection due to missing signature verification",
+      "severity": "CRITICAL",
+      "attack_vector": "Intercept CSRResponse; modify CSR PKCS#10 structure to change subject name to attacker-controlled identity; client provisions certificate with wrong identity"
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Attacker replays old CSRResponse to client using same nonce, associating attacker's certificate with client's CCDID",
+      "severity": "CRITICAL",
+      "attack_vector": "Capture CSRResponse from previous session; replay when client reuses nonce; client provisions certificate with attacker's public key"
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Attacker performs key substitution attack: signs nonce with one key but embeds different public key in CSR",
+      "severity": "CRITICAL",
+      "attack_vector": "Generate CSR with attacker's public key; sign nonce with legitimate key from previous session; client provisions certificate for attacker's key believing it signed the nonce"
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Client provisions unverified certificate, allowing attacker to inject malicious credentials accepted by node",
+      "severity": "CRITICAL",
+      "attack_vector": "Send crafted CSRResponse with invalid signatures or inconsistent keys; exploit missing verification to provision attacker-controlled certificate; use compromised CCDID for TLS authentication"
+    },
+    {
+      "property_id": "PROP_025",
+      "vulnerability": "Man-in-the-middle attack where attacker presents self-signed certificate or certificate from untrusted CA",
+      "severity": "CRITICAL",
+      "attack_vector": "Intercept TLS handshake; present malicious server certificate not signed by provisioned Root CA; node accepts without validation, communicates with impostor server"
+    },
+    {
+      "property_id": "PROP_026",
+      "vulnerability": "Attacker with access to one Fabric uses those credentials to authenticate in different Fabric, escalating privileges",
+      "severity": "CRITICAL",
+      "attack_vector": "Extract certificate from Fabric A; use same certificate for TLS connection in Fabric B; gain unauthorized access to Fabric B resources"
+    },
+    {
+      "property_id": "PROP_027",
+      "vulnerability": "Node accepts expired or revoked certificate due to incorrect time validation, allowing persistent unauthorized access",
+      "severity": "CRITICAL",
+      "attack_vector": "Use expired certificate that was previously valid; exploit unsynchronized time to bypass notAfter validation; maintain access after certificate revocation"
+    },
+    {
+      "property_id": "PROP_028",
+      "vulnerability": "Partial certificate update creates key-certificate mismatch, causing TLS handshake failures or using wrong key",
+      "severity": "HIGH",
+      "attack_vector": "Interrupt certificate update operation; node left with old certificate but new private key; all subsequent TLS handshakes fail signature verification"
+    },
+    {
+      "property_id": "PROP_030",
+      "vulnerability": "Private key exposure allows attacker to clone node credentials and impersonate node indefinitely",
+      "severity": "CRITICAL",
+      "attack_vector": "Extract private key via memory dump, debug interface, or storage access; use key with corresponding certificate to authenticate as legitimate node to any server"
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "CAID collision causes certificate validation with wrong CA, accepting certificates from untrusted issuers",
+      "severity": "HIGH",
+      "attack_vector": "Provision two Root CAs with same CAID; when validating server certificate, node uses wrong CA from pair, accepts certificate signed by untrusted CA"
+    },
+    {
+      "property_id": "PROP_023",
+      "vulnerability": "Certificate management cluster on non-root endpoint allows attacker to exploit endpoint confusion and bypass Fabric isolation",
+      "severity": "HIGH",
+      "attack_vector": "Target certificate management commands to non-root endpoint with weaker access control; provision certificates in wrong Fabric or extract certificates from isolated Fabric"
+    },
+    {
+      "property_id": "PROP_024",
+      "vulnerability": "Out-of-order CSR process execution breaks state machine, allowing provisioning of unvalidated certificates",
+      "severity": "HIGH",
+      "attack_vector": "Trigger certificate provisioning before verification completes; inject malicious certificate while validation is still in progress; state machine accepts invalid certificate"
+    },
+    {
+      "property_id": "PROP_038",
+      "vulnerability": "Private key returned by RETRIEVE operation allows attacker with query access to extract credentials and impersonate node",
+      "severity": "CRITICAL",
+      "attack_vector": "Execute RETRIEVE command via CCDID; if private key included in response, extract key; use key with certificate to authenticate as legitimate node to any server"
+    },
+    {
+      "property_id": "PROP_041",
+      "vulnerability": "Non-idempotent query operations with side effects create race conditions causing unpredictable state corruption",
+      "severity": "MEDIUM",
+      "attack_vector": "Execute multiple concurrent GET/RETRIEVE queries; exploit side effects to modify certificate state or corrupt data during query execution"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "CSR_Process_State_Machine",
+      "properties_enforcing_transitions": ["PROP_010", "PROP_024", "PROP_015"],
+      "critical_property": "Sequential ordering of CSR states must be enforced: [nonce_generated] → [csr_sent] → [response_received] → [verification_complete] → [certificate_provisioned]. Out-of-order transitions allow provisioning of unverified certificates (PROP_015) or nonce reuse (PROP_009)."
+    },
+    {
+      "state_name": "Certificate_Rotation_State_Machine",
+      "properties_enforcing_transitions": ["PROP_011", "PROP_028", "PROP_016"],
+      "critical_property": "Rotation requires existing CCDID (PROP_011), atomic replacement of old certificate with new (PROP_028), using CCDID from CSRResponse (PROP_016). Failure creates orphaned certificates or incomplete credentials."
+    },
+    {
+      "state_name": "Certificate_Lifecycle_State_Machine",
+      "properties_enforcing_transitions": ["PROP_027", "PROP_005", "PROP_007"],
+      "critical_property": "Certificate states: [provisioned] → [valid & time-verified] → [active in TLS] → [expired or removed]. Time validation (PROP_027) gates transition to active. Removal operations (PROP_005, PROP_007) move to terminal state."
+    },
+    {
+      "state_name": "Endpoint_Lifecycle_State_Machine",
+      "properties_enforcing_transitions": ["PROP_018", "PROP_034"],
+      "critical_property": "Endpoint states: [provisioned via command] → [associated with Fabric] → [active for connections] → [removed via command]. PROP_018 enforces provisioning/removal commands. PROP_034 enforces Fabric association. Out-of-band provisioning bypasses access control."
+    },
+    {
+      "state_name": "TLS_Connection_Establishment_FSM",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_025", "PROP_002", "PROP_017"],
+      "critical_property": "Connection states: [client_init only] → [cluster_validated] → [server_authenticated via Root CA] → [handshake_complete]. PROP_001 restricts to client mode. PROP_002/017 ensure required clusters. PROP_025 validates server. Missing any transition allows unauthenticated connections."
+    },
+    {
+      "state_name": "Query_Operations_FSM",
+      "properties_enforcing_transitions": ["PROP_036", "PROP_037", "PROP_038", "PROP_041"],
+      "critical_property": "Query states: [resource exists] → [query executed] → [result returned] → [same state]. PROP_036/037 ensure GET/RETRIEVE available. PROP_038 prevents private key exposure. PROP_041 ensures idempotence and no side effects."
+    }
+  ],
+  "additionalInsights": "The specification exhibits several patterns indicating potential vulnerabilities: (1) **Distributed Trust Model**: CSR process splits trust between client validation (steps 3-5) and external certificate creation (step 6, unspecified). This creates attack surface where malicious CA could issue certificates with exploitable properties even with valid CSR. (2) **Storage Minimums Without Maximums**: Specification requires minimum storage (5 root CAs, 2 CCDs, 2 endpoints) but doesn't limit maximum. Unbounded storage enables resource exhaustion attacks via certificate flooding. (3) **Temporal Coupling Vulnerability**: Time Synchronization cluster is prerequisite but synchronization accuracy bounds are not specified. Even small clock drift enables windows where expired certificates remain valid or valid certificates are rejected, creating intermittent vulnerabilities. (4) **Implicit Atomicity Assumption**: Operations like certificate update and removal assume atomicity but don't specify transaction mechanisms. Power loss or crash during multi-step operations could leave partial state. (5) **Cross-Fabric Attack Surface**: Multiple properties enforce Fabric isolation (PROP_026, PROP_034) suggesting this is critical boundary, but enforcement mechanisms are unspecified. Implementation flaws likely create privilege escalation vectors. (6) **Nonce Reuse Detection Gap**: Specification requires unique nonce per CSR but doesn't specify tracking mechanism or detection of nonce reuse attempts. Without explicit replay detection, nodes may accept duplicate nonces. (7) **Certificate Chain Validation Complexity**: Intermediate certificate chain completeness (PROP_031) is required but validation complexity is high: each intermediate must chain to root, be time-valid, and not be revoked. Specification lacks detail on chain validation order, creating implementation ambiguity that could lead to validation bypass. (8) **Freshness Window Unspecified**: Nonce provides freshness but acceptable time window between CSR request and response is unspecified. Overly permissive window enables delayed replay attacks; overly restrictive window causes legitimate operations to fail. (9) **Concurrent Operation Hazards**: Nodes must support 2 concurrent connections (PROP_022) but concurrent operations on same CCDID during rotation are not addressed. Race conditions could allow authentication with partially-updated credentials. (10) **Revocation Mechanism Absent**: Specification provides certificate removal but no explicit revocation propagation. Removed certificate on one node may remain active on others until expiration, creating persistent vulnerability window. (11) **Query Operation Security**: GET/RETRIEVE operations added per spec requirements but security implications need attention: private keys must never be returned, queries must be idempotent, and query access control not specified. (12) **TLS Client Management Cluster Gap**: Specification requires TLS Client Management Cluster (section 14.3.2) as separate from TLS Certificate Management Cluster, but provides no details about this cluster's commands, attributes, or behavior, creating significant implementation ambiguity. (13) **Incomplete Specification Section**: Section 14.3.2.1 states 'In addition, Nodes SHALL provide the following:' but provides no content, indicating incomplete specification that may hide critical requirements.",
+  "summary": {
+    "total_properties": 41,
+    "by_importance": {
+      "CRITICAL": 16,
+      "HIGH": 17,
+      "MEDIUM": 8
+    },
+    "by_category": {
+      "Security": 11,
+      "Correctness": 15,
+      "Cryptography": 1,
+      "Consistency": 4,
+      "Timing": 0,
+      "Atomicity": 2,
+      "AccessControl": 1,
+      "Revocation": 0,
+      "Combined": 7
+    },
+    "total_assumptions": 8,
+    "vulnerabilities_identified": 20
+  }
+}

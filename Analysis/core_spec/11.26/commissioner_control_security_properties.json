@@ -1,0 +1,535 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "CASE_Session_Required_For_RequestCommissioningApproval",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "RequestCommissioningApproval command must be executed via a CASE session or fail with UNSUPPORTED_ACCESS",
+      "formal": "∀client, server. event RequestCommissioningApproval(client, server) ==> session_type(client, server, CASE) ∨ fail(UNSUPPORTED_ACCESS)",
+      "violation": "An attacker without proper authentication credentials (not using CASE session) could request commissioning approval, bypassing authentication. This breaks the access control mechanism and allows unauthorized nodes to initiate commissioning flows, potentially leading to rogue device commissioning.",
+      "proverifQuery": "query c:principal, s:principal ⊢ event execute_command(c, s, RequestCommissioningApproval) ==> has_case_session(c, s)"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Device_Category_Conformance_Check",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "Client shall not send RequestCommissioningApproval if device does not conform to SupportedDeviceCategories",
+      "formal": "∀client, device. event RequestCommissioningApproval(client, device) ==> conforms_to(device, SupportedDeviceCategories)",
+      "violation": "Client attempts to commission a device that the server does not support (e.g., requesting FabricSynchronization when server's SupportedDeviceCategories bit 0 = 0). This wastes resources and may expose server to unexpected device types, potentially causing implementation bugs or undefined behavior.",
+      "proverifQuery": "query c:principal, d:device, cat:category ⊢ event send_approval_request(c, d) ==> device_category(d) = cat ∧ supported(cat)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Correct_Format_Always_Returns_SUCCESS",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Server shall always return SUCCESS to a correctly formatted RequestCommissioningApproval command",
+      "formal": "∀req. is_correctly_formatted(req) ==> response_code(req) = SUCCESS",
+      "violation": "Server rejects correctly formatted request with error instead of SUCCESS. This breaks the two-phase approval protocol where SUCCESS is acknowledged immediately and actual approval status comes via CommissioningRequestResult event. Clients cannot distinguish between format errors and actual rejections, breaking the protocol flow.",
+      "proverifQuery": "query req:request ⊢ event receive_request(req) ∧ is_valid_format(req) ==> event return_success(req)"
+    },
+    {
+      "id": "PROP_004",
+      "name": "CommissioningRequestResult_Event_Generation",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Server shall generate CommissioningRequestResult event after returning SUCCESS to RequestCommissioningApproval",
+      "formal": "∀req. response_code(req) = SUCCESS ==> ∃event. event_type(event) = CommissioningRequestResult ∧ event.RequestID = req.RequestID",
+      "violation": "Client receives SUCCESS response but never gets CommissioningRequestResult event. Client waits indefinitely for approval status, unable to proceed with commissioning. This creates a denial-of-service condition for legitimate commissioning requests and breaks the protocol state machine.",
+      "proverifQuery": "query req:request ⊢ event return_success(req) ==> event generate_result_event(req.RequestID)"
+    },
+    {
+      "id": "PROP_005",
+      "name": "RequestID_Uniqueness_Enforcement",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If RequestID and client NodeID match a previous pending request, server should return FAILURE",
+      "formal": "∀req1, req2. (req1.RequestID = req2.RequestID ∧ req1.ClientNodeID = req2.ClientNodeID ∧ is_pending(req1)) ==> response(req2) = FAILURE",
+      "violation": "Server allows duplicate RequestID from same client while previous request is pending. This creates ambiguity in the protocol state: which request does CommissioningRequestResult refer to? Multiple concurrent commissioning flows could interfere, leading to race conditions where wrong device gets commissioned or commissioning windows open for unintended devices.",
+      "proverifQuery": "query req1:request, req2:request ⊢ event receive_request(req2) ∧ pending(req1) ∧ same_id(req1, req2) ==> event return_failure(req2)"
+    },
+    {
+      "id": "PROP_006",
+      "name": "RequestID_Reuse_Across_Future_Interactions",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "RequestID set by client in RequestCommissioningApproval shall be reused in subsequent CommissionNode",
+      "formal": "∀req, cmd. event CommissionNode(cmd) ==> ∃approval. event RequestCommissioningApproval(approval) ∧ approval.RequestID = cmd.RequestID",
+      "violation": "Client uses different RequestID in CommissionNode than in RequestCommissioningApproval. Server cannot correlate the two commands, causing CommissionNode to fail with FAILURE. This breaks the two-phase protocol and prevents legitimate commissioning, but more critically, allows attacker to guess RequestIDs and potentially hijack approved commissioning sessions.",
+      "proverifQuery": "query cmd:command, rid:id ⊢ event commission_node(cmd) ∧ cmd.RequestID = rid ==> event approval_requested(rid)"
+    },
+    {
+      "id": "PROP_007",
+      "name": "VendorID_ProductID_Match_DAC",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "VendorID and ProductID in RequestCommissioningApproval shall match Device Attestation Certificate of target device",
+      "formal": "∀req, device. event RequestCommissioningApproval(req, device) ==> (req.VendorID = device.DAC.VendorID ∧ req.ProductID = device.DAC.ProductID)",
+      "violation": "Client specifies VendorID/ProductID that doesn't match actual device. During commissioning, server verifies Device Attestation Certificate and finds mismatch, causing commissioning to fail. However, if server doesn't properly enforce this check, attacker could commission counterfeit devices or perform device spoofing attacks, breaking device authenticity guarantees.",
+      "proverifQuery": "query req:request, dev:device ⊢ event approve_request(req, dev) ==> matches_attestation(req.VendorID, req.ProductID, dev.DAC)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "CommissionNode_NodeID_Fabric_Match",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "CommissionNode must be sent from same NodeID and fabric as RequestCommissioningApproval",
+      "formal": "∀approval, commission. event CommissionNode(commission) ∧ commission.RequestID = approval.RequestID ==> (commission.NodeID = approval.NodeID ∧ commission.FabricID = approval.FabricID)",
+      "violation": "Attacker from different NodeID or fabric sends CommissionNode using RequestID from victim's approved request. This is a session hijacking attack: attacker steals victim's approved commissioning slot and commissions their own device onto the fabric. This breaks authentication and authorization, allowing unauthorized fabric membership.",
+      "proverifQuery": "query approval:request, commission:command ⊢ event execute_commission_node(commission) ∧ commission.RequestID = approval.RequestID ==> same_identity(commission.sender, approval.sender)"
+    },
+    {
+      "id": "PROP_009",
+      "name": "CommissionNode_RequestID_Match",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "RequestID in CommissionNode must match RequestID provided to RequestCommissioningApproval",
+      "formal": "∀commission. event CommissionNode(commission) ==> ∃approval. event RequestCommissioningApproval(approval) ∧ approval.RequestID = commission.RequestID",
+      "violation": "Client sends CommissionNode with RequestID that was never approved or doesn't exist. Server cannot find matching approval record and returns FAILURE. While this seems like a correctness issue, an attacker could exploit this by brute-forcing RequestIDs to discover approved-but-not-yet-commissioned sessions and hijack them.",
+      "proverifQuery": "query cmd:command ⊢ event commission_node(cmd) ==> event previously_approved(cmd.RequestID)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "CASE_Session_Required_For_CommissionNode",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "CommissionNode command must be executed via CASE session or fail with UNEXPECTED_ACCESS",
+      "formal": "∀client, server. event CommissionNode(client, server) ==> session_type(client, server, CASE) ∨ fail(UNEXPECTED_ACCESS)",
+      "violation": "Attacker without CASE session sends CommissionNode command. Without proper authentication, attacker could trigger commissioning of arbitrary devices onto the fabric. This completely bypasses the authentication layer and allows unauthorized commissioning operations, breaking fabric security boundaries.",
+      "proverifQuery": "query c:principal, s:principal ⊢ event execute_command(c, s, CommissionNode) ==> has_case_session(c, s)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "ReverseOpenCommissioningWindow_Response_Condition",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Server shall respond with ReverseOpenCommissioningWindow only if CommissioningRequestResult had StatusCode SUCCESS",
+      "formal": "∀commission, rid. event ReverseOpenCommissioningWindow(commission) ==> ∃result. event CommissioningRequestResult(result) ∧ result.RequestID = rid ∧ result.StatusCode = SUCCESS",
+      "violation": "Server sends ReverseOpenCommissioningWindow even though approval was denied (StatusCode = FAILURE or TIMEOUT). Client opens commissioning window on a device that server didn't actually approve. This breaks the approval workflow and could lead to commissioning devices that violate policy, security constraints, or user consent.",
+      "proverifQuery": "query cmd:command ⊢ event reverse_open_window(cmd) ==> event approval_success(cmd.RequestID)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Single_ReverseOpenCommissioningWindow_Per_Approval",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Server shall return FAILURE if CommissionNode received after already responding with ReverseOpenCommissioningWindow for same RequestID, unless client re-approved",
+      "formal": "∀rid, commission1, commission2. (event ReverseOpenCommissioningWindow(rid) ∧ event CommissionNode(commission2) ∧ commission2.RequestID = rid) ==> (event RequestCommissioningApproval(rid) after ReverseOpenCommissioningWindow(rid)) ∨ fail(FAILURE)",
+      "violation": "Server allows multiple CommissionNode calls for same approved RequestID without requiring re-approval. Attacker could repeatedly trigger commissioning window openings for the same device, creating denial-of-service by forcing device into commissioning mode multiple times or causing race conditions in commissioning state machine.",
+      "proverifQuery": "query rid:id, cmd1:command, cmd2:command ⊢ event reverse_window_sent(rid) ∧ event commission_node(cmd2) ∧ cmd2.RequestID = rid ==> event re_approval(rid) ∨ event return_failure(cmd2)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Response_Timeout_Enforcement",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Client shall wait for ResponseTimeoutSeconds (30-120s) before considering responses invalid",
+      "formal": "∀commission, response. event CommissionNode(commission, t1) ∧ event ReverseOpenCommissioningWindow(response, t2) ==> (t2 - t1) ≤ commission.ResponseTimeoutSeconds ∨ invalid(response)",
+      "violation": "Client doesn't respect timeout and either waits indefinitely (denial-of-service on client) or prematurely rejects valid responses. If client accepts responses after timeout, attacker could replay old ReverseOpenCommissioningWindow messages to open commissioning windows at arbitrary future times, violating temporal security assumptions.",
+      "proverifQuery": "query cmd:command, resp:command, t1:time, t2:time ⊢ event send_commission_node(cmd, t1) ∧ event receive_reverse_window(resp, t2) ∧ resp.RequestID = cmd.RequestID ==> (t2 - t1) <= cmd.ResponseTimeoutSeconds"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Client_Opens_Window_On_VendorID_ProductID_Match",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "When receiving ReverseOpenCommissioningWindow within timeout, client shall open window on node matching VendorID and ProductID from RequestCommissioningApproval",
+      "formal": "∀response, approval. event ReverseOpenCommissioningWindow(response) within_timeout ==> ∃device. open_window(device) ∧ device.VendorID = approval.VendorID ∧ device.ProductID = approval.ProductID",
+      "violation": "Client opens commissioning window on wrong device (different VendorID/ProductID than originally requested). This causes server to commission an unintended device onto the fabric. In multi-device environments, this could allow attacker to substitute their device for the legitimate one by exploiting incorrect device selection logic.",
+      "proverifQuery": "query resp:command, approval:request ⊢ event open_commissioning_window(device) ==> device_matches(device, approval.VendorID, approval.ProductID)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "Server_VendorID_ProductID_Verification_Against_BasicInfo",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Server shall check VendorID and ProductID from RequestCommissioningApproval match Basic Information Cluster attributes verified during Device Attestation",
+      "formal": "∀approval, device. event commission_device(device) ==> verified_during_DAP(device.BasicInfo.VendorID, device.BasicInfo.ProductID) ∧ approval.VendorID = device.BasicInfo.VendorID ∧ approval.ProductID = device.BasicInfo.ProductID",
+      "violation": "Server commissions device without verifying VendorID/ProductID match between approval request and actual device identity from Basic Information Cluster. Attacker could commission counterfeit or unauthorized devices by presenting legitimate approval but substituting different device during actual commissioning. This breaks device authenticity and supply chain security.",
+      "proverifQuery": "query approval:request, dev:device ⊢ event complete_commissioning(dev) ==> verified_attestation(dev) ∧ matches_approval(approval.VendorID, dev.VendorID) ∧ matches_approval(approval.ProductID, dev.ProductID)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "Server_Abort_Commissioning_On_Mismatch",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If VendorID/ProductID don't match, server shall not complete commissioning",
+      "formal": "∀approval, device. (approval.VendorID ≠ device.BasicInfo.VendorID ∨ approval.ProductID ≠ device.BasicInfo.ProductID) ==> ¬complete_commissioning(device)",
+      "violation": "Server detects VendorID/ProductID mismatch but continues commissioning anyway. This allows device spoofing attacks where attacker presents legitimate approval credentials but commissions wrong device. Breaks the attestation-based device identity verification, allowing unauthorized or counterfeit devices onto fabric.",
+      "proverifQuery": "query approval:request, dev:device ⊢ event id_mismatch(approval, dev) ==> ¬event complete_commissioning(dev)"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Error_Indication_On_Mismatch",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Server should indicate error to user when VendorID/ProductID mismatch prevents commissioning",
+      "formal": "∀approval, device. (approval.VendorID ≠ device.BasicInfo.VendorID ∨ approval.ProductID ≠ device.BasicInfo.ProductID) ==> indicate_error_to_user",
+      "violation": "Server silently fails commissioning without notifying user of VendorID/ProductID mismatch. User has no visibility into why commissioning failed, making debugging difficult. While not directly a security vulnerability, lack of error feedback could mask ongoing attacks or allow repeated attack attempts without detection.",
+      "proverifQuery": "query approval:request, dev:device ⊢ event abort_commissioning(approval, dev) ∧ mismatch(approval, dev) ==> event user_notified(error)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "RequestID_ClientNodeID_Match_In_Event",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "CommissioningRequestResult event's RequestID and ClientNodeID shall match the original RequestCommissioningApproval command",
+      "formal": "∀event, approval. event.type = CommissioningRequestResult ==> (event.RequestID = approval.RequestID ∧ event.ClientNodeID = approval.ClientNodeID)",
+      "violation": "Server generates CommissioningRequestResult with wrong RequestID or ClientNodeID. Client cannot correlate event with original request, leading to protocol confusion. Wrong client might receive approval notification, or correct client might miss it. This could allow event spoofing where attacker causes client to believe approval succeeded when it didn't, or vice versa.",
+      "proverifQuery": "query event:event, approval:request ⊢ event generate_result(event) ==> event.RequestID = approval.RequestID ∧ event.ClientNodeID = approval.ClientNodeID"
+    },
+    {
+      "id": "PROP_019",
+      "name": "StatusCode_Correct_Values",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Server shall set CommissioningRequestResult StatusCode to SUCCESS if ready to commission, TIMEOUT on user inaction, or FAILURE for other errors",
+      "formal": "∀event. event.type = CommissioningRequestResult ==> (event.StatusCode = SUCCESS ∧ ready_to_commission) ∨ (event.StatusCode = TIMEOUT ∧ user_timeout) ∨ (event.StatusCode = FAILURE ∧ other_error)",
+      "violation": "Server sets incorrect StatusCode (e.g., SUCCESS when not ready, or FAILURE on timeout). Client receives misleading status and takes incorrect action. Setting SUCCESS when not ready causes client to send CommissionNode which will fail. Setting FAILURE/TIMEOUT when actually ready causes client to abort legitimate commissioning flow.",
+      "proverifQuery": "query event:event ⊢ event generate_result(event) ==> (event.StatusCode = SUCCESS ⟹ ready(event)) ∧ (event.StatusCode = TIMEOUT ⟹ timed_out(event)) ∧ (event.StatusCode = FAILURE ⟹ error(event))"
+    },
+    {
+      "id": "PROP_020",
+      "name": "FabricSynchronization_Bit_Accurate",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "FabricSynchronization bit shall be set to 1 if and only if server supports commissioning FabricSync nodes",
+      "formal": "bit(FabricSynchronization) = 1 ⟺ supports(server, FabricSync)",
+      "violation": "Server advertises FabricSynchronization support (bit = 1) but doesn't actually support it, or vice versa. Clients send RequestCommissioningApproval for FabricSync devices expecting success, but server fails. Or clients avoid sending requests for FabricSync devices even though server supports them. This breaks capability negotiation and prevents legitimate FabricSync operations.",
+      "proverifQuery": "query server:principal ⊢ event advertise_capability(server, FabricSync) ⟺ event can_commission(server, FabricSync)"
+    },
+    {
+      "id": "PROP_021",
+      "name": "SupportedDeviceCategories_Indicates_Supported_Categories",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "SupportedDeviceCategories attribute shall indicate device categories specified in bitmap that server supports",
+      "formal": "∀category. bit(category) = 1 ⟺ supported(server, category)",
+      "violation": "Server's SupportedDeviceCategories bitmap doesn't accurately reflect its commissioning capabilities. Clients filter requests based on this attribute (per PROP_002), so incorrect bitmap causes either: (1) clients avoid sending requests for devices server actually supports (lost functionality), or (2) clients send requests for devices server doesn't support (wasted requests and failures).",
+      "proverifQuery": "query server:principal, cat:category ⊢ event attribute_value(server, SupportedDeviceCategories, cat, 1) ⟺ event supports_category(server, cat)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Immediate_CommissionNode_After_Event",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Clients should send CommissionNode immediately upon receiving CommissioningRequestResult event",
+      "formal": "∀event. event.type = CommissioningRequestResult ∧ event.StatusCode = SUCCESS ==> ∃cmd. event CommissionNode(cmd) at (event.time + δ) where δ is_small",
+      "violation": "Client delays sending CommissionNode after receiving SUCCESS event. Approval validity period (manufacturer-determined) may expire, causing CommissionNode to fail. Worse, if timeout is short and attacker observes the approval, they could race to send their own CommissionNode before legitimate client, hijacking the approved commissioning session.",
+      "proverifQuery": "query event:event, cmd:command, t1:time, t2:time ⊢ event receive_success(event, t1) ∧ event send_commission_node(cmd, t2) ==> (t2 - t1) < approval_validity_period"
+    },
+    {
+      "id": "PROP_023",
+      "name": "Approval_Validity_Time_Bounded",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Approval from CommissioningRequestResult is valid for manufacturer-determined period",
+      "formal": "∀approval. event CommissioningRequestResult(approval, t_start) ==> valid(approval) = true during [t_start, t_start + validity_period]",
+      "violation": "Server doesn't enforce validity period on approvals, allowing indefinite reuse. Attacker who observes CommissioningRequestResult could send CommissionNode arbitrarily later (hours, days) to open commissioning window when victim isn't expecting it. This violates temporal security constraints and user consent, as approval context may have changed.",
+      "proverifQuery": "query approval:request, t_approval:time, t_use:time ⊢ event approval_granted(approval, t_approval) ∧ event commission_node(approval.RequestID, t_use) ==> (t_use - t_approval) <= validity_period"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Event_Fabric_Sensitivity",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "CommissioningRequestResult event is fabric-sensitive and only visible to nodes on same fabric",
+      "formal": "∀event, node. observe(node, event) ==> same_fabric(node, event.source)",
+      "violation": "CommissioningRequestResult event leaks across fabric boundaries. Nodes on other fabrics can observe approval events, learning about commissioning operations and device identities (VendorID, ProductID via RequestID correlation). This breaks fabric isolation and enables cross-fabric reconnaissance attacks.",
+      "proverifQuery": "query node:principal, event:event ⊢ event receive_event(node, event) ==> same_fabric(node, event.FabricID)"
+    },
+    {
+      "id": "PROP_025",
+      "name": "PAKE_Parameters_Secure_Range",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "ReverseOpenCommissioningWindow's PAKE parameters (Iterations, Salt) must be in secure ranges: Iterations 1000-100000, Salt 16-32 bytes",
+      "formal": "∀cmd. cmd.type = ReverseOpenCommissioningWindow ==> (1000 ≤ cmd.Iterations ≤ 100000 ∧ 16 ≤ length(cmd.Salt) ≤ 32)",
+      "violation": "Server sends ReverseOpenCommissioningWindow with weak PAKE parameters (e.g., Iterations < 1000 makes brute-force attacks feasible, Salt < 16 bytes reduces entropy). Client uses these weak parameters to set up commissioning window. Attacker can brute-force PAKE passcode, gain unauthorized access to commissioning window, and compromise the device being commissioned.",
+      "proverifQuery": "query cmd:command ⊢ event send_reverse_window(cmd) ==> cmd.Iterations >= 1000 ∧ cmd.Iterations <= 100000 ∧ length(cmd.Salt) >= 16 ∧ length(cmd.Salt) <= 32"
+    },
+    {
+      "id": "PROP_026",
+      "name": "Discriminator_Range_Enforcement",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Discriminator value in ReverseOpenCommissioningWindow must be max 4095 (12-bit value)",
+      "formal": "∀cmd. cmd.type = ReverseOpenCommissioningWindow ==> cmd.Discriminator ≤ 4095",
+      "violation": "Server sends Discriminator value > 4095. While Matter specification defines discriminator as 12-bit value, sending larger value could cause implementation-specific issues: overflow, truncation, or incorrect device discovery. Attacker could exploit this to cause commissioning failures or trigger bugs in client implementations.",
+      "proverifQuery": "query cmd:command ⊢ event send_reverse_window(cmd) ==> cmd.Discriminator <= 4095"
+    },
+    {
+      "id": "PROP_027",
+      "name": "Response_Sequencing_Order",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Protocol flow must follow sequence: RequestCommissioningApproval → CommissioningRequestResult → CommissionNode → ReverseOpenCommissioningWindow",
+      "formal": "event_order(RequestCommissioningApproval) < event_order(CommissioningRequestResult) < event_order(CommissionNode) < event_order(ReverseOpenCommissioningWindow)",
+      "violation": "Steps occur out of order (e.g., CommissionNode before CommissioningRequestResult, or ReverseOpenCommissioningWindow before CommissionNode). This breaks protocol state machine. Attacker could send out-of-order messages to confuse implementations, potentially bypassing approval checks or causing undefined behavior in state transitions.",
+      "proverifQuery": "query e1:event, e2:event, e3:event, e4:event ⊢ event sequence(e1, RequestCommissioningApproval) ∧ event sequence(e2, CommissioningRequestResult) ∧ event sequence(e3, CommissionNode) ∧ event sequence(e4, ReverseOpenCommissioningWindow) ==> happens_before(e1, e2) ∧ happens_before(e2, e3) ∧ happens_before(e3, e4)"
+    },
+    {
+      "id": "PROP_028",
+      "name": "Atomic_Approval_CommissionNode_Binding",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "CommissionNode can only succeed if preceded by successful approval for same RequestID from same client",
+      "formal": "∀cmd. event CommissionNode(cmd) succeeds ==> ∃approval, result. (approval.RequestID = cmd.RequestID ∧ approval.ClientNodeID = cmd.ClientNodeID ∧ result.RequestID = cmd.RequestID ∧ result.StatusCode = SUCCESS)",
+      "violation": "Server allows CommissionNode to proceed without verified approval or from different client than approved. This breaks the atomic binding between approval and commissioning phases. Attacker could: (1) send CommissionNode without approval, (2) hijack another client's approval, or (3) replay old CommissionNode after approval expired. All break authorization invariants.",
+      "proverifQuery": "query cmd:command ⊢ event commission_node_success(cmd) ==> event approved(cmd.RequestID, cmd.ClientNodeID) ∧ event result_success(cmd.RequestID)"
+    },
+    {
+      "id": "PROP_029",
+      "name": "State_Mutual_Exclusion_Pending_Approved",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "A RequestID cannot simultaneously be in pending approval state and completed commissioning state",
+      "formal": "∀rid. ¬(state(rid) = pending_approval ∧ state(rid) = completed_commissioning)",
+      "violation": "Server allows RequestID to exist in both pending and completed states simultaneously due to race condition or implementation bug. Client could observe contradictory state: receiving CommissioningRequestResult for still-pending request, or ability to send CommissionNode for already-completed request. This creates state confusion enabling double-commissioning or replay attacks.",
+      "proverifQuery": "query rid:id ⊢ event state_pending(rid) ==> ¬event state_completed(rid)"
+    },
+    {
+      "id": "PROP_030",
+      "name": "User_Approval_Optional_But_Secure",
+      "category": "AccessControl",
+      "importance": "MEDIUM",
+      "claim": "Server may request user approval but is not required; if requested, approval must be obtained before returning SUCCESS in CommissioningRequestResult",
+      "formal": "∀req. (user_approval_required(req) ∧ event CommissioningRequestResult(req, SUCCESS)) ==> user_approved(req)",
+      "violation": "Server requires user approval but generates CommissioningRequestResult with SUCCESS before user actually approves. Client proceeds with commissioning a device that user didn't consent to. This violates user consent principle and could enable social engineering attacks where attacker rushes through commissioning before user can review and reject.",
+      "proverifQuery": "query req:request ⊢ event result_success(req) ∧ requires_user_approval(req) ==> event user_approved(req)"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "CASE session protocol is secure and provides authenticated, encrypted communication",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_001 and PROP_010 fail. If CASE sessions are compromised, attackers can impersonate legitimate clients, bypass access control checks, and send RequestCommissioningApproval and CommissionNode commands without proper authentication, breaking all access control guarantees."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "Device Attestation Procedure correctly verifies device identity and VendorID/ProductID in DAC are trustworthy",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_007, PROP_015, PROP_016 fail. If DAP is compromised, attackers can present counterfeit DACs with false VendorID/ProductID. Server's verification checks become meaningless, allowing device spoofing and supply chain attacks."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "Clock synchronization is sufficient for timeout enforcement (ResponseTimeoutSeconds)",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_013 fails. Severe clock skew between client and server causes timeout violations: client may reject valid responses as expired, or accept expired responses as valid. Attacker exploiting clock skew could replay old ReverseOpenCommissioningWindow commands outside intended time windows."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "No privileged node with Commissioner Control Cluster access is compromised",
+      "type": "Explicit",
+      "impact_if_violated": "All properties can be violated. Compromised privileged node can bypass all protocol checks, directly manipulate server state, approve arbitrary requests, and commission unauthorized devices. This is equivalent to fabric administrator compromise."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Fabric isolation is maintained - nodes on different fabrics cannot observe each other's traffic",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_024 fails. If fabric isolation breaks, nodes on fabric A can observe CommissioningRequestResult events from fabric B. This enables cross-fabric reconnaissance, learning about devices being commissioned, and potential cross-fabric attacks targeting commissioning windows."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "PAKE protocol implementation correctly uses provided Iterations and Salt parameters with cryptographic strength",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_025 fails. Even if server sends secure parameters, weak PAKE implementation (e.g., poor PBKDF, weak random number generation) makes brute-force attacks feasible. Attacker gains unauthorized access to commissioning window despite protocol-level parameter constraints."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Server enforces approval validity period (manufacturer-determined timeout) consistently",
+      "type": "Explicit",
+      "impact_if_violated": "Properties PROP_022 and PROP_023 fail. Without enforced validity period, approved RequestIDs remain valid indefinitely. Attacker who observes approval can delay CommissionNode arbitrarily, opening commissioning window at unexpected time, violating temporal security and user consent assumptions."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "SupportedDeviceCategories bitmap correctly reflects server's actual commissioning capabilities",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_002, PROP_020, PROP_021 fail. Clients rely on this attribute for capability negotiation. Incorrect bitmap causes protocol failures (requests for unsupported categories) or prevents legitimate use (supported categories advertised as unsupported)."
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "Basic Information Cluster VendorID and ProductID attributes are immutable and match Device Attestation Certificate",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_015, PROP_016 fail. If Basic Information Cluster can be modified after attestation, attacker can pass initial DAP verification but present different VendorID/ProductID during commissioning check, defeating device identity verification."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Unauthorized commissioning request without authentication",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends RequestCommissioningApproval without CASE session. Server accepts request and generates approval. Attacker proceeds with CommissionNode, commissioning unauthorized device onto fabric."
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Server resource exhaustion from unsupported device requests",
+      "severity": "MEDIUM",
+      "attack_vector": "Client sends RequestCommissioningApproval for device categories server doesn't support. Server wastes resources processing invalid requests. Could be used for denial-of-service."
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "RequestID collision causing commissioning confusion",
+      "severity": "HIGH",
+      "attack_vector": "Attacker sends RequestCommissioningApproval with same RequestID as victim's pending request. Server accepts both. When CommissioningRequestResult is generated, both attacker and victim believe it applies to their request, leading to race condition where wrong device gets commissioned."
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "RequestID hijacking via brute-force or observation",
+      "severity": "HIGH",
+      "attack_vector": "Attacker observes or brute-forces valid RequestID from victim's approval. Attacker sends CommissionNode with stolen RequestID, hijacking victim's approved commissioning session to commission attacker's device instead."
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Device spoofing via incorrect VendorID/ProductID in approval",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker requests approval with VendorID/ProductID of legitimate device but presents counterfeit device during commissioning. If server doesn't verify DAC match, counterfeit device gets commissioned with false identity."
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Session hijacking - commissioning slot theft",
+      "severity": "CRITICAL",
+      "attack_vector": "Victim requests approval with RequestID R. Attacker on different NodeID or fabric sends CommissionNode with RequestID R. If server doesn't check NodeID/Fabric match, attacker steals victim's approved slot and commissions their own device."
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Unauthenticated commissioning trigger",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker without CASE session sends CommissionNode command. Server triggers commissioning flow without verifying attacker's identity, allowing unauthorized commissioning operations."
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Commissioning despite denied approval",
+      "severity": "HIGH",
+      "attack_vector": "Server generates CommissioningRequestResult with StatusCode=FAILURE but still sends ReverseOpenCommissioningWindow. Client opens commissioning window for device that was explicitly denied, violating approval policy and potentially user consent."
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Repeated commissioning window opening (replay attack)",
+      "severity": "HIGH",
+      "attack_vector": "Attacker repeatedly sends CommissionNode for same RequestID after initial ReverseOpenCommissioningWindow already sent. Device forced into commissioning mode multiple times, causing denial-of-service or enabling race conditions in commissioning state."
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Timeout replay attack",
+      "severity": "HIGH",
+      "attack_vector": "Client doesn't enforce ResponseTimeoutSeconds. Attacker captures ReverseOpenCommissioningWindow message and replays it hours later. Client accepts expired response and opens commissioning window at unexpected time, violating temporal security constraints."
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Device substitution during commissioning",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker requests approval for legitimate device (correct VendorID/ProductID in approval). During commissioning, attacker substitutes different device. If server doesn't verify Basic Information Cluster matches approval, wrong device gets commissioned."
+    },
+    {
+      "property_id": "PROP_016",
+      "vulnerability": "Counterfeit device commissioning",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker presents device with VendorID/ProductID mismatch between approval request and Basic Information Cluster. Server detects mismatch but doesn't abort commissioning. Counterfeit device successfully joins fabric with false identity."
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Approval hijacking via delayed CommissionNode",
+      "severity": "HIGH",
+      "attack_vector": "Victim receives CommissioningRequestResult with SUCCESS but delays sending CommissionNode. Attacker observes approval and races to send their own CommissionNode with victim's RequestID before victim acts, hijacking the approved session."
+    },
+    {
+      "property_id": "PROP_023",
+      "vulnerability": "Indefinite approval reuse enabling time-shifted attacks",
+      "severity": "HIGH",
+      "attack_vector": "Server doesn't enforce approval validity period. Attacker observes CommissioningRequestResult event, waits hours/days, then sends CommissionNode with old RequestID to open commissioning window when victim isn't monitoring or expecting commissioning activity."
+    },
+    {
+      "property_id": "PROP_024",
+      "vulnerability": "Cross-fabric information leakage",
+      "severity": "MEDIUM",
+      "attack_vector": "CommissioningRequestResult events leak across fabric boundaries. Attacker on fabric A observes commissioning activity on fabric B, learning about devices being commissioned, device identities, and commissioning timing - enabling reconnaissance for targeted attacks."
+    },
+    {
+      "property_id": "PROP_025",
+      "vulnerability": "Weak PAKE parameters enabling brute-force",
+      "severity": "CRITICAL",
+      "attack_vector": "Server sends ReverseOpenCommissioningWindow with weak PAKE parameters (Iterations < 1000, short Salt). Client sets up commissioning window with weak parameters. Attacker brute-forces PAKE passcode in reasonable time, gains access to commissioning window, compromises device."
+    },
+    {
+      "property_id": "PROP_027",
+      "vulnerability": "Protocol state confusion via out-of-order messages",
+      "severity": "HIGH",
+      "attack_vector": "Attacker sends protocol messages out of sequence (e.g., CommissionNode before CommissioningRequestResult). Implementation with weak state machine handling accepts out-of-order messages, bypassing approval checks or causing undefined behavior."
+    },
+    {
+      "property_id": "PROP_028",
+      "vulnerability": "Commissioning without approval (authorization bypass)",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends CommissionNode without prior approved RequestCommissioningApproval. Server doesn't verify approval binding, allows commissioning to proceed. Attacker commissions arbitrary devices onto fabric without approval or authorization."
+    },
+    {
+      "property_id": "PROP_029",
+      "vulnerability": "Double commissioning via state confusion",
+      "severity": "HIGH",
+      "attack_vector": "Due to race condition, RequestID exists in both pending and completed states. Attacker sends second CommissionNode for already-completed RequestID. Server accepts it due to state confusion, opening second commissioning window and potentially commissioning wrong device."
+    },
+    {
+      "property_id": "PROP_030",
+      "vulnerability": "Commissioning without user consent",
+      "severity": "MEDIUM",
+      "attack_vector": "Server implementation requires user approval but generates SUCCESS status before user actually approves. Attacker times request to exploit this window, commissioning device before user can review and reject, violating user consent principle."
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "idle",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_002"],
+      "critical_property": "PROP_001 - if violated, FSM enters approval_pending state without authentication, breaking initial access control gate"
+    },
+    {
+      "state_name": "approval_pending",
+      "properties_enforcing_transitions": ["PROP_003", "PROP_004", "PROP_005"],
+      "critical_property": "PROP_004 - if violated, FSM never transitions to approval_granted state, causing protocol deadlock where client waits indefinitely"
+    },
+    {
+      "state_name": "approval_granted",
+      "properties_enforcing_transitions": ["PROP_008", "PROP_009", "PROP_010", "PROP_011", "PROP_023"],
+      "critical_property": "PROP_008 - if violated, FSM transitions to commissioning_active state for wrong client, allowing session hijacking"
+    },
+    {
+      "state_name": "commissioning_active",
+      "properties_enforcing_transitions": ["PROP_013", "PROP_014", "PROP_015", "PROP_016"],
+      "critical_property": "PROP_015 - if violated, FSM completes to commissioned state with wrong device, permanently corrupting fabric membership"
+    },
+    {
+      "state_name": "commissioned",
+      "properties_enforcing_transitions": ["PROP_012", "PROP_029"],
+      "critical_property": "PROP_029 - if violated, FSM allows transition back to commissioning_active from commissioned state, enabling replay and double-commissioning attacks"
+    },
+    {
+      "state_name": "error",
+      "properties_enforcing_transitions": ["PROP_016", "PROP_017", "PROP_019"],
+      "critical_property": "PROP_016 - if violated, FSM transitions to commissioned state instead of error state on VendorID/ProductID mismatch, allowing device spoofing"
+    }
+  ],
+  "additionalInsights": "The Commissioner Control Cluster protocol exhibits several high-risk vulnerability patterns: (1) **Split-phase approval creates race condition window** - the gap between CommissioningRequestResult event and CommissionNode command creates time window for RequestID hijacking attacks (PROP_006, PROP_022). The specification acknowledges this with the SHOULD clause about immediate CommissionNode sending, but doesn't mandate cryptographic binding between approval and usage. (2) **Implicit approval validity timeout is unspecified** - the specification states approval is valid for 'manufacturer-determined period' (PROP_023) but doesn't mandate enforcement mechanism or maximum timeout. This creates inconsistent security posture across implementations. (3) **VendorID/ProductID verification is dual-gated** - verified twice (during approval and during commissioning) but specification doesn't explicitly require atomic verification, creating potential for TOCTOU (Time-Of-Check-Time-Of-Use) vulnerability where device identity changes between checks. (4) **SHOULD clauses create optional security** - multiple SHOULD statements (duplicate RequestID handling, error indication, immediate CommissionNode) are security-relevant but not mandatory, leading to inconsistent vulnerability surface across implementations. (5) **Fabric-sensitive event handling relies on underlying transport** - PROP_024 assumes fabric isolation is handled at lower layer, but specification doesn't mandate verification, creating cross-layer security assumption that may be violated. (6) **No rate limiting specified** - protocol lacks explicit rate limiting on RequestCommissioningApproval or CommissionNode, enabling denial-of-service attacks through request flooding. (7) **User approval is entirely optional** - server MAY request user approval but isn't required, making user consent inconsistent. This is particularly concerning for FabricSynchronization use case where one ecosystem commissions into another. (8) **No cryptographic binding between approval and commissioning phases** - RequestID is opaque identifier with no cryptographic properties. Adding HMAC or signature binding approval to specific client would prevent hijacking attacks. (9) **ResponseTimeoutSeconds bounds are wide** - 30-120 second range creates large attack window for race conditions and session hijacking attempts. Recommendation: reduce maximum timeout and require cryptographic freshness tokens.",
+  "summary": {
+    "total_properties": 30,
+    "by_importance": {
+      "CRITICAL": 19,
+      "HIGH": 8,
+      "MEDIUM": 3
+    },
+    "by_category": {
+      "AccessControl": 5,
+      "Security": 5,
+      "Correctness": 10,
+      "Consistency": 3,
+      "Timing": 3,
+      "Cryptography": 1,
+      "Atomicity": 1,
+      "Revocation": 0
+    },
+    "total_assumptions": 9,
+    "vulnerabilities_identified": 20
+  }
+}

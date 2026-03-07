@@ -1,0 +1,743 @@
+{
+  "specification": "TLS Client Management Cluster (14.5)",
+  "specification_version": "1.5",
+  "analysis_date": "2026-02-12",
+  
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Fabric_Isolation_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "All TLS endpoint resources (endpoints, root certificates, client certificates) are strictly isolated per fabric; cross-fabric access is forbidden.",
+      "formal": "∀endpoint E, fabric F1, fabric F2. (E.fabric = F1 ∧ accessing_fabric = F2 ∧ F1 ≠ F2) → access_denied(E)",
+      "violation": "Attacker from fabric F2 accesses or modifies endpoints belonging to fabric F1, breaking multi-tenant isolation. This allows unauthorized TLS connections using another tenant's credentials, compromising confidentiality and integrity across fabric boundaries.",
+      "proverifQuery": "query e:endpoint, f1:fabric, f2:fabric ⊢ event access_endpoint(e, f2) ∧ endpoint_fabric(e, f1) ∧ f1 ≠ f2 ==> false"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Root_Certificate_Validation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "A TLS endpoint can only be provisioned if a valid root certificate (CAID) exists in ProvisionedRootCertificates for the accessing fabric.",
+      "formal": "∀endpoint E, CAID ca, fabric F. provision_endpoint(E, ca, F) → ∃root R. (R.CAID = ca ∧ R.fabric = F ∧ R ∈ ProvisionedRootCertificates)",
+      "violation": "Node accepts endpoint provisioning with non-existent or wrong-fabric root certificate. Attacker provisions endpoints without proper CA trust chain, enabling man-in-the-middle attacks by connecting to rogue TLS servers that cannot be validated.",
+      "proverifQuery": "query e:endpoint, ca:caid, f:fabric ⊢ event provision_endpoint(e, ca, f) ==> event root_cert_exists(ca, f)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Client_Certificate_Validation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When CCDID is non-NULL, the client certificate must exist in ProvisionedClientCertificates for the accessing fabric before endpoint provisioning succeeds.",
+      "formal": "∀endpoint E, CCDID ccd, fabric F. (provision_endpoint(E, ccd, F) ∧ ccd ≠ NULL) → ∃cert C. (C.CCDID = ccd ∧ C.fabric = F ∧ C ∈ ProvisionedClientCertificates)",
+      "violation": "Node provisions endpoint with non-existent client certificate reference. During TLS connection, client authentication fails or uses wrong credentials, causing connection failures or identity spoofing if implementation falls back to unauthenticated connection.",
+      "proverifQuery": "query e:endpoint, ccd:ccdid, f:fabric ⊢ event provision_endpoint(e, ccd, f) ∧ ccd ≠ null ==> event client_cert_exists(ccd, f)"
+    },
+    {
+      "id": "PROP_004",
+      "name": "Mutual_TLS_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When CCDID is provisioned on an endpoint, the node SHALL fail TLS connection if the server does not require client authentication.",
+      "formal": "∀endpoint E, connection C. (E.CCDID ≠ NULL ∧ C.endpoint = E ∧ ¬C.server_requires_client_auth) → C.status = FAILED",
+      "violation": "Attacker performs downgrade attack by setting up TLS server without mutual TLS. Node connects despite CCDID being set, exposing client to man-in-the-middle attack where rogue server impersonates legitimate service without validating client identity. This breaks mutual authentication guarantee.",
+      "proverifQuery": "query e:endpoint, c:connection ⊢ event tls_connect(c, e) ∧ has_ccdid(e) ∧ ¬requires_client_auth(c) ==> event connection_failed(c)"
+    },
+    {
+      "id": "PROP_005",
+      "name": "Time_Synchronization_Precondition",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Endpoint provisioning requires UTCTime to be synchronized (not null) to prevent time-based attacks on certificate validity.",
+      "formal": "∀endpoint E. provision_endpoint(E) → UTCTime ≠ NULL",
+      "violation": "Node provisions endpoints without time sync, enabling certificate validity bypass. Attacker exploits expired or not-yet-valid certificates by manipulating perceived time. Node cannot validate certificate temporal constraints (NotBefore/NotAfter), accepting revoked or future-dated certificates.",
+      "proverifQuery": "query e:endpoint ⊢ event provision_endpoint(e) ==> event time_synchronized()"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Root_Certificate_Authentication_Binding",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "The TLSRCAC represented by CAID SHALL be used to authenticate the TLS server when making connections to the endpoint.",
+      "formal": "∀connection C, endpoint E. (C.endpoint = E) → C.server_auth_root = TLSRCAC(E.CAID)",
+      "violation": "Node uses wrong or no root certificate for server authentication. Attacker presents certificate signed by different CA or self-signed certificate; node accepts it, enabling man-in-the-middle attack. Confidentiality and integrity of TLS session are compromised.",
+      "proverifQuery": "query c:connection, e:endpoint, ca:caid ⊢ event tls_connect(c, e) ==> event authenticate_with_ca(c, ca) ∧ endpoint_caid(e, ca)"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Client_Certificate_Handshake_Binding",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "When CCDID is non-NULL, the client certificate details SHALL be used during TLS client authentication handshake.",
+      "formal": "∀connection C, endpoint E. (C.endpoint = E ∧ E.CCDID ≠ NULL) → C.uses_client_cert(E.CCDID)",
+      "violation": "Node fails to present client certificate during handshake despite CCDID being set. Server cannot authenticate client, either rejecting connection (denial of service) or accepting unauthenticated client (authorization bypass if server misconfigured).",
+      "proverifQuery": "query c:connection, e:endpoint, ccd:ccdid ⊢ event tls_handshake(c, e) ∧ endpoint_ccdid(e, ccd) ∧ ccd ≠ null ==> event present_client_cert(c, ccd)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Endpoint_ID_Uniqueness",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Each TLSEndpointID must be unique within the fabric scope; the node SHALL change colliding IDs until unique.",
+      "formal": "∀E1, E2 ∈ ProvisionedEndpoints, fabric F. (E1.fabric = F ∧ E2.fabric = F ∧ E1 ≠ E2) → E1.EndpointID ≠ E2.EndpointID",
+      "violation": "Two endpoints share same ID within fabric. FindEndpoint returns wrong endpoint, causing node to connect to unintended TLS server (wrong hostname/port/certificates). This can route sensitive data to attacker-controlled server or cause failed connections.",
+      "proverifQuery": "query e1:endpoint, e2:endpoint, id:endpointid, f:fabric ⊢ event endpoint_created(e1, id, f) ∧ event endpoint_created(e2, id, f) ∧ e1 ≠ e2 ==> false"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Reference_Count_Accuracy",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "ReferenceCount SHALL accurately reflect the number of entities currently using the TLS endpoint, recomputed at runtime (e.g., after reboot).",
+      "formal": "∀endpoint E, time T. E.ReferenceCount(T) = count({entity | entity.uses(E) ∧ entity.active(T)})",
+      "violation": "Stale reference count prevents legitimate endpoint removal (false positive > 0) or allows premature removal while in use (false zero). Premature removal causes active connections to fail or creates dangling references, potentially exposing secret key material if not properly cleaned up.",
+      "proverifQuery": "query e:endpoint, n:nat ⊢ event reference_count(e, n) ==> count_active_users(e, n)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Duplicate_Endpoint_Prevention",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Within a fabric, no two endpoints can have identical Hostname/Port combinations; provisioning duplicate returns EndpointAlreadyInstalled.",
+      "formal": "∀E1, E2 ∈ ProvisionedEndpoints, fabric F. (E1.fabric = F ∧ E2.fabric = F ∧ E1.Hostname = E2.Hostname ∧ E1.Port = E2.Port) → E1 = E2",
+      "violation": "Multiple endpoint entries point to same TLS server. Different certificate associations (CAID/CCDID) on duplicates create ambiguity: which certificate to use? Node may use wrong credentials, causing authentication failure or unintended certificate exposure.",
+      "proverifQuery": "query e1:endpoint, e2:endpoint, h:hostname, p:port, f:fabric ⊢ event endpoint_exists(e1, h, p, f) ∧ event endpoint_exists(e2, h, p, f) ==> e1 = e2"
+    },
+    {
+      "id": "PROP_011",
+      "name": "Resource_Exhaustion_Protection",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "The number of provisioned endpoints per fabric cannot exceed MaxProvisioned; attempts beyond limit return RESOURCE_EXHAUSTED.",
+      "formal": "∀fabric F. |{E ∈ ProvisionedEndpoints | E.fabric = F}| ≤ MaxProvisioned",
+      "violation": "Unbounded endpoint allocation enables denial-of-service attack: malicious admin provisions endpoints until memory exhausted, crashing node or preventing legitimate endpoint creation. Also creates performance degradation if endpoint lookup is linear.",
+      "proverifQuery": "query f:fabric, n:nat ⊢ event provision_endpoint(_, f) ∧ count_endpoints(f, n) ∧ n >= max_provisioned() ==> event provision_failed(resource_exhausted)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Endpoint_Removal_State_Constraint",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "An endpoint with ReferenceCount > 0 cannot be removed; removal attempt returns INVALID_IN_STATE.",
+      "formal": "∀endpoint E. E.ReferenceCount > 0 → ¬can_remove(E)",
+      "violation": "Active connections lose endpoint configuration mid-session. Ongoing TLS connections fail or enter undefined state. If removal also deletes certificate references, dangling pointers cause crashes or expose uninitialized memory potentially containing key material.",
+      "proverifQuery": "query e:endpoint, n:nat ⊢ event remove_endpoint(e) ∧ reference_count(e, n) ∧ n > 0 ==> event removal_failed(invalid_in_state)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Atomic_Endpoint_Creation",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "Endpoint provisioning is atomic: either fully succeeds with all fields set and stored, or fails with no side effects.",
+      "formal": "∀endpoint E. provision_endpoint(E) → (E ∈ ProvisionedEndpoints ∧ all_fields_valid(E)) ∨ (E ∉ ProvisionedEndpoints ∧ no_partial_state)",
+      "violation": "Partial endpoint creation leaves inconsistent state: EndpointID allocated but Hostname/certificates not set. Subsequent FindEndpoint retrieves malformed entry causing null pointer dereference. Or partial entry leaks memory/IDs, exhausting resources over repeated failed provisions.",
+      "proverifQuery": "query e:endpoint ⊢ event provision_started(e) ∧ ¬event provision_completed(e) ==> ¬event endpoint_exists(e)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Atomic_Endpoint_Update",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "Endpoint updates (when EndpointID is non-NULL) are atomic: all fields updated together or none updated if validation fails.",
+      "formal": "∀endpoint E, fields F_new. update_endpoint(E, F_new) → (E.fields = F_new ∧ stored) ∨ (E.fields = F_old ∧ error_returned)",
+      "violation": "Partial update creates inconsistent endpoint: Hostname updated but CAID not changed. Node connects to new server using old CA certificate, authentication fails. Or worse, old CA accepts new server's certificate incorrectly, enabling man-in-the-middle if old CA compromised.",
+      "proverifQuery": "query e:endpoint, f_old:fields, f_new:fields ⊢ event update_started(e, f_new) ∧ ¬event update_completed(e) ==> endpoint_fields(e, f_old)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "Endpoint_Fabric_Binding",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "An endpoint is permanently bound to the fabric that created it; cross-fabric access (read/update/delete) is always denied.",
+      "formal": "∀endpoint E, fabric F_create, fabric F_access, operation Op. (E.fabric = F_create ∧ F_access ≠ F_create) → access_denied(Op, E, F_access)",
+      "violation": "Attacker from fabric B deletes or modifies endpoints belonging to fabric A. Denial of service (deletes critical endpoints) or credential theft (modifies endpoint to redirect connections to attacker-controlled server, then observes traffic or harvests credentials).",
+      "proverifQuery": "query e:endpoint, f1:fabric, f2:fabric, op:operation ⊢ event execute_operation(op, e, f2) ∧ endpoint_fabric(e, f1) ∧ f1 ≠ f2 ==> event operation_denied(op)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "Certificate_Fabric_Consistency",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "All certificate references (CAID, CCDID) in an endpoint must belong to the same fabric as the endpoint.",
+      "formal": "∀endpoint E, CAID ca, CCDID ccd. (E.CAID = ca ∧ E.CCDID = ccd ∧ ccd ≠ NULL) → (cert(ca).fabric = E.fabric ∧ cert(ccd).fabric = E.fabric)",
+      "violation": "Endpoint in fabric A references certificate from fabric B. Cross-fabric certificate usage breaks isolation: fabric A can use fabric B's TLS credentials. Attacker in compromised fabric A impersonates fabric B's TLS connections, stealing data intended for fabric B or impersonating B's identity to external servers.",
+      "proverifQuery": "query e:endpoint, ca:caid, ccd:ccdid, f:fabric ⊢ event endpoint_provisioned(e, ca, ccd, f) ∧ ccd ≠ null ==> cert_fabric(ca, f) ∧ cert_fabric(ccd, f)"
+    },
+    {
+      "id": "PROP_017",
+      "name": "State_Transition_Ordering",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Endpoint lifecycle follows mandatory sequence: not_exist → provisioned (ReferenceCount=0) → in_use (ReferenceCount>0) → released (ReferenceCount=0) → removed.",
+      "formal": "∀endpoint E. state_sequence(E) ∈ {not_exist → provisioned → in_use* → released → removed}",
+      "violation": "Invalid state transitions allow removing in-use endpoints or using non-provisioned endpoints. Removing in-use endpoint crashes active connections. Using non-provisioned endpoint attempts TLS connection with uninitialized credentials, leaking error messages that reveal internal structure to attacker.",
+      "proverifQuery": "query e:endpoint ⊢ event state_change(e, in_use) ==> event state_previous(e, provisioned) ∨ event state_previous(e, in_use)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Endpoint_Update_Preserves_ID",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When updating an existing endpoint (EndpointID non-NULL), the EndpointID does not change; only mutable fields are updated.",
+      "formal": "∀endpoint E, EndpointID id, update U. (E.EndpointID = id ∧ update_endpoint(E, U)) → E'.EndpointID = id",
+      "violation": "Endpoint ID changes during update breaks references from other components tracking endpoints by ID. Components using old ID fail to find endpoint or retrieve wrong endpoint. If IDs reused, active connection may inadvertently switch to different TLS server mid-session.",
+      "proverifQuery": "query e:endpoint, id:endpointid, u:update ⊢ event update_endpoint(e, u) ∧ endpoint_id(e, id) ==> event after_update_id(e, id)"
+    },
+    {
+      "id": "PROP_019",
+      "name": "NULL_CCDID_No_Client_Auth",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When CCDID is NULL, no client certificate is used with the endpoint; TLS connection proceeds with server-only authentication.",
+      "formal": "∀endpoint E, connection C. (E.CCDID = NULL ∧ C.endpoint = E) → ¬C.presents_client_cert",
+      "violation": "Node incorrectly presents client certificate when CCDID is NULL, or fails to present when CCDID is set. Presenting when NULL may expose unintended credentials. Not presenting when set breaks mutual TLS, causing authentication failure or unauthorized access if server improperly accepts unauthenticated clients.",
+      "proverifQuery": "query c:connection, e:endpoint ⊢ event tls_connect(c, e) ∧ endpoint_ccdid(e, null) ==> ¬event client_cert_presented(c)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "Error_Code_Correctness",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Specific error conditions return documented cluster-specific status codes (InvalidTime, RootCertificateNotFound, ClientCertificateNotFound, EndpointAlreadyInstalled, EndpointInUse).",
+      "formal": "∀operation Op, error E. Op.fails_with(E) → E.code ∈ {InvalidTime, RootCertNotFound, ClientCertNotFound, EndpointAlreadyInstalled, EndpointInUse, RESOURCE_EXHAUSTED, NOT_FOUND, INVALID_IN_STATE}",
+      "violation": "Wrong error codes confuse diagnostics and automated retry logic. Generic errors hide root cause from admin. Security impact: if access denial returns generic error instead of specific fabric mismatch error, attacker learns less about access control enforcement, but this also hinders legitimate debugging.",
+      "proverifQuery": "query op:operation, err:error ⊢ event operation_failed(op, err) ==> valid_error_code(err) ∨ standard_error_code(err)"
+    },
+    {
+      "id": "PROP_021",
+      "name": "FindEndpoint_Fabric_Scoped",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "FindEndpoint only returns endpoints belonging to the accessing fabric; cross-fabric queries return NOT_FOUND.",
+      "formal": "∀EndpointID id, fabric F_access. find_endpoint(id, F_access) → (endpoint(id).fabric = F_access ∨ result = NOT_FOUND)",
+      "violation": "Cross-fabric endpoint discovery violates isolation. Attacker from fabric B enumerates endpoints in fabric A by probing IDs. Even if access denied, knowing endpoint configurations (hostnames, ports) reveals network topology and potential attack targets for separate network-level attacks.",
+      "proverifQuery": "query id:endpointid, f1:fabric, f2:fabric ⊢ event find_endpoint(id, f2) ∧ endpoint_fabric(id, f1) ∧ f1 ≠ f2 ==> event find_failed(not_found)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "RemoveEndpoint_Fabric_Scoped",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "RemoveEndpoint only removes endpoints belonging to the accessing fabric; cross-fabric removal attempts return NOT_FOUND.",
+      "formal": "∀EndpointID id, fabric F_access. remove_endpoint(id, F_access) → (endpoint(id).fabric = F_access ∨ result = NOT_FOUND)",
+      "violation": "Cross-fabric endpoint deletion enables denial-of-service attack. Attacker from fabric B removes endpoints from fabric A, disrupting A's TLS connections. If error code leaks fabric membership, attacker also gains information disclosure about which endpoint IDs exist in target fabric.",
+      "proverifQuery": "query id:endpointid, f1:fabric, f2:fabric ⊢ event remove_endpoint(id, f2) ∧ endpoint_fabric(id, f1) ∧ f1 ≠ f2 ==> event removal_failed(not_found)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "Command_Access_Control_Admin",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "ProvisionEndpoint and RemoveEndpoint commands require Administer (A) and Fabric (F) access privileges.",
+      "formal": "∀principal P, fabric F. (invoke(P, ProvisionEndpoint, F) ∨ invoke(P, RemoveEndpoint, F)) → has_privilege(P, Administer, F)",
+      "violation": "Non-admin user provisions or removes endpoints. Unprivileged attacker disrupts service by removing endpoints or exhausts resources by creating maximum endpoints. Or attacker provisions malicious endpoints pointing to eavesdropping servers, redirecting legitimate traffic.",
+      "proverifQuery": "query p:principal, f:fabric, cmd:command ⊢ event invoke_command(p, cmd, f) ∧ (cmd = provision_endpoint ∨ cmd = remove_endpoint) ==> has_access(p, administer, f)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Command_Access_Control_Operate",
+      "category": "AccessControl",
+      "importance": "MEDIUM",
+      "claim": "FindEndpoint command requires Operate (O) and Fabric (F) access privileges.",
+      "formal": "∀principal P, fabric F. invoke(P, FindEndpoint, F) → has_privilege(P, Operate, F)",
+      "violation": "Unprivileged user queries endpoint configuration. Information disclosure: attacker learns TLS server hostnames, ports, certificate IDs. This reconnaissance data guides targeted attacks (phishing using known hostnames, probing identified ports, analyzing certificate trust chains for vulnerabilities).",
+      "proverifQuery": "query p:principal, f:fabric ⊢ event invoke_command(p, find_endpoint, f) ==> has_access(p, operate, f)"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Large_Message_Qualifier_Uniform",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "All commands in this cluster use Large Message qualifier uniformly to reduce testing matrix, even when not strictly required.",
+      "formal": "∀command C ∈ {ProvisionEndpoint, FindEndpoint, RemoveEndpoint}. C.uses_large_message_qualifier = true",
+      "violation": "Inconsistent message handling causes parsing errors or buffer overflows. Small message buffer receives large endpoint data (long hostname), buffer overflow exposes stack memory or overwrites adjacent data structures. If overflow controlled, attacker achieves remote code execution.",
+      "proverifQuery": "query c:command ⊢ event send_command(c) ==> uses_large_message(c)"
+    },
+    {
+      "id": "PROP_026",
+      "name": "Cluster_Endpoint_Restriction",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "This cluster SHALL be present only on root node endpoint when required by device type; SHALL NOT be present on any other endpoint.",
+      "formal": "∀node N, endpoint E. (has_cluster(E, TLSClientManagement)) → (E = N.root_endpoint)",
+      "violation": "Cluster present on non-root endpoint creates unauthorized access point. Attacker targets less-protected endpoint to provision TLS configurations, bypassing root endpoint security controls (additional authentication, rate limiting). Multiple cluster instances cause inconsistent state across endpoints.",
+      "proverifQuery": "query n:node, e:endpoint ⊢ event cluster_present(e, tls_client_mgmt) ==> is_root_endpoint(n, e)"
+    },
+    {
+      "id": "PROP_027",
+      "name": "Hostname_Length_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Hostname field in TLSEndpointStruct and ProvisionEndpoint command must be 4-253 octets per specification.",
+      "formal": "∀hostname H. valid_hostname(H) → (4 ≤ length(H) ≤ 253)",
+      "violation": "Hostname exceeding 253 octets or below 4 octets causes buffer overflows (over-length) or validation bypass (under-length). Over-length hostname overflows DNS resolution buffer, enabling remote code execution. Under-length hostname (e.g., empty string) causes TLS connection to undefined target or null pointer dereference.",
+      "proverifQuery": "query h:hostname ⊢ event validate_hostname(h) ==> length_in_range(h, 4, 253)"
+    },
+    {
+      "id": "PROP_028",
+      "name": "Port_Range_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Port field must be in valid range 1-65535 (no port 0).",
+      "formal": "∀port P. valid_port(P) → (1 ≤ P ≤ 65535)",
+      "violation": "Port 0 or out-of-range port causes connection failure or undefined behavior. Port 0 may bind to random port in some TCP stacks, causing node to connect to unexpected service. Out-of-range port (> 65535) truncated or causes integer overflow, connecting to wrong port (e.g., 65536 → 0).",
+      "proverifQuery": "query p:port ⊢ event validate_port(p) ==> port_in_range(p, 1, 65535)"
+    },
+    {
+      "id": "PROP_029",
+      "name": "CAID_Range_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "CAID (Certificate Authority ID) must be in range 0-65534 (65535 reserved or invalid).",
+      "formal": "∀CAID ca. valid_caid(ca) → (0 ≤ ca ≤ 65534)",
+      "violation": "CAID 65535 or out-of-range may be used as sentinel value (NULL/invalid). Using 65535 as valid CAID causes lookup failure or matches wrong NULL checks, preventing endpoint from finding root certificate. TLS connection proceeds without proper server authentication (security bypass).",
+      "proverifQuery": "query ca:caid ⊢ event validate_caid(ca) ==> caid_in_range(ca, 0, 65534)"
+    },
+    {
+      "id": "PROP_030",
+      "name": "EndpointID_Range_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "TLSEndpointID must be in range 0-65534 (65535 reserved for NULL/invalid).",
+      "formal": "∀EndpointID eid. valid_endpoint_id(eid) → (0 ≤ eid ≤ 65534)",
+      "violation": "EndpointID 65535 conflicts with NULL sentinel. If 65535 used as valid ID, NULL checks incorrectly match valid endpoint or vice versa. FindEndpoint(65535) may return NULL instead of valid endpoint, or NULL check may match ID 65535, causing removal of wrong endpoint.",
+      "proverifQuery": "query eid:endpointid ⊢ event validate_endpoint_id(eid) ==> endpoint_id_in_range(eid, 0, 65534)"
+    },
+    {
+      "id": "PROP_031",
+      "name": "MaxProvisioned_Range_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "MaxProvisioned attribute must be in range 5-254 to ensure reasonable limits.",
+      "formal": "∀node N. 5 ≤ N.MaxProvisioned ≤ 254",
+      "violation": "MaxProvisioned < 5 prevents basic multi-endpoint configurations. MaxProvisioned > 254 risks memory exhaustion from excessive endpoint allocation. If MaxProvisioned = 0, no endpoints can be provisioned (denial of service). If MaxProvisioned = 255 or higher, attacker allocates excessive endpoints, exhausting heap memory and crashing node.",
+      "proverifQuery": "query n:node, max:nat ⊢ event read_attribute(n, max_provisioned, max) ==> max >= 5 ∧ max <= 254"
+    },
+    {
+      "id": "PROP_032",
+      "name": "ProvisionedEndpoints_List_Consistency",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "The ProvisionedEndpoints list length never exceeds MaxProvisioned and all entries are valid per TLSEndpointStruct schema.",
+      "formal": "∀node N. (|N.ProvisionedEndpoints| ≤ N.MaxProvisioned) ∧ (∀E ∈ N.ProvisionedEndpoints. valid_endpoint_struct(E))",
+      "violation": "List exceeds MaxProvisioned causes buffer overflow when reading attribute. Reading beyond allocated memory exposes adjacent heap data (potentially containing keys or sensitive data). Invalid entries (malformed fields) cause parsing errors, crashes, or exploitable type confusion vulnerabilities.",
+      "proverifQuery": "query n:node, list:endpoint_list ⊢ event read_provisioned_endpoints(n, list) ==> length(list) <= max_provisioned(n) ∧ all_valid(list)"
+    },
+    {
+      "id": "PROP_033",
+      "name": "Reference_Count_Non_Negative",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "ReferenceCount must always be non-negative (0 or positive integer).",
+      "formal": "∀endpoint E. E.ReferenceCount ≥ 0",
+      "violation": "Negative reference count (integer underflow) defeats removal protection. Endpoint with ReferenceCount = -1 passes 'ReferenceCount > 0' check incorrectly (if unsigned) or bypasses check (if signed comparison flawed), allowing removal while in use. Active connections crash or exhibit undefined behavior.",
+      "proverifQuery": "query e:endpoint, n:nat ⊢ event reference_count(e, n) ==> n >= 0"
+    },
+    {
+      "id": "PROP_034",
+      "name": "Endpoint_Creation_Initializes_ReferenceCount",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Newly created endpoints must have ReferenceCount initialized to 0.",
+      "formal": "∀endpoint E. event(provision_new_endpoint(E)) → E.ReferenceCount = 0",
+      "violation": "Uninitialized ReferenceCount contains arbitrary memory value. If value > 0, endpoint cannot be removed until counter decremented to 0, potentially never (memory leak). If value negative, integer underflow enables premature removal (see PROP_033).",
+      "proverifQuery": "query e:endpoint ⊢ event endpoint_created(e) ==> reference_count(e, 0)"
+    },
+    {
+      "id": "PROP_035",
+      "name": "TLS_Connection_Uses_Correct_Endpoint",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "When initiating TLS connection, node uses the correct Hostname, Port, CAID, and CCDID from the specified TLSEndpointID.",
+      "formal": "∀connection C, EndpointID eid, endpoint E. (C.intended_endpoint = eid ∧ E.EndpointID = eid) → (C.hostname = E.Hostname ∧ C.port = E.Port ∧ C.caid = E.CAID ∧ C.ccdid = E.CCDID)",
+      "violation": "Node uses wrong endpoint configuration for TLS connection. Connects to wrong server (wrong hostname/port), uses wrong certificate authority (accepts rogue server), or presents wrong client certificate (authentication failure or identity confusion). All lead to man-in-the-middle or denial-of-service.",
+      "proverifQuery": "query c:connection, eid:endpointid, e:endpoint ⊢ event tls_connect(c, eid) ∧ endpoint_exists(e, eid) ==> connection_config_matches(c, e)"
+    },
+    {
+      "id": "PROP_036",
+      "name": "Certificate_Lifecycle_Dependency",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Root certificates (CAID) and client certificates (CCDID) referenced by endpoints cannot be removed while endpoints exist that reference them.",
+      "formal": "∀cert C. (∃endpoint E. (E.CAID = C.id ∨ E.CCDID = C.id)) → ¬can_remove(C)",
+      "violation": "Certificate removed while endpoint references it creates dangling reference. TLS connection attempts to load non-existent certificate, causing connection failure (denial of service) or fallback to insecure mode (no authentication). If memory reclaimed, use-after-free vulnerability may leak sensitive data or enable code execution.",
+      "proverifQuery": "query c:cert, e:endpoint ⊢ event remove_cert(c) ∧ (endpoint_uses_caid(e, c) ∨ endpoint_uses_ccdid(e, c)) ==> event removal_failed(in_use)"
+    },
+    {
+      "id": "PROP_037",
+      "name": "NULL_EndpointID_Creates_New",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When ProvisionEndpoint receives NULL EndpointID, a new endpoint is created; non-NULL EndpointID updates existing endpoint.",
+      "formal": "∀command C. (C.EndpointID = NULL → creates_new_endpoint(C)) ∧ (C.EndpointID ≠ NULL → updates_existing_endpoint(C))",
+      "violation": "NULL treated as update attempts to update non-existent endpoint (returns NOT_FOUND, denial of service). Non-NULL treated as create causes duplicate endpoints with same ID, violating uniqueness (see PROP_008). State machine enters invalid state, causing subsequent operations to fail unpredictably.",
+      "proverifQuery": "query c:command ⊢ event provision_endpoint(c) ∧ endpoint_id(c, null) ==> event endpoint_created_new(c)"
+    },
+    {
+      "id": "PROP_038",
+      "name": "Endpoint_Update_Requires_Fabric_Match",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Updating an endpoint (EndpointID non-NULL) succeeds only if the endpoint's fabric matches the accessing fabric.",
+      "formal": "∀endpoint E, fabric F_access, update U. (update_endpoint(E, U, F_access) ∧ E.EndpointID ≠ NULL) → (E.fabric = F_access ∨ result = NOT_FOUND)",
+      "violation": "Cross-fabric endpoint modification breaks isolation. Attacker from fabric B updates endpoints in fabric A, redirecting A's TLS connections to attacker-controlled servers. Attacker harvests credentials or performs man-in-the-middle attacks on fabric A's traffic.",
+      "proverifQuery": "query e:endpoint, f1:fabric, f2:fabric, u:update ⊢ event update_endpoint(e, u, f2) ∧ endpoint_fabric(e, f1) ∧ f1 ≠ f2 ==> event update_failed(not_found)"
+    },
+    {
+      "id": "PROP_039",
+      "name": "Time_Validated_Before_Certificate_Operations",
+      "category": "Timing",
+      "importance": "CRITICAL",
+      "claim": "Certificate-related operations (provisioning endpoints with CAID/CCDID) cannot proceed until time synchronization establishes valid UTCTime.",
+      "formal": "∀operation O. involves_certificates(O) → (UTCTime ≠ NULL) ∨ operation_fails(O, InvalidTime)",
+      "violation": "Operations proceed without time sync, disabling certificate validity checks. Attacker replays expired certificates or uses not-yet-valid certificates. Node accepts revoked CA certificates or client certificates, enabling impersonation or man-in-the-middle attacks with compromised credentials.",
+      "proverifQuery": "query o:operation ⊢ event execute_operation(o) ∧ requires_certs(o) ==> event time_synchronized()"
+    },
+    {
+      "id": "PROP_040",
+      "name": "Endpoint_Update_Preserves_Fabric",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "Updating an endpoint never changes its fabric association; fabric is immutable after creation.",
+      "formal": "∀endpoint E, fabric F, update U. (E.fabric = F ∧ update_endpoint(E, U)) → E'.fabric = F",
+      "violation": "Fabric reassignment breaks isolation model. Endpoint created in fabric A moved to fabric B inherits A's certificates but operates in B's context. Fabric B gains unauthorized access to fabric A's TLS credentials. Or endpoint orphaned if fabric removed, creating inaccessible endpoints that leak memory.",
+      "proverifQuery": "query e:endpoint, f:fabric, u:update ⊢ event update_endpoint(e, u) ∧ endpoint_fabric_before(e, f) ==> endpoint_fabric_after(e, f)"
+    },
+    {
+      "id": "PROP_041",
+      "name": "Concurrent_Modification_Safety",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "Concurrent ProvisionEndpoint/RemoveEndpoint commands on the same fabric are serialized to prevent race conditions.",
+      "formal": "∀command C1, C2, fabric F, time T. (C1.fabric = F ∧ C2.fabric = F ∧ C1.arrives(T) ∧ C2.arrives(T)) → (executes(C1) < executes(C2) ∨ executes(C2) < executes(C1))",
+      "violation": "Race condition: two provisions create endpoints with same ID (uniqueness check races). Or provision and removal race: endpoint removed between existence check and update, causing update to fail or operate on wrong ID (reused). Corrupts ProvisionedEndpoints list or crashes due to null pointer dereference.",
+      "proverifQuery": "query c1:command, c2:command, f:fabric ⊢ event concurrent_commands(c1, c2, f) ==> event serialized_execution(c1, c2) ∨ event serialized_execution(c2, c1)"
+    },
+    {
+      "id": "PROP_042",
+      "name": "Storage_Persistence_Consistency",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "After successful endpoint provisioning/update/removal, changes are persisted to storage before returning success response.",
+      "formal": "∀operation O. success_response(O) → storage_committed(O.changes)",
+      "violation": "Success returned before storage commit. Node crashes before writing, changes lost. On reboot, endpoints revert to old state. Clients assume endpoint exists and attempt connections, failing. Or removed endpoint reappears after reboot, violating reference count = 0 assumption (zombie endpoint continues operating).",
+      "proverifQuery": "query o:operation ⊢ event send_success_response(o) ==> event storage_persisted(o)"
+    }
+  ],
+
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "The node maintains fabric isolation correctly at the system level; fabric IDs cannot be spoofed or manipulated by unauthorized principals.",
+      "type": "Implicit",
+      "impact_if_violated": "All fabric isolation properties (PROP_001, PROP_015, PROP_016, PROP_021, PROP_022, PROP_038, PROP_040) fail. Attacker can access any fabric's resources by spoofing fabric ID."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "Time Synchronization cluster provides accurate, tamper-resistant time; UTCTime cannot be manipulated by non-admin users.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_005 and PROP_039 fail. Attacker manipulates time to bypass certificate validity checks, accepting expired/revoked certificates or rejecting valid ones (denial of service)."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "Certificate storage (ProvisionedRootCertificates, ProvisionedClientCertificates) is managed by separate secure cluster that enforces fabric isolation and access control.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_002, PROP_003, PROP_036 fail. Attacker directly modifies certificate storage to remove certificates referenced by endpoints, or adds malicious certificates bypassing validation."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Access control system correctly enforces Administer (A) and Operate (O) privileges per fabric; privilege escalation is not possible.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_023 and PROP_024 fail. Non-admin users provision/remove endpoints (resource exhaustion, denial of service) or query endpoint configurations (information disclosure for reconnaissance)."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "TLS implementation uses provided certificate parameters correctly and fails securely when certificates are invalid or missing.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_006, PROP_007, PROP_019, PROP_035 fail. TLS connections proceed with wrong credentials, no authentication, or insecure fallback, enabling man-in-the-middle attacks."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Reference counting mechanism is implemented atomically and correctly by all components that use endpoints.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_009, PROP_012, PROP_033, PROP_034 fail. Stale or incorrect reference counts allow premature endpoint removal (crashes active connections) or prevent removal (memory leak)."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Storage layer provides atomic write semantics and crash consistency for endpoint list updates.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_013, PROP_014, PROP_042 fail. Partial writes corrupt ProvisionedEndpoints list after crash, causing parse errors, memory corruption, or inability to access any endpoints (denial of service)."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "No privileged administrator is compromised; all admin actions are legitimate.",
+      "type": "Explicit",
+      "impact_if_violated": "Attacker with admin privileges bypasses all access control (PROP_023) and can create malicious endpoints pointing to eavesdropping servers, exhausting resources, or removing critical endpoints. Detection relies on audit logging."
+    }
+  ],
+
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Cross-fabric endpoint access - attacker from fabric B reads, modifies, or deletes endpoints belonging to fabric A",
+      "severity": "CRITICAL",
+      "attack_vector": "Exploit fabric ID validation flaw; send ProvisionEndpoint/FindEndpoint/RemoveEndpoint commands with valid session but target endpoints from different fabric"
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Provision endpoint without valid root certificate - node accepts CAID that doesn't exist, enabling connection to unvalidated TLS servers",
+      "severity": "CRITICAL",
+      "attack_vector": "Send ProvisionEndpoint with arbitrary CAID not in ProvisionedRootCertificates; exploit missing validation to create endpoint with no CA trust anchor"
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Provision endpoint with invalid client certificate reference - TLS handshake fails or uses wrong credentials",
+      "severity": "CRITICAL",
+      "attack_vector": "Send ProvisionEndpoint with CCDID not in ProvisionedClientCertificates; force connection failure or credential confusion"
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Mutual TLS downgrade attack - node connects to server without client authentication despite CCDID being set",
+      "severity": "CRITICAL",
+      "attack_vector": "Set up rogue TLS server without client auth requirement; provision endpoint with CCDID pointing to it; node connects without mutual TLS, enabling man-in-the-middle"
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Time-based attacks on certificate validity - expired or not-yet-valid certificates accepted",
+      "severity": "CRITICAL",
+      "attack_vector": "Trigger endpoint provisioning before time sync completes (UTC time null); use expired CA certificate or revoked client certificate in TLS connection"
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "Wrong or no root certificate used for server authentication - man-in-the-middle attack with rogue server",
+      "severity": "CRITICAL",
+      "attack_vector": "Exploit implementation flaw where CAID not properly bound to TLS connection; present certificate signed by different CA or self-signed"
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Client certificate not presented during mutual TLS - authentication bypass or connection failure",
+      "severity": "CRITICAL",
+      "attack_vector": "Exploit TLS handshake implementation that skips client cert when CCDID set; connect to server requiring mutual TLS without presenting certificate"
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Duplicate endpoint IDs within fabric - FindEndpoint returns wrong endpoint, causing connection to incorrect server",
+      "severity": "HIGH",
+      "attack_vector": "Race condition during concurrent provisioning; force ID collision to route packets to attacker-controlled endpoint with different hostname/certificates"
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "Stale reference count - premature endpoint removal crashes active connections or memory leak prevents removal",
+      "severity": "HIGH",
+      "attack_vector": "Exploit race condition between reference count update and endpoint usage; underflow counter to enable removal while in use"
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Duplicate hostname/port endpoints with different certificates - ambiguous certificate selection",
+      "severity": "HIGH",
+      "attack_vector": "Provision multiple endpoints with same hostname/port but different CAID/CCDID; force node to use wrong certificates for connection"
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Unbounded endpoint allocation - memory exhaustion denial of service",
+      "severity": "HIGH",
+      "attack_vector": "Compromised admin provisions MaxProvisioned + N endpoints; exploit missing limit check to allocate until memory exhausted, crashing node"
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Remove in-use endpoint - active connections crash or enter undefined state",
+      "severity": "HIGH",
+      "attack_vector": "Race condition: decrement reference count and send RemoveEndpoint simultaneously; removal succeeds while connection active, causing use-after-free"
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Partial endpoint creation - inconsistent state with partially initialized fields",
+      "severity": "HIGH",
+      "attack_vector": "Crash node during provisioning after ID allocation but before full storage; on reboot, ID allocated but endpoint incomplete, causing null pointer dereference"
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Partial endpoint update - mismatched hostname/certificate configuration",
+      "severity": "HIGH",
+      "attack_vector": "Crash node during update after hostname changed but before CAID updated; connection to new server uses old CA, authentication fails or succeeds incorrectly"
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Cross-fabric endpoint modification - redirect traffic to attacker-controlled server",
+      "severity": "CRITICAL",
+      "attack_vector": "Exploit fabric validation flaw in update path; modify fabric A's endpoint from fabric B to point to attacker's TLS server, harvesting credentials"
+    },
+    {
+      "property_id": "PROP_016",
+      "vulnerability": "Cross-fabric certificate usage - attacker in fabric A uses fabric B's TLS credentials",
+      "severity": "CRITICAL",
+      "attack_vector": "Provision endpoint in fabric A with CAID/CCDID from fabric B; use fabric B's certificates to impersonate B's identity to external servers"
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Mutual TLS enforcement bypass - downgrade attack",
+      "severity": "CRITICAL",
+      "attack_vector": "Set up TLS server without client auth requirement; node connects despite CCDID being set, exposing connection to man-in-the-middle without mutual authentication"
+    },
+    {
+      "property_id": "PROP_021",
+      "vulnerability": "Cross-fabric endpoint enumeration - information disclosure",
+      "severity": "HIGH",
+      "attack_vector": "Send FindEndpoint requests from fabric B for endpoint IDs; if error messages differ for 'not found' vs 'wrong fabric', enumerate fabric A's endpoints"
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Cross-fabric endpoint deletion - denial of service",
+      "severity": "HIGH",
+      "attack_vector": "Send RemoveEndpoint from fabric B for fabric A's endpoint IDs; exploit missing fabric check to delete A's endpoints, disrupting A's TLS connections"
+    },
+    {
+      "property_id": "PROP_023",
+      "vulnerability": "Privilege escalation - non-admin provisions/removes endpoints",
+      "severity": "HIGH",
+      "attack_vector": "Exploit access control bypass in command dispatch; non-admin user provisions malicious endpoints or removes critical endpoints, causing DoS or traffic redirection"
+    },
+    {
+      "property_id": "PROP_025",
+      "vulnerability": "Buffer overflow from inconsistent message size handling",
+      "severity": "HIGH",
+      "attack_vector": "Send large endpoint data (long hostname) without large message qualifier; overflow small message buffer, overwriting adjacent memory to achieve remote code execution"
+    },
+    {
+      "property_id": "PROP_027",
+      "vulnerability": "Hostname buffer overflow or validation bypass",
+      "severity": "HIGH",
+      "attack_vector": "Send hostname > 253 octets to overflow DNS resolution buffer; or send empty hostname to bypass validation, causing null pointer dereference or connection to undefined target"
+    },
+    {
+      "property_id": "PROP_028",
+      "vulnerability": "Port number overflow or invalid port causing wrong connection target",
+      "severity": "MEDIUM",
+      "attack_vector": "Send port > 65535 causing integer overflow/truncation; node connects to wrong port (e.g., 65536 → 0 or random port)"
+    },
+    {
+      "property_id": "PROP_032",
+      "vulnerability": "Buffer overflow reading ProvisionedEndpoints attribute",
+      "severity": "HIGH",
+      "attack_vector": "Corrupt storage to have endpoint list > MaxProvisioned; attribute read overflows buffer, exposing adjacent heap memory containing keys or sensitive data"
+    },
+    {
+      "property_id": "PROP_033",
+      "vulnerability": "Reference count integer underflow enabling premature removal",
+      "severity": "HIGH",
+      "attack_vector": "Exploit race condition to decrement reference count below zero; signed integer becomes negative, passes '> 0' check incorrectly, allows removal while in use"
+    },
+    {
+      "property_id": "PROP_035",
+      "vulnerability": "TLS connection uses wrong endpoint configuration - man-in-the-middle or authentication failure",
+      "severity": "HIGH",
+      "attack_vector": "Exploit endpoint lookup bug; provide EndpointID but implementation uses wrong entry from list, connecting to different server with different certificates"
+    },
+    {
+      "property_id": "PROP_036",
+      "vulnerability": "Certificate removed while endpoints reference it - use-after-free vulnerability",
+      "severity": "HIGH",
+      "attack_vector": "Remove root or client certificate without checking endpoint references; TLS connection dereferences freed certificate memory, leaking data or causing crash"
+    },
+    {
+      "property_id": "PROP_038",
+      "vulnerability": "Cross-fabric endpoint update - traffic redirection attack",
+      "severity": "CRITICAL",
+      "attack_vector": "Exploit missing fabric check in update path; attacker from fabric B updates fabric A's endpoints to redirect A's connections to attacker's server"
+    },
+    {
+      "property_id": "PROP_039",
+      "vulnerability": "Certificate operations without time validation - expired certificate acceptance",
+      "severity": "CRITICAL",
+      "attack_vector": "Provision endpoints before time sync; later use expired or revoked certificates in TLS connections, bypassing temporal validity checks"
+    },
+    {
+      "property_id": "PROP_040",
+      "vulnerability": "Fabric reassignment breaks isolation - unauthorized certificate access",
+      "severity": "CRITICAL",
+      "attack_vector": "Exploit update that changes endpoint's fabric association; endpoint created in fabric A moved to fabric B, giving B access to A's certificates"
+    },
+    {
+      "property_id": "PROP_041",
+      "vulnerability": "Race condition corrupts endpoint list or creates duplicate IDs",
+      "severity": "HIGH",
+      "attack_vector": "Send concurrent ProvisionEndpoint commands; race in uniqueness check allows duplicate endpoint IDs or corrupts list structure, causing crashes or wrong endpoint retrieval"
+    },
+    {
+      "property_id": "PROP_042",
+      "vulnerability": "Data loss or zombie endpoints after crash",
+      "severity": "HIGH",
+      "attack_vector": "Crash node after success response but before storage commit; on reboot, endpoints revert to old state, causing inconsistency or reappearing removed endpoints"
+    }
+  ],
+
+  "fsmReferenceProperties": [
+    {
+      "state_name": "endpoint_lifecycle",
+      "properties_enforcing_transitions": ["PROP_017", "PROP_037", "PROP_012", "PROP_013", "PROP_014"],
+      "critical_property": "PROP_017 - Invalid state transitions allow removing in-use endpoints or using non-provisioned endpoints, causing crashes or security bypass"
+    },
+    {
+      "state_name": "fabric_isolation",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_015", "PROP_016", "PROP_040"],
+      "critical_property": "PROP_001 - Fabric isolation must be enforced at every operation; cross-fabric access breaks multi-tenancy security model"
+    },
+    {
+      "state_name": "certificate_validation",
+      "properties_enforcing_transitions": ["PROP_002", "PROP_003", "PROP_005", "PROP_039"],
+      "critical_property": "PROP_005 - Time synchronization is prerequisite for all certificate operations; without it, certificate validity cannot be verified"
+    },
+    {
+      "state_name": "tls_connection",
+      "properties_enforcing_transitions": ["PROP_006", "PROP_007", "PROP_004", "PROP_019", "PROP_035"],
+      "critical_property": "PROP_004 - Mutual TLS enforcement prevents downgrade attacks; when CCDID set, connection must fail if server doesn't require client auth"
+    },
+    {
+      "state_name": "reference_counting",
+      "properties_enforcing_transitions": ["PROP_009", "PROP_012", "PROP_033", "PROP_034"],
+      "critical_property": "PROP_012 - Reference count > 0 blocks removal; premature removal crashes active connections with use-after-free"
+    }
+  ],
+
+  "additionalInsights": "The specification has several emergent vulnerability patterns not explicitly stated: (1) **Certificate lifecycle dependency chain** - Certificates depend on time sync; endpoints depend on certificates; connections depend on endpoints. Breaking any link cascades failures down the chain. (2) **Reference counting as security mechanism** - Reference count isn't just resource management; it's a critical safety interlock preventing use-after-free. Implementation bugs here are exploitable. (3) **Fabric isolation pervasiveness** - Fabric checks must occur at EVERY operation boundary (provision, find, remove, update), not just provisioning. Missed checks enable cross-tenant attacks. (4) **Downgrade attack surface** - PROP_004 (mutual TLS enforcement) is unusual: requires failing connection if server doesn't require client auth. Implementers might miss this. (5) **Time sync as security foundation** - All certificate operations depend on synchronized time, but this is checked only at provisioning, not at connection time. If time sync lost after provisioning, connections may use expired certificates. (6) **Large message uniformity** - All commands use large message qualifier for consistency, but specification doesn't mandate buffer size validation. Implementations may allocate small buffers, creating overflow risk. (7) **Atomicity assumptions** - Multiple operations (ID generation, validation, storage) must be atomic but specification doesn't mandate transaction semantics. Race conditions enable duplicate IDs or partial states. (8) **Error code as side channel** - Different error codes for 'not found' vs 'wrong fabric' enable cross-fabric enumeration attacks. Should return uniform NOT_FOUND for all unauthorized access.",
+
+  "summary": {
+    "total_properties": 42,
+    "by_importance": {
+      "CRITICAL": 15,
+      "HIGH": 21,
+      "MEDIUM": 6
+    },
+    "by_category": {
+      "Security": 7,
+      "AccessControl": 7,
+      "Correctness": 11,
+      "Consistency": 6,
+      "Cryptography": 3,
+      "Atomicity": 3,
+      "Timing": 2,
+      "Revocation": 0
+    },
+    "total_assumptions": 8,
+    "vulnerabilities_identified": 32,
+    "high_risk_areas": [
+      "Fabric isolation enforcement (7 critical properties)",
+      "Certificate validation and binding (5 critical properties)",
+      "Mutual TLS enforcement (downgrade attack prevention)",
+      "Reference counting integrity (use-after-free prevention)",
+      "Atomic operations and race conditions (state corruption prevention)",
+      "Time synchronization dependency (temporal validity enforcement)"
+    ],
+    "testing_priorities": [
+      "Cross-fabric access attempts (all operations)",
+      "Concurrent provisioning/removal race conditions",
+      "Certificate removal while endpoints reference them",
+      "Time sync failure scenarios",
+      "Reference count underflow/overflow",
+      "Mutual TLS downgrade attack scenarios",
+      "Buffer overflows in hostname/list handling",
+      "Partial transaction scenarios (crash during operations)"
+    ]
+  }
+}

@@ -1,0 +1,1622 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Closure Control",
+    "cluster_id": "0x0104",
+    "pics_code": "CLCTRL",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 5.4, Pages 494-510",
+    "revision": 1,
+
+    "features": [
+      {
+        "bit": 0,
+        "code": "PS",
+        "name": "Positioning",
+        "conformance": "O.a+",
+        "description": "Supports Positioning with at least FullyOpened (0%) and FullyClosed (100%) discrete positions",
+        "affects_states": ["Stopped", "Moving", "WaitingForMotion"],
+        "affects_transitions": ["T016", "T017", "T018", "T021_PS", "T022_PS"]
+      },
+      {
+        "bit": 1,
+        "code": "LT",
+        "name": "MotionLatching",
+        "conformance": "O.a+",
+        "description": "Supports a latch that secures an axis, preventing associated actuators from moving components along that axis",
+        "affects_states": ["Stopped"],
+        "affects_transitions": ["T021_LT", "T022_LT", "T023_LT", "T024_LT"]
+      },
+      {
+        "bit": 2,
+        "code": "IS",
+        "name": "Instantaneous",
+        "conformance": "O",
+        "description": "Closure changes position/state instantaneously; Speed feature inapplicable; Stop command not usable; OverallCurrentState immediately follows OverallTargetState",
+        "affects_states": ["Moving"],
+        "affects_transitions": ["T001", "T002", "T003"]
+      },
+      {
+        "bit": 3,
+        "code": "SP",
+        "name": "Speed",
+        "conformance": "[PS & !IS]",
+        "description": "Supports configurable speed during motion toward target position using ThreeLevelAutoEnum (Low, Medium, High, Auto). At least two distinct speeds required.",
+        "affects_states": ["Moving", "WaitingForMotion"],
+        "affects_transitions": ["T021_SP", "T022_SP"]
+      },
+      {
+        "bit": 4,
+        "code": "VT",
+        "name": "Ventilation",
+        "conformance": "[PS]",
+        "description": "Supports a designated Ventilation position (e.g., partially open)",
+        "affects_states": ["Stopped"],
+        "affects_transitions": ["T018"]
+      },
+      {
+        "bit": 5,
+        "code": "PD",
+        "name": "Pedestrian",
+        "conformance": "[PS]",
+        "description": "Supports a dedicated Pedestrian position providing a clear walkway through the closure",
+        "affects_states": ["Stopped"],
+        "affects_transitions": ["T018"]
+      },
+      {
+        "bit": 6,
+        "code": "CL",
+        "name": "Calibration",
+        "conformance": "[PS]",
+        "description": "Capability to trigger a calibration procedure (fully automated or requiring manual steps)",
+        "affects_states": ["Calibrating"],
+        "affects_transitions": ["T030", "T031", "T032", "T033"]
+      },
+      {
+        "bit": 7,
+        "code": "PT",
+        "name": "Protection",
+        "conformance": "O",
+        "description": "Closure can activate a form of protection (e.g., wind protection). May be software limitation or mechanical system. Commands MAY be rejected.",
+        "affects_states": ["Protected"],
+        "affects_transitions": ["T040", "T041"]
+      },
+      {
+        "bit": 8,
+        "code": "MO",
+        "name": "ManuallyOperable",
+        "conformance": "O",
+        "description": "Closure can be operated manually by a user (e.g., opening a window)",
+        "affects_states": ["Disengaged"],
+        "affects_transitions": ["T042", "T043"]
+      }
+    ],
+
+    "dependencies": [
+      {
+        "cluster": "Closure Dimension",
+        "relationship": "MAY_COEXIST",
+        "description": "When a Closure Dimension cluster is associated, its SetTarget and Step commands MAY impact OverallCurrentState and operational logic of this Closure Control cluster. Closure Control acts as supervisory/coordination logic."
+      }
+    ],
+
+    "states": [
+      {
+        "name": "Boot",
+        "description": "Transient initial state immediately after power-on or reboot. The closure checks whether setup/calibration is required.",
+        "is_initial": true,
+        "invariants": [],
+        "state_attributes": {
+          "MainState": "N/A (transient, not a MainStateEnum value)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Closure behavior undefined during boot; commands SHOULD NOT be accepted."
+      },
+      {
+        "name": "SetupRequired",
+        "description": "Movement commands are ignored since the closure is not operational and requires further setup and/or calibration.",
+        "is_initial": false,
+        "invariants": ["MainState == SetupRequired"],
+        "state_attributes": {
+          "MainState": "SetupRequired"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Closure is not operational; movement commands are ignored. Calibrate command may be accepted."
+      },
+      {
+        "name": "Stopped",
+        "description": "Closure is stopped; no active motion. Central state from which most operational transitions originate.",
+        "is_initial": false,
+        "invariants": ["MainState == Stopped"],
+        "state_attributes": {
+          "MainState": "Stopped",
+          "OverallCurrentState.Position": "CurrentPositionEnum (if PS feature)",
+          "OverallCurrentState.Latch": "bool or null (if LT feature)",
+          "OverallCurrentState.Speed": "ThreeLevelAutoEnum (if SP feature)",
+          "OverallCurrentState.SecureState": "bool or null"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Closure is stationary. SecureState indicates if unauthorized entry is possible. If SecureState is false or null, security risk exists."
+      },
+      {
+        "name": "WaitingForMotion",
+        "description": "Closure is waiting before a motion (e.g., pre-heat, pre-check). OverallTargetState has been set but physical movement has not yet begun.",
+        "is_initial": false,
+        "invariants": ["MainState == WaitingForMotion"],
+        "state_attributes": {
+          "MainState": "WaitingForMotion",
+          "OverallTargetState": "set to requested target",
+          "CountdownTime": "estimated time until operation completes (if PS & !IS)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Closure is committed to move but not yet moving. Security state may be about to change."
+      },
+      {
+        "name": "Moving",
+        "description": "Closure is actively moving toward OverallTargetState. Not applicable when IS (Instantaneous) feature is active.",
+        "is_initial": false,
+        "invariants": ["MainState == Moving"],
+        "state_attributes": {
+          "MainState": "Moving",
+          "OverallTargetState": "set to requested target",
+          "OverallCurrentState.Speed": "current speed (if SP feature)",
+          "CountdownTime": "estimated time remaining (if PS & !IS)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Closure is in physical motion. Risk of injury if path is obstructed. ObserveCurrentErrorList for PhysicallyBlocked, BlockedBySensor errors."
+      },
+      {
+        "name": "Calibrating",
+        "description": "Closure is currently calibrating its Opened and Closed limits to determine effective physical range. Exited on completion, error, or Stop command.",
+        "is_initial": false,
+        "invariants": ["MainState == Calibrating"],
+        "state_attributes": {
+          "MainState": "Calibrating"
+        },
+        "feature_requirements": ["Feature_CL == true"],
+        "safety_implications": "Closure may move to physical limits during calibration. Physical access around the closure should be restricted."
+      },
+      {
+        "name": "Protected",
+        "description": "Some protective measures are activated to prevent damage to the closure. Commands MAY be rejected.",
+        "is_initial": false,
+        "invariants": ["MainState == Protected"],
+        "state_attributes": {
+          "MainState": "Protected"
+        },
+        "feature_requirements": ["Feature_PT == true"],
+        "safety_implications": "Closure is in a protective state (e.g., wind protection). Movement may be restricted to prevent hardware damage."
+      },
+      {
+        "name": "Disengaged",
+        "description": "Closure has a disengaged element preventing any actuator movements. Manual operation is in effect.",
+        "is_initial": false,
+        "invariants": ["MainState == Disengaged"],
+        "state_attributes": {
+          "MainState": "Disengaged"
+        },
+        "feature_requirements": ["Feature_MO == true"],
+        "safety_implications": "Actuator is disengaged; remote control over physical position is lost. Unauthorized manual access may be possible."
+      },
+      {
+        "name": "Error",
+        "description": "Closure is in an error state. CurrentErrorList contains one or more active ClosureErrorEnum values.",
+        "is_initial": false,
+        "invariants": ["MainState == Error", "CurrentErrorList.length >= 1"],
+        "state_attributes": {
+          "MainState": "Error",
+          "CurrentErrorList": "non-empty list of ClosureErrorEnum"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Closure is in an error condition. Physical state is indeterminate. Errors include PhysicallyBlocked, BlockedBySensor, TemperatureLimited, MaintenanceRequired, InternalInterference."
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T001",
+        "from_state": "Boot",
+        "to_state": "SetupRequired",
+        "trigger": {
+          "type": "internal",
+          "name": "BootComplete_SetupNeeded",
+          "command_id": null
+        },
+        "guard_condition": "boot completed AND (closure not calibrated OR setup not complete)",
+        "actions": [
+          "MainState := SetupRequired"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram (informational)"
+      },
+      {
+        "id": "T002",
+        "from_state": "Boot",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "internal",
+          "name": "BootComplete_SetupOK",
+          "command_id": null
+        },
+        "guard_condition": "boot completed AND closure is operational (setup complete)",
+        "actions": [
+          "MainState := Stopped",
+          "OverallTargetState := null"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram (informational)"
+      },
+      {
+        "id": "T003",
+        "from_state": "SetupRequired",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "internal",
+          "name": "SetupComplete",
+          "command_id": null
+        },
+        "guard_condition": "setup and calibration completed successfully",
+        "actions": [
+          "MainState := Stopped"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram (informational)"
+      },
+      {
+        "id": "T010",
+        "from_state": "Moving",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "Stop",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Feature_IS == false",
+        "actions": [
+          "stop_motion()",
+          "MainState := Stopped",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.1 Stop Command"
+      },
+      {
+        "id": "T011",
+        "from_state": "WaitingForMotion",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "Stop",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Feature_IS == false",
+        "actions": [
+          "stop_motion()",
+          "MainState := Stopped",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.1 Stop Command"
+      },
+      {
+        "id": "T012",
+        "from_state": "Calibrating",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "Stop",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Feature_IS == false",
+        "actions": [
+          "stop_motion()",
+          "MainState := Stopped",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.1 Stop Command"
+      },
+      {
+        "id": "T013",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "Stop",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Feature_IS == false",
+        "actions": [
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.1 Stop Command: 'SUCCESS SHALL always be returned, regardless of MainState'"
+      },
+      {
+        "id": "T014",
+        "from_state": "Protected",
+        "to_state": "Protected",
+        "trigger": {
+          "type": "command",
+          "name": "Stop",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Feature_IS == false",
+        "actions": [
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.1 Stop Command: 'SUCCESS SHALL always be returned, regardless of MainState'"
+      },
+      {
+        "id": "T015",
+        "from_state": "Error",
+        "to_state": "Error",
+        "trigger": {
+          "type": "command",
+          "name": "Stop",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Feature_IS == false",
+        "actions": [
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.1 Stop Command: 'SUCCESS SHALL always be returned, regardless of MainState'"
+      },
+      {
+        "id": "T020",
+        "from_state": "SetupRequired",
+        "to_state": "SetupRequired",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "MainState == SetupRequired",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "MainState NOT IN [Moving, WaitingForMotion, Stopped]",
+            "status_code": "INVALID_IN_STATE",
+            "description": "MoveTo rejected because closure is not in a motion-capable state"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T021",
+        "from_state": "Calibrating",
+        "to_state": "Calibrating",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "MainState == Calibrating",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "MainState NOT IN [Moving, WaitingForMotion, Stopped]",
+            "status_code": "INVALID_IN_STATE",
+            "description": "MoveTo rejected because closure is calibrating"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T022",
+        "from_state": "Protected",
+        "to_state": "Protected",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "MainState == Protected",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "MainState NOT IN [Moving, WaitingForMotion, Stopped]",
+            "status_code": "INVALID_IN_STATE",
+            "description": "MoveTo rejected because closure is in protected state"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T023",
+        "from_state": "Error",
+        "to_state": "Error",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "MainState == Error",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "MainState NOT IN [Moving, WaitingForMotion, Stopped]",
+            "status_code": "INVALID_IN_STATE",
+            "description": "MoveTo rejected because closure is in error state"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T024",
+        "from_state": "Disengaged",
+        "to_state": "Disengaged",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "MainState == Disengaged",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "MainState NOT IN [Moving, WaitingForMotion, Stopped]",
+            "status_code": "INVALID_IN_STATE",
+            "description": "MoveTo rejected because closure is disengaged"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T025",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_PS == true && Position field present && Position value out of constraints",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "Position field present but value out of constraints AND Feature_PS == true",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Position value is not a valid TargetPositionEnum value for this closure"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.1 Position Field"
+      },
+      {
+        "id": "T026",
+        "from_state": "Moving",
+        "to_state": "Moving",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_PS == true && Position field present && Position value out of constraints",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "Position field present but value out of constraints AND Feature_PS == true",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Position value is not a valid TargetPositionEnum value for this closure"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.1 Position Field"
+      },
+      {
+        "id": "T027",
+        "from_state": "WaitingForMotion",
+        "to_state": "WaitingForMotion",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_PS == true && Position field present && Position value out of constraints",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "Position field present but value out of constraints AND Feature_PS == true",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Position value is not a valid TargetPositionEnum value for this closure"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.1 Position Field"
+      },
+      {
+        "id": "T028",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_LT == true && Latch field present && Latch value out of constraints",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "Latch field present but value out of constraints AND Feature_LT == true",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Latch value is not a valid boolean"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.2 Latch Field"
+      },
+      {
+        "id": "T029",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_SP == true && Speed field present && Speed value out of constraints",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "Speed field present but value out of constraints AND Feature_SP == true",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Speed value is not a valid ThreeLevelAutoEnum value"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.3 Speed Field"
+      },
+      {
+        "id": "T030",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_LT == true && OverallCurrentState.Latch == true && (Latch field absent OR Latch field value != false) && Position change is requested",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "Position change requested while closure is latched and Latch field does not request unlatch",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Cannot change position while latch is engaged unless Latch=false is also requested in the same command"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T031",
+        "from_state": "Moving",
+        "to_state": "Moving",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_LT == true && OverallCurrentState.Latch == true && (Latch field absent OR Latch field value != false) && Position change is requested",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "Position change requested while closure is latched and Latch field does not request unlatch",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Cannot change position while latch is engaged unless unlatch is simultaneously requested"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T032",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_LT == true && Latch field requests latching == true && LatchControlModes.RemoteLatching == 0 (manual only)",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "Latch=true requested but LatchControlModes indicates latching requires manual intervention",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Remote latching not supported; latch requires manual physical operation"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.2.2 Latch Field"
+      },
+      {
+        "id": "T033",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "all fields valid (or absent/ignored) AND all field values match corresponding OverallCurrentState fields",
+        "actions": [
+          "OverallTargetState := update_target_state(Position, Latch, Speed)",
+          "MainState := Stopped",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt: 'if all field values match OverallCurrentState, MainState SHALL be set to Stopped'"
+      },
+      {
+        "id": "T034",
+        "from_state": "Stopped",
+        "to_state": "WaitingForMotion",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "all fields valid AND at least one field value differs from OverallCurrentState AND closure cannot move (e.g., power limitation)",
+        "actions": [
+          "OverallTargetState := update_target_state(Position, Latch, Speed)",
+          "MainState := WaitingForMotion",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T035",
+        "from_state": "Stopped",
+        "to_state": "Moving",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "all fields valid AND at least one field value differs from OverallCurrentState AND closure is able to move",
+        "actions": [
+          "OverallTargetState := update_target_state(Position, Latch, Speed)",
+          "MainState := Moving",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T036",
+        "from_state": "Moving",
+        "to_state": "Moving",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "all fields valid AND all field values match corresponding OverallCurrentState fields",
+        "actions": [
+          "OverallTargetState := update_target_state(Position, Latch, Speed)",
+          "MainState := Stopped",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T037",
+        "from_state": "Moving",
+        "to_state": "WaitingForMotion",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "all fields valid AND at least one field value differs from OverallCurrentState AND closure cannot move",
+        "actions": [
+          "OverallTargetState := update_target_state(Position, Latch, Speed)",
+          "MainState := WaitingForMotion",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T038",
+        "from_state": "Moving",
+        "to_state": "Moving",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "all fields valid AND at least one field value differs from OverallCurrentState AND closure is able to move",
+        "actions": [
+          "OverallTargetState := update_target_state(Position, Latch, Speed)",
+          "MainState := Moving",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T039",
+        "from_state": "WaitingForMotion",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "all fields valid AND all field values match corresponding OverallCurrentState fields",
+        "actions": [
+          "OverallTargetState := update_target_state(Position, Latch, Speed)",
+          "MainState := Stopped",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T040",
+        "from_state": "WaitingForMotion",
+        "to_state": "WaitingForMotion",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "all fields valid AND at least one field value differs AND closure cannot move",
+        "actions": [
+          "OverallTargetState := update_target_state(Position, Latch, Speed)",
+          "MainState := WaitingForMotion",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T041",
+        "from_state": "WaitingForMotion",
+        "to_state": "Moving",
+        "trigger": {
+          "type": "command",
+          "name": "MoveTo",
+          "command_id": "0x01"
+        },
+        "guard_condition": "all fields valid AND at least one field value differs AND closure is able to move",
+        "actions": [
+          "OverallTargetState := update_target_state(Position, Latch, Speed)",
+          "MainState := Moving",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.2.4 Effect on Receipt"
+      },
+      {
+        "id": "T050",
+        "from_state": "Calibrating",
+        "to_state": "Calibrating",
+        "trigger": {
+          "type": "command",
+          "name": "Calibrate",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Feature_CL == true && MainState == Calibrating",
+        "actions": [
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.3.1 Effect on Receipt: 'if already in Calibrating state, respond with SUCCESS'"
+      },
+      {
+        "id": "T051",
+        "from_state": "Moving",
+        "to_state": "Moving",
+        "trigger": {
+          "type": "command",
+          "name": "Calibrate",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Feature_CL == true && MainState == Moving",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "MainState NOT IN [Stopped, SetupRequired, Calibrating]",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Calibrate only accepted in Stopped, SetupRequired, or Calibrating states"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.3.1 Effect on Receipt"
+      },
+      {
+        "id": "T052",
+        "from_state": "WaitingForMotion",
+        "to_state": "WaitingForMotion",
+        "trigger": {
+          "type": "command",
+          "name": "Calibrate",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Feature_CL == true && MainState == WaitingForMotion",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "MainState NOT IN [Stopped, SetupRequired, Calibrating]",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Calibrate only accepted in Stopped, SetupRequired, or Calibrating states"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.3.1 Effect on Receipt"
+      },
+      {
+        "id": "T053",
+        "from_state": "Error",
+        "to_state": "Error",
+        "trigger": {
+          "type": "command",
+          "name": "Calibrate",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Feature_CL == true && MainState == Error",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [
+          {
+            "condition": "MainState NOT IN [Stopped, SetupRequired, Calibrating]",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Calibrate only accepted in Stopped, SetupRequired, or Calibrating states"
+          }
+        ],
+        "spec_reference": "Section 5.4.8.3.1 Effect on Receipt"
+      },
+      {
+        "id": "T054",
+        "from_state": "Stopped",
+        "to_state": "Calibrating",
+        "trigger": {
+          "type": "command",
+          "name": "Calibrate",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Feature_CL == true && MainState == Stopped",
+        "actions": [
+          "MainState := Calibrating",
+          "initiate_calibration_procedure()",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.3.1 Effect on Receipt"
+      },
+      {
+        "id": "T055",
+        "from_state": "SetupRequired",
+        "to_state": "Calibrating",
+        "trigger": {
+          "type": "command",
+          "name": "Calibrate",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Feature_CL == true && MainState == SetupRequired",
+        "actions": [
+          "MainState := Calibrating",
+          "initiate_calibration_procedure()",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Timed Invoke required",
+        "error_responses": [],
+        "spec_reference": "Section 5.4.8.3.1 Effect on Receipt"
+      },
+      {
+        "id": "T060",
+        "from_state": "Calibrating",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "internal",
+          "name": "CalibrationCompleted",
+          "command_id": null
+        },
+        "guard_condition": "calibration routine has completed successfully",
+        "actions": [
+          "MainState := Stopped",
+          "generate_event(MovementCompleted, {})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 NOTE: 'Calibrating state is exited upon completion of the calibration routine'"
+      },
+      {
+        "id": "T061",
+        "from_state": "WaitingForMotion",
+        "to_state": "Moving",
+        "trigger": {
+          "type": "internal",
+          "name": "ReadyToMove",
+          "command_id": null
+        },
+        "guard_condition": "pre-motion checks complete AND closure can now move",
+        "actions": [
+          "MainState := Moving"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram: '[Ready to move ?]'"
+      },
+      {
+        "id": "T062",
+        "from_state": "Moving",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "internal",
+          "name": "MovementCompleted",
+          "command_id": null
+        },
+        "guard_condition": "closure has reached OverallTargetState OR movement ended",
+        "actions": [
+          "OverallCurrentState := update_current_state()",
+          "MainState := Stopped",
+          "generate_event(MovementCompleted, {})",
+          "evaluate_and_update_SecureState()",
+          "generate_event(SecureStateChanged, {SecureValue: OverallCurrentState.SecureState})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram: '[EndOfMoving]'; Section 5.4.9.2 MovementCompleted Event"
+      },
+      {
+        "id": "T063",
+        "from_state": "Stopped",
+        "to_state": "Protected",
+        "trigger": {
+          "type": "internal",
+          "name": "ProtectionRaised",
+          "command_id": null
+        },
+        "guard_condition": "Feature_PT == true && one or more protection conditions are raised",
+        "actions": [
+          "MainState := Protected"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram: '[OneProtectionIsRaised]'"
+      },
+      {
+        "id": "T064",
+        "from_state": "Protected",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "internal",
+          "name": "AllProtectionsDropped",
+          "command_id": null
+        },
+        "guard_condition": "Feature_PT == true && all protection conditions have cleared",
+        "actions": [
+          "MainState := Stopped"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram: '[AllProtectionsAreDropped]'"
+      },
+      {
+        "id": "T065",
+        "from_state": "Stopped",
+        "to_state": "Disengaged",
+        "trigger": {
+          "type": "internal",
+          "name": "ActuatorDisengaged",
+          "command_id": null
+        },
+        "guard_condition": "Feature_MO == true && actuator disengaged by manual operation",
+        "actions": [
+          "MainState := Disengaged",
+          "generate_event(EngageStateChanged, {EngageValue: false})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram: '[Disengaged]'; Section 5.4.9.3 EngageStateChanged Event"
+      },
+      {
+        "id": "T066",
+        "from_state": "Disengaged",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "internal",
+          "name": "ActuatorEngaged",
+          "command_id": null
+        },
+        "guard_condition": "Feature_MO == true && actuator re-engaged",
+        "actions": [
+          "MainState := Stopped",
+          "generate_event(EngageStateChanged, {EngageValue: true})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram: '[Engaged]'; Section 5.4.9.3 EngageStateChanged Event"
+      },
+      {
+        "id": "T067",
+        "from_state": "Moving",
+        "to_state": "Error",
+        "trigger": {
+          "type": "event",
+          "name": "OperationalError",
+          "command_id": null
+        },
+        "guard_condition": "error condition detected during movement",
+        "actions": [
+          "CurrentErrorList := append_error(error_condition)",
+          "MainState := Error",
+          "generate_event(OperationalError, {ErrorState: CurrentErrorList})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.9.1 OperationalError Event: 'SHALL also set MainState to Error'"
+      },
+      {
+        "id": "T068",
+        "from_state": "WaitingForMotion",
+        "to_state": "Error",
+        "trigger": {
+          "type": "event",
+          "name": "OperationalError",
+          "command_id": null
+        },
+        "guard_condition": "error condition detected while waiting",
+        "actions": [
+          "CurrentErrorList := append_error(error_condition)",
+          "MainState := Error",
+          "generate_event(OperationalError, {ErrorState: CurrentErrorList})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.9.1 OperationalError Event"
+      },
+      {
+        "id": "T069",
+        "from_state": "Calibrating",
+        "to_state": "Error",
+        "trigger": {
+          "type": "event",
+          "name": "OperationalError",
+          "command_id": null
+        },
+        "guard_condition": "error condition detected during calibration",
+        "actions": [
+          "CurrentErrorList := append_error(error_condition)",
+          "MainState := Error",
+          "generate_event(OperationalError, {ErrorState: CurrentErrorList})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.9.1 OperationalError Event"
+      },
+      {
+        "id": "T070",
+        "from_state": "Stopped",
+        "to_state": "Error",
+        "trigger": {
+          "type": "event",
+          "name": "OperationalError",
+          "command_id": null
+        },
+        "guard_condition": "error condition detected while stopped",
+        "actions": [
+          "CurrentErrorList := append_error(error_condition)",
+          "MainState := Error",
+          "generate_event(OperationalError, {ErrorState: CurrentErrorList})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.9.1 OperationalError Event"
+      },
+      {
+        "id": "T071",
+        "from_state": "Error",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "internal",
+          "name": "ErrorCleared",
+          "command_id": null
+        },
+        "guard_condition": "all errors resolved AND CurrentErrorList is empty",
+        "actions": [
+          "CurrentErrorList := []",
+          "MainState := Stopped"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram: '[NoErrorAnymore]'"
+      },
+      {
+        "id": "T072",
+        "from_state": "Error",
+        "to_state": "Error",
+        "trigger": {
+          "type": "event",
+          "name": "OperationalError",
+          "command_id": null
+        },
+        "guard_condition": "additional or persistent error detected",
+        "actions": [
+          "CurrentErrorList := append_error(error_condition)",
+          "generate_event(OperationalError, {ErrorState: CurrentErrorList})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram: 'Error --> Error : [Error]'"
+      },
+      {
+        "id": "T073",
+        "from_state": "Error",
+        "to_state": "Calibrating",
+        "trigger": {
+          "type": "internal",
+          "name": "CalibrationInitiated_FromError",
+          "command_id": null
+        },
+        "guard_condition": "Feature_CL == true AND error condition allows calibration to proceed",
+        "actions": [
+          "MainState := Calibrating",
+          "initiate_calibration_procedure()"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.7.2.1 MainState Diagram: 'Error --> Calibrating : [Calibration ended]' (informational)"
+      },
+      {
+        "id": "T074",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "SecureStateChanged",
+          "command_id": null
+        },
+        "guard_condition": "OverallCurrentState.SecureState value has changed",
+        "actions": [
+          "generate_event(SecureStateChanged, {SecureValue: OverallCurrentState.SecureState})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.4.9.4 SecureStateChanged Event"
+      }
+    ],
+
+    "events": [
+      {
+        "id": "0x00",
+        "name": "OperationalError",
+        "priority": "CRITICAL",
+        "generated_by": ["T067", "T068", "T069", "T070", "T072"],
+        "fields": [
+          {
+            "name": "ErrorState",
+            "type": "list[ClosureErrorEnum]",
+            "description": "List of currently active closure errors (1 to 10 entries). Values: PhysicallyBlocked(0), BlockedBySensor(1), TemperatureLimited(2), MaintenanceRequired(3), InternalInterference(4), ManufacturerError(0x80-0xBF)"
+          }
+        ],
+        "description": "Generated when a reportable error condition is detected. The server SHALL also set MainState to Error when generating this event."
+      },
+      {
+        "id": "0x01",
+        "name": "MovementCompleted",
+        "priority": "INFO",
+        "conformance": "!IS",
+        "generated_by": ["T060", "T062"],
+        "fields": [],
+        "description": "Generated when the overall operation ends, either successfully or otherwise. Sent upon completion of a movement operation (e.g., blind fully lowered). Not applicable when IS (Instantaneous) feature is enabled."
+      },
+      {
+        "id": "0x02",
+        "name": "EngageStateChanged",
+        "priority": "INFO",
+        "conformance": "MO",
+        "generated_by": ["T065", "T066"],
+        "fields": [
+          {
+            "name": "EngageValue",
+            "type": "bool",
+            "description": "True = actuator is Engaged (movements possible); False = actuator is Disengaged (movements prevented)"
+          }
+        ],
+        "description": "Generated when the MainState attribute changes to or from the Disengaged state. Indicates whether the actuator is engaged or disengaged."
+      },
+      {
+        "id": "0x03",
+        "name": "SecureStateChanged",
+        "priority": "INFO",
+        "conformance": "M",
+        "generated_by": ["T062", "T074"],
+        "fields": [
+          {
+            "name": "SecureValue",
+            "type": "bool",
+            "description": "True = closure is in secure state (unauthorized/undetectable access not possible); False = closure is insecure (unauthorized access possible)"
+          }
+        ],
+        "description": "Generated when the SecureState field in OverallCurrentState changes. Used to indicate whether the closure is securing a space against unauthorized entry."
+      }
+    ],
+
+    "timers": [
+      {
+        "name": "CountdownTimer",
+        "source_attribute": "CountdownTime",
+        "trigger": "MainState transitions to Moving or WaitingForMotion and Feature_PS is set and Feature_IS is not set",
+        "expiry_transition": "T062 (MovementCompleted → Stopped) is triggered when physical movement ends; CountdownTime reaches 0",
+        "resolution": "seconds",
+        "notes": "This attribute is NOT reported during regular countdown. Clients SHOULD NOT rely on periodic CountdownTime reports to track duration. Reportable only on: operation change, 0↔non-null transitions, increases, or estimation updates."
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "update_target_state",
+        "parameters": [
+          {"name": "Position", "type": "TargetPositionEnum or absent", "description": "Requested target position; ignored if PS not supported or absent with null fallback"},
+          {"name": "Latch", "type": "bool or absent", "description": "Requested latch state; ignored if LT not supported or absent with null fallback"},
+          {"name": "Speed", "type": "ThreeLevelAutoEnum or absent", "description": "Requested motion speed; ignored if SP not supported; defaults to Auto if never set"}
+        ],
+        "return_type": "OverallTargetStateStruct",
+        "description": "Constructs the new OverallTargetState by applying the provided field values. Fields for unsupported features are ignored. If a field is absent, the fallback is the existing OverallTargetState field value; if that is NULL, the field is ignored and the corresponding aspect of the closure is not changed.",
+        "usage_in_fsm": "T033, T034, T035, T036, T037, T038, T039, T040, T041"
+      },
+      {
+        "name": "update_current_state",
+        "parameters": [],
+        "return_type": "OverallCurrentStateStruct",
+        "description": "Reads and returns the actual physical state of the closure including Position (from sensor/encoder), Latch state, current Speed, and derived SecureState. Sets SecureState=True only if Position==FullyClosed (when PS supported) AND Latch==True (when LT supported).",
+        "usage_in_fsm": "T062"
+      },
+      {
+        "name": "evaluate_and_update_SecureState",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Recomputes OverallCurrentState.SecureState. SecureState is True if: (PS not supported OR Position==FullyClosed) AND (LT not supported OR Latch==True). Sets null if current state unknown.",
+        "usage_in_fsm": "T062, T074"
+      },
+      {
+        "name": "stop_motion",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Commands the physical closure actuator to halt movement as quickly as possible. Updates OverallCurrentState to reflect the position where motion stopped.",
+        "usage_in_fsm": "T010, T011, T012"
+      },
+      {
+        "name": "initiate_calibration_procedure",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Starts the manufacturer-specific calibration routine to determine the effective physical FullyOpen and FullyClosed limits of the closure. May require manual steps from an installer.",
+        "usage_in_fsm": "T054, T055, T073"
+      },
+      {
+        "name": "append_error",
+        "parameters": [
+          {"name": "error_condition", "type": "ClosureErrorEnum", "description": "The error value to add to the current error list; SHALL NOT duplicate existing entries"}
+        ],
+        "return_type": "list[ClosureErrorEnum]",
+        "description": "Appends the given error to CurrentErrorList if not already present. Maximum 10 entries. Manufacturer-specific errors (0x80-0xBF) must not duplicate general error values.",
+        "usage_in_fsm": "T067, T068, T069, T070, T072"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": ["Stop", "MoveTo"],
+      "manage_commands": ["Calibrate"],
+      "administer_commands": [],
+      "timed_commands": ["MoveTo", "Calibrate"],
+      "notes": "All attributes are Read/View access. Stop requires Operate privilege and is not available when IS (Instantaneous) feature is active. MoveTo requires Operate privilege and Timed Invoke. Calibrate requires Manage privilege and Timed Invoke."
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "state",
+        "element_id": "Moving",
+        "safety_concern": "Closure is in physical motion. Risk of injury to persons or animals in the path of movement, and risk of property damage from obstruction.",
+        "mitigation_in_spec": "ClosureErrorEnum.PhysicallyBlocked and ClosureErrorEnum.BlockedBySensor errors cause transition to Error state. Stop command halts motion."
+      },
+      {
+        "element_type": "state",
+        "element_id": "Disengaged",
+        "safety_concern": "Actuator is disengaged from mechanical drive; remote control over physical position is lost. Closure may be left in any position including fully open, enabling unauthorized physical access.",
+        "mitigation_in_spec": "EngageStateChanged event generated; MainState clearly shows Disengaged. No movement commands succeed in this state."
+      },
+      {
+        "element_type": "state",
+        "element_id": "Calibrating",
+        "safety_concern": "Closure may move to physical limits (fully open or fully closed) during calibration without user-initiated command. Persons or objects near the closure pathway could be endangered.",
+        "mitigation_in_spec": "Calibrate command requires Manage (M) privilege and Timed Invoke. Error state transition on detection of obstruction."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "OverallCurrentState.SecureState",
+        "safety_concern": "If SecureState is False or null, unauthorized or undetectable physical access is possible. This is relevant for closures on outer shells such as garage doors, windows, and doors.",
+        "mitigation_in_spec": "SecureStateChanged event generated when SecureState changes. Note: spec explicitly states this is supplementary info, not a replacement for a comprehensive security system."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T035",
+        "safety_concern": "MoveTo command (Operate privilege, Timed Invoke) can cause a closure to open, unlatch, or move to a ventilation/pedestrian position. Any network-connected principal with Operate privilege can physically open a closure.",
+        "mitigation_in_spec": "Timed Invoke is required (T flag on MoveTo), preventing replay attacks. Access control at Operate (O) level required. No PIN or credentials required, unlike Door Lock cluster."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T054",
+        "safety_concern": "Calibrate command moves closure to physical extremes. Requires only Manage privilege — an attacker who gains Manage access can trigger calibration motion unpredictably.",
+        "mitigation_in_spec": "Manage (M) privilege and Timed Invoke required."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "LatchControlModes",
+        "safety_concern": "If RemoteUnlatching bit is set, a remote principal with Operate privilege can unlatch the closure, potentially defeating mechanical security.",
+        "mitigation_in_spec": "LatchControlModes attribute flags whether remote latching/unlatching is supported. MoveTo command requires Timed Invoke. However no additional authentication beyond Operate privilege is required."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "location": "Section 5.4.8.2.4 Effect on Receipt",
+        "gap_type": "ambiguous",
+        "description": "The spec states MoveTo is accepted in Moving, WaitingForMotion, or Stopped states. It is ambiguous whether a MoveTo received while Moving should first abort the current movement target before setting a new one, or whether it should seamlessly redirect.",
+        "security_impact": "An attacker could rapidly send a sequence of conflicting MoveTo commands to create undefined physical behavior or prevent the closure from reaching a secure (FullyClosed+Latched) state."
+      },
+      {
+        "location": "Section 5.4.5.2 MotionLatching Feature",
+        "gap_type": "weak_normative",
+        "description": "The spec notes that some products with LT feature cannot drive an actuator to latch — the user must manually latch. The condition for when INVALID_IN_STATE is returned for latching depends on LatchControlModes.RemoteLatching, but there is no defined timeout or notification when manual latching is expected.",
+        "security_impact": "A closure could be directed to a FullyClosed position but remain unlatched indefinitely with no automatic alert, leaving the SecureState as False while appearing operationally closed."
+      },
+      {
+        "location": "Section 5.4.7.2.1 MainState Diagram",
+        "gap_type": "ambiguous",
+        "description": "The MainState diagram transition 'Error --> Calibrating : [Calibration ended]' is labeled inconsistently — if already in Error, no Calibrate command is accepted per the normative text (INVALID_IN_STATE). The diagram is informational only, but the inconsistency between diagram and normative text is confusing.",
+        "security_impact": "Implementers following the diagram instead of normative text may accept Calibrate in Error state, causing unexpected physical motion during error conditions."
+      },
+      {
+        "location": "Section 5.4.7.2.1 MainState Diagram",
+        "gap_type": "ambiguous",
+        "description": "The SetupRequired → Stopped transition is labeled '[Error]' which is ambiguous — it could mean an error during boot causes the transition to Stopped (skipping SetupRequired) or that an error is encountered and setup is forced. The normative text provides no explicit rule for this path.",
+        "security_impact": "An implementation that incorrectly handles this path could expose an uncalibrated closure to movement commands, leading to unpredictable physical behavior."
+      },
+      {
+        "location": "Section 5.4.8.1 Stop Command",
+        "gap_type": "missing_constraint",
+        "description": "The Stop command is not applicable when IS (Instantaneous) feature is active, but there is no specification of what status code to return if Stop is sent to an IS-enabled device. The conformance is '!IS' but the error response is unspecified.",
+        "security_impact": "Low security impact; primarily a reliability/interoperability concern. A client sending Stop to an IS device may receive ambiguous responses."
+      },
+      {
+        "location": "Section 5.4.8.2.2 Latch Field",
+        "gap_type": "weak_normative",
+        "description": "If LatchControlModes.RemoteUnlatching == 0 (manual only), the spec does not explicitly state that a MoveTo with Latch=false should return INVALID_IN_STATE. The text only describes the Latch=true (latching) case for manual intervention, leaving the remote unlatching rejection implicit.",
+        "security_impact": "If an implementation allows remote unlatching when RemoteUnlatching=0, a physical security mechanism (the latch) can be defeated remotely."
+      },
+      {
+        "location": "Section 5.4.5 Features",
+        "gap_type": "missing_constraint",
+        "description": "No requirement that at least one of PS or LT features must be supported. A device claiming only IS (Instantaneous) feature with neither PS nor LT has no observable state attributes beyond MainState, making the cluster nearly information-free for a client attempting to determine security posture.",
+        "security_impact": "Clients relying on SecureState to assess physical security risk may receive limited or null data from minimal-feature implementations."
+      },
+      {
+        "location": "Section 5.4.8.2.3 Speed Field",
+        "gap_type": "weak_normative",
+        "description": "When Speed feature is supported, 'the server SHALL select and set one of the speed values' if no speed has been set, but there is no definition of which default speed to choose. 'Manufacturer specific' leaves the default unverifiable.",
+        "security_impact": "Low security impact; may affect noise-sensitive deployments (e.g., attacker forces high-speed movement at night, bypassing silent mode)."
+      },
+      {
+        "location": "Section 5.4.6.4 ClosureErrorEnum",
+        "gap_type": "missing_constraint",
+        "description": "Manufacturer-specific error codes (0x80-0xBF) are scoped to Vendor ID in Basic Information cluster but the spec does not define how a client should handle unknown manufacturer error codes or how they affect the error recovery path.",
+        "security_impact": "A malformed or spoofed error event with a manufacturer-specific code could confuse client-side security monitoring systems into treating a real error as a vendor non-critical condition."
+      }
+    ],
+
+    "initial_state": "Boot",
+    "all_states": [
+      "Boot",
+      "SetupRequired",
+      "Stopped",
+      "WaitingForMotion",
+      "Moving",
+      "Calibrating",
+      "Protected",
+      "Disengaged",
+      "Error"
+    ],
+    "all_triggers": [
+      "Stop",
+      "MoveTo",
+      "Calibrate",
+      "BootComplete_SetupNeeded",
+      "BootComplete_SetupOK",
+      "SetupComplete",
+      "CalibrationCompleted",
+      "ReadyToMove",
+      "MovementCompleted",
+      "ProtectionRaised",
+      "AllProtectionsDropped",
+      "ActuatorDisengaged",
+      "ActuatorEngaged",
+      "OperationalError",
+      "ErrorCleared",
+      "CalibrationInitiated_FromError",
+      "SecureStateChanged"
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true,
+      "commands_coverage_notes": "Stop (T010-T015), MoveTo (T020-T041), Calibrate (T050-T055) all mapped. Stop omitted for IS feature per conformance !IS.",
+      "events_coverage_notes": "OperationalError (0x00), MovementCompleted (0x01), EngageStateChanged (0x02), SecureStateChanged (0x03) all mapped.",
+      "features_coverage_notes": "PS, LT, IS, SP, VT, PD, CL, PT, MO all documented with guards and affected transitions."
+    }
+  }
+}

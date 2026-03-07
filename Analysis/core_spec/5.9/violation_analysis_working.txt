@@ -1,0 +1,1201 @@
+PROPERTY VIOLATION ANALYSIS - WORKING FILE
+==========================================
+
+ANALYZING: Network Recovery Properties against Network Recovery FSM
+
+CRITICAL PROPERTIES (17 total)
+===============================
+
+PROP_001: CASE_Session_Required_For_Recovery
+---------------------------------------------
+Claim: Administrator and Recovery Node must establish CASE session before exchanging credentials
+
+FSM Analysis:
+- Credential provisioning transitions:
+  * AdminFailSafeArmed -> CredentialsProvisioned (add_or_update_wifi_network_command)
+  * AdminFailSafeArmed -> CredentialsProvisioned (add_or_update_thread_network_command)
+  * AdminFailSafeArmed -> CredentialsProvisioned (remove_network_then_add_or_update)
+
+- Path to AdminFailSafeArmed:
+  * Must go through: RecoveryConnectionEstablished -> CASESessionEstablished -> NodeFailSafeArmed -> AdminFailSafeArmed
+
+- Guard on CASESessionEstablished transition:
+  Guard: "recovery_connection_active == true"
+  
+- Guard on NodeFailSafeArmed transition:
+  Guard: "case_session_active == true"
+  
+- Guard on AdminFailSafeArmed transition:
+  Guard: "(get_current_time() - case_establishment_time) <= 60"
+
+- Guard on credential provisioning:
+  Guard: "admin_failsafe_armed == true"
+
+VERDICT: HOLDS
+- All paths to credential provisioning require passing through CASESessionEstablished state
+- case_session_active must be true to reach AdminFailSafeArmed
+- No bypass path exists in FSM
+
+Spec Evidence:
+"Once connected, the Administrator and Recovery Node SHALL establish a secure session using CASE for purposes of provisioning the Recovery Node with updated network credentials."
+Source: Section 5.9.3, Step 9
+
+
+PROP_002: All_Messages_CASE_Encrypted
+--------------------------------------
+Claim: All messages over recovery connection must be encrypted using CASE-derived keys
+
+FSM Analysis:
+- Action in CASESessionEstablished transition:
+  "case_derived_keys := derive_case_keys(case_session)"
+  
+- However, FSM does NOT explicitly model message sending/encryption
+- FSM abstracts away the message exchange layer
+- No transitions show "send_message" with guard checking encryption
+
+VERDICT: UNVERIFIABLE (FSM abstraction doesn't model message-level operations)
+
+Spec Evidence:
+"All messages exchanged over the recovery connection SHALL be encrypted using CASE-derived keys."
+Source: Section 5.9.3, Step 9
+
+
+PROP_003: User_Consent_Before_Credential_Provision
+---------------------------------------------------
+Claim: Administrator must obtain user consent before providing new credentials
+
+FSM Analysis:
+- Transition from AwaitingAdministrator -> RecoveryConnectionEstablished
+  Guard: "user_consent_obtained == true"
+  
+- Transition from AwaitingAdministrator -> RecoveryAborted
+  Guard: "user_consent_obtained == false"
+  
+- Path to credential provisioning:
+  AwaitingAdministrator (consent required) -> RecoveryConnectionEstablished -> ... -> AdminFailSafeArmed -> CredentialsProvisioned
+
+POTENTIAL VIOLATION: Is AwaitingAdministrator always entered?
+- Let me trace backwards from CredentialsProvisioned:
+  * CredentialsProvisioned comes from AdminFailSafeArmed
+  * AdminFailSafeArmed comes from NodeFailSafeArmed
+  * NodeFailSafeArmed comes from CASESessionEstablished
+  * CASESessionEstablished comes from RecoveryConnectionEstablished
+  * RecoveryConnectionEstablished comes from AwaitingAdministrator
+  
+- But wait, RecoveryAnnouncing -> AwaitingAdministrator is triggered by "administrator_received_announcement"
+- What if we go directly from RecoveryAnnouncing to RecoveryConnectionEstablished?
+  * No such transition exists in FSM!
+  
+- All paths enforce: RecoveryAnnouncing -> AwaitingAdministrator -> RecoveryConnectionEstablished
+
+VERDICT: HOLDS
+- FSM forces AwaitingAdministrator state where consent is checked
+- No bypass exists
+
+Spec Evidence:
+"The Administrator SHALL obtain user consent before providing new credentials to a Recovery Node."
+Source: Section 5.9.3, Step 6
+
+
+PROP_004: No_Credential_Provision_Without_Consent
+--------------------------------------------------
+Claim: If no consent, Administrator must terminate and NOT provision
+
+FSM Analysis:
+- Transition: AwaitingAdministrator -> RecoveryAborted
+  Guard: "user_consent_obtained == false"
+  Actions: terminate_recovery_flow(), resume_autonomous_reconnect()
+  
+- From RecoveryAborted, can we reach CredentialsProvisioned?
+  * RecoveryAborted -> WaitingReconnect
+  * WaitingReconnect -> RecoveryAnnouncing (or back to normal)
+  * Would require going through AwaitingAdministrator again
+  
+VERDICT: HOLDS
+- No path from RecoveryAborted to CredentialsProvisioned without re-entering AwaitingAdministrator
+- Consent check is enforced
+
+Spec Evidence:
+"If user consent has not been granted, the Administrator terminates its execution of the Network Recovery flow and the following steps SHALL NOT be performed."
+Source: Section 5.9.3, Step 7
+
+
+PROP_005: CommissioningComplete_Over_Operational_Network_Only
+--------------------------------------------------------------
+Claim: Recovery Node must reject CommissioningComplete if not over operational network
+
+FSM Analysis:
+- Transition: OperationalDiscovered -> RecoveryCompleted
+  Trigger: "commissioning_complete_command"
+  Guard: "received_over_operational_network == true && over_case_session == true"
+  Actions: send_commissioning_complete_response()
+  
+- Transition: OperationalDiscovered -> OperationalDiscovered (STAY)
+  Trigger: "commissioning_complete_command"
+  Guard: "received_over_operational_network == false || over_case_session == false"
+  Actions: reject_commissioning_complete('invalid_channel_or_session')
+
+VERDICT: HOLDS
+- FSM explicitly models rejection when guard fails
+- Stay transition handles invalid case
+
+Spec Evidence:
+"The Recovery Node SHALL reject the CommissioningComplete that is not received over the operational network."
+Source: Section 5.9.3, Step 16
+
+
+PROP_006: Operational_Network_Reconnection_Minimum_Duration
+------------------------------------------------------------
+Claim: Node must attempt reconnection for at least 120 seconds before entering recovery mode
+
+FSM Analysis:
+- Transition: WaitingReconnect -> RecoveryAnnouncing
+  Guard: "reconnect_timer == 0 && connected_to_operational_network == false"
+  
+- ConnectivityLost -> WaitingReconnect
+  Action: "reconnect_timer := 120"
+  
+- WaitingReconnect -> WaitingReconnect (STAY)
+  Trigger: "reconnect_attempt_tick"
+  Guard: "reconnect_timer > 0 && connected_to_operational_network == false"
+  Action: "reconnect_timer := reconnect_timer - 1"
+
+VERDICT: HOLDS
+- Timer initialized to 120
+- Timer counts down
+- RecoveryAnnouncing only entered when timer == 0
+
+Spec Evidence:
+"Should operational network connectivity be lost, the Recovery Node SHALL continue to attempt to connect to the operational network for a duration of at least 120 seconds using its existing credentials."
+Source: Section 5.9.3, Step 3
+
+
+PROP_007: Recovery_Advertisement_Contains_RecoveryIdentifier
+-------------------------------------------------------------
+Claim: Recovery advertisements must contain RecoveryIdentifier
+
+FSM Analysis:
+- WaitingReconnect -> RecoveryAnnouncing transition:
+  Action: "recovery_identifier := get_recovery_identifier()"
+  
+- RecoveryAnnouncing -> RecoveryAnnouncing (STAY):
+  Action: "advertise_recovery_payload(recovery_identifier, error_codes, commissioning_channels)"
+  
+- Function advertise_recovery_payload defined with parameter recovery_identifier
+
+VERDICT: HOLDS
+- FSM explicitly retrieves and includes RecoveryIdentifier in advertisement
+
+Spec Evidence:
+"The advertisement for Network Recovery SHALL contain the value of the RecoveryIdentifier attribute"
+Source: Section 5.9.1
+
+
+PROP_008: RecoveryIdentifier_Retrieved_Before_Credential_Change
+----------------------------------------------------------------
+Claim: Administrator should retrieve RecoveryIdentifier before credential change
+
+FSM Analysis:
+- This property is about Administrator behavior BEFORE the recovery flow
+- FSM starts at NormalOperation and models what happens AFTER credentials change
+- FSM does not model Administrator's preparatory actions
+
+VERDICT: UNVERIFIABLE (FSM doesn't model pre-recovery Administrator actions)
+
+Spec Evidence:
+"At some time before the operational network credentials change, an Administrator SHOULD retrieve the value of the RecoveryIdentifier attribute"
+Source: Section 5.9.3, Step 1 (Note: SHOULD, not SHALL)
+
+
+PROP_009: Recovery_Preempts_Autonomous_Reconnection
+----------------------------------------------------
+Claim: Once CASE session established, autonomous reconnection must be suspended
+
+FSM Analysis:
+- RecoveryConnectionEstablished -> CASESessionEstablished
+  Action: "suspend_autonomous_reconnect()"
+  Action: "autonomous_reconnect_suspended := true"
+  
+- CASESessionEstablished state:
+  Invariant: "autonomous_reconnect_suspended == true"
+
+VERDICT: HOLDS
+- FSM explicitly suspends autonomous reconnect in action
+- State invariant enforces suspension
+
+Spec Evidence:
+"once the secure connection is established, any ongoing attempts taken autonomously by the Recovery Node to re-establish connectivity to the previously configured operational network SHALL be suspended and SHALL NOT interfere"
+Source: Section 5.9.3, Step 9
+
+
+PROP_010: Autonomous_Reconnection_Resumes_On_Failure
+-----------------------------------------------------
+Claim: If recovery fails, autonomous reconnection must resume
+
+FSM Analysis:
+- Transitions to RecoveryAborted:
+  * AwaitingAdministrator -> RecoveryAborted (no consent)
+    Action: "resume_autonomous_reconnect(old_credentials)"
+    Action: "autonomous_reconnect_resumed := true"
+    
+  * NodeFailSafeArmed -> RecoveryAborted (timeout)
+    Action: "resume_autonomous_reconnect(old_credentials)"
+    Action: "autonomous_reconnect_resumed := true"
+    
+  * ConnectingToOperational -> RecoveryAborted (connection failed)
+    Action: "resume_autonomous_reconnect(old_credentials)"
+    Action: "autonomous_reconnect_resumed := true"
+
+- RecoveryAborted invariant: "autonomous_reconnect_resumed == true"
+
+VERDICT: HOLDS
+- All paths to RecoveryAborted explicitly resume autonomous reconnection
+
+Spec Evidence:
+"Autonomous attempts to re-establish network connectivity SHALL resume in the event of failure of the network recovery procedure."
+Source: Section 5.9.3, Step 9
+
+
+PROP_011: Fail_Safe_Armed_On_CASE_Session
+------------------------------------------
+Claim: Recovery Node must autonomously arm fail-safe for 60s upon CASE session establishment
+
+FSM Analysis:
+- CASESessionEstablished -> NodeFailSafeArmed
+  Trigger: "case_session_established" (automatic)
+  Guard: "case_session_active == true"
+  Actions:
+    "node_failsafe_timer := 60"
+    "arm_failsafe(60)"
+    "node_failsafe_armed := true"
+
+VERDICT: HOLDS
+- FSM models automatic transition with 60s timeout
+- Triggered immediately upon CASE session establishment
+
+Spec Evidence:
+"Upon successful establishment of the CASE session, the Recovery Node SHALL autonomously arm the fail-safe timer for a timeout of 60 seconds."
+Source: Section 5.9.3, Step 10
+
+
+PROP_012: Administrator_Arms_FailSafe_Within_60s
+-------------------------------------------------
+Claim: Administrator must arm fail-safe within 60s of CASE session
+
+FSM Analysis:
+- NodeFailSafeArmed -> AdminFailSafeArmed
+  Trigger: "admin_arm_failsafe_command"
+  Guard: "(get_current_time() - case_establishment_time) <= 60"
+  
+- NodeFailSafeArmed -> RecoveryAborted
+  Trigger: "admin_arm_failsafe_command"
+  Guard: "(get_current_time() - case_establishment_time) > 60"
+
+VERDICT: HOLDS
+- FSM enforces 60s window with guard condition
+- Violation leads to RecoveryAborted
+
+Spec Evidence:
+"Within 60 seconds of establishing the CASE session, the Administrator SHALL arm the fail-safe timer."
+Source: Section 5.9.3, Step 11
+
+
+PROP_013: Terminate_Session_If_FailSafe_Arming_Fails
+-----------------------------------------------------
+Claim: If Administrator cannot arm fail-safe, must terminate session
+
+FSM Analysis:
+- NodeFailSafeArmed -> RecoveryAborted
+  Trigger: "admin_arm_failsafe_command"
+  Guard: "(get_current_time() - case_establishment_time) > 60"
+  Actions: "terminate_session()"
+
+HOWEVER: What if Administrator NEVER sends admin_arm_failsafe_command?
+- NodeFailSafeArmed -> FailSafeExpired
+  Trigger: "node_failsafe_timer_expired"
+  Guard: "node_failsafe_timer == 0 && admin_failsafe_armed == false"
+  
+This is different from "fail-safe could not be successfully armed"
+The property talks about TRYING and FAILING, but FSM models:
+1. Trying too late (>60s) -> RecoveryAborted
+2. Not trying at all -> FailSafeExpired
+
+VERDICT: PARTIALLY_HOLDS
+- FSM handles timeout case but doesn't model "arm command failed" scenario
+- Spec says "could not be successfully armed" which implies attempted but failed
+
+Spec Evidence:
+"If the fail-safe could not be successfully armed, the Administrator SHALL terminate the session."
+Source: Section 5.9.3, Step 11
+
+
+PROP_014: Administrator_Provides_New_Credentials
+-------------------------------------------------
+Claim: Administrator must provide new credentials using AddOrUpdate commands
+
+FSM Analysis:
+- AdminFailSafeArmed -> CredentialsProvisioned transitions exist for:
+  * add_or_update_wifi_network_command
+  * add_or_update_thread_network_command
+  * remove_network_then_add_or_update
+  
+- All credential actions call provision_wifi_credentials() or provision_thread_credentials()
+
+VERDICT: HOLDS
+- FSM explicitly models credential provisioning commands
+
+Spec Evidence:
+"The Administrator SHALL provide the new credentials of the operational network to the Recovery Node using the AddOrUpdateWiFiNetwork or AddOrUpdateThreadNetwork commands."
+Source: Section 5.9.3, Step 12
+
+
+PROP_015: ConnectNetwork_Issued_After_Credential_Provision
+-----------------------------------------------------------
+Claim: ConnectNetwork must be issued after providing credentials
+
+FSM Analysis:
+- CredentialsProvisioned -> ConnectingToOperational
+  Trigger: "connect_network_command"
+  Guard: "has_new_credentials == true"
+  
+- Can only reach CredentialsProvisioned from AdminFailSafeArmed via credential commands
+
+VERDICT: HOLDS
+- Guard enforces has_new_credentials == true before ConnectNetwork
+
+Spec Evidence:
+"The Administrator SHALL then instruct the Recovery Node to connect to the operational network using the new credentials by issuing a ConnectNetwork command."
+Source: Section 5.9.3, Step 13
+
+
+PROP_016: Recovery_Node_Attempts_Connection_With_New_Credentials
+-----------------------------------------------------------------
+Claim: Upon ConnectNetwork, node must use newly-provisioned credentials
+
+FSM Analysis:
+- CredentialsProvisioned -> ConnectingToOperational
+  Action: "attempt_connection_to_operational_network(new_operational_credentials)"
+  
+- Function definition states:
+  "attempts to connect to operational network using newly-provisioned credentials"
+
+VERDICT: HOLDS
+- FSM explicitly passes new_operational_credentials to connection function
+
+Spec Evidence:
+"The Recovery Node SHALL attempt to connect to the operational network using the newly-provisioned credentials."
+Source: Section 5.9.3, Step 14
+
+
+PROP_017: Subsequent_Messages_Over_Operational_Network
+-------------------------------------------------------
+Claim: After operational connection, all messages must be over operational network
+
+FSM Analysis:
+- ConnectingToOperational -> OperationalConnected
+  Actions: "terminate_recovery_connection()"
+  
+- OperationalConnected state invariant: "recovery_connection_terminated == true"
+
+VERDICT: HOLDS
+- FSM explicitly terminates recovery connection
+- State invariant enforces termination
+
+Spec Evidence:
+"Once connected, all messages associated with the remaining Network Recovery steps between the Administrator and Recovery Node SHALL be exchanged over the operational network."
+Source: Section 5.9.3, Step 14
+
+===================================================================
+SUMMARY OF CRITICAL PROPERTIES:
+===================================================================
+HOLDS: 13 properties
+UNVERIFIABLE: 2 properties (message-level ops, pre-recovery admin actions)
+PARTIALLY_HOLDS: 1 property (fail-safe arming failure scenario not fully modeled)
+VIOLATED: 0 properties (so far)
+
+Now checking remaining CRITICAL, HIGH, and MEDIUM properties...
+
+PROP_018: CASE_Session_Over_Operational_Network_For_Final_Steps
+----------------------------------------------------------------
+Claim: CommissioningComplete must be over CASE session over operational network
+
+FSM Analysis:
+- OperationalDiscovered -> RecoveryCompleted
+  Guard: "received_over_operational_network == true && over_case_session == true"
+  
+Both conditions enforced in guard
+
+VERDICT: HOLDS
+
+
+PROP_019: Operational_Discovery_Before_Commissioning_Complete
+--------------------------------------------------------------
+Claim: Operational discovery must complete before CommissioningComplete
+
+FSM Analysis:
+- OperationalConnected -> OperationalDiscovered
+  Trigger: "initiate_operational_discovery"
+  
+- OperationalDiscovered -> RecoveryCompleted
+  Trigger: "commissioning_complete_command"
+  
+- Can only send CommissioningComplete from OperationalDiscovered state
+
+VERDICT: HOLDS
+
+
+PROP_020: Recovery_Announcement_Follows_Duration_Requirements
+--------------------------------------------------------------
+Claim: Announcements must follow duration requirements and use Extended Announcement
+
+FSM Analysis:
+- RecoveryAnnouncing state has announcement_timer
+- Actions call start_recovery_announcement() and advertise_recovery_payload()
+- Function descriptions mention "follows announcement duration requirements"
+
+VERDICT: HOLDS (assuming function implementations are correct)
+
+
+PROP_021: Continuous_Reconnection_During_Recovery_State
+--------------------------------------------------------
+Claim: Must attempt reconnection while in recovery state
+
+FSM Analysis:
+- RecoveryAnnouncing -> RecoveryAnnouncing (stay transition)
+  Actions: "attempt_reconnect(old_credentials)"
+  
+- Parallel behavior modeled
+
+VERDICT: HOLDS
+
+
+PROP_022: Recovery_Restart_On_CommissioningMode_Steps
+------------------------------------------------------
+Claim: Node must restart recovery when CommissioningModeInitialStepsHint steps performed
+
+FSM Analysis:
+- ExtendedAnnouncementEnded -> RecoveryAnnouncing
+  Trigger: "commissioning_mode_initial_steps_performed"
+  
+VERDICT: HOLDS
+
+
+PROP_023: Administrator_Has_New_Operational_Credentials
+--------------------------------------------------------
+Claim: Administrator must have new credentials before starting recovery
+
+FSM Analysis:
+- This is a precondition check - does FSM enforce it?
+- No transition checks if Administrator has new credentials
+- FSM doesn't model Administrator's state
+
+VERDICT: UNVERIFIABLE (FSM doesn't model Administrator pre-state)
+
+
+PROP_024: New_Operational_Network_Present_And_Operational
+----------------------------------------------------------
+Claim: New network must be operational before recovery
+
+FSM Analysis:
+- No transition checks network operational status
+- FSM assumes network is available
+
+VERDICT: UNVERIFIABLE (FSM doesn't model network state)
+
+
+PROP_025: Recovery_Nodes_Allow_All_CASE_Transactions
+-----------------------------------------------------
+Claim: Recovery Nodes must allow all CASE transactions during recovery
+
+FSM Analysis:
+- FSM doesn't model individual transaction types
+- No transitions restrict transaction types
+
+VERDICT: UNVERIFIABLE (FSM abstraction doesn't model transaction-level detail)
+
+
+PROP_026: Recovery_Channel_Advertisement_Distinguishable
+---------------------------------------------------------
+Claim: Recovery ads must be distinguishable from commissioning ads
+
+FSM Analysis:
+- advertise_recovery_payload() function mentions "OpCode that identifies node as being in Network Recovery mode"
+- Function description indicates distinction via OpCode
+
+VERDICT: HOLDS (assuming function implementation is correct)
+
+
+PROP_027: CASE_Session_Establishes_Over_Recovery_Channel
+---------------------------------------------------------
+Claim: Must be able to establish CASE over commissioning channel
+
+FSM Analysis:
+- RecoveryConnectionEstablished -> CASESessionEstablished
+  Trigger: "establish_case"
+  
+- Function establish_case_session() defined
+
+VERDICT: HOLDS
+
+
+PROP_028: Recovery_CASE_Not_Used_For_Steady_State
+--------------------------------------------------
+Claim: Recovery CASE session must not be used for steady-state operations
+
+FSM Analysis:
+- ConnectingToOperational -> OperationalConnected
+  Action: "terminate_recovery_connection()"
+  
+- After termination, no recovery CASE session exists
+- But this is about USAGE POLICY, not enforcement
+
+POTENTIAL VIOLATION: What prevents using recovery CASE before termination?
+- Between CASESessionEstablished and OperationalConnected, recovery connection is active
+- FSM doesn't explicitly prevent non-recovery transactions during this window
+- Spec says recovery CASE "SHALL be used for recovery [...] and not for steady state operational interaction"
+
+VERDICT: UNVERIFIABLE (FSM doesn't model transaction type restrictions)
+Could be VIOLATED if implementation allows non-recovery transactions during recovery window
+
+
+PROP_029: Recovery_Advertisement_Contains_Error_Codes
+------------------------------------------------------
+Claim: Advertisements should contain error codes (SHOULD not SHALL)
+
+FSM Analysis:
+- WaitingReconnect -> RecoveryAnnouncing
+  Action: "error_codes := get_error_codes()"
+  
+- advertise_recovery_payload(recovery_identifier, error_codes, commissioning_channels)
+
+VERDICT: HOLDS (SHOULD requirement, FSM includes error codes)
+
+
+PROP_030: Extended_Announcement_Duration_Ends_Then_Retry
+---------------------------------------------------------
+Claim: After Extended Announcement ends, continue reconnection attempts
+
+FSM Analysis:
+- RecoveryAnnouncing -> ExtendedAnnouncementEnded
+  Action: "continue_periodic_reconnect(old_credentials, manufacturer_reconnect_interval)"
+  
+- ExtendedAnnouncementEnded -> ExtendedAnnouncementEnded (stay)
+  Action: "attempt_reconnect(old_credentials)"
+
+VERDICT: HOLDS
+
+
+PROP_031: RecoveryIdentifier_Uniquely_Identifies_Node
+------------------------------------------------------
+Claim: RecoveryIdentifier must be unique (implicit security property)
+
+FSM Analysis:
+- FSM uses recovery_identifier as state variable
+- Function get_recovery_identifier() retrieves it
+- FSM doesn't validate uniqueness - assumes it
+
+VERDICT: UNVERIFIABLE (Uniqueness is system-level property, not FSM-level)
+
+
+PROP_032: Recovery_State_And_Operational_State_Mutually_Exclusive
+------------------------------------------------------------------
+Claim: Cannot be in both recovery and operational state simultaneously
+
+FSM Analysis:
+- States are discrete in FSM
+- RecoveryAnnouncing has invariant: "recovery_mode == true"
+- NormalOperation has invariant: "recovery_mode == false"
+- States are mutually exclusive by FSM definition
+
+VERDICT: HOLDS (by FSM state machine definition)
+
+
+PROP_033: Recovery_Connection_Terminated_After_Operational_Connection
+----------------------------------------------------------------------
+Claim: Recovery connection must be terminated after operational connection
+
+FSM Analysis:
+- ConnectingToOperational -> OperationalConnected
+  Action: "terminate_recovery_connection()"
+  
+- OperationalConnected invariant: "recovery_connection_terminated == true"
+
+VERDICT: HOLDS
+
+
+PROP_034: Announcement_OpCode_Identifies_Recovery_Mode
+-------------------------------------------------------
+Claim: Administrator uses OpCode to identify recovery nodes
+
+FSM Analysis:
+- Function advertise_recovery_payload mentions "OpCode indicating recovery mode"
+- FSM models this at function level, not state level
+
+VERDICT: HOLDS (function-level detail)
+
+
+PROP_035: State_Transition_Ordering_Enforced
+---------------------------------------------
+Claim: Recovery must follow specific state ordering
+
+FSM Analysis:
+- FSM enforces state ordering through transition guards and prerequisites
+- No bypass transitions exist
+
+VERDICT: HOLDS (by FSM structure)
+
+
+PROP_036: Parallel_Recovery_And_Reconnection_Attempts
+------------------------------------------------------
+Claim: Node must perform both recovery announcement and reconnection in parallel
+
+FSM Analysis:
+- RecoveryAnnouncing -> RecoveryAnnouncing (stay)
+  Actions include BOTH:
+    "advertise_recovery_payload(...)"
+    "attempt_reconnect(old_credentials)"
+
+VERDICT: HOLDS
+
+
+PROP_037: Credentials_Temporal_Validity_Window
+-----------------------------------------------
+Claim: New credentials supersede old atomically upon ConnectNetwork success
+
+FSM Analysis:
+- CredentialsProvisioned has: new_operational_credentials stored
+- ConnectingToOperational uses: new_operational_credentials
+- Old credentials remain available for reconnection attempts in parallel
+
+POTENTIAL VIOLATION: Are old credentials invalidated?
+- RecoveryAborted transitions use: resume_autonomous_reconnect(old_credentials)
+- This means old credentials persist even after new ones provisioned
+- But spec says: "new credentials supersede old credentials atomically"
+
+Let me check: After OperationalConnected, are old credentials still used?
+- RecoveryCompleted -> NormalOperation
+  Action: "operational_credentials := new_operational_credentials"
+  
+So new credentials replace old credentials only at the END of recovery.
+During recovery, both coexist.
+
+Is this a violation? Spec says "atomically upon successful ConnectNetwork"
+- ConnectNetwork triggers: CredentialsProvisioned -> ConnectingToOperational
+- Connection succeeds: ConnectingToOperational -> OperationalConnected
+- At OperationalConnected, we're using new credentials but old credentials haven't been explicitly deleted
+
+VERDICT: PARTIALLY_HOLDS
+- FSM doesn't show explicit deletion of old credentials
+- Both coexist during recovery window
+- Atomic replacement happens at NormalOperation but not immediately upon ConnectNetwork success
+
+
+PROP_038: Remove_Network_Optional_But_Precedes_Add
+---------------------------------------------------
+Claim: If RemoveNetwork used, must occur before AddOrUpdate
+
+FSM Analysis:
+- Transition: AdminFailSafeArmed -> CredentialsProvisioned
+  Trigger: "remove_network_then_add_or_update"
+  Action: "remove_network(old_network_id)" THEN "new_operational_credentials := provision_credentials(...)"
+  
+- Action ordering enforces remove before add
+
+VERDICT: HOLDS
+
+
+PROP_039: User_Can_Identify_Nodes_Requiring_Recovery
+-----------------------------------------------------
+Claim: User must be able to identify which nodes need recovery (human-in-loop assumption)
+
+FSM Analysis:
+- User consent is checked but identifier correctness is not validated
+- FSM assumes user correctly identifies node
+
+VERDICT: UNVERIFIABLE (Human decision-making not modeled in FSM)
+
+
+PROP_040: FailSafe_Timeout_Protects_Against_Incomplete_Recovery
+----------------------------------------------------------------
+Claim: Fail-safe timeout triggers rollback if recovery incomplete
+
+FSM Analysis:
+- NodeFailSafeArmed -> FailSafeExpired
+  Trigger: "node_failsafe_timer_expired"
+  Guard: "node_failsafe_timer == 0 && admin_failsafe_armed == false"
+  Action: "rollback_state()"
+
+VERDICT: HOLDS
+
+
+PROP_041: BLE_And_WiFi_Service_Discovery_Include_RecoveryID
+------------------------------------------------------------
+Claim: BLE and WiFi announcements must include RecoveryID
+
+FSM Analysis:
+- Same as PROP_007, function-level detail
+
+VERDICT: HOLDS
+
+
+PROP_042: Network_Connectivity_Loss_Detected_Reliably
+------------------------------------------------------
+Claim: Node must reliably detect connectivity loss to trigger recovery
+
+FSM Analysis:
+- NormalOperation -> ConnectivityLost
+  Triggers: "operational_credentials_changed" OR "network_unreachable"
+  
+- FSM assumes detection mechanisms exist
+
+VERDICT: UNVERIFIABLE (Detection mechanism is implementation-specific)
+
+===================================================================
+FINAL VIOLATION SUMMARY:
+===================================================================
+
+CRITICAL/HIGH/MEDIUM PROPERTIES ANALYZED: 42
+
+HOLDS: 28 properties
+PARTIALLY_HOLDS: 2 properties (PROP_013, PROP_037)
+UNVERIFIABLE: 12 properties (abstraction level or implementation details)
+VIOLATED: 0 properties
+
+KEY FINDINGS:
+1. No clear VIOLATIONS where FSM contradicts specification
+2. FSM is well-designed and enforces most security properties
+3. Some properties unverifiable due to FSM abstraction level
+4. Two partial violations related to:
+   - Fail-safe arming failure handling (command failure vs timeout)
+   - Credential temporal validity (old creds persist during recovery)
+
+However, let me look more carefully for potential violations...
+
+DEEPER ANALYSIS - LOOKING FOR SUBTLE VIOLATIONS:
+==================================================
+
+POTENTIAL VIOLATION 1: Timing Window Attack
+Property: PROP_017 (Subsequent_Messages_Over_Operational_Network)
+Issue: Between OperationalConnected and OperationalDiscovered, is recovery connection truly terminated?
+
+FSM shows:
+- ConnectingToOperational -> OperationalConnected
+  Action: "terminate_recovery_connection()"
+  
+- OperationalConnected -> OperationalDiscovered
+  Trigger: "initiate_operational_discovery"
+  
+- OperationalDiscovered -> RecoveryCompleted
+  Trigger: "commissioning_complete_command"
+  Guard: "received_over_operational_network == true && over_case_session == true"
+
+But what about messages BEFORE CommissioningComplete?
+- If credential provisioning or ConnectNetwork messages come after operational connection but before discovery?
+- FSM doesn't show explicit transitions for those
+
+Actually, credential provisioning happens BEFORE operational connection.
+The concern is: Can CommissioningComplete be sent over recovery channel?
+The guard explicitly checks "received_over_operational_network == true"
+So this is enforced.
+
+NOT A VIOLATION.
+
+POTENTIAL VIOLATION 2: Recovery Connection Not Truly Terminated
+Property: PROP_033 (Recovery_Connection_Terminated_After_Operational_Connection)
+
+Issue: terminate_recovery_connection() is called, but there's no guard preventing use of recovery connection after this point.
+
+Between OperationalConnected and RecoveryCompleted:
+- Could Administrator still send messages over recovery channel (BLE/WiFi)?
+- FSM doesn't model individual message sends
+- Only CommissioningComplete has guard checking channel
+
+If Administrator sends OTHER commands (e.g., read attributes, configure settings) over recovery channel after OperationalConnected, would they be accepted?
+
+FSM shows:
+- OperationalConnected state requires "recovery_connection_terminated == true"
+- But there's no transition showing rejection of recovery channel messages
+- Only CommissioningComplete has explicit channel check
+
+This is a GAP in FSM modeling, not necessarily a violation.
+The specification says recovery CASE "SHALL be used for recovery and not for steady state"
+But FSM doesn't model enforcement of this after connection.
+
+VERDICT: PARTIAL VIOLATION - FSM doesn't enforce recovery channel inactivity post-connection for non-CommissioningComplete messages.
+
+Actually, looking at PROP_025:
+"Recovery Nodes SHALL allow any and all transactions allowed over a CASE session"
+This applies DURING recovery, from Step 9.
+
+And PROP_028 says:
+"CASE session established over commissioning channel during recovery must be used only for network credential recovery"
+
+So there's a contradiction:
+- PROP_025 says allow all CASE transactions during recovery
+- PROP_028 says use only for recovery, not operational traffic
+
+Hmm, but PROP_025 talks about "during recovery" (Steps 9-16)
+And PROP_028 talks about "not for steady-state operational interaction"
+
+The key is: what's "steady-state operational" vs "recovery-related configuration"?
+
+Actually, re-reading Step 9:
+"Recovery Nodes SHALL allow any and all transactions allowed over a CASE session, such as reading Basic Information cluster or accessing device configuration data and topology, as Administrators might require them to fully restore network connectivity."
+
+So during recovery, Administrator CAN read config, Basic Info, etc.
+This is recovery-related, not steady-state operational.
+
+After recovery completes (RecoveryCompleted -> NormalOperation), recovery connection should be gone.
+
+So this is NOT a violation - it's correctly allowing flexibility during recovery while requiring CommissioningComplete over operational network.
+
+POTENTIAL VIOLATION 3: Race Condition in Parallel Reconnection
+Property: PROP_036 (Parallel_Recovery_And_Reconnection_Attempts)
+
+FSM shows parallel activities during RecoveryAnnouncing:
+- advertise_recovery_payload()
+- attempt_reconnect(old_credentials)
+
+What if reconnection succeeds DURING recovery procedure (after CASESessionEstablished)?
+- Spec says: "autonomous reconnect attempts SHALL be suspended" during recovery
+- FSM shows: "suspend_autonomous_reconnect()" in CASESessionEstablished
+
+But what about the window BEFORE CASESessionEstablished?
+- RecoveryAnnouncing -> AwaitingAdministrator -> RecoveryConnectionEstablished -> CASESessionEstablished
+
+During AwaitingAdministrator and RecoveryConnectionEstablished states:
+- Are reconnection attempts still happening?
+- FSM doesn't show continued reconnection attempts
+- Only RecoveryAnnouncing has the parallel attempts
+
+So once you leave RecoveryAnnouncing (via administrator_received_announcement), reconnection stops?
+That seems wrong. The spec says reconnection continues "while in the recovery state."
+
+Let me check RecoveryAnnouncing -> AwaitingAdministrator transition:
+- No actions stop reconnection attempts
+- But stay transition with reconnection is only in RecoveryAnnouncing
+
+This is a GAP: FSM doesn't model continued reconnection in AwaitingAdministrator and RecoveryConnectionEstablished states.
+
+Is this a VIOLATION? Let's check the spec:
+"Recovery Nodes SHALL attempt to reconnect to the existing operational network while in the recovery state."
+
+AwaitingAdministrator is still "in recovery state" (recovery_mode would still be true).
+
+FSM GAP IDENTIFIED: Reconnection attempts should continue in AwaitingAdministrator and RecoveryConnectionEstablished states, but FSM doesn't model this.
+
+Is this a violation of PROP_021 "Continuous_Reconnection_During_Recovery_State"?
+Yes! The property says "Must attempt reconnection while in recovery state"
+But FSM only shows reconnection attempts in RecoveryAnnouncing and ExtendedAnnouncementEnded, not in AwaitingAdministrator or RecoveryConnectionEstablished.
+
+VERDICT: VIOLATED - PROP_021
+
+===================================================================
+CONFIRMED VIOLATIONS:
+===================================================================
+
+VIOLATION 1: PROP_021 - Continuous_Reconnection_During_Recovery_State
+----------------------------------------------------------------------
+
+Property Claim:
+"Recovery Nodes must attempt to reconnect to existing operational network while in the recovery state."
+
+FSM Analysis - Attack Path:
+1. RecoveryAnnouncing state: reconnection attempts modeled (stay transition with attempt_reconnect action)
+2. RecoveryAnnouncing -> AwaitingAdministrator: no action to continue reconnection
+3. AwaitingAdministrator state: NO stay transition with reconnection attempts
+4. AwaitingAdministrator -> RecoveryConnectionEstablished: still no reconnection
+5. RecoveryConnectionEstablished state: NO stay transition with reconnection attempts
+6. RecoveryConnectionEstablished -> CASESessionEstablished: suspension happens HERE
+
+Gap Period: From AwaitingAdministrator through RecoveryConnectionEstablished (before CASE established)
+- Node is still in "recovery state" (recovery_mode == true)
+- But no reconnection attempts modeled in FSM
+- Violates continuous reconnection requirement
+
+Specification Evidence:
+Quote: "Recovery Nodes SHALL attempt to reconnect to the existing operational network while in the recovery state."
+Source: Section 5.9.3, Step 3
+
+Additional Support:
+Quote: "once the secure connection is established, any ongoing attempts taken autonomously by the Recovery Node to re-establish connectivity to the previously configured operational network SHALL be suspended"
+Source: Section 5.9.3, Step 9
+Context: This implies reconnection attempts are ONGOING until CASE session, but FSM doesn't model this between RecoveryAnnouncing and CASESessionEstablished
+
+FSM Gap:
+The FSM only models reconnection attempts in:
+- WaitingReconnect (stay transition)
+- RecoveryAnnouncing (stay transition)
+- ExtendedAnnouncementEnded (stay transition)
+
+Missing reconnection in:
+- AwaitingAdministrator
+- RecoveryConnectionEstablished
+
+Severity: MEDIUM (creates window where node stops attempting autonomous recovery)
+
+Impact:
+- If network becomes available during AwaitingAdministrator or RecoveryConnectionEstablished states
+- Node will NOT autonomously reconnect
+- Forces dependency on Administrator-assisted recovery even when autonomous recovery could succeed
+- Increases recovery time unnecessarily
+
+
+LOOKING FOR MORE VIOLATIONS...
+
+POTENTIAL VIOLATION 2: Fail-Safe Timeout Not Comprehensive
+-----------------------------------------------------------
+
+Property: PROP_011, PROP_012, PROP_040 combined
+
+Issue: What if Administrator successfully arms fail-safe but THEN abandons recovery?
+- AdminFailSafeArmed state: both failsafes armed
+- Admin fails to send credential provisioning commands
+- Does fail-safe timer continue counting down?
+
+FSM Analysis:
+- AdminFailSafeArmed state has "admin_failsafe_timer" variable
+- But there's NO transition from AdminFailSafeArmed to FailSafeExpired
+- Only transition from NodeFailSafeArmed to FailSafeExpired
+
+This means: Once Administrator successfully arms fail-safe, if they abandon recovery at AdminFailSafeArmed state, there's NO timeout protection!
+
+FSM Transitions from AdminFailSafeArmed:
+1. -> CredentialsProvisioned (add_or_update commands)
+2. No other transitions!
+
+Missing: AdminFailSafeArmed -> FailSafeExpired (timeout)
+
+Specification Evidence:
+Quote: "Upon successful establishment of the CASE session, the Recovery Node SHALL autonomously arm the fail-safe timer for a timeout of 60 seconds. This is to guard against the Administrator not proceeding with the rest of the flow in a timely fashion"
+Source: Section 5.9.3, Step 10
+
+The intent is clear: fail-safe should protect against Administrator not proceeding.
+But FSM only has timeout from NodeFailSafeArmed (before Admin arms).
+After Admin arms, there's no timeout protection in FSM.
+
+VERDICT: VIOLATED - PROP_040 (partially)
+
+This is a CRITICAL violation because it allows Administrator to lock up Recovery Node indefinitely after arming fail-safe.
+
+
+POTENTIAL VIOLATION 3: No Mutual Discovery Requirement Enforced
+----------------------------------------------------------------
+
+Property: PROP_019 - Operational_Discovery_Before_Commissioning_Complete
+
+FSM shows:
+- OperationalConnected -> OperationalDiscovered
+  Trigger: "initiate_operational_discovery"
+  Guard: "connected_to_operational_network == true && case_session_active == true"
+
+But WHO triggers "initiate_operational_discovery"?
+- Specification Step 15 says: "The Administrator and the Recovery Node SHALL discover each other"
+- This implies BOTH parties must initiate discovery
+
+FSM only shows ONE transition with this trigger.
+Does it model:
+a) Administrator initiating discovery?
+b) Node initiating discovery?
+c) Both?
+
+The function "perform_operational_discovery()" is called.
+Description says: "Administrator and Recovery Node use mDNS or other service discovery to find each other"
+
+But there's only ONE transition. How do we model mutual discovery?
+
+Actually, looking at the trigger name "initiate_operational_discovery" - this is generic.
+The FSM abstracts to single transition for mutually successful discovery.
+
+This is a modeling choice, not a violation. The function models the mutual aspect.
+
+NOT A VIOLATION.
+
+
+POTENTIAL VIOLATION 4: RemoveNetwork Optional but Not Enforced
+---------------------------------------------------------------
+
+Property: PROP_038 - Remove_Network_Optional_But_Precedes_Add
+
+FSM has THREE transitions from AdminFailSafeArmed to CredentialsProvisioned:
+1. add_or_update_wifi_network_command
+2. add_or_update_thread_network_command  
+3. remove_network_then_add_or_update
+
+If Administrator uses transitions 1 or 2 (WITHOUT RemoveNetwork), what happens?
+- Actions: "new_operational_credentials := provision_wifi_credentials(command_params)"
+- Variable: "old_credentials_removed := ???" - no assignment!
+
+In transition 3:
+- Action: "old_credentials_removed := true"
+
+In transitions 1 and 2:
+- "old_credentials_removed" is NOT set
+- Defaults to ??? (undefined or false?)
+
+CredentialsProvisioned state variables show:
+"old_credentials_removed": "boolean"
+
+If old_credentials_removed is undefined or false in transitions 1/2, then:
+- Node has BOTH old and new credentials
+- This could cause ambiguity
+
+But is this a violation? Let's check spec:
+
+Quote: "The Administrator MAY choose to delete a Recovery Node's existing network credentials by sending a RemoveNetwork."
+Source: Section 5.9.3, Step 12
+
+"MAY" means optional. So having old credentials remain is allowed.
+
+NOT A VIOLATION (by design).
+
+
+POTENTIAL VIOLATION 5: Node Fail-Safe Timer Not Checked During Admin FailSafe
+-----------------------------------------------------------------------------
+
+Property: PROP_011 + PROP_012 combined
+
+FSM shows:
+- CASESessionEstablished -> NodeFailSafeArmed (automatic)
+  Action: "node_failsafe_timer := 60"
+  
+- NodeFailSafeArmed -> AdminFailSafeArmed
+  Guard: "(get_current_time() - case_establishment_time) <= 60"
+  
+- NodeFailSafeArmed -> FailSafeExpired
+  Guard: "node_failsafe_timer == 0 && admin_failsafe_armed == false"
+
+Question: Does node_failsafe_timer continue counting down in NodeFailSafeArmed state?
+- There's no stay transition in NodeFailSafeArmed that decrements the timer
+- The guard checks against case_establishment_time, not node_failsafe_timer
+
+This means: node_failsafe_timer is set to 60 but never decremented!
+The actual timeout is checked via (current_time - case_establishment_time).
+
+So node_failsafe_timer variable is:
+a) Set but never used? OR
+b) Used internally by arm_failsafe() function?
+
+This is an FSM modeling issue, not a specification violation.
+The timeout is enforced via the guard checking elapsed time.
+
+NOT A VIOLATION (modeling detail).
+
+
+POTENTIAL VIOLATION 6: Concurrent Reads During Credential Provisioning
+-----------------------------------------------------------------------
+
+Property: PROP_025 - Recovery_Nodes_Allow_All_CASE_Transactions
+
+Spec says: "Recovery Nodes SHALL allow any and all transactions allowed over a CASE session, such as reading Basic Information cluster or accessing device configuration data and topology"
+
+This applies during states:
+- CASESessionEstablished
+- NodeFailSafeArmed
+- AdminFailSafeArmed
+- CredentialsProvisioned
+- ConnectingToOperational
+
+But FSM doesn't model these concurrent transactions.
+FSM only models the main line recovery flow.
+
+Is this a violation? No, it's an abstraction.
+FSM models the recovery flow; concurrent reads are orthogonal operations.
+
+NOT A VIOLATION (abstraction choice).
+
+
+POTENTIAL VIOLATION 7: Credential Type Validation Missing
+----------------------------------------------------------
+
+Property: Related to PROP_014
+
+FSM shows:
+- AdminFailSafeArmed -> CredentialsProvisioned (add_or_update_wifi_network_command)
+  Action: "credential_type := 'WiFi'"
+  
+- AdminFailSafeArmed -> CredentialsProvisioned (add_or_update_thread_network_command)
+  Action: "credential_type := 'Thread'"
+
+What if node is WiFi-only but Administrator sends Thread credentials?
+Or vice versa?
+
+FSM has no guard checking capability compatibility.
+
+Specification doesn't explicitly address this error case in Section 5.9.
+
+This is an implementation detail - validation should happen in provision_wifi_credentials() or provision_thread_credentials() functions.
+
+NOT A VIOLATION (error handling is implementation-specific).
+
+
+POTENTIAL VIOLATION 8: Max Connection Attempts Not Specified
+-------------------------------------------------------------
+
+Property: Related to PROP_016
+
+FSM shows:
+- ConnectingToOperational -> RecoveryAborted
+  Guard: "connection_attempts >= max_connection_attempts"
+
+But "max_connection_attempts" is never defined or initialized in FSM.
+How many attempts should be made?
+
+Specification Step 14 says:
+"The Recovery Node SHALL attempt to connect to the operational network"
+No "SHALL retry N times" or timeout specified.
+
+This is a specification gap, not an FSM violation.
+FSM correctly models retry logic; spec doesn't define retry limit.
+
+NOT A VIOLATION (spec is underspecified, FSM reasonably models it).
+
+
+POTENTIAL VIOLATION 9: Commissioning Complete Response Not Validated
+---------------------------------------------------------------------
+
+Property: PROP_005 extended
+
+FSM shows:
+- OperationalDiscovered -> RecoveryCompleted
+  Trigger: "commissioning_complete_command"
+  Guard: "received_over_operational_network == true && over_case_session == true"
+  Action: "send_commissioning_complete_response()"
+
+But what if send_commissioning_complete_response() FAILS?
+- Network error
+- Message lost
+- Administrator doesn't receive response
+
+FSM transitions to RecoveryCompleted regardless.
+No error path for failed response.
+
+Is this a violation? Let's check spec:
+
+Step 16: "The Administrator and the Recovery Node SHALL indicate successful completion of the Network Recovery flow using the CommissioningComplete and CommissioningCompleteResponse commands."
+
+"SHALL indicate" implies both must successfully exchange messages.
+But FSM doesn't model response failure.
+
+However, this is likely a protocol-level retry concern (transport layer).
+CommissioningCompleteResponse is sent; if it fails, standard Matter message retry applies.
+
+NOT A VIOLATION (transport-level reliability assumed).
+
+
+===================================================================
+INTERIM SUMMARY OF VIOLATIONS FOUND:
+===================================================================
+
+CONFIRMED VIOLATIONS: 2
+
+1. PROP_021: Continuous_Reconnection_During_Recovery_State
+   - Severity: MEDIUM
+   - FSM Gap: No reconnection attempts in AwaitingAdministrator and RecoveryConnectionEstablished states
+   
+2. PROP_040: FailSafe_Timeout_Protects_Against_Incomplete_Recovery (partial)
+   - Severity: CRITICAL
+   - FSM Gap: No timeout from AdminFailSafeArmed state if Administrator abandons recovery
+
+Continuing analysis...
+

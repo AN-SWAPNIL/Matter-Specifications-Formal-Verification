@@ -1,0 +1,851 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Node_ID_Uniqueness_Enforcement",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Any newly-allocated Node ID SHALL be checked to ensure its uniqueness in the NodeList attribute of the Joint Fabric Datastore before assignment.",
+      "formal": "∀n:nodeId. event assign_node_id(n) ==> ¬exists_in_nodelist(n) ∧ (0x0000_0000_0000_0000 < n < 0xFFFF_FFEF_FFFF_FFFF)",
+      "violation": "Duplicate Node IDs enable identity spoofing attacks where an attacker impersonates an existing node, gaining unauthorized access to fabric resources. Two nodes with identical IDs cause routing conflicts, message interception, and ACL bypass.",
+      "proverifQuery": "query n:nodeId ⊢ event node_assigned(n) ==> event uniqueness_check_passed(n)"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Anchor_ICAC_Reserved_Attribute",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Anchor ICAC SHALL contain the reserved org-unit-name attribute 'jf-anchor-icac' in its Subject DN, and the Anchor CA SHALL NOT place this attribute into any Node that is not the Anchor Administrator.",
+      "formal": "∀cert:icac. is_anchor_icac(cert) ⟺ contains_attribute(cert, 'jf-anchor-icac') ∧ ∀node. has_cert(node, cert) ⟹ is_anchor_admin(node)",
+      "violation": "Non-anchor nodes can masquerade as the Anchor Administrator by forging certificates with the reserved attribute. This enables privilege escalation, unauthorized ICA cross-signing, and complete fabric takeover as the attacker gains anchor-level administrative control.",
+      "proverifQuery": "query c:cert, n:node ⊢ event certificate_issued(c, n) ∧ has_anchor_attribute(c) ==> is_anchor_administrator(n)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Administrator_CAT_ACL_Requirement",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "All devices participating in Joint Fabric SHALL contain an ACL entry granting Administer privilege to CaseSubjectAdmin set to the Administrator CAT.",
+      "formal": "∀device:node. in_joint_fabric(device) ⟹ has_acl_entry(device, admin_cat, ADMINISTER) ∧ ∀op:admin_operation. requires(op, ADMINISTER) ⟹ authorized_by(op, admin_cat)",
+      "violation": "Nodes without Administrator CAT ACL entries cannot be managed by legitimate administrators, creating orphaned devices. Conversely, devices accepting non-CAT administrators allow unauthorized nodes to gain administrative control, bypassing the Joint Fabric security model.",
+      "proverifQuery": "query d:device, op:operation ⊢ event admin_operation(d, op) ==> event has_admin_cat_acl(d) ∧ event authorized(admin_cat, op)"
+    },
+    {
+      "id": "PROP_004",
+      "name": "Administrator_CAT_CASE_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Any client that discovers the Administrator Node with DNS-SD and connects via CASE SHALL check if the Administrator CAT is present in the NOC as part of the CASE handshake.",
+      "formal": "∀client:node, admin:node. event case_connect(client, admin, discovered_as_admin) ==> event verify_cat_present(admin.noc, admin_cat) ∨ event reject_connection(client, admin)",
+      "violation": "Skipping CAT verification during CASE allows rogue nodes to advertise as administrators without proper credentials. Attackers establish administrative sessions, issue unauthorized commands, modify ACLs, and inject malicious nodes into the Joint Fabric without detection.",
+      "proverifQuery": "query c:principal, a:principal, noc:cert ⊢ event case_established(c, a, noc) ∧ advertised_as(a, administrator) ==> event cat_verified(noc, admin_cat)"
+    },
+    {
+      "id": "PROP_005",
+      "name": "Administrator_CAT_Version_Revocation",
+      "category": "Revocation",
+      "importance": "CRITICAL",
+      "claim": "To revoke an Administrator, the Anchor Administrator SHALL increment the Administrator CAT version, update NOCs for non-revoked Administrators with the new version, and update ACL entries on all Nodes with the new CAT version.",
+      "formal": "∀admin:node. event revoke_admin(admin) ⟹ event increment_cat_version(admin_cat) ∧ (∀n:node. n ≠ admin ⟹ event update_noc(n, new_cat_version)) ∧ (∀device:node. event update_acl(device, new_cat_version))",
+      "violation": "Incomplete CAT version updates leave revoked administrators with valid credentials on some nodes. The revoked administrator retains partial fabric access, can compromise unupdated devices, and gradually re-establish full administrative control through credential reuse and ACL exploitation.",
+      "proverifQuery": "query a:principal, v:version ⊢ event admin_revoked(a, v) ==> (∀n:node. event noc_updated(n, v+1) ∨ n = a) ∧ event all_acls_updated(v+1)"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Anchor_CAT_Issuance_Restriction",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "A NOC containing the Anchor CAT SHALL be issued only by the Joint Fabric Anchor ICAC.",
+      "formal": "∀noc:cert. contains_cat(noc, anchor_cat) ⟹ issued_by(noc, anchor_icac) ∧ ∀issuer. issued_by(noc, issuer) ⟹ issuer = anchor_icac",
+      "violation": "Non-anchor ICAs issuing Anchor CAT certificates enable unauthorized nodes to masquerade as the Anchor Administrator. Attackers perform anchor-specific operations (ICA cross-signing, datastore management, fabric transfer) without legitimate authority, leading to complete Joint Fabric compromise.",
+      "proverifQuery": "query noc:cert, issuer:ca ⊢ event noc_issued(noc, issuer) ∧ has_anchor_cat(noc) ==> is_anchor_icac(issuer)"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Anchor_CAT_CASE_Chain_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Any client connecting to an Anchor Node via CASE SHALL check if the Anchor CAT or Anchor/Datastore CAT is present in the NOC and verify the NOC chains up to the Anchor ICAC.",
+      "formal": "∀client:node, anchor:node. event case_connect(client, anchor, discovered_as_anchor) ==> event verify_cat_present(anchor.noc, anchor_cat ∨ anchor_datastore_cat) ∧ event verify_chain(anchor.noc, anchor_icac)",
+      "violation": "Omitting chain verification allows attackers to present self-signed or foreign-CA-signed certificates with forged Anchor CATs. The attacker impersonates the Anchor, intercepts cross-signing requests, issues fraudulent ICACs, and controls the entire Joint Fabric trust hierarchy.",
+      "proverifQuery": "query c:principal, a:principal, noc:cert ⊢ event case_established(c, a, noc) ∧ advertised_as(a, anchor) ==> event cat_verified(noc, anchor_cat) ∧ event chain_verified(noc, anchor_icac)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Datastore_CAT_CASE_Verification",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Any client discovering a Datastore Node via DNS-SD SHALL check if the Datastore CAT or Anchor/Datastore CAT is present in the NOC during CASE handshake.",
+      "formal": "∀client:node, ds:node. event case_connect(client, ds, discovered_as_datastore) ==> event verify_cat_present(ds.noc, datastore_cat ∨ anchor_datastore_cat) ∨ event reject_connection(client, ds)",
+      "violation": "Unverified datastore connections allow rogue nodes to provide false or corrupted Joint Fabric state. Attackers inject malicious node entries, manipulate ACL synchronization, or provide stale data causing network-wide inconsistency and authorization bypass.",
+      "proverifQuery": "query c:principal, d:principal, noc:cert ⊢ event case_established(c, d, noc) ∧ advertised_as(d, datastore) ==> event cat_verified(noc, datastore_cat)"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Anchor_Datastore_CAT_Issuance_Restriction",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "A NOC containing the Anchor/Datastore CAT SHALL be issued only by the Anchor ICAC.",
+      "formal": "∀noc:cert. contains_cat(noc, anchor_datastore_cat) ⟹ issued_by(noc, anchor_icac) ∧ ¬∃issuer. (issuer ≠ anchor_icac ∧ issued_by(noc, issuer))",
+      "violation": "Unauthorized issuance of Anchor/Datastore CAT allows non-anchor nodes to control the canonical Joint Fabric state. Attackers manipulate node lists, inject false administrator entries, and trigger anchor transfer to hostile nodes, achieving persistent fabric control.",
+      "proverifQuery": "query noc:cert, issuer:ca ⊢ event noc_issued(noc, issuer) ∧ has_anchor_datastore_cat(noc) ==> is_anchor_icac(issuer)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "JCM_Anchor_CAT_Verification_During_Commissioning",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "During Joint Commissioning Method, Ecosystem B Administrator SHALL check that the NOC belonging to Ecosystem A Administrator contains either an Anchor CAT or Anchor/Datastore CAT.",
+      "formal": "∀ecoB:admin, ecoA:admin. event jcm_commission(ecoB, ecoA) ==> event verify_cat(ecoA.noc, anchor_cat ∨ anchor_datastore_cat) ∨ event abort_commissioning(ecoB)",
+      "violation": "Commissioning with non-anchor administrators creates joint fabrics with incorrect trust anchors. The resulting fabric structure lacks a legitimate anchor, enabling any administrator to claim anchor status and issue fraudulent cross-signed ICACs without authorization.",
+      "proverifQuery": "query b:admin, a:admin, noc:cert ⊢ event jcm_complete(b, a, noc) ==> event anchor_cat_verified(noc)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "JCM_User_Consent_Requirement",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "User Consent must be obtained on Ecosystem B before proceeding with Joint Commissioning Method steps after ECM/BCM completion.",
+      "formal": "∀ecoB:admin, ecoA:admin. event ecm_complete(ecoB, ecoA) ∧ event jcm_initiate(ecoB, ecoA) ==> event user_consent_obtained(ecoB) ∨ event halt_jcm(ecoB)",
+      "violation": "Automatic joint fabric creation without user consent enables covert fabric merging. Malicious administrators silently integrate devices into foreign fabrics, exfiltrating data, bypassing access controls, and creating unauthorized administrative backdoors without user awareness.",
+      "proverifQuery": "query b:admin, a:admin ⊢ event jcm_proceed(b, a) ==> event user_consent(b) ∧ event occurred_before(user_consent(b), jcm_proceed(b, a))"
+    },
+    {
+      "id": "PROP_012",
+      "name": "RCAC_Vendor_ID_Validation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Ecosystem B Administrator SHALL use RCAC-based Vendor ID validation with Ecosystem A's RCAC public key, algorithm, curve, and VendorID as inputs, and SHALL verify the returned certificate is a valid RCAC (Basic Constraint cA=TRUE).",
+      "formal": "∀ecoB:admin, rcac:cert. event jcm_validate_rcac(ecoB, rcac) ==> event dcl_query(rcac.ec_pub_key, rcac.algo, rcac.curve, rcac.vendorID) ∧ event verify_basic_constraint(returned_cert, cA=TRUE) ∨ event abort_jcm(ecoB)",
+      "violation": "Skipping RCAC validation allows attackers to present fraudulent root certificates with fabricated vendor identities. The victim ecosystem trusts an illegitimate CA hierarchy, accepting attacker-issued NOCs and granting fabric access to unauthorized devices controlled by the attacker.",
+      "proverifQuery": "query b:admin, rcac:cert ⊢ event jcm_trust_established(b, rcac) ==> event dcl_validated(rcac) ∧ event is_valid_rcac(rcac)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "ICA_CSR_Signature_Validation",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "ICA Cross Signing SHALL verify that the ICA CSR signature can be validated using the Public Key of the ICA CSR, and the SubjectPublicKey in the CSR matches the key used for signing.",
+      "formal": "∀csr:icacsr. event validate_ica_csr(csr) ==> verify_signature(csr.signature, csr.subject_public_key) ∧ (csr.subject_public_key = key_used_for_signature(csr))",
+      "violation": "Accepting ICA CSRs without signature verification allows attackers to submit CSRs for keys they don't control. The Anchor signs a certificate binding the attacker's chosen identity to a victim's public key, enabling the attacker to impersonate the victim administrator and issue fraudulent NOCs.",
+      "proverifQuery": "query csr:csr, pubkey:key ⊢ event csr_accepted(csr) ==> event signature_valid(csr, pubkey) ∧ event pubkey_matches(csr.subject, pubkey)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "ICA_CSR_Matter_Fabric_ID_Consistency",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "ICA CSR subject DN SHALL encode a matter-fabric-id attribute whose value SHALL be identical to the matter-fabric-id attribute from the cross-signed ICAC, and NOCs issued SHALL also use this identical matter-fabric-id.",
+      "formal": "∀csr:icacsr, icac:cert, noc:cert. event cross_sign(csr) → icac ∧ event issue_noc(icac) → noc ==> (csr.fabric_id = icac.fabric_id = noc.fabric_id = anchor_fabric_id)",
+      "violation": "Mismatched fabric IDs fragment the Joint Fabric into isolated sub-fabrics. Nodes with different fabric ID values cannot verify each other's credentials, breaking mutual authentication. Attackers exploit this to partition the network, isolating victims or creating unauthorized parallel fabrics.",
+      "proverifQuery": "query csr:csr, icac:cert, noc:cert, fid:fabricId ⊢ event noc_issued_from_csr(noc, csr) ==> (fabric_id(csr) = fid ∧ fabric_id(icac) = fid ∧ fabric_id(noc) = fid)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "ICAC_Based_Vendor_ID_Validation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "During ICA Cross Signing, SHALL perform ICAC-based Vendor ID validation using the ICA CSR's public key parameters and requestor's Vendor ID; SHALL verify returned certificate is an ICAC (Basic Constraint cA=FALSE).",
+      "formal": "∀csr:icacsr, vendorID:vid. event validate_ica_csr_vendor(csr, vendorID) ==> event dcl_query(csr.ec_pub_key, csr.algo, csr.curve, vendorID) ∧ event verify_basic_constraint(returned_cert, cA=FALSE) ∨ event reject_csr(csr)",
+      "violation": "Omitting vendor validation allows unauthorized ecosystems to obtain cross-signed ICACs without legitimate vendor credentials. Attackers masquerade as trusted vendors, issue NOCs to compromised nodes, and inject malicious devices into the Joint Fabric with full administrative privileges.",
+      "proverifQuery": "query csr:csr, vid:vendorId ⊢ event csr_signed(csr) ==> event dcl_validated_icac(csr, vid) ∧ event is_valid_icac(returned_cert)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "ICA_Cross_Signing_User_Consent",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "ICA Cross Signing SHALL check that User Consent has been obtained previously or ask for User Consent; if not obtained, SHALL return IcaCsrRequestNoUserConsent error.",
+      "formal": "∀anchor:admin, csr:icacsr. event receive_ica_csr(anchor, csr) ==> event user_consent_obtained(anchor) ∨ event return_error(IcaCsrRequestNoUserConsent)",
+      "violation": "Automatic ICA cross-signing without user consent enables silent Joint Fabric formation. Malicious administrators covertly merge victim fabrics, gaining unauthorized access to all devices without user knowledge. Victims unknowingly grant foreign ecosystems full administrative control.",
+      "proverifQuery": "query a:admin, csr:csr ⊢ event cross_sign_complete(a, csr) ==> event user_consent(a) ∧ event occurred_before(user_consent(a), cross_sign_complete(a, csr))"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Anchor_Transfer_Mutual_User_Consent",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Anchor Administrator transfer SHALL require mutual user consent: Administrator A SHALL obtain consent to transfer anchor role, and Administrator B SHALL obtain consent to receive anchor role.",
+      "formal": "∀adminA:anchor, adminB:admin. event anchor_transfer(adminA, adminB) ==> event user_consent_transfer_from(adminA) ∧ event user_consent_receive_at(adminB) ∨ event abort_transfer(adminA, adminB)",
+      "violation": "One-sided consent enables hostile anchor takeovers. A compromised administrator forces anchor role transfer to an attacker-controlled node without victim consent. The attacker gains datastore control, issues fraudulent ICACs, and manipulates the entire Joint Fabric without authorization.",
+      "proverifQuery": "query a:admin, b:admin ⊢ event anchor_transferred(a, b) ==> event consent_send(a) ∧ event consent_receive(b)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Anchor_Transfer_Datastore_Busy_Check",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Before anchor transfer, Administrator A SHALL check all Datastore entries; if any have status Pending or DeletePending, SHALL send TransferAnchorStatusDatastoreBusy error and stop the procedure.",
+      "formal": "∀adminA:anchor, adminB:admin. event initiate_anchor_transfer(adminA, adminB) ==> (∀entry:datastore_entry. entry.status ∉ {Pending, DeletePending}) ∨ event return_error(TransferAnchorStatusDatastoreBusy)",
+      "violation": "Transferring anchor during pending datastore operations causes state inconsistency. The new anchor inherits incomplete transactions, resulting in corrupt node lists, missing ACL updates, or orphaned entries. Attackers exploit race conditions to inject malicious state during the transfer window.",
+      "proverifQuery": "query a:admin, b:admin ⊢ event anchor_transfer_initiated(a, b) ==> (∀e:entry. datastore_status(e) ∉ {Pending, DeletePending})"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Anchor_Transfer_Datastore_Read_Only",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "During anchor transfer, Administrator A SHALL put Joint Fabric Datastore in read-only state by setting StatusEntry to DeletePending and SHALL stop DNS-SD advertising of Administrator, Anchor, and Datastore capabilities.",
+      "formal": "∀adminA:anchor. event begin_anchor_transfer(adminA) ==> event set_datastore_status(DeletePending) ∧ event stop_dns_sd_advertising(adminA, {Administrator, Anchor, Datastore}) ∧ (∀admin:node. event detect_status(DeletePending) ==> event stop_commissioning(admin))",
+      "violation": "Allowing writes during anchor transfer creates split-brain scenarios where old and new anchors have divergent datastore states. Administrators commissioning to different datastores fragment the fabric. Attackers exploit this to create shadow fabrics with manipulated node lists and ACLs.",
+      "proverifQuery": "query a:admin ⊢ event anchor_transfer_started(a) ==> event datastore_readonly(a) ∧ event dns_advertising_stopped(a)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "Anchor_Transfer_Administrator_CAT_Version_Increment",
+      "category": "Revocation",
+      "importance": "CRITICAL",
+      "claim": "During anchor transfer, Administrator B SHALL increase Administrator CAT version and update NOCs for all other Joint Fabric Administrators with the new version.",
+      "formal": "∀adminB:new_anchor, adminA:old_anchor. event anchor_transfer_complete(adminA, adminB) ==> event increment_cat_version(admin_cat) ∧ (∀admin:node. admin ≠ adminA ⟹ event update_noc_cat(admin, new_cat_version))",
+      "violation": "Reusing old CAT version after anchor transfer allows the previous anchor to retain administrative access. The old anchor continues operating with valid credentials, creating dual-anchor conflicts. Attackers exploit this to maintain persistent backdoor access after supposed anchor revocation.",
+      "proverifQuery": "query a:admin, b:admin, v:version ⊢ event anchor_transferred(a, b) ==> event cat_version_incremented(v+1) ∧ (∀n:admin. event noc_updated(n, v+1))"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Anchor_Transfer_ICA_Cross_Signing_Blocked",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "During anchor transfer, Administrator A SHALL set BusyAnchorTransfer error status for ICACSRResponse if ICA Cross Signing is in progress.",
+      "formal": "∀adminA:anchor, req:ica_csr_request. event anchor_transfer_started(adminA) ∧ event receive_ica_csr(adminA, req) ==> event return_error(BusyAnchorTransfer, req)",
+      "violation": "Cross-signing during anchor transfer produces ICACs signed by the wrong anchor. Recipients cannot validate the ICAC chain to the new anchor, breaking trust relationships. Attackers request cross-signing during transfer to obtain permanently valid credentials from the old (revoked) anchor.",
+      "proverifQuery": "query a:admin, csr:csr ⊢ event anchor_transfer_active(a) ∧ event csr_received(a, csr) ==> event error_returned(BusyAnchorTransfer)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Anchor_Transfer_Complete_Notification",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "After completing anchor role assumption, Administrator B SHALL send TransferAnchorComplete to Administrator A to announce transition completion.",
+      "formal": "∀adminB:new_anchor, adminA:old_anchor. event anchor_role_assumed(adminB) ∧ event datastore_committed(adminB) ==> event send_transfer_complete(adminB, adminA)",
+      "violation": "Without completion notification, Administrator A cannot safely shut down, creating a window where both old and new anchors operate simultaneously. Administrators receive conflicting datastore updates, node registrations go to wrong anchor, and split-brain conditions persist indefinitely.",
+      "proverifQuery": "query a:admin, b:admin ⊢ event anchor_operational(b) ==> event transfer_complete_sent(b, a) ∧ event occurred_before(anchor_operational(b), transfer_complete_sent(b, a))"
+    },
+    {
+      "id": "PROP_023",
+      "name": "Post_Anchor_Transfer_ICA_Request",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "After anchor transfer, all other Joint Fabric Administrators SHALL request ICA Cross Signing from the new Anchor Administrator and SHALL remove devices from the fabric governed by the old Anchor CA using RemoveFabric.",
+      "formal": "∀admin:node, oldAnchor:admin, newAnchor:admin. event detect_new_anchor(admin, newAnchor) ==> event request_ica_cross_sign(admin, newAnchor) ∧ event remove_fabric(admin, oldAnchor.ca)",
+      "violation": "Administrators continuing to use old anchor ICACs create fragmented fabrics with two incompatible trust hierarchies. Devices commissioned with old vs. new ICACs cannot mutually authenticate. Attackers exploit stale credentials from the old anchor to maintain unauthorized access.",
+      "proverifQuery": "query admin:node, old:admin, new:admin ⊢ event anchor_changed(old, new) ==> event ica_requested(admin, new) ∧ event old_fabric_removed(admin, old)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Administrator_Removal_Fabric_Scoped_Data_Deletion",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When removing a Joint Fabric Administrator via RemoveFabric, the outgoing Administrator SHALL remove the given Fabric and delete all associated fabric-scoped data.",
+      "formal": "∀admin:node, fabric:fabric_id. event remove_fabric(admin, fabric) ==> event delete_fabric_data(admin, fabric) ∧ (∀data. scoped_to(data, fabric) ⟹ event deleted(data))",
+      "violation": "Retaining fabric-scoped data after removal allows the revoked administrator to leak sensitive information (keys, ACLs, node identities) to unauthorized parties. Attackers use cached credentials from deleted fabrics to reconstruct membership lists and mount targeted attacks on former fabric members.",
+      "proverifQuery": "query a:admin, f:fabric ⊢ event fabric_removed(a, f) ==> (∀d:data. fabric_scoped(d, f) ==> event data_deleted(d))"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Fabric_Table_Duplication_Prevention",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "When establishing PASE session for commissioning a Synchronized Device, Fabric Synchronizing Administrator SHOULD verify the device is not already present on the intended fabric by checking if the fabric is in the Fabric Table.",
+      "formal": "∀admin:sync_admin, device:sync_device, fabric:fabric_id. event pase_session_established(admin, device) ==> event check_fabric_table(device, fabric) ∧ (fabric ∈ device.fabric_table ⟹ event abort_commissioning(admin, device))",
+      "violation": "Commissioning devices already present on the fabric creates duplicate node entries with different Node IDs but identical device identities. This causes routing ambiguity, message duplication, and ACL confusion. Attackers deliberately trigger duplicate commissioning to bypass ACLs via alternate Node ID.",
+      "proverifQuery": "query a:admin, d:device, f:fabric ⊢ event commission_complete(a, d, f) ==> (f ∉ prior_fabrics(d) ∨ event duplication_detected(d, f))"
+    },
+    {
+      "id": "PROP_026",
+      "name": "UniqueID_Association_Persistence",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "When a Fabric Synchronizing Administrator commissions a Synchronized Device, it SHALL persist and maintain an association with the UniqueID in the Bridged Device Basic Information Cluster.",
+      "formal": "∀admin:sync_admin, device:sync_device, uid:uniqueId. event commission_sync_device(admin, device) ==> event persist_mapping(admin, device.nodeId, uid) ∧ (∀t:time. t > commission_time ⟹ query_mapping(admin, device.nodeId) = uid)",
+      "violation": "Without persistent UniqueID mapping, administrators cannot detect duplicate devices across synchronization cycles. The same physical device appears as multiple distinct logical devices, consuming node slots and creating ACL inconsistencies. Attackers exploit this to bypass device limits and flood the fabric.",
+      "proverifQuery": "query a:admin, d:device, uid:id ⊢ event device_commissioned(a, d) ==> event uid_persisted(a, d, uid) ∧ (∀t. event uid_query(a, d, t) ==> result(uid))"
+    },
+    {
+      "id": "PROP_027",
+      "name": "UniqueID_Generation_For_Legacy_Devices",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If a Fabric Synchronizing Administrator exposes a Synchronized Device without a UniqueID in its Basic Information Cluster, the Administrator SHALL generate and persist a new UniqueID for use in Bridged Device Basic Information Cluster.",
+      "formal": "∀admin:sync_admin, device:sync_device. event expose_bridged_device(admin, device) ∧ ¬has_unique_id(device) ==> event generate_unique_id(admin, device) ∧ event persist_unique_id(admin, device) ∧ event expose_in_bdbi(admin, device, generated_uid)",
+      "violation": "Exposing legacy devices without generated UniqueIDs makes them indistinguishable from each other in synchronized fabrics. Multiple administrators commission the same device repeatedly, each assuming it's unique. This creates zombie device entries, exhausts node resources, and breaks device-to-identity mapping.",
+      "proverifQuery": "query a:admin, d:device ⊢ event bridged_exposed(a, d) ∧ ¬original_uid(d) ==> event uid_generated(a, d) ∧ event uid_persistent(a, d)"
+    },
+    {
+      "id": "PROP_028",
+      "name": "UniqueID_Lexicographic_Tiebreaker",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "If Administrator A detects a UniqueID loop (cached entry matches but differs from current), Administrator A SHOULD set UniqueID to the lexicographically smallest value from all cached entries.",
+      "formal": "∀adminA:sync_admin, adminB:sync_admin, device:sync_device, uid_set:set<uniqueId>. event detect_uid_loop(adminA, device, uid_set) ==> event set_uid(adminA, device, min_lexicographic(uid_set))",
+      "violation": "Without deterministic tiebreaking, two administrators continuously overwrite each other's UniqueID assignments in an infinite loop. Each sync cycle triggers re-commissioning, flooding networks with commissioning traffic. Devices oscillate between identities, breaking persistent bindings and ACL rules.",
+      "proverifQuery": "query a:admin, d:device, uids:set ⊢ event uid_conflict(a, d, uids) ==> event uid_resolved(a, d, min(uids))"
+    },
+    {
+      "id": "PROP_029",
+      "name": "UniqueID_Cache_Size_Requirement",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Fabric Synchronizing Administrator SHOULD maintain a cache of prior known UniqueIDs scoped to the NodeID of the Synchronized Device, with space for at least 5 entries per NodeID.",
+      "formal": "∀admin:sync_admin, device:sync_device. event commission_sync_device(admin, device) ==> cache_capacity(admin, device.nodeId) ≥ 5 ∧ (∀uid:uniqueId. event update_uid(admin, device, uid) ⟹ event add_to_cache(admin, device.nodeId, uid))",
+      "violation": "Insufficient cache size causes administrators to forget historical UniqueID assignments, reintroducing resolved conflicts. Devices repeatedly cycle through previously-rejected UniqueIDs, creating persistent commissioning loops. Attackers trigger cache exhaustion to force UUID collisions and bypass deduplication.",
+      "proverifQuery": "query a:admin, d:device ⊢ event cache_initialized(a, d) ==> cache_size(a, d) ≥ 5"
+    },
+    {
+      "id": "PROP_030",
+      "name": "Ecosystem_Information_Name_Exposure",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "A Fabric Synchronizing Administrator SHOULD expose device names and locations in the Ecosystem Information Cluster, and if names are exposed in Basic Information Cluster, the same names SHALL be exposed in Ecosystem Information Cluster.",
+      "formal": "∀admin:sync_admin, device:sync_device, name:string. event expose_in_basic_info(admin, device, name) ==> event expose_in_ecosystem_info(admin, device, name) ∧ (name_in_basic(device) = name_in_ecosystem(device))",
+      "violation": "Inconsistent name exposure between Basic Information and Ecosystem Information clusters confuses synchronized administrators about device identity. Users see different names in different ecosystems, leading to misidentification. Attackers inject misleading names to misdirect administrative actions to wrong devices.",
+      "proverifQuery": "query a:admin, d:device, n:name ⊢ event name_set_basic(a, d, n) ==> event name_set_ecosystem(a, d, n) ∧ name_consistent(d)"
+    },
+    {
+      "id": "PROP_031",
+      "name": "Synchronized_Device_Set_PartsList_Update",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "When the set of Synchronized Devices changes (added/removed), the Fabric Synchronizing Administrator SHALL update PartsList attribute on Descriptor clusters of Root Node Endpoint and Aggregator endpoint.",
+      "formal": "∀admin:sync_admin, device:sync_device. (event add_sync_device(admin, device) ∨ event remove_sync_device(admin, device)) ==> event update_parts_list(admin.root_endpoint) ∧ event update_parts_list(admin.aggregator_endpoint)",
+      "violation": "Stale PartsList causes synchronized administrators to commission non-existent devices or ignore newly available devices. Administrators waste resources attempting to open commissioning windows on removed devices. Attackers exploit delayed updates to maintain access to devices supposedly removed from synchronization.",
+      "proverifQuery": "query a:admin, d:device ⊢ (event device_added(a, d) ∨ event device_removed(a, d)) ==> event partslist_updated(a.root) ∧ event partslist_updated(a.aggregator)"
+    },
+    {
+      "id": "PROP_032",
+      "name": "Fabric_Synchronization_Mutual_Authentication_Precondition",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Ecosystems MAY wait until complete bi-directional commissioning of both ecosystems before exposing any Bridged Nodes, ensuring both ecosystems receive device attestation from the other.",
+      "formal": "∀ecoA:sync_admin, ecoB:sync_admin. event expose_bridged_nodes(ecoA, ecoB) ==> event commissioning_complete(ecoA, ecoB) ∧ event commissioning_complete(ecoB, ecoA) ∧ event attestation_verified(ecoA, ecoB) ∧ event attestation_verified(ecoB, ecoA)",
+      "violation": "One-way commissioning allows asymmetric trust where Ecosystem A exposes devices to Ecosystem B before verifying B's legitimacy. Attacker-controlled Ecosystem B gains access to victim devices without providing valid attestation. Victim cannot revoke access retroactively after discovering the compromise.",
+      "proverifQuery": "query a:admin, b:admin ⊢ event bridged_exposed(a, b) ==> event bidirectional_commissioned(a, b) ∧ event mutual_attestation(a, b)"
+    },
+    {
+      "id": "PROP_033",
+      "name": "Fabric_Synchronization_User_Consent_Before_Or_After",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Before or after commissioning a Fabric Synchronizing Administrator, the user SHALL be asked for consent to enable Fabric Synchronization between ecosystems, and each ecosystem SHALL independently ask the user for consent.",
+      "formal": "∀ecoA:sync_admin, ecoB:sync_admin. event enable_fabric_sync(ecoA, ecoB) ==> (event user_consent(ecoA) ∧ event user_consent(ecoB)) ∧ (event occurred_before(user_consent(ecoA), enable_fabric_sync(ecoA, ecoB)) ∨ event occurred_after(user_consent(ecoA), commissioning(ecoA, ecoB)))",
+      "violation": "Automatic fabric synchronization without user consent enables covert device sharing. Malicious administrators silently synchronize victim devices to attacker-controlled fabrics, exfiltrating data and establishing persistent backdoors. Users remain unaware their devices are accessible to foreign ecosystems.",
+      "proverifQuery": "query a:admin, b:admin ⊢ event sync_enabled(a, b) ==> event consent_obtained(a) ∧ event consent_obtained(b)"
+    },
+    {
+      "id": "PROP_034",
+      "name": "Commissionee_DNS_SD_Advertising_Requirement",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "The Commissionee Fabric Synchronizing Administrator SHALL advertise its presence over DNS-SD and SHALL provide user with Manual Pairing Code and MAY provide QR code.",
+      "formal": "∀commissionee:sync_admin. event initiate_fabric_sync_commissioning(commissionee) ==> event advertise_dns_sd(commissionee) ∧ event provide_manual_code(commissionee) ∧ event may_provide_qr(commissionee)",
+      "violation": "Absent DNS-SD advertising makes commissionee undiscoverable, preventing legitimate commissioners from initiating fabric synchronization. Users cannot complete setup flows, leaving fabrics isolated. Attackers exploit this by selectively disabling DNS-SD to prevent legitimate administrators from joining while maintaining attacker access.",
+      "proverifQuery": "query c:admin ⊢ event commissioning_available(c) ==> event dns_sd_active(c) ∧ event pairing_code_available(c)"
+    },
+    {
+      "id": "PROP_035",
+      "name": "Forward_Commissioning_Aggregator_Access",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "After Commissioner completes forward commissioning of Commissionee, the Commissionee Fabric Synchronizing Administrator's Aggregator SHALL be accessible on the Fabric administered by the Commissioner.",
+      "formal": "∀commissioner:sync_admin, commissionee:sync_admin. event forward_commissioning_complete(commissioner, commissionee) ==> event aggregator_accessible(commissioner.fabric, commissionee.aggregator)",
+      "violation": "Inaccessible aggregator after commissioning prevents the commissioner from discovering synchronized devices, rendering fabric synchronization non-functional. Administrators cannot open commissioning windows on bridged nodes. This breaks the entire synchronization mechanism, leaving devices isolated.",
+      "proverifQuery": "query comm:admin, commee:admin ⊢ event commissioned(comm, commee) ==> event can_access(comm.fabric, commee.aggregator)"
+    },
+    {
+      "id": "PROP_036",
+      "name": "Reverse_Commissioning_Initiation_Via_Commissioner_Control",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "After forward commissioning, the Commissioner SHOULD initiate Reverse Commissioning using the Commissioner Control Cluster.",
+      "formal": "∀commissioner:sync_admin, commissionee:sync_admin. event forward_commissioning_complete(commissioner, commissionee) ==> event initiate_reverse_commissioning(commissioner, commissionee, commissioner_control_cluster)",
+      "violation": "Skipping reverse commissioning creates one-way synchronization where only the commissioner can access commissionee's devices. The commissionee cannot reciprocate, breaking bidirectional synchronization assumptions. Attackers exploit this asymmetry to exfiltrate data without providing access to their own devices.",
+      "proverifQuery": "query comm:admin, commee:admin ⊢ event forward_done(comm, commee) ==> event reverse_initiated(comm, commee)"
+    },
+    {
+      "id": "PROP_037",
+      "name": "Reverse_Commissioning_Requirement_Option",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "A Commissionee Fabric Synchronizing Administrator MAY choose to require reverse commissioning before enabling Fabric Synchronization.",
+      "formal": "∀commissionee:sync_admin, commissioner:sync_admin. event enable_fabric_sync_features(commissionee, commissioner) ==> (event reverse_commissioning_complete(commissionee, commissioner) ∨ ¬requires_reverse(commissionee))",
+      "violation": "Enabling synchronization without reverse commissioning allows one-way data exfiltration scenarios. The commissioner gains full access to commissionee devices without reciprocal accountability. Malicious commissioners extract sensitive data, manipulate devices, and remain unauditable from the commissionee perspective.",
+      "proverifQuery": "query commee:admin, comm:admin ⊢ event sync_active(commee, comm) ∧ requires_reverse(commee) ==> event reverse_complete(commee, comm)"
+    },
+    {
+      "id": "PROP_038",
+      "name": "Synchronized_Device_BridgedICDSupport_Check",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When commissioning a Synchronized Device, Administrator SHALL identify if device supports BridgedICDSupport feature by checking presence in Bridged Device Basic Information Cluster and MAY use the feature to ensure device is active.",
+      "formal": "∀admin:sync_admin, device:sync_device. event commission_sync_device(admin, device) ==> event check_feature(device, BridgedICDSupport) ∧ (has_feature(device, BridgedICDSupport) ⟹ event may_ensure_active(admin, device))",
+      "violation": "Commissioning ICD devices without checking BridgedICDSupport causes commissioning window timeouts when the device is sleeping. Administrators repeatedly fail to commission, wasting network resources. Attackers exploit this by presenting fake ICD devices that never wake, causing denial-of-service via resource exhaustion.",
+      "proverifQuery": "query a:admin, d:device ⊢ event commission_attempt(a, d) ==> event icd_support_checked(d)"
+    },
+    {
+      "id": "PROP_039",
+      "name": "Administrator_Commissioning_Cluster_Presence_On_Bridged_Node",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Bridged Node with FabricSynchronizedNode condition SHALL include Administrator Commissioning Cluster when user consents to share a device.",
+      "formal": "∀device:sync_device, admin:sync_admin. event user_consent_share(device) ==> event expose_cluster(device.bridged_node, AdministratorCommissioningCluster)",
+      "violation": "Missing Administrator Commissioning Cluster prevents synchronized administrators from opening commissioning windows, making devices unsynchronizable despite user consent. The entire fabric synchronization mechanism fails for affected devices. Attackers selectively hide the cluster to prevent legitimate synchronization while maintaining covert access.",
+      "proverifQuery": "query d:device ⊢ event share_consented(d) ==> event has_cluster(d.bridged_node, AdminCommissioning)"
+    },
+    {
+      "id": "PROP_040",
+      "name": "Enhanced_Commissioning_Method_For_Synchronized_Devices",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Commissioning of Synchronized Devices SHALL be completed using Enhanced Commissioning Method after opening commissioning window via Administrator Commissioning Cluster.",
+      "formal": "∀admin:sync_admin, device:sync_device. event open_commissioning_window(admin, device) ∧ event commissioning_window_opened(device) ==> event complete_commissioning(admin, device, ECM)",
+      "violation": "Using non-ECM methods bypasses security attestation checks required for synchronized devices. Attackers commission devices using Basic Commissioning Method, avoiding device attestation and vendor validation. Compromised or counterfeit devices join synchronized fabrics without proper credential verification.",
+      "proverifQuery": "query a:admin, d:device ⊢ event commissioned(a, d) ==> event method_used(a, d, ECM) ∧ event window_opened_via_admin_cluster(d)"
+    },
+    {
+      "id": "PROP_041",
+      "name": "Open_Commissioning_Window_CASE_Requirement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "OpenCommissioningWindow and OpenBasicCommissioningWindow commands SHALL be invoked over a CASE secure channel.",
+      "formal": "∀admin:node, device:node, cmd:commissioning_window_cmd. event invoke_command(admin, device, cmd) ==> event over_case_channel(admin, device) ∨ event reject_command(device, cmd)",
+      "violation": "Accepting commissioning window commands over unsecured channels allows attackers to remotely open commissioning windows without authorization. The attacker commissions the device to their own fabric, gaining full control. Legitimate administrators lose access as the device reaches maximum fabric limit.",
+      "proverifQuery": "query a:admin, d:device, cmd:command ⊢ event command_accepted(d, cmd) ∧ is_commissioning_window_cmd(cmd) ==> event case_secured(a, d)"
+    },
+    {
+      "id": "PROP_042",
+      "name": "Commissioning_Window_Operational_Network_Maintenance",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "During a commissioning window opened via Administrator Commissioning Cluster, the Node SHALL maintain its existing configuration, including operational network connection and identities, and SHOULD allow normal interactions from other Nodes.",
+      "formal": "∀device:node. event commissioning_window_open(device) ==> event maintain_config(device) ∧ event maintain_network(device) ∧ event maintain_identities(device) ∧ event should_allow_interactions(device)",
+      "violation": "Nodes dropping operational network or resetting configuration during commissioning windows become unavailable to existing fabrics. Critical device functions (e.g., door locks, alarms) fail during multi-admin commissioning. Attackers trigger commissioning windows to cause denial-of-service, disrupting operational devices.",
+      "proverifQuery": "query d:device ⊢ event window_opened(d) ==> event config_preserved(d) ∧ event network_active(d) ∧ event identities_intact(d)"
+    },
+    {
+      "id": "PROP_043",
+      "name": "Administrator_Removal_RemoveFabric_Warning_Compliance",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When removing a Joint Fabric Administrator via RemoveFabric, the warning from RemoveFabric section SHALL apply, and user consent SHALL be obtained for removing the Administrator.",
+      "formal": "∀anchor:admin, target:admin. event remove_joint_fabric_admin(anchor, target) ==> event comply_with_remove_fabric_warnings(anchor, target) ∧ event user_consent_obtained(anchor) ∨ event abort_removal(anchor, target)",
+      "violation": "Removing administrators without proper warnings and consent enables unauthorized purges of legitimate administrators. Attackers with temporary administrative access remove all other administrators, establishing exclusive control. Users lose access to their devices with no recovery path.",
+      "proverifQuery": "query a:admin, t:admin ⊢ event admin_removed(a, t) ==> event warning_applied(a, t) ∧ event consent_obtained(a)"
+    },
+    {
+      "id": "PROP_044",
+      "name": "Administrator_Removal_Datastore_Update",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "When removing a Joint Fabric Administrator, the Joint Fabric Anchor Administrator SHALL remove the outgoing Administrator from the Joint Fabric Datastore.",
+      "formal": "∀anchor:admin, target:admin. event remove_joint_fabric_admin(anchor, target) ==> event remove_from_datastore(anchor, target) ∧ (∀entry. entry.admin = target ⟹ event delete_entry(anchor, entry))",
+      "violation": "Stale datastore entries for removed administrators allow revoked nodes to appear as legitimate fabric members. Other administrators continue trusting the removed node's certificates and accepting its commands. Attackers exploit datastore inconsistency to maintain persistent access after supposed removal.",
+      "proverifQuery": "query a:admin, t:admin ⊢ event admin_removed(a, t) ==> event datastore_entry_deleted(a, t)"
+    },
+    {
+      "id": "PROP_045",
+      "name": "ICAC_Non_Revocation_Anchor_Transition_Recommendation",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "To ensure proper fail-proof removal of a Joint Fabric Administrator, the Anchor Administrator SHOULD trigger a transition to a new Trusted Root Certificate, where the new Anchor will not issue an ICAC to the Administrator being removed.",
+      "formal": "∀anchor:admin, target:admin. event remove_joint_fabric_admin(anchor, target) ==> event should_trigger_anchor_transition(anchor) ∧ (∀newAnchor:admin. event transition_complete(newAnchor) ⟹ ¬event will_issue_icac(newAnchor, target))",
+      "violation": "Without ICAC revocation capability, removed administrators retain technically-valid certificates that authenticate successfully. Attackers use cached ICACs to rejoin the fabric or commission new devices. The removal is policy-only, not cryptographically enforced, allowing persistent unauthorized access.",
+      "proverifQuery": "query a:admin, t:admin ⊢ event secure_removal(a, t) ==> event anchor_transitioned(a) ∧ ¬event icac_issuable(new_anchor, t)"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "Certificate authorities (RCAC, ICAC) are not compromised and do not issue fraudulent certificates outside the specified protocol constraints.",
+      "type": "Implicit",
+      "impact_if_violated": "All properties relying on certificate trust chains (PROP_002, PROP_006, PROP_007, PROP_009, PROP_010, PROP_012, PROP_013, PROP_015) fail. Attackers with compromised CA keys can issue arbitrary certificates, impersonate any node, bypass all access controls, and gain complete fabric control without detection."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "CASE (Certificate Authenticated Session Establishment) handshake correctly verifies certificate chains and CAT presence without implementation flaws.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_004, PROP_007, PROP_008 fail. Flawed CASE implementations accept invalid certificates or skip CAT verification. Attackers bypass authentication, establish unauthorized sessions, and execute administrative commands with forged credentials."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "DNS-SD (Service Discovery) records are not spoofed by on-path attackers, and discovered service identities match advertised capabilities.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_004, PROP_034 fail. Attackers spoof DNS-SD to advertise fake Anchor, Administrator, or Datastore services. Victims connect to attacker-controlled nodes, disclose sensitive information, and accept malicious datastore state as authoritative."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "User consent mechanisms are secure and cannot be bypassed, spoofed, or coerced programmatically.",
+      "type": "Explicit",
+      "impact_if_violated": "Properties PROP_011, PROP_016, PROP_017, PROP_033, PROP_043 fail. Attackers bypass consent checks via software exploits, UI manipulation, or race conditions. Unauthorized fabric operations (commissioning, anchor transfer, admin removal) execute without user awareness, enabling silent compromise."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Device Conformance List (DCL) vendor validation queries return accurate, untampered results, and DCL infrastructure is not compromised.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_012, PROP_015 fail. Compromised DCL allows attackers to validate arbitrary vendor IDs without legitimate credentials. Fake vendors join Joint Fabrics, issue fraudulent ICACs, and commission attacker-controlled devices with full trust from legitimate administrators."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "UniqueID values are globally unique across all Matter devices, or at minimum unique within the scope of synchronized fabrics.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_025, PROP_026, PROP_027, PROP_028, PROP_029 fail. UniqueID collisions cause device misidentification. Administrators commission wrong devices, apply incorrect ACLs, and merge distinct physical devices into single logical entries, breaking isolation and access control."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Clock synchronization is sufficient across all nodes such that time-based operations (commissioning windows, datastore state transitions) complete within expected timeframes without race conditions.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_018, PROP_019, PROP_021, PROP_022 fail. Clock drift creates temporal windows where inconsistent states exist simultaneously. Attackers exploit timing gaps to commission during anchor transfer, inject datastore entries during readonly state, or cause split-brain scenarios."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "Network partitions or node unavailability during multi-step operations (anchor transfer, CAT version updates) are eventually resolvable without permanent inconsistency.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_005, PROP_020, PROP_023 fail. Permanently offline nodes never receive CAT version updates or anchor transition notifications. Fabric fragments into incompatible sub-fabrics. Attackers exploit unreachable nodes as persistent backdoors with stale credentials."
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "Cryptographic primitives (ECDSA signatures, certificate validation, key derivation) are implemented correctly per specification and remain secure against known attacks.",
+      "type": "Explicit",
+      "impact_if_violated": "Property PROP_013 fails. Weak signature validation allows attackers to forge ICA CSRs for keys they don't control. All certificate-based properties (PROP_002, PROP_006, PROP_007, PROP_009) become bypassable through cryptographic attacks, breaking foundational trust."
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "Fabric-scoped data deletion (PROP_024) is securely implemented such that deleted data is irrecoverable and not leaked through side channels (logs, backups, swap, memory dumps).",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_024 fails. Removed administrators recover deleted credentials from device storage, logs, or memory dumps. Attackers use recovered fabric keys and node identities to rejoin fabrics covertly or mount cryptographic attacks on current operational keys."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Identity spoofing via duplicate Node ID assignment enables message interception and ACL bypass",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker triggers Node ID assignment without uniqueness check (race condition during batch commissioning or by compromising datastore read) to obtain an existing node's ID and impersonate it"
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Privilege escalation to Anchor Administrator role via forged ICAC with reserved attribute",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker compromises a non-anchor CA or exploits certificate issuance vulnerability to obtain ICAC with 'jf-anchor-icac' attribute, then advertises as Anchor and performs ICA cross-signing"
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Unauthorized administrative operations on nodes lacking Administrator CAT ACL enforcement",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker targets nodes with missing or incorrect ACL entries, sends administrative commands without valid Administrator CAT, bypasses authentication to modify ACLs, add malicious nodes, or extract keys"
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Rogue node establishes administrative session without valid Administrator CAT",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker advertises as Administrator via DNS-SD, victim connects via CASE but skips CAT verification, attacker executes administrative commands (OpenCommissioningWindow, ACL modification, fabric removal) with invalid credentials"
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Revoked administrator retains access due to incomplete CAT version update across fabric nodes",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker maintains connection to nodes unreachable during CAT update (offline devices, network partitioned nodes), uses old CAT version credentials to administer unupdated nodes, gradually re-compromises fabric"
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "Non-anchor node masquerades as Anchor Administrator using fraudulent Anchor CAT certificate",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker compromises non-anchor ICA to issue Anchor CAT certificate to attacker-controlled node, victim nodes accept the certificate without verifying issuer is Anchor ICAC, attacker performs anchor-specific operations"
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Attacker presents self-signed or foreign-CA certificate with forged Anchor CAT, impersonates Anchor",
+      "severity": "CRITICAL",
+      "attack_vector": "Victim connects to attacker node advertising as Anchor but skips chain validation to Anchor ICAC, attacker intercepts ICA cross-signing requests, issues fraudulent ICACs for attacker-controlled ecosystems"
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Rogue datastore provides corrupted Joint Fabric state, causing network-wide ACL and node list inconsistency",
+      "severity": "HIGH",
+      "attack_vector": "Attacker advertises fake datastore via DNS-SD, victims subscribe without verifying Datastore CAT, attacker injects malicious node entries, manipulates ACL synchronization, or provides stale data causing authorization failures"
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "Unauthorized node controls Joint Fabric datastore using fraudulent Anchor/Datastore CAT",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker compromises non-anchor CA to issue Anchor/Datastore CAT, manipulates canonical Joint Fabric state, injects false administrator entries, triggers unauthorized anchor transfer to attacker-controlled node"
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Joint Fabric created with non-anchor administrator, lacking legitimate trust anchor",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker commissions victim ecosystem without Anchor CAT verification, both ecosystems proceed assuming legitimate Joint Fabric, attacker claims anchor status without authority and issues fraudulent cross-signed ICACs"
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Covert Joint Fabric formation without user awareness enables silent data exfiltration",
+      "severity": "HIGH",
+      "attack_vector": "Attacker exploits software vulnerability to bypass user consent check, silently commissions victim ecosystem into attacker-controlled Joint Fabric, exfiltrates device data and establishes administrative backdoor"
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Victim ecosystem trusts fraudulent root CA with fabricated vendor identity",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker skips RCAC validation during JCM, presents self-created RCAC with arbitrary vendor ID, victim accepts attacker-issued NOCs granting fabric access to attacker-controlled devices"
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Attacker obtains cross-signed ICAC for keys they don't control, impersonates victim administrator",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker submits ICA CSR without proper signature validation, Anchor signs CSR binding attacker's chosen identity to victim's public key, attacker uses signed ICAC to issue NOCs impersonating victim"
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Fabric fragmentation into isolated sub-fabrics due to mismatched fabric IDs in credentials",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker manipulates ICA CSR or NOC issuance to use different fabric ID values, nodes with mismatched IDs cannot mutually authenticate, creating isolated partitions exploitable for targeted access denial or shadow fabric creation"
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Unauthorized ecosystem obtains cross-signed ICAC without legitimate vendor credentials",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker skips ICAC-based vendor validation, submits ICA CSR from attacker-controlled ecosystem, Anchor cross-signs without DCL verification, attacker issues NOCs to compromised nodes joining Joint Fabric with full privileges"
+    },
+    {
+      "property_id": "PROP_016",
+      "vulnerability": "Silent ICA cross-signing enables covert Joint Fabric merging without user consent",
+      "severity": "HIGH",
+      "attack_vector": "Attacker bypasses user consent check for ICA cross-signing, silently merges victim fabric into attacker Joint Fabric, gains administrative access to all victim devices without user knowledge"
+    },
+    {
+      "property_id": "PROP_017",
+      "vulnerability": "Hostile anchor takeover via forced transfer without mutual consent",
+      "severity": "CRITICAL",
+      "attack_vector": "Compromised administrator forces anchor role transfer to attacker node without victim consent, attacker gains datastore control, issues fraudulent ICACs, manipulates entire Joint Fabric"
+    },
+    {
+      "property_id": "PROP_018",
+      "vulnerability": "Datastore state corruption due to anchor transfer during pending transactions",
+      "severity": "HIGH",
+      "attack_vector": "Attacker triggers anchor transfer while datastore has pending operations, new anchor inherits incomplete transactions resulting in corrupt node lists or missing ACL updates, exploitable for authorization bypass"
+    },
+    {
+      "property_id": "PROP_019",
+      "vulnerability": "Split-brain scenario with divergent datastore states at old and new anchors",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker commissions devices to old anchor during transfer while datastore is not read-only, administrators synchronize to different datastores fragmenting fabric, attacker creates shadow fabric with manipulated state"
+    },
+    {
+      "property_id": "PROP_020",
+      "vulnerability": "Previous anchor retains administrative access after transfer using unchanged CAT version",
+      "severity": "CRITICAL",
+      "attack_vector": "New anchor skips CAT version increment, old anchor's credentials remain valid, attacker uses old anchor credentials to maintain persistent backdoor access after supposed revocation"
+    },
+    {
+      "property_id": "PROP_021",
+      "vulnerability": "Permanently valid attacker credentials from ICAC signed by old anchor during transfer",
+      "severity": "HIGH",
+      "attack_vector": "Attacker requests ICA cross-signing during anchor transfer, receives ICAC signed by old anchor, new anchor cannot validate chain, attacker retains credentials valid with old anchor nodes for persistent access"
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Dual-anchor operation causing conflicting datastore updates and node registration confusion",
+      "severity": "HIGH",
+      "attack_vector": "New anchor doesn't notify old anchor of completion, both anchors operate simultaneously, administrators receive conflicting datastore updates, nodes register with wrong anchor creating persistent split-brain"
+    },
+    {
+      "property_id": "PROP_023",
+      "vulnerability": "Fragmented fabric with incompatible trust hierarchies from old vs. new anchor credentials",
+      "severity": "HIGH",
+      "attack_vector": "Administrators continue using ICACs from old anchor after transfer, devices commissioned with old vs. new ICACs cannot mutually authenticate, attacker uses stale credentials to maintain unauthorized access"
+    },
+    {
+      "property_id": "PROP_024",
+      "vulnerability": "Sensitive data leakage from revoked administrator's retained fabric-scoped data",
+      "severity": "CRITICAL",
+      "attack_vector": "Revoked administrator retains cached keys, ACLs, node identities after removal, attacker extracts fabric membership lists, uses cached credentials for targeted attacks on former fabric members"
+    },
+    {
+      "property_id": "PROP_025",
+      "vulnerability": "Duplicate device entries with different Node IDs causing routing ambiguity and ACL bypass",
+      "severity": "HIGH",
+      "attack_vector": "Attacker triggers commissioning without Fabric Table check, same device registered multiple times, attacker sends messages to alternate Node ID bypassing ACLs targeting original Node ID"
+    },
+    {
+      "property_id": "PROP_026",
+      "vulnerability": "Device duplication across synchronization cycles consuming node resources and breaking ACL consistency",
+      "severity": "HIGH",
+      "attack_vector": "Administrator loses UniqueID mapping, same device re-commissioned as new logical device, attacker floods fabric by repeatedly triggering re-commissioning, exhausting node ID space and creating ACL confusion"
+    },
+    {
+      "property_id": "PROP_027",
+      "vulnerability": "Legacy devices without UniqueID treated as distinct devices despite being identical, causing zombie entries",
+      "severity": "MEDIUM",
+      "attack_vector": "Multiple administrators commission same legacy device without generated UniqueID, each assumes it's unique, device appears multiple times exhausting node slots, administrators configure wrong device copy"
+    },
+    {
+      "property_id": "PROP_028",
+      "vulnerability": "Infinite UniqueID update loop causing continuous re-commissioning and network flooding",
+      "severity": "MEDIUM",
+      "attack_vector": "Two administrators continuously overwrite each other's UniqueID without deterministic tiebreaker, triggering perpetual sync cycles, flooding network with commissioning traffic, causing denial-of-service"
+    },
+    {
+      "property_id": "PROP_029",
+      "vulnerability": "UniqueID cache exhaustion forcing forgotten historical assignments and reintroduced conflicts",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker rapidly changes device UniqueID or commissions many devices to overflow cache, forces administrator to forget resolved UniqueID conflicts, devices cycle through previously-rejected IDs creating commissioning loops"
+    },
+    {
+      "property_id": "PROP_030",
+      "vulnerability": "Device misidentification across ecosystems due to inconsistent name exposure causing misdirected admin operations",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker manipulates names in Basic Information or Ecosystem Information cluster separately, administrators see different names in different ecosystems, victim administrator performs action on wrong device"
+    },
+    {
+      "property_id": "PROP_031",
+      "vulnerability": "Stale PartsList causes wasted commissioning attempts or ignored newly available devices",
+      "severity": "HIGH",
+      "attack_vector": "Attacker delays PartsList update, administrators attempt to commission removed devices wasting resources or ignore newly added devices, attacker maintains access to devices supposedly removed from synchronization"
+    },
+    {
+      "property_id": "PROP_032",
+      "vulnerability": "One-way commissioning enables asymmetric trust where attacker gains access without providing attestation",
+      "severity": "HIGH",
+      "attack_vector": "Attacker-controlled Ecosystem B commissions devices from Ecosystem A before bidirectional commissioning completes, gains access without valid attestation, victim cannot revoke retroactively after discovering compromise"
+    },
+    {
+      "property_id": "PROP_033",
+      "vulnerability": "Covert device sharing to attacker-controlled fabric without user awareness",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker bypasses user consent check via software exploit, silently enables fabric synchronization to attacker ecosystem, exfiltrates device data and establishes persistent backdoors without user knowledge"
+    },
+    {
+      "property_id": "PROP_034",
+      "vulnerability": "Legitimate commissioners cannot discover commissionee, fabric remains isolated, selective DNS-SD attack",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker disables DNS-SD advertising on victim, prevents legitimate administrators from joining while attacker maintains access via cached addressing, creates isolated victim fabric under attacker control"
+    },
+    {
+      "property_id": "PROP_035",
+      "vulnerability": "Non-functional fabric synchronization due to inaccessible aggregator after commissioning",
+      "severity": "HIGH",
+      "attack_vector": "Commissioning completes but aggregator remains inaccessible, administrators cannot discover bridged nodes or open commissioning windows, entire synchronization mechanism broken, devices isolated"
+    },
+    {
+      "property_id": "PROP_036",
+      "vulnerability": "One-way data exfiltration via asymmetric synchronization without reciprocal access",
+      "severity": "HIGH",
+      "attack_vector": "Attacker skips reverse commissioning, gains access to victim devices without providing reciprocal access to attacker devices, exfiltrates data unidirectionally, remains unauditable from victim perspective"
+    },
+    {
+      "property_id": "PROP_037",
+      "vulnerability": "One-way data extraction scenario with non-reciprocal accountability",
+      "severity": "MEDIUM",
+      "attack_vector": "Commissioner enables synchronization without completing reverse commissioning, gains full access to commissionee devices, manipulates devices without commissionee having reciprocal audit or access capabilities"
+    },
+    {
+      "property_id": "PROP_038",
+      "vulnerability": "ICD device commissioning failures causing timeout-based denial-of-service",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker presents fake ICD device without proper BridgedICDSupport handling, never wakes when commissioning window opened, administrators exhaust retry attempts and resources, causing denial-of-service"
+    },
+    {
+      "property_id": "PROP_039",
+      "vulnerability": "Unsynchronizable devices despite user consent due to missing Administrator Commissioning Cluster",
+      "severity": "HIGH",
+      "attack_vector": "Attacker selectively hides Administrator Commissioning Cluster from bridged nodes, prevents legitimate synchronization while maintaining covert direct access, victims cannot commission shared devices"
+    },
+    {
+      "property_id": "PROP_040",
+      "vulnerability": "Compromised or counterfeit devices join synchronized fabric via non-ECM method bypassing attestation",
+      "severity": "HIGH",
+      "attack_vector": "Attacker commissions synchronized device using Basic Commissioning Method instead of ECM, skips device attestation and vendor validation, counterfeit or compromised device joins fabric with full trust"
+    },
+    {
+      "property_id": "PROP_041",
+      "vulnerability": "Remote unauthorized commissioning window opening without authentication",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends OpenCommissioningWindow over unsecured channel (UDP without CASE), device accepts command, attacker commissions device to attacker fabric gaining full control, legitimate admin loses access"
+    },
+    {
+      "property_id": "PROP_042",
+      "vulnerability": "Denial-of-service via commissioning window causing operational network drop and device unavailability",
+      "severity": "HIGH",
+      "attack_vector": "Attacker opens commissioning window on critical devices (locks, alarms), device drops operational network or resets configuration, loses existing fabric connectivity, attacker causes service disruption"
+    },
+    {
+      "property_id": "PROP_043",
+      "vulnerability": "Unauthorized purge of legitimate administrators without consent or warnings",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker with temporary administrative access removes all other administrators without proper warnings or user consent, establishes exclusive control, users lose device access with no recovery path"
+    },
+    {
+      "property_id": "PROP_044",
+      "vulnerability": "Revoked node maintains apparent legitimacy via stale datastore entry causing continued trust",
+      "severity": "HIGH",
+      "attack_vector": "Removed administrator's datastore entry not deleted, other administrators continue trusting revoked node's certificates, accept its commands, attacker uses datastore inconsistency for persistent access"
+    },
+    {
+      "property_id": "PROP_045",
+      "vulnerability": "Policy-only removal without cryptographic enforcement allows persistent unauthorized access via cached ICAC",
+      "severity": "HIGH",
+      "attack_vector": "Removed administrator retains technically-valid ICAC without revocation capability, uses cached ICAC to rejoin fabric or commission new devices, maintains covert access despite removal policy"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "joint_fabric_commissioning",
+      "properties_enforcing_transitions": ["PROP_010", "PROP_011", "PROP_012", "PROP_013", "PROP_014", "PROP_015", "PROP_016"],
+      "critical_property": "PROP_010 - If JCM proceeds without Anchor CAT verification, fabric enters invalid state where no legitimate anchor exists, enabling any administrator to falsely claim anchor authority"
+    },
+    {
+      "state_name": "anchor_transfer",
+      "properties_enforcing_transitions": ["PROP_017", "PROP_018", "PROP_019", "PROP_020", "PROP_021", "PROP_022", "PROP_023"],
+      "critical_property": "PROP_019 - If datastore not set to read-only during transfer, state machine can reach split-brain state with dual anchors and divergent datastores, unrecoverable without full fabric rebuild"
+    },
+    {
+      "state_name": "administrator_revocation",
+      "properties_enforcing_transitions": ["PROP_005", "PROP_020", "PROP_043", "PROP_044", "PROP_045"],
+      "critical_property": "PROP_005 - Incomplete CAT version update leaves state machine in partially-revoked state where target administrator retains access to subset of nodes, enabling persistent compromise"
+    },
+    {
+      "state_name": "fabric_synchronization_setup",
+      "properties_enforcing_transitions": ["PROP_032", "PROP_033", "PROP_034", "PROP_035", "PROP_036", "PROP_037"],
+      "critical_property": "PROP_033 - Without user consent, state machine transitions to synchronized state covertly, creating unauthorized fabric sharing that cannot be safely reversed without user data loss"
+    },
+    {
+      "state_name": "synchronized_device_commissioning",
+      "properties_enforcing_transitions": ["PROP_025", "PROP_026", "PROP_027", "PROP_028", "PROP_029", "PROP_038", "PROP_39", "PROP_040"],
+      "critical_property": "PROP_025 - Fabric Table check failure causes state machine to assign duplicate Node ID, reaching inconsistent state where two nodes claim same identity, breaking routing and ACL enforcement"
+    },
+    {
+      "state_name": "commissioning_window_operation",
+      "properties_enforcing_transitions": ["PROP_041", "PROP_042"],
+      "critical_property": "PROP_041 - Accepting commissioning window commands without CASE authentication allows unauthorized state transition to commissioning mode, enabling complete device takeover"
+    },
+    {
+      "state_name": "ica_cross_signing",
+      "properties_enforcing_transitions": ["PROP_013", "PROP_015", "PROP_016", "PROP_021"],
+      "critical_property": "PROP_013 - ICA CSR signature validation failure enables state transition to trust relationship without proper key ownership verification, creating fraudulent trust chain"
+    },
+    {
+      "state_name": "datastore_synchronization",
+      "properties_enforcing_transitions": ["PROP_008", "PROP_018", "PROP_019", "PROP_031", "PROP_044"],
+      "critical_property": "PROP_019 - Datastore state not properly enforced during anchor transfer creates race condition where multiple writers cause state divergence, resulting in permanent fabric inconsistency"
+    }
+  ],
+  "additionalInsights": "1. **Temporal Attack Surface**: Multiple properties depend on time-ordered operations (anchor transfer, CAT updates, commissioning windows) but lack explicit timeout or deadline enforcement. Clock drift or network partitions create exploitable temporal windows where stale credentials remain valid. 2. **Revocation Gap**: The specification acknowledges (PROP_045) that Matter lacks ICAC revocation, requiring expensive anchor transitions for secure administrator removal. This is a fundamental protocol limitation making revocation policy-only rather than cryptographically enforced. 3. **Split-Brain Risk**: Properties PROP_019, PROP_022, PROP_023 highlight anchor transfer as high-risk operation for creating permanently divergent fabric states. No automatic reconciliation mechanism exists; recovery requires manual intervention. 4. **UniqueID Design Flaw**: Properties PROP_026-029 reveal a complex workaround for missing UniqueIDs in legacy devices, involving generation, caching, and lexicographic tie-breaking. This complexity introduces multiple failure modes (cache exhaustion, infinite loops) that could be avoided with mandatory global UniqueIDs. 5. **Consent Bypass Vectors**: Properties PROP_011, PROP_016, PROP_017, PROP_033, PROP_043 all rely on user consent as security boundary, but specification provides no guidance on secure consent implementation. UI manipulation, race conditions, or programmatic bypass could defeat all consent-dependent properties. 6. **Datastore as Single Point of Failure**: Joint Fabric design centralizes trust in the Anchor's datastore (PROP_008, PROP_018, PROP_019, PROP_044). Compromise or corruption of this single component impacts entire fabric. No redundancy or Byzantine-fault-tolerance is specified. 7. **CAT Version Rollback**: PROP_005 and PROP_020 require CAT version increments for revocation but don't specify rollback protection. Attackers might exploit version management flaws to downgrade to older CAT versions, re-enabling revoked administrators. 8. **DNS-SD Spoofing**: Multiple discovery-dependent properties (PROP_004, PROP_007, PROP_008, PROP_034) assume DNS-SD integrity but provide no cryptographic binding between advertised service and certificate identity. On-path attackers can redirect discovery to malicious nodes. 9. **Fabric Table Race Condition**: PROP_025 recommends checking Fabric Table during PASE but doesn't mandate atomic check-and-commit. Race conditions between check and commissioning completion could still create duplicates. 10. **Cross-Signing Without Key Escrow**: PROP_013 requires cross-signing to preserve original SubjectPublicKey, but doesn't address key recovery scenarios. If original ICAC private key is lost, the cross-signed ICAC becomes unusable, orphaning all devices commissioned under it.",
+  "summary": {
+    "total_properties": 45,
+    "by_importance": {
+      "CRITICAL": 26,
+      "HIGH": 15,
+      "MEDIUM": 4
+    },
+    "by_category": {
+      "Security": 14,
+      "Correctness": 10,
+      "AccessControl": 4,
+      "Consistency": 8,
+      "Revocation": 3,
+      "Cryptography": 1,
+      "Atomicity": 1,
+      "Timing": 0
+    },
+    "total_assumptions": 10,
+    "vulnerabilities_identified": 45
+  }
+}

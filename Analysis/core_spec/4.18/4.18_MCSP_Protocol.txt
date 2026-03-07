@@ -1,0 +1,679 @@
+===============================================================================
+SECTION 4.18 - MESSAGE COUNTER SYNCHRONIZATION PROTOCOL (MCSP)
+
+===============================================================================
+
+
+**4.18. Message Counter Synchronization Protocol**
+
+**(MCSP)**
+
+This section describes the protocol used to securely synchronize the message counter used by a
+
+```
+Page 206 Copyright © Connectivity Standards Alliance, Inc. All rights reserved.
+```
+
+sender of messages encrypted with a symmetric group key.
+
+Message counter synchronization is an essential part of enabling secure messaging between mem­
+bers of an operational group. Specifically, it protects against replay attacks, where an attacker
+replays older messages, which may result in unexpected behavior if accepted and processed by the
+receiver.
+
+The recipient of a message encrypted with a group key can trust and process that message only if it
+has kept the last message counter received from a given sender using that key.
+
+Underlying MCSP is a simple request / response protocol. When a multicast message with unknown
+counter is received, synchronization via MCSP begins by sending a synchronization request via uni­
+cast UDP to the multicast message originator’s unicast IPv6 address. That originator then sends a
+synchronization response to the unsynchronized node via unicast UDP. After cryptographic verifi­
+cation, the formerly unsynchronized node is now synchronized with the originator’s message
+counter and can trust the original and subsequent messages from the originator node.
+
+**4.18.1. Message Counter Synchronization Methods**
+
+There are two methods for synchronizing the message counter of a peer node, which are config­
+urable per-group-key based on the GroupKeySecurityPolicy field of a given group key set (see
+GroupKeySetStruct).
+
+**4.18.1.1. Trust-first policy**
+
+The first authenticated message counter from an unsynchronized peer is trusted, and its message
+counter is used to configure message-counter-based replay protection on future messages from that
+node. All control messages (any message with C Flag set) use the control message counter and
+SHALL use Trust-first for synchronization. Note that MCSP is not used for Trust-first synchroniza­
+tion.
+
+This policy provides lower latency for less security-sensitive applications such as lighting.
+
+### WARNING
+
+```
+Trust-first synchronization is susceptible to accepting a replayed message after
+a Node has been rebooted.
+```
+**4.18.1.2. Cache-and-sync policy**
+
+The message that triggers message counter synchronization is stored, a message counter synchro­
+nization exchange is initiated, and only when the synchronization is completed is the original mes­
+sage processed. Cache-and-sync provides replay protection even in the case where a Node has been
+rebooted, at the expense of higher latency.
+
+Support for the cache-and-sync policy and MCSP is optional. A node indicates its ability to support
+this feature via the Group Key Management cluster FeatureMap.
+
+### WARNING
+
+```
+Large groups may cause significant message synchronization burden on the
+sender and message queueing pressure or latency on the receiver when mes­
+sage counter synchronization state is out of sync, such as after a brown-out, on
+```
+```
+Copyright © Connectivity Standards Alliance, Inc. All rights reserved. Page 207
+```
+
+```
+first message to a new large group, or similar large scale sets of synchroniza­
+tions being required at a single point in time.
+```
+**4.18.2. Group Peer State**
+
+The _Group Peer State Table_ stores information about every peer with which the node had a group
+message exchange. For every peer node id the following information is available in the table:
+
+- Peer’s Encrypted Group Data Message Counter Status:
+    ◦ _Synchronized Data Message Counter_ - the largest encrypted data message counter received
+       from the peer, if available.
+    ◦ Flag to indicate whether this counter value is valid and synchronized.
+    ◦ The _message reception state_ bitmap tracking the recent window of data message counters
+       received from the peer.
+- Peer’s Encrypted Group Control Message Counter Status:
+    ◦ _Synchronized Control Message Counter_ - the largest encrypted control message counter
+       received from the peer, if available.
+    ◦ Flag to indicate whether this counter value is valid and synchronized.
+    ◦ The _message reception state_ bitmap tracking the recent window of control message counters
+       received from the peer.
+
+There are three scenarios where the receiver of an encrypted message does not know the sender’s
+last message counter:
+
+- The encrypted message is the first received from a peer.
+- The device rebooted without persisting the _Group Peer State Table_ content.
+
+```
+NOTE It is not required to persist the Peer State Table.
+```
+- The entry for the Peer in the _Group Peer State Table_ was expunged due to the table being full.
+
+There SHALL be at least 10 entries per supported fabric for Peer Encrypted Group data Message
+Status in the Group Peer State table. This number SHOULD NOT be less than 5 entries per fabric per
+instance of Groups cluster on an endpoint. The number of entries is a compromise between the
+number of peers that can send a group message to a receiver while the table is maintained, and the
+associated memory usage.
+
+There SHALL be at least 2 entries per supported fabric for Peer Encrypted Group Control Message
+Status in the Group Peer State table.
+
+The next sections describe the functional protocol used to request message counter synchronization
+with a peer and form responses to such message counter synchronization requests.
+
+**4.18.3. MCSP Messages**
+
+```
+Page 208 Copyright © Connectivity Standards Alliance, Inc. All rights reserved.
+```
+
+**4.18.3.1. MsgCounterSyncReq - Message Counter Synchronization Request**
+
+The Message Counter Synchronization Request ( _MsgCounterSyncReq_ ) message is sent when a mes­
+sage was received from a peer whose current message counter is unknown.
+
+A _MsgCounterSyncReq_ message SHALL set the C Flag in the message header. The control message
+counter SHALL be used for message protection.
+
+A _MsgCounterSyncReq_ message SHALL be secured with the group key for which counter synchro­
+nization is requested and SHALL set the Session Type to 1 , indicating a group session as per the
+rules outline in Section 4.18.5, “Message Counter Synchronization Exchange”.
+
+The payload of the _MsgCounterSyncReq_ message takes the format defined in Table 26, “Message
+Counter Sync Request”:
+
+_Table 26. Message Counter Sync Request_
+
+```
+Field
+Size
+```
+```
+Message Field Description
+```
+```
+8 bytes Challenge The Challenge is a 64-bit random number generated using
+the DRBG by the initiator of a MsgCounterSyncReq to
+uniquely identify the synchronization request crypto­
+graphically.
+```
+**4.18.3.2. MsgCounterSyncRsp - Message Counter Synchronization Response**
+
+The Message Counter Synchronization Response ( _MsgCounterSyncRsp_ ) message is sent in response
+to a _MsgCounterSyncReq_.
+
+A _MsgCounterSyncRsp_ message SHALL set the C Flag in the message header. The control message
+counter SHALL be used for message protection.
+
+The _MsgCounterSyncRsp_ message has the format defined in Table 27, “Message Counter Sync
+Response”:
+
+_Table 27. Message Counter Sync Response_
+
+```
+Field
+Size
+```
+```
+Message Field Description
+```
+```
+4 bytes Synchronized Counter The current data message counter for the node sending
+the MsgCounterSyncRsp message.
+8 bytes Response The Response SHALL be the same as the 64-bit value sent
+in the Challenge field of the corresponding MsgCounter­
+SyncReq.
+```
+**4.18.4. Unsynchronized Message Processing**
+
+An unsynchronized message is one that is cryptographically verified from a node whose message
+counter is unknown. Upon receipt of an unsynchronized message process the message as follows:
+
+```
+Copyright © Connectivity Standards Alliance, Inc. All rights reserved. Page 209
+```
+
+1. The message SHALL be of Group Session Type, otherwise discard the message.
+2. If C Flag is set to 1 :
+    a.Create a Message Reception State and set its max_message_counter to the message counter of
+       the given message, i.e. trust-first.
+b. Accept the message for further processing.
+3. If C Flag is set to 0 :
+    a.Determine the GroupKeySecurityPolicy (as set by the Section 11.2, “Group Key Management
+       Cluster”) of the operational group key used to authenticate the message.
+b. If the key has a _trust-first_ security policy, the receiver SHALL:
+i. Set the peer’s group key data message counter to _Message Counter_ of the message.
+A. Clear the Message Reception State bitmap for the group session from the peer.
+B. Mark the peer 's group key data message counter as synchronized.
+ii.Process the message.
+c.If the key has a _cache-and-sync_ security policy, the receiver SHALL:
+i. If MCSP is not in progress for the given peer Node ID and group key:
+A. Store the message for later processing.
+B. Proceed to Section 4.18.5, “Message Counter Synchronization Exchange”.
+ii.Otherwise, do not process the message.
+A. An implementation MAY queue the message for later processing after MCSP com­
+pletes if resources allow.
+
+For each peer Node ID and group key pair there SHALL be at most one synchronization exchange
+outstanding at a time.
+
+**4.18.5. Message Counter Synchronization Exchange**
+
+A message synchronization exchange starts by sending the MsgCounterSyncReq message to the
+peer Node that sent the message with unknown message counter. When a synchronization request
+is triggered by an incoming multicast message, the Node SHALL first wait for a uniformly random
+amount of time between 0 and MSG_COUNTER_SYNC_REQ_JITTER.
+
+The sender of the _MsgCounterSyncReq_ message SHALL:
+
+1. Set the Message Header fields as follows:
+    a.The S Flag SHALL be set to 1.
+b. The DSIZ field SHALL be set to 1.
+c.The P Flag SHALL be set to 1.
+d. The C Flag SHALL be set to 1.
+e. The Session Type field SHALL be set to 1.
+f. The Session ID field SHALL be set to the Group Session Id for the operational group key
+
+```
+Page 210 Copyright © Connectivity Standards Alliance, Inc. All rights reserved.
+```
+
+```
+being synchronized.
+g. The Source Node ID field SHALL be set to the Node ID of the sender Node.
+h. The Destination Node ID field SHALL be set to the Source Node ID of the message that trig­
+gered the synchronization attempt.
+```
+2. Create a new synchronization Exchange.
+    a. The Exchange ID of the message SHALL be set to match the new Exchange.
+    b. The I Flag SHALL be set to 1.
+       c. The A Flag SHALL be set to 0.
+    d. The R Flag SHALL be set to 1.
+3. Set the _Challenge_ field to the value returned by Crypto_DRBG(len = 8 * 8) and store that value to
+    resolve synchronization responses from the destination peer.
+4. Arm a timer to enforce that a synchronization response is received before MSG_COUNTER_­
+    SYNC_TIMEOUT.
+       a. Upon firing of the timer:
+          i. The synchronization exchange SHALL be closed.
+ii. Any message waiting on synchronization associated with the exchange SHALL be dis­
+carded.
+       b. The timer SHALL be stopped upon receipt of an authenticated _MsgCounterSyncRsp_ message
+          that matches:
+             i. The Source Node ID field matches the Destination Node ID field of the most recent _Msg­_
+                _CounterSyncReq_ message generated for that Node.
+ii. The _Response_ field corresponds to the _Challenge_ field of the _MsgCounterSyncReq_ mes­
+sage.
+5. Invoke Section 4.7.1, “Message Transmission” using parameters from step 1 to encrypt and then
+    send the request message over UDP to the IPv6 unicast address of the destination.
+       a. The request message SHALL use the same operational group key as the message which trig­
+          gered synchronization.
+       b. The group key SHALL be known/derivable by both parties (sender and receiver).
+
+The receiver of _MsgCounterSyncReq_ SHALL:
+
+1. Verify the Destination Node ID field SHALL match the Node ID of the receiver, otherwise discard
+    the message.
+2. Respond with _MsgCounterSyncRsp_.
+
+The sender of the _MsgCounterSyncRsp_ response message SHALL:
+
+1. Set the Message Header fields as follows:
+    a. The S Flag SHALL be set to 1.
+    b. The DSIZ field SHALL be set to 1.
+
+```
+Copyright © Connectivity Standards Alliance, Inc. All rights reserved. Page 211
+```
+
+```
+c.The P Flag SHALL be set to 1.
+d. The C Flag SHALL be set to 1.
+e. The Session Type field SHALL be set to 1.
+f. The Session ID field SHALL be set to the Group Session Id for the operational group key
+being synchronized.
+g. The Source Node ID field SHALL be set to the Node ID of the sender Node.
+h. The Destination Node ID field SHALL be set to the Source Node ID of the MsgCounterSyn­
+cReq.
+```
+2. Set the MsgCounterSyncRsp payload fields as follows:
+    a.The _Response_ field SHALL be set to the value of the _Challenge_ field from the _MsgCounterSyn­_
+       _cReq_.
+b. The _Synchronized Counter_ field SHALL be set to the current Global Group Encrypted Data
+Message Counter of the sender.
+3. Use the same exchange context as the _MsgCounterSyncReq_ being responded to.
+    a.The Exchange ID of the message SHALL be set to the _Exchange ID_ of the _MsgCounterSyncReq_.
+b. The I Flag SHALL be set to 0.
+c.The A Flag SHALL be set to 1.
+d. The R Flag SHALL be set to 1.
+4. Invoke Section 4.7.1, “Message Transmission” using parameters from step 1 to encrypt and then
+    send the response message over UDP to the IPv6 unicast address of the destination.
+
+The receiver of the _MsgCounterSyncRsp_ message SHALL:
+
+1. Verify the _MsgCounterSyncRsp_ matches a previously sent _MsgCounterSyncReq_ :
+    a.An active synchronization exchange SHALL exist with the source node.
+b. The _Exchange ID_ field SHALL match the _Exchange ID_ used for the original _MsgCounterSyn­
+cReq_ message.
+c.The _Response_ field SHALL match the _Challenge_ field used for the original _MsgCounterSyn­
+cReq_ message.
+d. The Destination Node ID field SHALL match the Source Node ID of the original _MsgCounter­
+SyncReq_ message.
+    e. The Source Node ID field SHALL match the Destination Node ID of the original _MsgCounter­_
+       _SyncReq_ message.
+2. On verification failure:
+    a.Silently ignore the _MsgCounterSyncRsp_ message.
+3. On verification success:
+    a.Set the peer’s group key data message counter to _Synchronized Counter_.
+b. Clear the Section 4.6.5.1, “Message Reception State” bitmap for the peer.
+c.Mark the peer 's group key data message counter as synchronized.
+
+```
+Page 212 Copyright © Connectivity Standards Alliance, Inc. All rights reserved.
+```
+
+```
+d. Resume processing of any queued message that triggered synchronization according to Sec­
+tion 4.6.7, “Counter Processing of Incoming Messages”.
+i. If more than one message is queued from the synchronized peer, using the same opera­
+tional group key, the messages SHALL be processed in the order received.
+e. Close the synchronization exchange created for the original MsgCounterSyncReq message.
+```
+**4.18.6. Message Counter Synchronization Session Context**
+
+While conducting Message Counter Synchronization with a peer, nodes SHALL maintain the follow­
+ing session context. For nodes initiating message counter synchronization, this context SHALL be
+maintained throughout the full exchange of _MsgCounterSyncReq_ and _MsgCounterSyncRsp_ messages.
+For nodes responding to _MsgCounterSyncReq_ messages, the context SHALL only be maintained long
+enough to generate and successfully transmit the _MsgCounterSyncRsp_ message.
+
+1. Fabric Index: Records the Index for the Fabric within which nodes are conducting message
+    counter synchronization.
+       ◦ Fabric Index is derived by identification of an Operational Group Key associated with the
+          fabric through successful decryption with that key and verification of the Message Integrity
+          Check. For nodes initiating counter synchronization, this occurs at decryption of an inbound
+          groupcast message. For nodes in the responder role, this occurs at decryption of an inbound
+          _MsgCounterSyncReq_ message.
+2. Peer Node ID: Records the node ID of the peer with which message counter synchronization is
+    being conducted.
+       ◦ For nodes initiating message counter synchronization, this is the node ID of the responder.
+          For nodes responding to message counter synchronization, this is the node ID of the initia­
+          tor.
+3. Role: Records whether the node is the initiator of or responder to message counter synchroniza­
+    tion.
+       ◦ Together, _Fabric Index_ , _Peer Node ID_ and _Role_ comprise a unique key that can be used to
+          match incoming messages to ongoing MCSP exchanges.
+4. Message Reception State: Provides tracking for the Control Message Counter of the remote peer.
+5. Peer IP Address: The unicast IP address of the peer.
+6. Peer Port: The receiving port of the peer.
+7. Operational Group Key: The Operational Group Key that is being used to encrypt messages
+    within the counter synchronization exchange.
+8. Group Session ID: Records the Group Session ID derived from the Operational Group Key that is
+    being used to encrypt messages within the counter synchronization exchange.
+
+**4.18.7. Sequence Diagram**
+
+The following sequence diagram shows an example of how message counter synchronization
+behaves in the most common scenario.
+
+```
+Copyright © Connectivity Standards Alliance, Inc. All rights reserved. Page 213
+```
+
+**4.18.7.1. Scenario 1 — Multicast Receiver Initiated**
+
+Assumptions:
+
+- _Sender_ transmits a multicast message.
+- _Receiver_ does not know _Sender_ 's message counter.
+
+_Figure 21. Multicast Receiver Initiated Message Counter Synchronization_
+
+Sequence:
+
+- _Sender_ :
+    ◦ Generates, encrypts and sends _Msg1_ as a multicast message. _Msg1_ could be:
+       ▪ Regular message that starts encrypted group communication with receivers _Receiver1_
+          and _Receiver2_.
+- Receivers _Receiver1_ and _Receiver2_ each:
+    ◦ Receive, decrypt, authenticate, and cache _Msg1_ message for later processing.
+       ▪ Generate, encrypt, and send _MsgCounterSyncReq_ message.
+
+```
+Page 214 Copyright © Connectivity Standards Alliance, Inc. All rights reserved.
+```
+
+- _Sender_ :
+    ◦ Receives _MsgCounterSyncReq_ message.
+    ◦ Generates, encrypts and sends _MsgCounterSyncRsp_ message.
+- R1 and R2 each:
+    ◦ Receive, decrypt, process, and verify _MsgCounterSyncRsp_ message from _Sender_.
+    ◦ On verification success: marks _Sender_ 's group key message counter as synchronized.
+       ▪ Processes cached _Msg1_ message.
+
+
+
+
+
+===============================================================================
+
+REFERENCED SECTIONS
+
+===============================================================================
+
+
+
+-------------------------------------------------------------------------------
+
+SECTION 4.6.5.1 - Message Reception State
+
+-------------------------------------------------------------------------------
+
+
+**4.6.5.1. Message Reception State**
+
+The state maintained by a Node about the messages it has received from a particular peer is
+referred to as _message reception state_. Nodes use this state information to determine whether a
+newly arrived message is a duplicate of a previous message. Message reception state is maintained
+on a per-peer or per-session basis, depending on the type of message encryption being used.
+
+At a conceptual level, message reception state consists of a set of integers corresponding to the
+counters of all the messages that have been received from a particular peer. To limit the amount of
+memory required to store this state, Nodes employ a lossy compression scheme that takes advan­
+tage of the fact that message counters are generated sequentially by the sender. The scheme allows
+for a limited amount of out-of-order message arrivals due to network effects without inducing false
+detection of duplicates.
+
+In the compressed form, message reception state is structured as a pair of values: a integer repre­
+senting the largest valid, or maximum message counter received from the peer (max_message_­
+counter), and a bitmap of size _MSG_COUNTER_WINDOW_SIZE_ indicating which messages immedi­
+ately prior to the max message have been received. The offset into the bitmap equates to the differ­
+ence between the corresponding message counter and the max message counter, i.e. the first bit in
+the bitmap indicates whether the message with the counter of max_message_counter - 1 has been
+received, the second indicates whether message max_message_counter - 2 has been received, and so
+on. A message counter is within the range of the bitmap, also known as the message counter win­
+dow, when the counter value is between [(max_message_counter - MSG_COUNTER_WINDOW_SIZE) to
+(max_message_counter - 1) mod 2^32 ]. As messages arrive, the message reception state is queried to
+determine if an arriving message is new or duplicate. If a message is new, the state is then updated
+
+```
+Copyright © Connectivity Standards Alliance, Inc. All rights reserved. Page 129
+```
+
+to reflect the arrival of the message. When a message arrives with a message counter that is logi­
+cally greater than the current maximum message counter for that peer, the maximum message
+counter value for the peer is updated and the bitmap shifted accordingly.
+
+_Figure 7. Message Reception State Example_
+
+
+
+
+-------------------------------------------------------------------------------
+
+SECTION 4.6.7 - Counter Processing of Incoming Messages
+
+-------------------------------------------------------------------------------
+
+
+**4.6.7. Counter Processing of Incoming Messages**
+
+1. Determine the Message Reception State for the sending peer and get the current max_message_­
+    counter.
+       a.Given a decrypted message of Unicast Session Type:
+          i. Get the session-specific Message Reception State from the Secure Unicast Session Con­
+             text.
+b. Given a decrypted message of Group Session Type:
+i. Extract the Source Node ID from the Message Header.
+A. If there is no Source Node ID for the message, drop the message.
+ii.Get the Message Reception State for the Source Node ID of the given message:
+A. If the Security Flags C Flag = 0, get the Data Message Reception State for the peer
+node.
+B. If the Security Flags C Flag = 1, get the Control Message Reception State for the peer
+node.
+iii.If there is no Message Reception State for the groupcast message, initiate Section 4.18.4,
+“Unsynchronized Message Processing”.
+c.Given an unencrypted message:
+i. Get the Message Reception State associated with the Unsecured Session Context.
+ii.If there is no Message Reception State for the unencrypted message, create it with the
+information from the given message.
+
+```
+Page 132 Copyright © Connectivity Standards Alliance, Inc. All rights reserved.
+```
+
+2. If the Message Counter is outside the valid message counter window, the message SHALL be
+    marked as a duplicate. Note that while messages may be outside of the window for reasons
+    other than being a duplicate, and we always mark them as such.
+3. If the message is a duplicate:
+    a. If the message is marked as encrypted, follow Section 4.6.5.2, “Use of Message Reception
+       State for Encrypted Messages”.
+    b. If the message is marked as unencrypted, follow Section 4.6.5.3, “Use of Message Reception
+       State for Unencrypted Messages”.
+c. If the message is encrypted and marked as a duplicate, i.e. Message Counter is outside the
+valid message counter window or marked as previously received in the Message Reception
+State:
+i. Perform Section 4.12.5.2, “Reliable Message Processing of Incoming Messages” on the
+duplicate message.
+    d. Otherwise, update the Message Reception State as detailed in Section 4.6.5.1, “Message
+       Reception State”, and accept the message for further processing.
+
+
+
+
+-------------------------------------------------------------------------------
+
+SECTION 4.7.1 - Message Transmission
+
+-------------------------------------------------------------------------------
+
+
+**4.7.1. Message Transmission**
+
+To prepare a message for transmission with a given Session ID, Destination Node ID (which may be
+a group node id or an operational node id) and Security Flags, the following steps SHALL be per­
+formed, in order:
+
+1. Process the message as described in Section 4.6.6, “Counter Processing of Outgoing Messages”.
+2. If the message’s Session Type is a Unicast Session:
+    a. Set SessionTimestamp to a timestamp from a clock which would allow for the eventual deter­
+       mination of the last session use relative to other sessions.
+    b. Process the message as described in Section 4.8.2, “Security Processing of Outgoing Mes­
+       sages”.
+c. Process the message as described in Section 4.9.3, “Privacy Processing of Outgoing Mes­
+sages”.
+
+
+
+
+-------------------------------------------------------------------------------
+
+SECTION 11.2 - Group Key Management Cluster (Relevant Parts)
+
+-------------------------------------------------------------------------------
+
+
+
+
+**11.2.5.4. GroupKeySetStruct Type**
+
+```
+Copyright © Connectivity Standards Alliance, Inc. All rights reserved. Page 739
+```
+
+```
+ID Name Type Constraint Quality Default Access Confor­
+mance
+0 GroupKey­
+SetID
+```
+```
+uint16 all M
+```
+```
+1 GroupKey­
+Security­
+Policy
+```
+```
+GroupKey­
+Security­
+Poli­
+cyEnum
+```
+```
+all S M
+```
+```
+2 EpochKey
+0
+```
+```
+octstr 16 X S M
+```
+```
+3 EpochStar
+tTime0
+```
+```
+epoch-us all X S M
+```
+```
+4 EpochKey
+1
+```
+```
+octstr 16 X S M
+```
+```
+5 EpochStar
+tTime1
+```
+```
+epoch-us all X S M
+```
+```
+6 EpochKey
+2
+```
+```
+octstr 16 X S M
+```
+```
+7 EpochStar
+tTime2
+```
+```
+epoch-us all X S M
+```
+```
+8 GroupKey­
+Multicast­
+Policy
+```
+```
+GroupKey­
+Multicast­
+Poli­
+cyEnum
+```
+```
+all S P, M
+```
+**GroupKeySetID Field**
+
+This field SHALL provide the fabric-unique index for the associated group key set, as specified in
+Section 4.17.3.5.1, “Group Key Set ID”.
+
+**GroupKeySecurityPolicy Field**
+
+This field SHALL provide the security policy for an operational group key set.
+
+When CacheAndSync is not supported in the FeatureMap of this cluster, any action attempting to
+set CacheAndSync in the GroupKeySecurityPolicy field SHALL fail with an INVALID_COMMAND
+error.
+
+
+
+
+===============================================================================
+
+END OF DOCUMENT
+
+===============================================================================
+
+
+Extracted from: core_spec.md (Matter Specification Version 1.4)
+
+Extraction Date: 2026-01-19 19:25:34
+
+
+This document contains:
+
+- Section 4.18: Message Counter Synchronization Protocol (MCSP)
+
+- Section 4.6.5.1: Message Reception State (Referenced)
+
+- Section 4.6.7: Counter Processing of Incoming Messages (Referenced)
+
+- Section 4.7.1: Message Transmission (Referenced)
+
+- Section 11.2: Group Key Management Cluster - Relevant parts (Referenced)
+

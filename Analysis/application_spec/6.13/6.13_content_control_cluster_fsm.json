@@ -1,0 +1,1030 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Content Control",
+    "cluster_id": "0x050F",
+    "pics_code": "CONCON",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 6.13, Pages 611-627",
+    "revision": 1,
+
+    "features": [
+      {
+        "bit": 0,
+        "code": "ST",
+        "name": "ScreenTime",
+        "conformance": "O",
+        "description": "Supports managing screen time limits. Enables ScreenDailyTime and RemainingScreenTime attributes, and AddBonusTime/SetScreenDailyTime commands.",
+        "affects_states": ["Enabled_ScreenTimeExhausted"],
+        "affects_transitions": ["T035", "T036", "T037", "T038", "T039", "T040", "T041"]
+      },
+      {
+        "bit": 1,
+        "code": "PM",
+        "name": "PINManagement",
+        "conformance": "O",
+        "description": "Supports managing a PIN code which restricts access to configuration of this feature. Enables UpdatePIN and ResetPIN commands.",
+        "affects_states": [],
+        "affects_transitions": ["T005", "T006", "T007"]
+      },
+      {
+        "bit": 2,
+        "code": "BU",
+        "name": "BlockUnrated",
+        "conformance": "O",
+        "description": "Supports managing content controls for unrated content. Enables BlockUnrated attribute and BlockUnratedContent/UnblockUnratedContent commands.",
+        "affects_states": [],
+        "affects_transitions": ["T014", "T015"]
+      },
+      {
+        "bit": 3,
+        "code": "OCR",
+        "name": "OnDemandContentRating",
+        "conformance": "O",
+        "description": "Supports content controls based upon rating threshold for on-demand content. Enables OnDemandRatings, OnDemandRatingThreshold attributes and SetOnDemandRatingThreshold command.",
+        "affects_states": [],
+        "affects_transitions": ["T016", "T017"]
+      },
+      {
+        "bit": 4,
+        "code": "SCR",
+        "name": "ScheduledContentRating",
+        "conformance": "O",
+        "description": "Supports content controls based upon rating threshold for scheduled content. Enables ScheduledContentRatings, ScheduledContentRatingThreshold attributes and SetScheduledContentRatingThreshold command.",
+        "affects_states": [],
+        "affects_transitions": ["T018", "T019"]
+      },
+      {
+        "bit": 5,
+        "code": "BC",
+        "name": "BlockChannels",
+        "conformance": "O",
+        "description": "Supports managing a set of prohibited channels. Enables BlockChannelList attribute and AddBlockChannels/RemoveBlockChannels commands.",
+        "affects_states": [],
+        "affects_transitions": ["T020", "T021", "T022", "T023", "T024"]
+      },
+      {
+        "bit": 6,
+        "code": "BA",
+        "name": "BlockApplications",
+        "conformance": "O",
+        "description": "Supports managing a set of prohibited applications. Enables BlockApplicationList attribute and AddBlockApplications/RemoveBlockApplications commands.",
+        "affects_states": [],
+        "affects_transitions": ["T025", "T026", "T027", "T028", "T029"]
+      },
+      {
+        "bit": 7,
+        "code": "BTW",
+        "name": "BlockContentTimeWindow",
+        "conformance": "O",
+        "description": "Supports time window-based blocking of all content and applications. Enables BlockContentTimeWindow attribute (max 7 entries, one per day of week) and SetBlockContentTimeWindow/RemoveBlockContentTimeWindow commands. Enforces no-playback periods and fires EnteringBlockContentTimeWindow event.",
+        "affects_states": ["Enabled_BlockTimeWindowActive"],
+        "affects_transitions": ["T030", "T031", "T032", "T033", "T034", "T042", "T043"]
+      }
+    ],
+
+    "dependencies": [],
+
+    "states": [
+      {
+        "name": "Disabled",
+        "description": "Content Control feature is deactivated. No content filtering, screen time tracking, or blocking is enforced. Device operates without parental control restrictions.",
+        "is_initial": true,
+        "invariants": ["Enabled == false"],
+        "state_attributes": {
+          "Enabled": "false"
+        },
+        "feature_requirements": [],
+        "safety_implications": "No content restrictions enforced — children can access unrestricted content, blocked channels, blocked applications, and exceed screen time limits without enforcement."
+      },
+      {
+        "name": "Enabled_Normal",
+        "description": "Content Control feature is active. All configured restrictions are enforced: rating thresholds, channel blocks, application blocks, and screen time limits (if Feature_ST). Playback of blocked content is prevented.",
+        "is_initial": false,
+        "invariants": [
+          "Enabled == true",
+          "RemainingScreenTime > 0 || Feature_ST == false",
+          "current_time NOT IN any BlockContentTimeWindow period || Feature_BTW == false"
+        ],
+        "state_attributes": {
+          "Enabled": "true",
+          "RemainingScreenTime": "> 0 (if Feature_ST enabled)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Content restrictions are enforced. Configuration commands require Manage privilege — if a child obtains Manage access, restrictions can be bypassed."
+      },
+      {
+        "name": "Enabled_ScreenTimeExhausted",
+        "description": "Content Control is active and the daily screen time allowance has been depleted. The media device SHALL terminate playback of content immediately. Only a client with sufficient privilege (Manage or correct PIN) can add bonus time to resume playback.",
+        "is_initial": false,
+        "invariants": [
+          "Enabled == true",
+          "Feature_ST == true",
+          "RemainingScreenTime == 0"
+        ],
+        "state_attributes": {
+          "Enabled": "true",
+          "RemainingScreenTime": "0"
+        },
+        "feature_requirements": ["Feature_ST == true"],
+        "safety_implications": "Playback forced to terminate. If BonusTime is granted to a child without proper PIN, screen time controls are effectively bypassed for the rest of the day."
+      },
+      {
+        "name": "Enabled_BlockTimeWindowActive",
+        "description": "Content Control is active and the current time falls within a configured BlockContentTimeWindow period. All content and applications SHALL be blocked. The device SHALL reject any play request during this period. Playback already in progress is terminated when the window begins.",
+        "is_initial": false,
+        "invariants": [
+          "Enabled == true",
+          "Feature_BTW == true",
+          "current_time IN some BlockContentTimeWindow period"
+        ],
+        "state_attributes": {
+          "Enabled": "true",
+          "BlockContentTimeWindow": "active period covering current time"
+        },
+        "feature_requirements": ["Feature_BTW == true"],
+        "safety_implications": "All content is blocked in this state. If a child can invoke RemoveBlockContentTimeWindow during this period, the restriction is lifted immediately."
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T001",
+        "from_state": "Disabled",
+        "to_state": "Enabled_Normal",
+        "trigger": {
+          "type": "command",
+          "name": "Enable",
+          "command_id": "0x03"
+        },
+        "guard_condition": "true",
+        "actions": [
+          "Enabled := true",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Command requires Timed Invoke",
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.4 'Enable Command'"
+      },
+      {
+        "id": "T002",
+        "from_state": "Enabled_Normal",
+        "to_state": "Disabled",
+        "trigger": {
+          "type": "command",
+          "name": "Disable",
+          "command_id": "0x04"
+        },
+        "guard_condition": "true",
+        "actions": [
+          "Enabled := false",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Command requires Timed Invoke",
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.5 'Disable Command'"
+      },
+      {
+        "id": "T003",
+        "from_state": "Enabled_ScreenTimeExhausted",
+        "to_state": "Disabled",
+        "trigger": {
+          "type": "command",
+          "name": "Disable",
+          "command_id": "0x04"
+        },
+        "guard_condition": "true",
+        "actions": [
+          "Enabled := false",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Command requires Timed Invoke",
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.5 'Disable Command'"
+      },
+      {
+        "id": "T004",
+        "from_state": "Enabled_BlockTimeWindowActive",
+        "to_state": "Disabled",
+        "trigger": {
+          "type": "command",
+          "name": "Disable",
+          "command_id": "0x04"
+        },
+        "guard_condition": "true",
+        "actions": [
+          "Enabled := false",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Command requires Timed Invoke",
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.5 'Disable Command'"
+      },
+      {
+        "id": "T005",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "UpdatePIN",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Feature_PM == true && OldPIN == current_PIN",
+        "actions": [
+          "current_PIN := NewPIN",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Command requires Timed Invoke",
+        "error_responses": [
+          {
+            "condition": "OldPIN != current_PIN",
+            "status_code": "InvalidPINCode",
+            "description": "The OldPIN field does not match the current PIN; PIN is not updated."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.1 'UpdatePIN Command'"
+      },
+      {
+        "id": "T006",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "ResetPIN",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_PM == true",
+        "actions": [
+          "current_PIN := generate_new_default_PIN()",
+          "return ResetPINResponse(PINCode := current_PIN)"
+        ],
+        "access_required": "A",
+        "timed_required": true,
+        "timing_constraint": "Command requires Timed Invoke",
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.2 'ResetPIN Command' and Section 6.13.8.3 'ResetPINResponse Command'"
+      },
+      {
+        "id": "T007",
+        "from_state": "Enabled_Normal",
+        "to_state": "Enabled_Normal",
+        "trigger": {
+          "type": "command",
+          "name": "AddBonusTime",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_ST == true && client_privilege >= Manage",
+        "actions": [
+          "RemainingScreenTime := RemainingScreenTime + BonusTime",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.6 'AddBonusTime Command'"
+      },
+      {
+        "id": "T008",
+        "from_state": "Enabled_ScreenTimeExhausted",
+        "to_state": "Enabled_Normal",
+        "trigger": {
+          "type": "command",
+          "name": "AddBonusTime",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_ST == true && client_privilege >= Manage",
+        "actions": [
+          "RemainingScreenTime := RemainingScreenTime + BonusTime",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.6 'AddBonusTime Command'"
+      },
+      {
+        "id": "T009",
+        "from_state": "Enabled_Normal",
+        "to_state": "Enabled_Normal",
+        "trigger": {
+          "type": "command",
+          "name": "AddBonusTime",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_ST == true && client_privilege == Operate && PINCode == current_PIN",
+        "actions": [
+          "RemainingScreenTime := RemainingScreenTime + BonusTime",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "PINCode != current_PIN",
+            "status_code": "InvalidPINCode",
+            "description": "PIN mismatch; RemainingScreenTime is not changed."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.6 'AddBonusTime Command'"
+      },
+      {
+        "id": "T010",
+        "from_state": "Enabled_ScreenTimeExhausted",
+        "to_state": "Enabled_Normal",
+        "trigger": {
+          "type": "command",
+          "name": "AddBonusTime",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_ST == true && client_privilege == Operate && PINCode == current_PIN",
+        "actions": [
+          "RemainingScreenTime := RemainingScreenTime + BonusTime",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "PINCode != current_PIN",
+            "status_code": "InvalidPINCode",
+            "description": "PIN mismatch; RemainingScreenTime remains 0."
+          },
+          {
+            "condition": "Feature_PM == false && client_privilege == Operate && no out-of-band PIN configured",
+            "status_code": "InvalidPINCode",
+            "description": "Server without PM feature must reject Operate-privilege clients unless an out-of-band PIN is configured and matches."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.6 'AddBonusTime Command'"
+      },
+      {
+        "id": "T011",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "SetScreenDailyTime",
+          "command_id": "0x06"
+        },
+        "guard_condition": "Feature_ST == true && ScreenTime <= 86400",
+        "actions": [
+          "ScreenDailyTime := ScreenTime",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.7 'SetScreenDailyTime Command'"
+      },
+      {
+        "id": "T012",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "BlockUnratedContent",
+          "command_id": "0x07"
+        },
+        "guard_condition": "Feature_BU == true",
+        "actions": [
+          "BlockUnrated := true",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.8 'BlockUnratedContent Command'"
+      },
+      {
+        "id": "T013",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "UnblockUnratedContent",
+          "command_id": "0x08"
+        },
+        "guard_condition": "Feature_BU == true",
+        "actions": [
+          "BlockUnrated := false",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.9 'UnblockUnratedContent Command'"
+      },
+      {
+        "id": "T014",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "SetOnDemandRatingThreshold",
+          "command_id": "0x09"
+        },
+        "guard_condition": "Feature_OCR == true && Rating IN OnDemandRatings",
+        "actions": [
+          "OnDemandRatingThreshold := Rating",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Rating NOT IN OnDemandRatings",
+            "status_code": "InvalidRating",
+            "description": "Provided rating is not in the OnDemandRatings list; threshold is not updated."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.10 'SetOnDemandRatingThreshold Command'"
+      },
+      {
+        "id": "T015",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "SetScheduledContentRatingThreshold",
+          "command_id": "0x0A"
+        },
+        "guard_condition": "Feature_SCR == true && Rating IN ScheduledContentRatings",
+        "actions": [
+          "ScheduledContentRatingThreshold := Rating",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Rating NOT IN ScheduledContentRatings",
+            "status_code": "InvalidRating",
+            "description": "Provided rating is not in the ScheduledContentRatings list; threshold is not updated."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.11 'SetScheduledContentRatingThreshold Command'"
+      },
+      {
+        "id": "T016",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "AddBlockChannels",
+          "command_id": "0x0B"
+        },
+        "guard_condition": "Feature_BC == true && channels_valid(Channels) && NOT all_channels_already_in_BlockChannelList(Channels)",
+        "actions": [
+          "assign_unique_BlockChannelIndex_to_each_new_channel(Channels)",
+          "BlockChannelList := BlockChannelList UNION new_channels_from(Channels)",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "any channel in Channels is invalid",
+            "status_code": "InvalidChannel",
+            "description": "One or more channels are not valid; no channels are added."
+          },
+          {
+            "condition": "all channels in Channels already exist in BlockChannelList",
+            "status_code": "ChannelAlreadyExist",
+            "description": "All provided channels are already blocked; no change made."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.12 'AddBlockChannels Command'"
+      },
+      {
+        "id": "T017",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "RemoveBlockChannels",
+          "command_id": "0x0C"
+        },
+        "guard_condition": "Feature_BC == true && all_indexes_in_BlockChannelList(ChannelIndexes)",
+        "actions": [
+          "BlockChannelList := BlockChannelList MINUS channels_with_indexes(ChannelIndexes)",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "one or more ChannelIndexes not present in BlockChannelList",
+            "status_code": "ChannelNotExist",
+            "description": "One or more channel indexes do not exist in BlockChannelList; no channels are removed."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.13 'RemoveBlockChannels Command'"
+      },
+      {
+        "id": "T018",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "AddBlockApplications",
+          "command_id": "0x0D"
+        },
+        "guard_condition": "Feature_BA == true && NOT all_applications_already_in_BlockApplicationList(Applications)",
+        "actions": [
+          "BlockApplicationList := BlockApplicationList UNION new_apps_from(Applications)",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "application in Applications is not identifiable by media device",
+            "status_code": "UnidentifiableApplication",
+            "description": "Application not recognized; response with this status MAY (not SHALL) be returned — server has discretion."
+          },
+          {
+            "condition": "all applications in Applications already present in BlockApplicationList",
+            "status_code": "ApplicationAlreadyExist",
+            "description": "All provided applications are already blocked; no change made."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.14 'AddBlockApplications Command'"
+      },
+      {
+        "id": "T019",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "RemoveBlockApplications",
+          "command_id": "0x0E"
+        },
+        "guard_condition": "Feature_BA == true && all_applications_in_BlockApplicationList(Applications)",
+        "actions": [
+          "BlockApplicationList := BlockApplicationList MINUS Applications",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "one or more applications in Applications not present in BlockApplicationList",
+            "status_code": "ApplicationNotExist",
+            "description": "One or more applications do not exist in BlockApplicationList; no applications are removed."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.15 'RemoveBlockApplications Command'"
+      },
+      {
+        "id": "T020",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "SetBlockContentTimeWindow",
+          "command_id": "0x0F"
+        },
+        "guard_condition": "Feature_BTW == true && TimeWindow.TimeWindowIndex == NULL && NOT matching_entry_exists_in_BlockContentTimeWindow(TimeWindow)",
+        "actions": [
+          "assign_unique_TimeWindowIndex(TimeWindow)",
+          "BlockContentTimeWindow := BlockContentTimeWindow APPEND TimeWindow",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "TimeWindow.TimeWindowIndex == NULL && matching_entry_exists(TimePeriod, DayOfWeek)",
+            "status_code": "TimeWindowAlreadyExist",
+            "description": "An entry with the same DayOfWeek and TimePeriod already exists; no entry added."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.16 'SetBlockContentTimeWindow Command'"
+      },
+      {
+        "id": "T021",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "SetBlockContentTimeWindow",
+          "command_id": "0x0F"
+        },
+        "guard_condition": "Feature_BTW == true && TimeWindow.TimeWindowIndex != NULL && TimeWindow.TimeWindowIndex IN BlockContentTimeWindow",
+        "actions": [
+          "BlockContentTimeWindow := REPLACE entry at TimeWindow.TimeWindowIndex WITH TimeWindow",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.16 'SetBlockContentTimeWindow Command'"
+      },
+      {
+        "id": "T022",
+        "from_state": "any",
+        "to_state": "same",
+        "trigger": {
+          "type": "command",
+          "name": "RemoveBlockContentTimeWindow",
+          "command_id": "0x10"
+        },
+        "guard_condition": "Feature_BTW == true && all_indexes_in_BlockContentTimeWindow(TimeWindowIndexes)",
+        "actions": [
+          "BlockContentTimeWindow := BlockContentTimeWindow MINUS windows_with_indexes(TimeWindowIndexes)",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "one or more TimeWindowIndexes not present in BlockContentTimeWindow",
+            "status_code": "TimeWindowNotExist",
+            "description": "One or more time window indexes do not exist; no windows are removed."
+          }
+        ],
+        "spec_reference": "Section 6.13.8.17 'RemoveBlockContentTimeWindow Command'"
+      },
+      {
+        "id": "T023",
+        "from_state": "Enabled_Normal",
+        "to_state": "Enabled_ScreenTimeExhausted",
+        "trigger": {
+          "type": "timer",
+          "name": "RemainingScreenTime_Depleted",
+          "command_id": null
+        },
+        "guard_condition": "Feature_ST == true && Enabled == true && RemainingScreenTime == 0",
+        "actions": [
+          "generate_event(RemainingScreenTimeExpired, {})",
+          "terminate_content_playback()"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Triggered automatically when RemainingScreenTime decrements to 0 during active viewing",
+        "error_responses": [],
+        "spec_reference": "Section 6.13.7.7 'RemainingScreenTime Attribute' and Section 6.13.9.1 'RemainingScreenTimeExpired Event'"
+      },
+      {
+        "id": "T024",
+        "from_state": "Enabled_Normal",
+        "to_state": "Enabled_BlockTimeWindowActive",
+        "trigger": {
+          "type": "timer",
+          "name": "BlockContentTimeWindow_Entry",
+          "command_id": null
+        },
+        "guard_condition": "Feature_BTW == true && Enabled == true && current_time ENTERS BlockContentTimeWindow period",
+        "actions": [
+          "block_current_content_playback()",
+          "generate_event(EnteringBlockContentTimeWindow, {})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Triggered automatically when wall-clock time enters a configured BlockContentTimeWindow period",
+        "error_responses": [],
+        "spec_reference": "Section 6.13.7.11 'BlockContentTimeWindow Attribute' and Section 6.13.9.2 'EnteringBlockContentTimeWindow Event'"
+      },
+      {
+        "id": "T025",
+        "from_state": "Enabled_BlockTimeWindowActive",
+        "to_state": "Enabled_Normal",
+        "trigger": {
+          "type": "timer",
+          "name": "BlockContentTimeWindow_Exit",
+          "command_id": null
+        },
+        "guard_condition": "Feature_BTW == true && Enabled == true && current_time EXITS all BlockContentTimeWindow periods",
+        "actions": [
+          "unblock_content_playback()"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Triggered automatically when wall-clock time exits all configured BlockContentTimeWindow periods",
+        "error_responses": [],
+        "spec_reference": "Section 6.13.7.11 'BlockContentTimeWindow Attribute'"
+      },
+      {
+        "id": "T026",
+        "from_state": "Disabled",
+        "to_state": "Disabled",
+        "trigger": {
+          "type": "command",
+          "name": "Enable",
+          "command_id": "0x03"
+        },
+        "guard_condition": "Enabled == true",
+        "actions": [
+          "Enabled := true",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": true,
+        "timing_constraint": "Command requires Timed Invoke",
+        "error_responses": [],
+        "spec_reference": "Section 6.13.8.4 'Enable Command' — idempotent; no-op when already enabled"
+      }
+    ],
+
+    "events": [
+      {
+        "id": "0x00",
+        "name": "RemainingScreenTimeExpired",
+        "priority": "INFO",
+        "generated_by": ["T023"],
+        "fields": [],
+        "description": "Generated when RemainingScreenTime reaches 0. Signals that the user's daily screen time allowance is exhausted and playback must be terminated.",
+        "conformance": "ST"
+      },
+      {
+        "id": "0x01",
+        "name": "EnteringBlockContentTimeWindow",
+        "priority": "INFO",
+        "generated_by": ["T024"],
+        "fields": [],
+        "description": "Generated when the device's wall-clock time enters a period defined in the BlockContentTimeWindow attribute. The device blocks currently playing content and rejects new play requests for the duration of the window.",
+        "conformance": "BTW"
+      }
+    ],
+
+    "timers": [
+      {
+        "name": "RemainingScreenTime_Countdown",
+        "source_attribute": "RemainingScreenTime",
+        "trigger": "Content playback is active while Feature_ST is enabled and Enabled == true; the timer decrements RemainingScreenTime in real time",
+        "expiry_transition": "T023",
+        "resolution": "seconds"
+      },
+      {
+        "name": "BlockContentTimeWindow_Schedule",
+        "source_attribute": "BlockContentTimeWindow",
+        "trigger": "Wall-clock time advancing into a configured DayOfWeek + TimePeriod window in the BlockContentTimeWindow list",
+        "expiry_transition": "T024 (entry), T025 (exit)",
+        "resolution": "seconds (granularity: minute boundary per StartHour/StartMinute/EndHour/EndMinute)"
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "generate_new_default_PIN",
+        "parameters": [],
+        "return_type": "string (max 6 numeric characters)",
+        "description": "Generates a new default PIN for the Content Control feature. The mechanism is implementation-defined. The resulting PIN is returned to the administrator via ResetPINResponse.",
+        "usage_in_fsm": "T006"
+      },
+      {
+        "name": "channels_valid",
+        "parameters": [
+          {"name": "channels", "type": "list[BlockChannelStruct]", "description": "Channels to validate against the Channel cluster's ChannelList attribute"}
+        ],
+        "return_type": "bool",
+        "description": "Returns true if all channels in the provided list are entries in the Channel cluster's ChannelList attribute on the same endpoint. The BlockChannelIndex field of each entry in the input MUST be NULL.",
+        "usage_in_fsm": "T016"
+      },
+      {
+        "name": "assign_unique_BlockChannelIndex_to_each_new_channel",
+        "parameters": [
+          {"name": "channels", "type": "list[BlockChannelStruct]", "description": "Channels to assign indexes to"}
+        ],
+        "return_type": "void",
+        "description": "Assigns a unique BlockChannelIndex to each channel being added to BlockChannelList. The index values are implementation-defined but must be unique within the list.",
+        "usage_in_fsm": "T016"
+      },
+      {
+        "name": "assign_unique_TimeWindowIndex",
+        "parameters": [
+          {"name": "window", "type": "TimeWindowStruct", "description": "Time window to assign an index"}
+        ],
+        "return_type": "void",
+        "description": "Assigns a unique TimeWindowIndex to a new time window entry being added to BlockContentTimeWindow. The index value is implementation-defined but must be unique within the list.",
+        "usage_in_fsm": "T020"
+      },
+      {
+        "name": "matching_entry_exists_in_BlockContentTimeWindow",
+        "parameters": [
+          {"name": "window", "type": "TimeWindowStruct", "description": "Window to check for duplicates"}
+        ],
+        "return_type": "bool",
+        "description": "Returns true if an entry in BlockContentTimeWindow has the same DayOfWeek and TimePeriod as the provided window. Used to enforce the constraint that no duplicate time windows exist.",
+        "usage_in_fsm": "T020"
+      },
+      {
+        "name": "terminate_content_playback",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Stops any active media playback on the device. The mechanism is implementation-defined but is mandatory when RemainingScreenTime reaches 0.",
+        "usage_in_fsm": "T023"
+      },
+      {
+        "name": "block_current_content_playback",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Immediately stops in-progress media playback and prevents new playback requests. Invoked when the device enters a BlockContentTimeWindow period.",
+        "usage_in_fsm": "T024"
+      },
+      {
+        "name": "unblock_content_playback",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resumes playback capability after exiting all BlockContentTimeWindow periods. Playback is only actually allowed once the user initiates it.",
+        "usage_in_fsm": "T025"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": ["AddBonusTime (with PIN check when Operate privilege)"],
+      "manage_commands": [
+        "Enable",
+        "Disable",
+        "UpdatePIN",
+        "AddBonusTime (PIN ignored when Manage or higher)",
+        "SetScreenDailyTime",
+        "BlockUnratedContent",
+        "UnblockUnratedContent",
+        "SetOnDemandRatingThreshold",
+        "SetScheduledContentRatingThreshold",
+        "AddBlockChannels",
+        "RemoveBlockChannels",
+        "AddBlockApplications",
+        "RemoveBlockApplications",
+        "SetBlockContentTimeWindow",
+        "RemoveBlockContentTimeWindow"
+      ],
+      "administer_commands": ["ResetPIN"],
+      "timed_commands": ["Enable", "Disable", "UpdatePIN", "ResetPIN"]
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "state",
+        "element_id": "Disabled",
+        "safety_concern": "All parental controls are inactive. Children have unrestricted access to all content, channels, and applications regardless of configured filters.",
+        "mitigation_in_spec": "Disable command requires Manage privilege and Timed Invoke, preventing casual or accidental deactivation. Spec notes it is the product's responsibility to prevent a child from disabling Content Control."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T002",
+        "safety_concern": "Disable command completely turns off all content restrictions. An attacker with Manage access can disable parental controls.",
+        "mitigation_in_spec": "Requires Manage privilege + Timed Invoke. No PIN verification required for Disable—unlike UpdatePIN—meaning a legitimate Manage-privileged client can always disable content control without knowing the PIN."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T009",
+        "safety_concern": "AddBonusTime with Operate privilege uses PIN for authorization. Brute forcing the PIN code (max 6 digits) grants a child the ability to extend screen time indefinitely.",
+        "mitigation_in_spec": "PIN is max 6 numeric characters. No lockout or rate-limiting policy is defined in the spec, creating a brute-force vulnerability."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T006",
+        "safety_concern": "ResetPIN (Administer privilege) resets the PIN and discloses the new PIN in the ResetPINResponse. If an attacker gains Administer access, they can reset and obtain the PIN, bypassing all PIN-protected restrictions.",
+        "mitigation_in_spec": "Requires Administer privilege and Timed Invoke."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "BlockContentTimeWindow",
+        "safety_concern": "Limited to 7 entries (one per day of week). If all 7 slots are occupied, no new time windows can be added without first removing existing ones. A malicious client with Manage access could fill all 7 slots with bogus windows or remove legitimate ones.",
+        "mitigation_in_spec": "Requires Manage privilege to modify. No integrity check on whether entries are plausible."
+      },
+      {
+        "element_type": "state",
+        "element_id": "Enabled_ScreenTimeExhausted",
+        "safety_concern": "When RemainingScreenTime reaches 0, the device MUST terminate playback. If AddBonusTime is granted without PIN verification (Manage privilege), screen time limits are trivially bypassed.",
+        "mitigation_in_spec": "Manage-privilege clients bypass PIN for AddBonusTime by design; this is intentional but means the PIN only gates Operate-privilege clients."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "location": "Section 6.13.8.6 'AddBonusTime Command'",
+        "gap_type": "missing_constraint",
+        "description": "No rate limiting, lockout policy, or maximum attempt count is defined for incorrect PIN submissions via AddBonusTime with Operate privilege. A child could brute-force the 6-character numeric PIN (max 1,000,000 combinations).",
+        "security_impact": "Brute-force attack allows Operate-privilege clients to extend screen time without knowing the correct PIN. The effective security of the PIN is zero without a lockout mechanism."
+      },
+      {
+        "location": "Section 6.13.8.1 'UpdatePIN Command'",
+        "gap_type": "missing_constraint",
+        "description": "No minimum PIN length or complexity requirement is specified. A 1-character or all-zeros PIN (e.g., '0') is conformant.",
+        "security_impact": "Weak PINs dramatically reduce the brute-force search space for Operate-privilege AddBonusTime attacks."
+      },
+      {
+        "location": "Section 6.13.8.5 'Disable Command'",
+        "gap_type": "weak_normative",
+        "description": "The Disable command does not require PIN verification — only Manage privilege and Timed Invoke. A legitimately enrolled Manage-privileged client (e.g., a second TV remote) can disable all parental controls at any time without knowing the Content Control PIN.",
+        "security_impact": "The PIN protects AddBonusTime (Operate level) but does NOT protect the Disable command. The PIN is not a universal gate for Content Control deactivation."
+      },
+      {
+        "location": "Section 6.13.8.14 'AddBlockApplications Command'",
+        "gap_type": "weak_normative",
+        "description": "The UnidentifiableApplication error response is MAY (not SHALL). An implementation may silently ignore unrecognized applications and add them to the BlockApplicationList, or silently drop them. Behavior is undefined.",
+        "security_impact": "An attacker could submit fake ApplicationIDs; some implementations may block them (correct behavior) while others may silently ignore them, leaving the application unblocked."
+      },
+      {
+        "location": "Section 6.13.7.11 'BlockContentTimeWindow Attribute'",
+        "gap_type": "missing_constraint",
+        "description": "The spec states there SHALL NOT be multiple entries for the same day of week but does not define how overlapping TimePeriod entries within the same day are handled if they use different TimeWindowIndex values added via subsequent SetBlockContentTimeWindow commands with non-NULL index.",
+        "security_impact": "Implementation variation may allow time window manipulation that creates inconsistent blocking behavior."
+      },
+      {
+        "location": "Section 6.13.8.16 'SetBlockContentTimeWindow Command'",
+        "gap_type": "ambiguous",
+        "description": "When TimeWindowIndex is not NULL but the index is NOT present in BlockContentTimeWindow, no error response is specified. It is unclear whether the device should add a new entry, assign the provided index, or return an error.",
+        "security_impact": "Undefined behavior for invalid index in replace path; implementations may handle this inconsistently, potentially allowing unexpected entries."
+      },
+      {
+        "location": "Section 6.13 (entire cluster)",
+        "gap_type": "undefined_behavior",
+        "description": "The spec does not define behavior when a configuration command (e.g., AddBlockChannels) is received while Enabled == false. It is unclear whether configuration is permitted in the Disabled state.",
+        "security_impact": "If configuration is blocked in Disabled state, an attacker who disables Content Control first could prevent re-configuration. If configuration is always allowed, the effective state space is simpler."
+      },
+      {
+        "location": "Section 6.13.9 'Events'",
+        "gap_type": "missing_constraint",
+        "description": "The EnteringBlockContentTimeWindow event has no fields. The event does not indicate which time window was entered or what content was blocked, making audit logging of blocking events imprecise.",
+        "security_impact": "Limited forensic visibility into which window triggered blocking, hampering incident analysis."
+      },
+      {
+        "location": "Section 6.13 (entire cluster)",
+        "gap_type": "missing_constraint",
+        "description": "No ExitingBlockContentTimeWindow event is defined. The FSM transition from Enabled_BlockTimeWindowActive back to Enabled_Normal (T025) has no corresponding event notification.",
+        "security_impact": "Clients monitoring content state have no event-driven indication that the block window has ended, relying entirely on polling the BlockContentTimeWindow attribute."
+      },
+      {
+        "location": "Section 6.13 (cluster classification)",
+        "gap_type": "ambiguous",
+        "description": "The cluster Conformance is 'P' (Provisional). The spec explicitly notes 'Support for Content Control cluster is provisional.' This means the entire cluster may change in future revisions, invalidating any formal verification performed against revision 1.",
+        "security_impact": "Provisional status means security properties verified against this spec may not hold in future Matter revisions."
+      }
+    ],
+
+    "initial_state": "Disabled",
+    "all_states": [
+      "Disabled",
+      "Enabled_Normal",
+      "Enabled_ScreenTimeExhausted",
+      "Enabled_BlockTimeWindowActive"
+    ],
+    "all_triggers": [
+      "Enable",
+      "Disable",
+      "UpdatePIN",
+      "ResetPIN",
+      "AddBonusTime",
+      "SetScreenDailyTime",
+      "BlockUnratedContent",
+      "UnblockUnratedContent",
+      "SetOnDemandRatingThreshold",
+      "SetScheduledContentRatingThreshold",
+      "AddBlockChannels",
+      "RemoveBlockChannels",
+      "AddBlockApplications",
+      "RemoveBlockApplications",
+      "SetBlockContentTimeWindow",
+      "RemoveBlockContentTimeWindow",
+      "timer:RemainingScreenTime_Depleted",
+      "timer:BlockContentTimeWindow_Entry",
+      "timer:BlockContentTimeWindow_Exit"
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true,
+      "notes": [
+        "Configuration commands (UpdatePIN, Set*, Add*, Remove*) use from_state='any' / to_state='same' to denote self-loops valid in all states. Verification tools should expand these for all four states.",
+        "ResetPINResponse (0x02) is a server-to-client response payload, not a client-initiated command; it is modeled as the return action of the ResetPIN transition (T006) rather than as a separate trigger.",
+        "The cluster is Provisional (Conformance 'P'); formal verification results are valid only against Matter 1.5 revision 1 of this cluster.",
+        "Transition T026 models the idempotent Enable command issued while already Enabled (no state change but must return SUCCESS per spec's attribute-set semantics)."
+      ]
+    }
+  }
+}

@@ -1,0 +1,1981 @@
+{
+  "fsm_model": {
+    "section_name": "11.26 Commissioner Control Cluster",
+    "section_ref": "Matter Specification R1.4, Section 11.26, Document 23-27349",
+    "states": [
+      {
+        "name": "Idle",
+        "description": "Initial state with no active commissioning approval request",
+        "is_initial": true,
+        "invariants": [
+          "approval_status == none",
+          "request_record == does_not_exist",
+          "commissioning_window_status == closed"
+        ],
+        "state_variables": {
+          "approval_status": "enum: none",
+          "request_record": "null",
+          "commissioning_window_status": "enum: closed"
+        }
+      },
+      {
+        "name": "CASE_Session_Validation_Failed",
+        "description": "RequestCommissioningApproval received without CASE session",
+        "is_initial": false,
+        "invariants": [
+          "session_type != CASE",
+          "error_code == UNSUPPORTED_ACCESS"
+        ],
+        "state_variables": {
+          "session_type": "enum: PASE | CASE | none",
+          "error_code": "status_code"
+        }
+      },
+      {
+        "name": "Device_Category_Check_Failed",
+        "description": "Client attempted to request approval for unsupported device category",
+        "is_initial": false,
+        "invariants": [
+          "device_category NOT IN SupportedDeviceCategories"
+        ],
+        "state_variables": {
+          "device_category": "bitmap_value",
+          "SupportedDeviceCategories": "bitmap"
+        }
+      },
+      {
+        "name": "Duplicate_RequestID_Detected",
+        "description": "Client reused RequestID while previous request still pending",
+        "is_initial": false,
+        "invariants": [
+          "request_exists(RequestID, ClientNodeID) == true",
+          "previous_request_pending == true",
+          "response_code == FAILURE"
+        ],
+        "state_variables": {
+          "RequestID": "uint64",
+          "ClientNodeID": "node_id",
+          "previous_request_pending": "boolean"
+        }
+      },
+      {
+        "name": "Approval_Request_Accepted",
+        "description": "Server accepted RequestCommissioningApproval and will generate event",
+        "is_initial": false,
+        "invariants": [
+          "approval_status == pending_event",
+          "request_record.exists == true",
+          "event_generated == false",
+          "session_type == CASE"
+        ],
+        "state_variables": {
+          "request_record": "struct{RequestID, ClientNodeID, VendorID, ProductID, Label, FabricID}",
+          "event_generated": "boolean",
+          "approval_status": "enum: pending_event"
+        }
+      },
+      {
+        "name": "Awaiting_User_Approval",
+        "description": "Server optionally requesting user approval for commissioning",
+        "is_initial": false,
+        "invariants": [
+          "user_approval_required == true",
+          "user_approval_pending == true"
+        ],
+        "state_variables": {
+          "user_approval_required": "boolean",
+          "user_approval_pending": "boolean",
+          "approval_timer_active": "boolean"
+        }
+      },
+      {
+        "name": "Approval_Granted",
+        "description": "CommissioningRequestResult event generated with StatusCode SUCCESS",
+        "is_initial": false,
+        "invariants": [
+          "approval_status == approved",
+          "event_generated == true",
+          "StatusCode == SUCCESS",
+          "has_responded_with_window == false"
+        ],
+        "state_variables": {
+          "approval_status": "enum: approved",
+          "StatusCode": "enum: SUCCESS",
+          "has_responded_with_window": "boolean"
+        }
+      },
+      {
+        "name": "Approval_Denied",
+        "description": "CommissioningRequestResult event generated with StatusCode FAILURE",
+        "is_initial": false,
+        "invariants": [
+          "approval_status == denied",
+          "event_generated == true",
+          "StatusCode == FAILURE"
+        ],
+        "state_variables": {
+          "approval_status": "enum: denied",
+          "StatusCode": "enum: FAILURE"
+        }
+      },
+      {
+        "name": "Approval_Timeout",
+        "description": "User approval timed out, CommissioningRequestResult with StatusCode TIMEOUT",
+        "is_initial": false,
+        "invariants": [
+          "approval_status == timeout",
+          "event_generated == true",
+          "StatusCode == TIMEOUT",
+          "user_approval_timeout_occurred == true"
+        ],
+        "state_variables": {
+          "approval_status": "enum: timeout",
+          "StatusCode": "enum: TIMEOUT",
+          "user_approval_timeout_occurred": "boolean"
+        }
+      },
+      {
+        "name": "CommissionNode_CASE_Validation_Failed",
+        "description": "CommissionNode received without CASE session",
+        "is_initial": false,
+        "invariants": [
+          "session_type != CASE",
+          "error_code == UNEXPECTED_ACCESS"
+        ],
+        "state_variables": {
+          "session_type": "enum",
+          "error_code": "status_code"
+        }
+      },
+      {
+        "name": "CommissionNode_Identity_Mismatch",
+        "description": "CommissionNode from different NodeID or Fabric than approval",
+        "is_initial": false,
+        "invariants": [
+          "CommissionNode.NodeID != Approval.NodeID OR CommissionNode.FabricID != Approval.FabricID",
+          "response_code == FAILURE"
+        ],
+        "state_variables": {
+          "CommissionNode_NodeID": "node_id",
+          "CommissionNode_FabricID": "fabric_id",
+          "Approval_NodeID": "node_id",
+          "Approval_FabricID": "fabric_id"
+        }
+      },
+      {
+        "name": "CommissionNode_RequestID_Invalid",
+        "description": "CommissionNode RequestID not found in approved requests",
+        "is_initial": false,
+        "invariants": [
+          "request_exists(CommissionNode.RequestID) == false",
+          "response_code == FAILURE"
+        ],
+        "state_variables": {
+          "CommissionNode_RequestID": "uint64",
+          "response_code": "status_code"
+        }
+      },
+      {
+        "name": "CommissionNode_No_Approval_Success",
+        "description": "CommissionNode received but no SUCCESS event for RequestID",
+        "is_initial": false,
+        "invariants": [
+          "CommissioningRequestResult.StatusCode != SUCCESS FOR CommissionNode.RequestID",
+          "response_code == FAILURE"
+        ],
+        "state_variables": {
+          "approval_success_exists": "boolean",
+          "response_code": "status_code"
+        }
+      },
+      {
+        "name": "CommissionNode_Already_Used",
+        "description": "CommissionNode for RequestID already responded with ReverseOpenCommissioningWindow",
+        "is_initial": false,
+        "invariants": [
+          "has_responded_with_window == true FOR CommissionNode.RequestID",
+          "no_new_approval == true",
+          "response_code == FAILURE"
+        ],
+        "state_variables": {
+          "has_responded_with_window": "boolean",
+          "response_code": "status_code"
+        }
+      },
+      {
+        "name": "Commissioning_Window_Preparation",
+        "description": "Server preparing ReverseOpenCommissioningWindow response",
+        "is_initial": false,
+        "invariants": [
+          "CommissionNode_validated == true",
+          "approval_status == approved",
+          "preparing_window_params == true"
+        ],
+        "state_variables": {
+          "CommissionNode_validated": "boolean",
+          "CommissioningTimeout": "uint16",
+          "PAKEPasscodeVerifier": "octstr",
+          "Discriminator": "uint16",
+          "Iterations": "uint32",
+          "Salt": "octstr"
+        }
+      },
+      {
+        "name": "PAKE_Parameters_Invalid",
+        "description": "ReverseOpenCommissioningWindow parameters out of valid range",
+        "is_initial": false,
+        "invariants": [
+          "Iterations NOT IN [1000, 100000] OR length(Salt) NOT IN [16, 32] OR Discriminator > 4095"
+        ],
+        "state_variables": {
+          "parameter_error": "string"
+        }
+      },
+      {
+        "name": "Server_Window_Response_Sent",
+        "description": "Server sent ReverseOpenCommissioningWindow to client",
+        "is_initial": false,
+        "invariants": [
+          "commissioning_window_status == opening",
+          "has_responded_with_window == true",
+          "ReverseOpenCommissioningWindow_sent == true"
+        ],
+        "state_variables": {
+          "commissioning_window_status": "enum: opening",
+          "has_responded_with_window": "boolean",
+          "window_parameters": "struct"
+        }
+      },
+      {
+        "name": "Client_Awaiting_Response",
+        "description": "Client waiting for ReverseOpenCommissioningWindow within timeout",
+        "is_initial": false,
+        "invariants": [
+          "CommissionNode_sent == true",
+          "timer_active == true",
+          "timer_value > 0",
+          "ResponseTimeoutSeconds IN [30, 120]"
+        ],
+        "state_variables": {
+          "timer_active": "boolean",
+          "timer_value": "uint16",
+          "ResponseTimeoutSeconds": "uint16"
+        }
+      },
+      {
+        "name": "Client_Response_Timeout",
+        "description": "Client timeout waiting for ReverseOpenCommissioningWindow",
+        "is_initial": false,
+        "invariants": [
+          "timer_value == 0",
+          "ReverseOpenCommissioningWindow_received == false",
+          "response_invalid == true"
+        ],
+        "state_variables": {
+          "timer_value": "uint16",
+          "response_invalid": "boolean"
+        }
+      },
+      {
+        "name": "Client_Window_Opening",
+        "description": "Client received ReverseOpenCommissioningWindow and opening window",
+        "is_initial": false,
+        "invariants": [
+          "ReverseOpenCommissioningWindow_received == true",
+          "received_within_timeout == true",
+          "opening_commissioning_window == true"
+        ],
+        "state_variables": {
+          "received_within_timeout": "boolean",
+          "target_device": "device_reference",
+          "window_params": "struct"
+        }
+      },
+      {
+        "name": "Client_Device_Mismatch",
+        "description": "Client cannot find device matching VendorID and ProductID",
+        "is_initial": false,
+        "invariants": [
+          "device_found == false OR device.VendorID != approval.VendorID OR device.ProductID != approval.ProductID"
+        ],
+        "state_variables": {
+          "device_found": "boolean",
+          "device_VendorID": "vendor_id",
+          "device_ProductID": "uint16"
+        }
+      },
+      {
+        "name": "Client_Commissioning_Window_Open",
+        "description": "Client opened commissioning window on target device",
+        "is_initial": false,
+        "invariants": [
+          "commissioning_window_status == open",
+          "device_matched == true",
+          "window_active == true"
+        ],
+        "state_variables": {
+          "commissioning_window_status": "enum: open",
+          "device_matched": "boolean",
+          "window_active": "boolean"
+        }
+      },
+      {
+        "name": "Server_Commissioning_Device",
+        "description": "Server commissioning device through opened window",
+        "is_initial": false,
+        "invariants": [
+          "concurrent_commissioning_active == true",
+          "device_attestation_pending == true"
+        ],
+        "state_variables": {
+          "concurrent_commissioning_active": "boolean",
+          "device_attestation_pending": "boolean"
+        }
+      },
+      {
+        "name": "Device_Attestation_Verification",
+        "description": "Server verifying Device Attestation Certificate and Basic Information",
+        "is_initial": false,
+        "invariants": [
+          "device_attestation_complete == true",
+          "verifying_basic_info == true"
+        ],
+        "state_variables": {
+          "device_DAC": "certificate",
+          "device_BasicInfo_VendorID": "vendor_id",
+          "device_BasicInfo_ProductID": "uint16"
+        }
+      },
+      {
+        "name": "Device_Identity_Mismatch",
+        "description": "Device Basic Information VendorID/ProductID does not match approval",
+        "is_initial": false,
+        "invariants": [
+          "device.BasicInfo.VendorID != approval.VendorID OR device.BasicInfo.ProductID != approval.ProductID",
+          "commissioning_aborted == true"
+        ],
+        "state_variables": {
+          "commissioning_aborted": "boolean",
+          "mismatch_detected": "boolean"
+        }
+      },
+      {
+        "name": "Commissioning_Aborted_With_Error",
+        "description": "Server aborted commissioning and should indicate error to user",
+        "is_initial": false,
+        "invariants": [
+          "commissioning_completed == false",
+          "error_indicated_to_user == true OR error_indication_pending == true"
+        ],
+        "state_variables": {
+          "commissioning_completed": "boolean",
+          "error_message": "string"
+        }
+      },
+      {
+        "name": "Commissioning_Complete",
+        "description": "Device successfully commissioned with verified identity",
+        "is_initial": false,
+        "invariants": [
+          "commissioning_completed == true",
+          "device_identity_verified == true",
+          "device_commissioned_to_fabric == true"
+        ],
+        "state_variables": {
+          "commissioning_completed": "boolean",
+          "device_identity_verified": "boolean",
+          "commissioned_device": "device_reference"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "Idle",
+        "to_state": "CASE_Session_Validation_Failed",
+        "trigger": "RequestCommissioningApproval",
+        "guard_condition": "session_type != CASE",
+        "actions": [
+          "error_code := UNSUPPORTED_ACCESS",
+          "generate_failure_response(UNSUPPORTED_ACCESS)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Device_Category_Check_Failed",
+        "trigger": "RequestCommissioningApproval",
+        "guard_condition": "session_type == CASE && device_category NOT IN SupportedDeviceCategories",
+        "actions": [
+          "generate_client_side_check_failure()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Duplicate_RequestID_Detected",
+        "trigger": "RequestCommissioningApproval",
+        "guard_condition": "session_type == CASE && device_category IN SupportedDeviceCategories && check_duplicate_request(RequestID, ClientNodeID, pending_requests) == true",
+        "actions": [
+          "response_code := FAILURE",
+          "generate_failure_response(FAILURE)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Approval_Request_Accepted",
+        "trigger": "RequestCommissioningApproval",
+        "guard_condition": "session_type == CASE && device_category IN SupportedDeviceCategories && check_duplicate_request(RequestID, ClientNodeID, pending_requests) == false",
+        "actions": [
+          "store_approval_request(RequestID, ClientNodeID, VendorID, ProductID, Label, FabricID)",
+          "approval_status := pending_event",
+          "event_generated := false",
+          "generate_success_response()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Request_Accepted",
+        "to_state": "Awaiting_User_Approval",
+        "trigger": "internal_decision",
+        "guard_condition": "user_approval_required == true",
+        "actions": [
+          "request_user_approval(Label, VendorID, ProductID)",
+          "user_approval_pending := true",
+          "start_approval_timer()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Request_Accepted",
+        "to_state": "Approval_Granted",
+        "trigger": "internal_decision",
+        "guard_condition": "user_approval_required == false",
+        "actions": [
+          "StatusCode := SUCCESS",
+          "generate_commissioning_request_result_event(RequestID, ClientNodeID, SUCCESS)",
+          "event_generated := true",
+          "approval_status := approved"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Awaiting_User_Approval",
+        "to_state": "Approval_Granted",
+        "trigger": "user_approval_obtained",
+        "guard_condition": "user_approved == true",
+        "actions": [
+          "StatusCode := SUCCESS",
+          "generate_commissioning_request_result_event(RequestID, ClientNodeID, SUCCESS)",
+          "event_generated := true",
+          "approval_status := approved"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Awaiting_User_Approval",
+        "to_state": "Approval_Timeout",
+        "trigger": "user_approval_timeout",
+        "guard_condition": "approval_timer_expired == true",
+        "actions": [
+          "StatusCode := TIMEOUT",
+          "generate_commissioning_request_result_event(RequestID, ClientNodeID, TIMEOUT)",
+          "event_generated := true",
+          "approval_status := timeout"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Awaiting_User_Approval",
+        "to_state": "Approval_Denied",
+        "trigger": "user_approval_denied",
+        "guard_condition": "user_approved == false && approval_timer_expired == false",
+        "actions": [
+          "StatusCode := FAILURE",
+          "generate_commissioning_request_result_event(RequestID, ClientNodeID, FAILURE)",
+          "event_generated := true",
+          "approval_status := denied"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Granted",
+        "to_state": "CommissionNode_CASE_Validation_Failed",
+        "trigger": "CommissionNode",
+        "guard_condition": "session_type != CASE",
+        "actions": [
+          "error_code := UNEXPECTED_ACCESS",
+          "generate_failure_response(UNEXPECTED_ACCESS)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Granted",
+        "to_state": "CommissionNode_Identity_Mismatch",
+        "trigger": "CommissionNode",
+        "guard_condition": "session_type == CASE && (CommissionNode.NodeID != Approval.NodeID || CommissionNode.FabricID != Approval.FabricID)",
+        "actions": [
+          "response_code := FAILURE",
+          "generate_failure_response(FAILURE)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Granted",
+        "to_state": "CommissionNode_RequestID_Invalid",
+        "trigger": "CommissionNode",
+        "guard_condition": "session_type == CASE && CommissionNode.NodeID == Approval.NodeID && CommissionNode.FabricID == Approval.FabricID && validate_commission_node_requestid(CommissionNode.RequestID, approved_requests) == false",
+        "actions": [
+          "response_code := FAILURE",
+          "generate_failure_response(FAILURE)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Granted",
+        "to_state": "CommissionNode_No_Approval_Success",
+        "trigger": "CommissionNode",
+        "guard_condition": "session_type == CASE && CommissionNode.NodeID == Approval.NodeID && CommissionNode.FabricID == Approval.FabricID && validate_commission_node_requestid(CommissionNode.RequestID, approved_requests) == true && check_approval_success(CommissionNode.RequestID, event_history) == false",
+        "actions": [
+          "response_code := FAILURE",
+          "generate_failure_response(FAILURE)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Granted",
+        "to_state": "CommissionNode_Already_Used",
+        "trigger": "CommissionNode",
+        "guard_condition": "session_type == CASE && CommissionNode.NodeID == Approval.NodeID && CommissionNode.FabricID == Approval.FabricID && validate_commission_node_requestid(CommissionNode.RequestID, approved_requests) == true && check_approval_success(CommissionNode.RequestID, event_history) == true && check_already_responded(CommissionNode.RequestID, response_history) == true && new_approval_received == false",
+        "actions": [
+          "response_code := FAILURE",
+          "generate_failure_response(FAILURE)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Granted",
+        "to_state": "Commissioning_Window_Preparation",
+        "trigger": "CommissionNode",
+        "guard_condition": "session_type == CASE && CommissionNode.NodeID == Approval.NodeID && CommissionNode.FabricID == Approval.FabricID && validate_commission_node_requestid(CommissionNode.RequestID, approved_requests) == true && check_approval_success(CommissionNode.RequestID, event_history) == true && (check_already_responded(CommissionNode.RequestID, response_history) == false || new_approval_received == true)",
+        "actions": [
+          "CommissionNode_validated := true",
+          "prepare_pake_parameters()",
+          "ResponseTimeoutSeconds := CommissionNode.ResponseTimeoutSeconds"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Commissioning_Window_Preparation",
+        "to_state": "PAKE_Parameters_Invalid",
+        "trigger": "internal_validation",
+        "guard_condition": "validate_pake_parameters(Iterations, Salt) == false || validate_discriminator(Discriminator) == false",
+        "actions": [
+          "parameter_error := describe_parameter_error(Iterations, Salt, Discriminator)",
+          "abort_window_preparation()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Commissioning_Window_Preparation",
+        "to_state": "Server_Window_Response_Sent",
+        "trigger": "internal_validation",
+        "guard_condition": "validate_pake_parameters(Iterations, Salt) == true && validate_discriminator(Discriminator) == true",
+        "actions": [
+          "window_message := generate_reverse_open_commissioning_window(CommissioningTimeout, PAKEPasscodeVerifier, Discriminator, Iterations, Salt)",
+          "send_reverse_open_commissioning_window(window_message)",
+          "has_responded_with_window := true",
+          "commissioning_window_status := opening"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Granted",
+        "to_state": "Client_Awaiting_Response",
+        "trigger": "CommissionNode",
+        "guard_condition": "CommissionNode_sent == true",
+        "actions": [
+          "timer_handle := start_response_timer(ResponseTimeoutSeconds)",
+          "timer_active := true",
+          "timer_value := ResponseTimeoutSeconds"
+        ],
+        "timing_requirement": "ResponseTimeoutSeconds IN [30, 120]"
+      },
+      {
+        "from_state": "Client_Awaiting_Response",
+        "to_state": "Client_Awaiting_Response",
+        "trigger": "timer_tick",
+        "guard_condition": "timer_value > 0 && ReverseOpenCommissioningWindow_received == false",
+        "actions": [
+          "timer_value := timer_value - 1"
+        ],
+        "timing_requirement": "1 second tick"
+      },
+      {
+        "from_state": "Client_Awaiting_Response",
+        "to_state": "Client_Response_Timeout",
+        "trigger": "timer_expiry",
+        "guard_condition": "timer_value == 0 && ReverseOpenCommissioningWindow_received == false",
+        "actions": [
+          "timer_active := false",
+          "response_invalid := true",
+          "consider_responses_invalid()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Client_Awaiting_Response",
+        "to_state": "Client_Window_Opening",
+        "trigger": "ReverseOpenCommissioningWindow",
+        "guard_condition": "timer_value > 0 && ReverseOpenCommissioningWindow_received == true",
+        "actions": [
+          "received_within_timeout := true",
+          "timer_active := false",
+          "window_params := extract_window_parameters(ReverseOpenCommissioningWindow)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Client_Window_Opening",
+        "to_state": "Client_Device_Mismatch",
+        "trigger": "device_selection",
+        "guard_condition": "match_device_identity(target_device, approval.VendorID, approval.ProductID) == false",
+        "actions": [
+          "device_found := false",
+          "generate_device_mismatch_error()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Client_Window_Opening",
+        "to_state": "Client_Commissioning_Window_Open",
+        "trigger": "device_selection",
+        "guard_condition": "match_device_identity(target_device, approval.VendorID, approval.ProductID) == true",
+        "actions": [
+          "device_matched := true",
+          "open_commissioning_window(target_device, window_params.PAKEPasscodeVerifier, window_params.Discriminator, window_params.Iterations, window_params.Salt, window_params.CommissioningTimeout)",
+          "commissioning_window_status := open",
+          "window_active := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Client_Commissioning_Window_Open",
+        "to_state": "Server_Commissioning_Device",
+        "trigger": "commissioning_window_opened",
+        "guard_condition": "window_active == true",
+        "actions": [
+          "initiate_concurrent_commissioning()",
+          "concurrent_commissioning_active := true",
+          "device_attestation_pending := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Server_Commissioning_Device",
+        "to_state": "Device_Attestation_Verification",
+        "trigger": "device_attestation_complete",
+        "guard_condition": "device_attestation_pending == true",
+        "actions": [
+          "device_DAC := get_device_attestation_certificate()",
+          "device_BasicInfo_VendorID := get_basic_info_vendor_id()",
+          "device_BasicInfo_ProductID := get_basic_info_product_id()",
+          "verifying_basic_info := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Device_Attestation_Verification",
+        "to_state": "Device_Identity_Mismatch",
+        "trigger": "basic_info_verification",
+        "guard_condition": "check_basic_info_match(device_BasicInfo_VendorID, device_BasicInfo_ProductID, approval.VendorID, approval.ProductID) == false",
+        "actions": [
+          "mismatch_detected := true",
+          "commissioning_aborted := true",
+          "abort_commissioning(identity_mismatch)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Device_Identity_Mismatch",
+        "to_state": "Commissioning_Aborted_With_Error",
+        "trigger": "abort_complete",
+        "guard_condition": "commissioning_aborted == true",
+        "actions": [
+          "commissioning_completed := false",
+          "error_message := generate_identity_mismatch_error_message()",
+          "indicate_error_to_user(error_message)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Device_Attestation_Verification",
+        "to_state": "Commissioning_Complete",
+        "trigger": "basic_info_verification",
+        "guard_condition": "check_basic_info_match(device_BasicInfo_VendorID, device_BasicInfo_ProductID, approval.VendorID, approval.ProductID) == true",
+        "actions": [
+          "device_identity_verified := true",
+          "complete_commissioning(device, fabric)",
+          "commissioning_completed := true",
+          "device_commissioned_to_fabric := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CASE_Session_Validation_Failed",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Device_Category_Check_Failed",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Duplicate_RequestID_Detected",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Denied",
+        "to_state": "Idle",
+        "trigger": "cleanup",
+        "guard_condition": "true",
+        "actions": [
+          "clear_approval_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Approval_Timeout",
+        "to_state": "Idle",
+        "trigger": "cleanup",
+        "guard_condition": "true",
+        "actions": [
+          "clear_approval_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommissionNode_CASE_Validation_Failed",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommissionNode_Identity_Mismatch",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommissionNode_RequestID_Invalid",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommissionNode_No_Approval_Success",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CommissionNode_Already_Used",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PAKE_Parameters_Invalid",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Client_Response_Timeout",
+        "to_state": "Idle",
+        "trigger": "timeout_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_client_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Client_Device_Mismatch",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_client_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Commissioning_Aborted_With_Error",
+        "to_state": "Idle",
+        "trigger": "error_acknowledged",
+        "guard_condition": "true",
+        "actions": [
+          "clear_commissioning_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Commissioning_Complete",
+        "to_state": "Idle",
+        "trigger": "new_request",
+        "guard_condition": "true",
+        "actions": [
+          "clear_commissioning_state()",
+          "reset_for_new_request()"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "check_case_session",
+        "parameters": [
+          {
+            "name": "session_context",
+            "type": "session_object",
+            "description": "Current session context containing session type and authentication status"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that the current session is a CASE (Certificate Authenticated Session Establishment) session with proper authentication credentials",
+        "algorithm_detail": "Check session_context.type field. Return true if session_context.type == CASE and session is authenticated, false otherwise",
+        "usage_in_fsm": "Called in all transitions receiving RequestCommissioningApproval or CommissionNode to enforce CASE session requirement"
+      },
+      {
+        "name": "check_device_category_support",
+        "parameters": [
+          {
+            "name": "device_category",
+            "type": "bitmap_value",
+            "description": "Device category bit to check (e.g., FabricSynchronization bit 0)"
+          },
+          {
+            "name": "SupportedDeviceCategories",
+            "type": "map32_bitmap",
+            "description": "SupportedDeviceCategoryBitmap attribute value from server"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if the requested device category is supported by this Commissioner Control Cluster server",
+        "algorithm_detail": "Perform bitwise AND: (SupportedDeviceCategories & (1 << device_category)). Return true if result is non-zero, false otherwise",
+        "usage_in_fsm": "Called in Idle->Device_Category_Check_Failed transition to validate client's request against server capabilities"
+      },
+      {
+        "name": "check_duplicate_request",
+        "parameters": [
+          {
+            "name": "RequestID",
+            "type": "uint64",
+            "description": "RequestID from incoming RequestCommissioningApproval"
+          },
+          {
+            "name": "ClientNodeID",
+            "type": "node_id",
+            "description": "NodeID of client sending request"
+          },
+          {
+            "name": "pending_requests",
+            "type": "list_of_request_records",
+            "description": "Server's record of pending approval requests"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if RequestID and ClientNodeID combination already exists in pending requests that have not completed or errored",
+        "algorithm_detail": "Iterate through pending_requests. For each record, check if record.RequestID == RequestID AND record.ClientNodeID == ClientNodeID AND record.status IN [pending_event, approved]. Return true if match found, false otherwise",
+        "usage_in_fsm": "Called in Idle->Duplicate_RequestID_Detected transition to enforce SHOULD requirement about avoiding duplicate RequestIDs"
+      },
+      {
+        "name": "store_approval_request",
+        "parameters": [
+          {
+            "name": "RequestID",
+            "type": "uint64",
+            "description": "Unique request identifier"
+          },
+          {
+            "name": "ClientNodeID",
+            "type": "node_id",
+            "description": "Identity of requesting client"
+          },
+          {
+            "name": "VendorID",
+            "type": "vendor_id",
+            "description": "Expected device VendorID"
+          },
+          {
+            "name": "ProductID",
+            "type": "uint16",
+            "description": "Expected device ProductID"
+          },
+          {
+            "name": "Label",
+            "type": "string_max_64",
+            "description": "Optional user-readable device label"
+          },
+          {
+            "name": "FabricID",
+            "type": "fabric_id",
+            "description": "Fabric context of the request"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores approval request details in server's pending_requests table for later validation during CommissionNode",
+        "algorithm_detail": "Create new request_record with all parameters. Add to pending_requests table indexed by RequestID. Set record.status to pending_event, record.timestamp to current time",
+        "usage_in_fsm": "Called in Idle->Approval_Request_Accepted transition to persist request details"
+      },
+      {
+        "name": "generate_commissioning_request_result_event",
+        "parameters": [
+          {
+            "name": "RequestID",
+            "type": "uint64",
+            "description": "RequestID from approval request"
+          },
+          {
+            "name": "ClientNodeID",
+            "type": "node_id",
+            "description": "Client's NodeID"
+          },
+          {
+            "name": "StatusCode",
+            "type": "status_enum",
+            "description": "SUCCESS, TIMEOUT, or FAILURE"
+          }
+        ],
+        "return_type": "void",
+        "description": "Generates fabric-sensitive CommissioningRequestResult event containing approval result",
+        "algorithm_detail": "Create event structure with fields: RequestID, ClientNodeID, StatusCode. Mark event as fabric-sensitive (visible only to nodes on same fabric). Send event to client via Matter event reporting mechanism",
+        "usage_in_fsm": "Called in Approval_Request_Accepted->Approval_Granted/Denied/Timeout transitions to notify client of approval result"
+      },
+      {
+        "name": "request_user_approval",
+        "parameters": [
+          {
+            "name": "Label",
+            "type": "string",
+            "description": "Device label for user display"
+          },
+          {
+            "name": "VendorID",
+            "type": "vendor_id",
+            "description": "Device vendor for user display"
+          },
+          {
+            "name": "ProductID",
+            "type": "uint16",
+            "description": "Device product for user display"
+          }
+        ],
+        "return_type": "approval_status_enum",
+        "description": "Optionally requests user approval for commissioning operation, displaying device identity information to user",
+        "algorithm_detail": "Display UI prompt to user showing Label, VendorID, ProductID. Wait for user response (approve/deny) or timeout. Return approval status based on user action",
+        "usage_in_fsm": "Called in Approval_Request_Accepted->Awaiting_User_Approval transition when server chooses to require user approval"
+      },
+      {
+        "name": "validate_commission_node_identity",
+        "parameters": [
+          {
+            "name": "CommissionNode_NodeID",
+            "type": "node_id",
+            "description": "NodeID from CommissionNode command"
+          },
+          {
+            "name": "CommissionNode_FabricID",
+            "type": "fabric_id",
+            "description": "FabricID from CommissionNode session"
+          },
+          {
+            "name": "Approval_NodeID",
+            "type": "node_id",
+            "description": "NodeID from stored approval request"
+          },
+          {
+            "name": "Approval_FabricID",
+            "type": "fabric_id",
+            "description": "FabricID from stored approval request"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that CommissionNode command is sent from same NodeID and Fabric as RequestCommissioningApproval",
+        "algorithm_detail": "Compare identities: return (CommissionNode_NodeID == Approval_NodeID AND CommissionNode_FabricID == Approval_FabricID)",
+        "usage_in_fsm": "Called in Approval_Granted->CommissionNode_Identity_Mismatch transition to enforce identity binding security property"
+      },
+      {
+        "name": "validate_commission_node_requestid",
+        "parameters": [
+          {
+            "name": "RequestID",
+            "type": "uint64",
+            "description": "RequestID from CommissionNode command"
+          },
+          {
+            "name": "approved_requests",
+            "type": "list_of_request_records",
+            "description": "Server's table of approved requests"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that RequestID exists in approved_requests table",
+        "algorithm_detail": "Search approved_requests for record with matching RequestID. Return true if found, false otherwise",
+        "usage_in_fsm": "Called in Approval_Granted->CommissionNode_RequestID_Invalid transition to validate RequestID"
+      },
+      {
+        "name": "check_approval_success",
+        "parameters": [
+          {
+            "name": "RequestID",
+            "type": "uint64",
+            "description": "RequestID to check"
+          },
+          {
+            "name": "event_history",
+            "type": "event_log",
+            "description": "Log of CommissioningRequestResult events"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if CommissioningRequestResult event with StatusCode SUCCESS exists for given RequestID",
+        "algorithm_detail": "Search event_history for event where event.RequestID == RequestID AND event.StatusCode == SUCCESS. Return true if found, false otherwise",
+        "usage_in_fsm": "Called in Approval_Granted->CommissionNode_No_Approval_Success transition to enforce approval requirement"
+      },
+      {
+        "name": "check_already_responded",
+        "parameters": [
+          {
+            "name": "RequestID",
+            "type": "uint64",
+            "description": "RequestID to check"
+          },
+          {
+            "name": "response_history",
+            "type": "response_log",
+            "description": "Log of ReverseOpenCommissioningWindow responses sent"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if ReverseOpenCommissioningWindow already sent for given RequestID",
+        "algorithm_detail": "Search response_history for entry where entry.RequestID == RequestID AND entry.response_sent == true. Return true if found, false otherwise",
+        "usage_in_fsm": "Called in Approval_Granted->CommissionNode_Already_Used transition to enforce single-use approval property"
+      },
+      {
+        "name": "generate_reverse_open_commissioning_window",
+        "parameters": [
+          {
+            "name": "CommissioningTimeout",
+            "type": "uint16",
+            "description": "Duration commissioning window remains open"
+          },
+          {
+            "name": "PAKEPasscodeVerifier",
+            "type": "octstr",
+            "description": "PAKE verifier for commissioning authentication"
+          },
+          {
+            "name": "Discriminator",
+            "type": "uint16",
+            "description": "Device discriminator for discovery, max 4095"
+          },
+          {
+            "name": "Iterations",
+            "type": "uint32",
+            "description": "PAKE iteration count, range 1000-100000"
+          },
+          {
+            "name": "Salt",
+            "type": "octstr",
+            "description": "PAKE salt, length 16-32 bytes"
+          }
+        ],
+        "return_type": "ReverseOpenCommissioningWindow_message",
+        "description": "Creates ReverseOpenCommissioningWindow command message with PAKE parameters for client to open commissioning window",
+        "algorithm_detail": "Construct command message structure with command ID 0x02, populate fields: CommissioningTimeout (field 0), PAKEPasscodeVerifier (field 1), Discriminator (field 2), Iterations (field 3), Salt (field 4). Return encoded message",
+        "usage_in_fsm": "Called in Commissioning_Window_Preparation->Server_Window_Response_Sent transition to create response for client"
+      },
+      {
+        "name": "validate_pake_parameters",
+        "parameters": [
+          {
+            "name": "Iterations",
+            "type": "uint32",
+            "description": "PAKE iteration count to validate"
+          },
+          {
+            "name": "Salt",
+            "type": "octstr",
+            "description": "PAKE salt to validate"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Validates PAKE parameters are within secure ranges: Iterations in [1000, 100000], Salt length in [16, 32] bytes",
+        "algorithm_detail": "Check constraints: return (Iterations >= 1000 AND Iterations <= 100000 AND length(Salt) >= 16 AND length(Salt) <= 32)",
+        "usage_in_fsm": "Called in Commissioning_Window_Preparation->PAKE_Parameters_Invalid transition to validate cryptographic parameter security"
+      },
+      {
+        "name": "validate_discriminator",
+        "parameters": [
+          {
+            "name": "Discriminator",
+            "type": "uint16",
+            "description": "Discriminator value to validate"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Validates discriminator is within valid 12-bit range (max 4095)",
+        "algorithm_detail": "Check constraint: return (Discriminator <= 4095)",
+        "usage_in_fsm": "Called in Commissioning_Window_Preparation->PAKE_Parameters_Invalid transition to validate discriminator range"
+      },
+      {
+        "name": "start_response_timer",
+        "parameters": [
+          {
+            "name": "ResponseTimeoutSeconds",
+            "type": "uint16",
+            "description": "Timeout duration in seconds, range 30-120"
+          }
+        ],
+        "return_type": "timer_handle",
+        "description": "Starts countdown timer for client to wait for ReverseOpenCommissioningWindow response",
+        "algorithm_detail": "Create timer object with initial value ResponseTimeoutSeconds. Start countdown at 1 second resolution. Return timer handle for later checking",
+        "usage_in_fsm": "Called in Approval_Granted->Client_Awaiting_Response transition to enforce timeout property"
+      },
+      {
+        "name": "match_device_identity",
+        "parameters": [
+          {
+            "name": "device",
+            "type": "device_reference",
+            "description": "Target device to check"
+          },
+          {
+            "name": "VendorID",
+            "type": "vendor_id",
+            "description": "Expected VendorID from approval"
+          },
+          {
+            "name": "ProductID",
+            "type": "uint16",
+            "description": "Expected ProductID from approval"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if device's VendorID and ProductID match expected values from approval request",
+        "algorithm_detail": "Retrieve device.VendorID and device.ProductID. Return (device.VendorID == VendorID AND device.ProductID == ProductID)",
+        "usage_in_fsm": "Called in Client_Window_Opening->Client_Device_Mismatch/Client_Commissioning_Window_Open transitions to verify correct device selected"
+      },
+      {
+        "name": "open_commissioning_window",
+        "parameters": [
+          {
+            "name": "device",
+            "type": "device_reference",
+            "description": "Device on which to open commissioning window"
+          },
+          {
+            "name": "PAKEPasscodeVerifier",
+            "type": "octstr",
+            "description": "PAKE verifier for authentication"
+          },
+          {
+            "name": "Discriminator",
+            "type": "uint16",
+            "description": "Device discriminator"
+          },
+          {
+            "name": "Iterations",
+            "type": "uint32",
+            "description": "PAKE iterations"
+          },
+          {
+            "name": "Salt",
+            "type": "octstr",
+            "description": "PAKE salt"
+          },
+          {
+            "name": "CommissioningTimeout",
+            "type": "uint16",
+            "description": "Window duration"
+          }
+        ],
+        "return_type": "void",
+        "description": "Opens commissioning window on target device using provided PAKE parameters. This is an alias to OpenCommissioningWindow command in Administrator Commissioning Cluster",
+        "algorithm_detail": "Invoke Administrator Commissioning Cluster's OpenCommissioningWindow command on device with provided parameters. Configure device to accept commissioning connections using PAKE authentication with specified parameters for CommissioningTimeout duration",
+        "usage_in_fsm": "Called in Client_Window_Opening->Client_Commissioning_Window_Open transition to establish commissioning access on device"
+      },
+      {
+        "name": "verify_device_attestation",
+        "parameters": [
+          {
+            "name": "device",
+            "type": "device_reference",
+            "description": "Device undergoing attestation"
+          }
+        ],
+        "return_type": "DAC_verification_result",
+        "description": "Performs Device Attestation Procedure to verify device's Device Attestation Certificate and extract verified VendorID and ProductID",
+        "algorithm_detail": "Execute Matter Device Attestation Procedure: retrieve Device Attestation Certificate (DAC), verify DAC signature chain against Product Attestation Authority, extract VendorID and ProductID from DAC, verify device signature. Return verification result containing VendorID and ProductID if successful",
+        "usage_in_fsm": "Called in Server_Commissioning_Device->Device_Attestation_Verification transition during concurrent commissioning flow"
+      },
+      {
+        "name": "check_basic_info_match",
+        "parameters": [
+          {
+            "name": "device_BasicInfo_VendorID",
+            "type": "vendor_id",
+            "description": "VendorID from device's Basic Information Cluster"
+          },
+          {
+            "name": "device_BasicInfo_ProductID",
+            "type": "uint16",
+            "description": "ProductID from device's Basic Information Cluster"
+          },
+          {
+            "name": "approval_VendorID",
+            "type": "vendor_id",
+            "description": "VendorID from RequestCommissioningApproval"
+          },
+          {
+            "name": "approval_ProductID",
+            "type": "uint16",
+            "description": "ProductID from RequestCommissioningApproval"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that device's Basic Information Cluster VendorID and ProductID match values from approval request, as required during commissioning",
+        "algorithm_detail": "Compare identities: return (device_BasicInfo_VendorID == approval_VendorID AND device_BasicInfo_ProductID == approval_ProductID)",
+        "usage_in_fsm": "Called in Device_Attestation_Verification->Device_Identity_Mismatch/Commissioning_Complete transitions to enforce device identity verification security property"
+      },
+      {
+        "name": "abort_commissioning",
+        "parameters": [
+          {
+            "name": "reason",
+            "type": "error_code",
+            "description": "Reason for aborting (e.g., identity_mismatch)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Aborts ongoing commissioning operation and cleans up commissioning state. Server SHALL NOT complete commissioning when this is called",
+        "algorithm_detail": "Terminate commissioning connection to device. Close any open commissioning windows. Remove device from pending commissioning list. Log abort reason. Clean up temporary commissioning state",
+        "usage_in_fsm": "Called in Device_Attestation_Verification->Device_Identity_Mismatch transition when VendorID/ProductID mismatch detected"
+      },
+      {
+        "name": "indicate_error_to_user",
+        "parameters": [
+          {
+            "name": "error_message",
+            "type": "string",
+            "description": "Error description to display"
+          }
+        ],
+        "return_type": "void",
+        "description": "Indicates error to user through UI or logging mechanism. Server SHOULD call this when commissioning fails due to VendorID/ProductID mismatch",
+        "algorithm_detail": "Display error_message through available user interface (screen, app notification, log). Implementation-specific but user must be able to see why commissioning failed",
+        "usage_in_fsm": "Called in Device_Identity_Mismatch->Commissioning_Aborted_With_Error transition to fulfill SHOULD requirement for error notification"
+      },
+      {
+        "name": "complete_commissioning",
+        "parameters": [
+          {
+            "name": "device",
+            "type": "device_reference",
+            "description": "Device to commission"
+          },
+          {
+            "name": "fabric",
+            "type": "fabric_reference",
+            "description": "Fabric onto which device is commissioned"
+          }
+        ],
+        "return_type": "void",
+        "description": "Completes commissioning of device onto fabric after all verification checks passed",
+        "algorithm_detail": "Finalize device commissioning: install fabric credentials (NOC, ICAC, root CA) on device, assign NodeID, configure ACLs, complete operational certificate chain, add device to fabric's node list, close commissioning window",
+        "usage_in_fsm": "Called in Device_Attestation_Verification->Commissioning_Complete transition when all identity checks succeed"
+      },
+      {
+        "name": "get_device_attestation_certificate",
+        "parameters": [],
+        "return_type": "X509_certificate",
+        "description": "Retrieves Device Attestation Certificate from device during Device Attestation Procedure",
+        "algorithm_detail": "Request and receive DAC from device via Matter commissioning protocol. Verify certificate format and signature chain. Return parsed certificate containing VendorID and ProductID in subject fields",
+        "usage_in_fsm": "Called in Server_Commissioning_Device->Device_Attestation_Verification transition to obtain device identity credentials"
+      },
+      {
+        "name": "get_basic_info_vendor_id",
+        "parameters": [],
+        "return_type": "vendor_id",
+        "description": "Reads VendorID attribute from device's Basic Information Cluster",
+        "algorithm_detail": "Send Read Attribute request to device for Basic Information Cluster (0x0028) attribute VendorID (0x0002). Parse and return uint16 VendorID value",
+        "usage_in_fsm": "Called in Server_Commissioning_Device->Device_Attestation_Verification transition to retrieve device identity for verification"
+      },
+      {
+        "name": "get_basic_info_product_id",
+        "parameters": [],
+        "return_type": "uint16",
+        "description": "Reads ProductID attribute from device's Basic Information Cluster",
+        "algorithm_detail": "Send Read Attribute request to device for Basic Information Cluster (0x0028) attribute ProductID (0x0003). Parse and return uint16 ProductID value",
+        "usage_in_fsm": "Called in Server_Commissioning_Device->Device_Attestation_Verification transition to retrieve device identity for verification"
+      },
+      {
+        "name": "generate_failure_response",
+        "parameters": [
+          {
+            "name": "status_code",
+            "type": "status_enum",
+            "description": "Error status code (UNSUPPORTED_ACCESS, UNEXPECTED_ACCESS, FAILURE)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Generates failure response to client command with specified status code",
+        "algorithm_detail": "Create Matter status response message with provided status_code. Send response to client that sent the command",
+        "usage_in_fsm": "Called in various error state transitions to return failure status to client"
+      },
+      {
+        "name": "generate_success_response",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Generates SUCCESS response to RequestCommissioningApproval command",
+        "algorithm_detail": "Create Matter status response message with status_code = SUCCESS. Send response to client. Note: actual approval result comes later via CommissioningRequestResult event",
+        "usage_in_fsm": "Called in Idle->Approval_Request_Accepted transition per spec requirement that server always returns SUCCESS for correctly formatted request"
+      },
+      {
+        "name": "prepare_pake_parameters",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Prepares PAKE parameters for ReverseOpenCommissioningWindow command",
+        "algorithm_detail": "Generate or retrieve: CommissioningTimeout from configuration, PAKEPasscodeVerifier from secure storage or generation, Discriminator from device info, Iterations from security policy (1000-100000), Salt from secure random generator (16-32 bytes)",
+        "usage_in_fsm": "Called in Approval_Granted->Commissioning_Window_Preparation transition to prepare window parameters"
+      },
+      {
+        "name": "send_reverse_open_commissioning_window",
+        "parameters": [
+          {
+            "name": "window_message",
+            "type": "ReverseOpenCommissioningWindow_message",
+            "description": "Encoded ReverseOpenCommissioningWindow command"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sends ReverseOpenCommissioningWindow command from server to client",
+        "algorithm_detail": "Transmit window_message over CASE session to client. Mark request as responded in response_history",
+        "usage_in_fsm": "Called in Commissioning_Window_Preparation->Server_Window_Response_Sent transition to send window parameters to client"
+      },
+      {
+        "name": "initiate_concurrent_commissioning",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Initiates concurrent connection commissioning flow from server to device through opened commissioning window",
+        "algorithm_detail": "Establish commissioning connection to device using PAKE parameters from ReverseOpenCommissioningWindow. Begin Matter commissioning protocol flow: PAKE handshake, device attestation, operational credential provisioning",
+        "usage_in_fsm": "Called in Client_Commissioning_Window_Open->Server_Commissioning_Device transition to start commissioning device onto server's fabric"
+      },
+      {
+        "name": "extract_window_parameters",
+        "parameters": [
+          {
+            "name": "ReverseOpenCommissioningWindow",
+            "type": "command_message",
+            "description": "Received ReverseOpenCommissioningWindow command"
+          }
+        ],
+        "return_type": "window_parameters_struct",
+        "description": "Extracts PAKE parameters from ReverseOpenCommissioningWindow command for opening commissioning window",
+        "algorithm_detail": "Parse ReverseOpenCommissioningWindow message. Extract fields: CommissioningTimeout (field 0), PAKEPasscodeVerifier (field 1), Discriminator (field 2), Iterations (field 3), Salt (field 4). Return as structured object",
+        "usage_in_fsm": "Called in Client_Awaiting_Response->Client_Window_Opening transition to parse received window parameters"
+      },
+      {
+        "name": "consider_responses_invalid",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Marks any future ReverseOpenCommissioningWindow responses as invalid due to timeout",
+        "algorithm_detail": "Set client state to reject any ReverseOpenCommissioningWindow messages for current RequestID. Clean up pending request state",
+        "usage_in_fsm": "Called in Client_Awaiting_Response->Client_Response_Timeout transition when ResponseTimeoutSeconds expires"
+      },
+      {
+        "name": "describe_parameter_error",
+        "parameters": [
+          {
+            "name": "Iterations",
+            "type": "uint32",
+            "description": "Iterations value to check"
+          },
+          {
+            "name": "Salt",
+            "type": "octstr",
+            "description": "Salt value to check"
+          },
+          {
+            "name": "Discriminator",
+            "type": "uint16",
+            "description": "Discriminator value to check"
+          }
+        ],
+        "return_type": "string",
+        "description": "Generates descriptive error message for PAKE parameter validation failures",
+        "algorithm_detail": "Check each parameter: if Iterations < 1000 or > 100000, return 'Iterations out of range [1000, 100000]'. If length(Salt) < 16 or > 32, return 'Salt length out of range [16, 32]'. If Discriminator > 4095, return 'Discriminator exceeds 4095'. Return combined error message",
+        "usage_in_fsm": "Called in Commissioning_Window_Preparation->PAKE_Parameters_Invalid transition to provide error details"
+      },
+      {
+        "name": "abort_window_preparation",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Aborts ReverseOpenCommissioningWindow preparation due to invalid parameters",
+        "algorithm_detail": "Clean up window preparation state. Do not send ReverseOpenCommissioningWindow. Log error. Return failure to client",
+        "usage_in_fsm": "Called in Commissioning_Window_Preparation->PAKE_Parameters_Invalid transition when parameter validation fails"
+      },
+      {
+        "name": "generate_device_mismatch_error",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Generates error when client cannot find device matching approval VendorID/ProductID",
+        "algorithm_detail": "Log error indicating device with specified VendorID/ProductID not found or accessible. Abort commissioning window opening",
+        "usage_in_fsm": "Called in Client_Window_Opening->Client_Device_Mismatch transition when device selection fails"
+      },
+      {
+        "name": "generate_identity_mismatch_error_message",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Creates error message for VendorID/ProductID mismatch during commissioning",
+        "algorithm_detail": "Format error message: 'Device identity mismatch: approval requested VendorID=<approval.VendorID>, ProductID=<approval.ProductID>, but device reported VendorID=<device.VendorID>, ProductID=<device.ProductID>'. Return formatted string",
+        "usage_in_fsm": "Called in Device_Identity_Mismatch->Commissioning_Aborted_With_Error transition to provide detailed mismatch information"
+      },
+      {
+        "name": "clear_error_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clears error state and returns FSM to Idle for new request",
+        "algorithm_detail": "Reset all error flags. Clear temporary state variables. Remove failed request from pending_requests table. Ready system for new RequestCommissioningApproval",
+        "usage_in_fsm": "Called in various error state->Idle transitions to clean up after errors"
+      },
+      {
+        "name": "clear_approval_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clears approval state after denial or timeout",
+        "algorithm_detail": "Remove request from pending_requests table. Clear approval_status. Reset event_generated flag. Ready system for new request",
+        "usage_in_fsm": "Called in Approval_Denied/Timeout->Idle transitions to clean up after approval failure"
+      },
+      {
+        "name": "clear_client_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clears client-side state after error or timeout",
+        "algorithm_detail": "Stop any active timers. Clear window parameters. Reset response tracking flags. Ready client for new commissioning attempt",
+        "usage_in_fsm": "Called in client error state->Idle transitions to clean up client state"
+      },
+      {
+        "name": "clear_commissioning_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clears commissioning state after completion or abort",
+        "algorithm_detail": "Close commissioning windows. Clear device references. Remove from active commissioning table. Update request status to completed or failed. Ready for new commissioning request",
+        "usage_in_fsm": "Called in Commissioning_Aborted_With_Error/Complete->Idle transitions to clean up after commissioning ends"
+      },
+      {
+        "name": "reset_for_new_request",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Resets FSM state to accept new RequestCommissioningApproval",
+        "algorithm_detail": "Clear all state variables to initial values. Reset approval_status to none. Clear request_record. Set commissioning_window_status to closed",
+        "usage_in_fsm": "Called in Commissioning_Complete->Idle transition to prepare for next commissioning operation"
+      },
+      {
+        "name": "start_approval_timer",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Starts timer for user approval timeout",
+        "algorithm_detail": "Create and start timer with manufacturer-determined duration for user approval. When timer expires, trigger user_approval_timeout event",
+        "usage_in_fsm": "Called in Approval_Request_Accepted->Awaiting_User_Approval transition to enforce approval timeout"
+      },
+      {
+        "name": "generate_client_side_check_failure",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Handles client-side device category check failure (client should not have sent request)",
+        "algorithm_detail": "This represents client violating SHALL NOT requirement. Server may log the violation. In practice, if server receives such request, it should reject it",
+        "usage_in_fsm": "Called in Idle->Device_Category_Check_Failed transition when client violates device category precondition"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "CASE Session",
+        "definition": "Certificate Authenticated Session Establishment - a secure authenticated session protocol in Matter using operational certificates to establish encrypted communication between nodes with verified identities",
+        "security_relevance": "CRITICAL: All Commissioner Control Cluster commands require CASE session. Without CASE, commands fail with UNSUPPORTED_ACCESS or UNEXPECTED_ACCESS. Ensures only authenticated fabric members can request commissioning operations"
+      },
+      {
+        "term": "RequestID",
+        "definition": "64-bit unique identifier set by client in RequestCommissioningApproval to correlate approval request with subsequent CommissionNode command and server responses",
+        "security_relevance": "HIGH: RequestID is security-critical for binding approval to commissioning operation. Duplicate RequestIDs create confusion. Stolen RequestIDs enable session hijacking. Must be unique per client"
+      },
+      {
+        "term": "Fabric-Sensitive Event",
+        "definition": "Matter event that is only visible to nodes on the same fabric as the event source, enforcing fabric isolation boundaries",
+        "security_relevance": "CRITICAL: CommissioningRequestResult event is fabric-sensitive, preventing cross-fabric information leakage about commissioning operations and device identities"
+      },
+      {
+        "term": "Device Attestation Certificate",
+        "definition": "X.509 certificate containing device's VendorID and ProductID, signed by Product Attestation Authority, used to verify device authenticity during commissioning",
+        "security_relevance": "CRITICAL: DAC verification ensures commissioned device is authentic and matches approval. Prevents counterfeit devices and device substitution attacks"
+      },
+      {
+        "term": "Basic Information Cluster",
+        "definition": "Matter cluster (0x0028) containing device metadata including VendorID and ProductID attributes that must match Device Attestation Certificate values",
+        "security_relevance": "CRITICAL: Server checks Basic Information Cluster VendorID/ProductID against approval request during commissioning. Mismatch causes commissioning abort. Prevents device spoofing"
+      },
+      {
+        "term": "PAKE",
+        "definition": "Password Authenticated Key Exchange - cryptographic protocol (SPAKE2+ in Matter) allowing two parties to establish shared secret using password-derived verifier without revealing password",
+        "security_relevance": "CRITICAL: PAKE parameters (Iterations, Salt, PAKEPasscodeVerifier) must be in secure ranges. Weak parameters enable brute-force attacks on commissioning window"
+      },
+      {
+        "term": "Concurrent Connection Commissioning",
+        "definition": "Commissioning flow where server establishes connection to device through client-opened commissioning window to commission device onto server's fabric",
+        "security_relevance": "HIGH: Enables reverse commissioning pattern for ecosystem-to-ecosystem Fabric Synchronization. Requires careful identity verification to prevent unauthorized commissioning"
+      },
+      {
+        "term": "SupportedDeviceCategories",
+        "definition": "Bitmap attribute indicating which device categories (e.g., FabricSynchronization) this Commissioner Control Cluster server supports for commissioning",
+        "security_relevance": "MEDIUM: Controls what types of devices can be commissioned. Client must check this before sending approval request. Prevents unsupported device commissioning attempts"
+      },
+      {
+        "term": "ResponseTimeoutSeconds",
+        "definition": "Duration (30-120 seconds) client waits for ReverseOpenCommissioningWindow response before considering it invalid",
+        "security_relevance": "HIGH: Enforces temporal bounds on commissioning flow. Responses after timeout are invalid, preventing replay attacks and time-shifted commissioning operations"
+      },
+      {
+        "term": "ReverseOpenCommissioningWindow",
+        "definition": "Server-to-client command (alias to OpenCommissioningWindow) providing PAKE parameters for client to open commissioning window on device, enabling concurrent commissioning",
+        "security_relevance": "CRITICAL: Contains cryptographic material (PAKE parameters). Client must validate device identity before opening window. Server uses window to commission device"
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "CASE_AUTHENTICATION_REQUIRED",
+        "type": "access_control",
+        "description": "All RequestCommissioningApproval and CommissionNode commands must be executed via authenticated CASE session, failing with UNSUPPORTED_ACCESS or UNEXPECTED_ACCESS otherwise",
+        "fsm_states_involved": [
+          "Idle",
+          "CASE_Session_Validation_Failed",
+          "Approval_Granted",
+          "CommissionNode_CASE_Validation_Failed"
+        ],
+        "critical_transitions": [
+          "Idle->CASE_Session_Validation_Failed",
+          "Approval_Granted->CommissionNode_CASE_Validation_Failed"
+        ]
+      },
+      {
+        "property_name": "DEVICE_CATEGORY_AUTHORIZATION",
+        "type": "access_control",
+        "description": "Client shall not request approval for devices whose category is not in SupportedDeviceCategories bitmap",
+        "fsm_states_involved": [
+          "Idle",
+          "Device_Category_Check_Failed"
+        ],
+        "critical_transitions": [
+          "Idle->Device_Category_Check_Failed"
+        ]
+      },
+      {
+        "property_name": "REQUESTID_UNIQUENESS",
+        "type": "consistency",
+        "description": "Server should reject duplicate RequestID+ClientNodeID combinations while previous request is still pending (not completed or errored)",
+        "fsm_states_involved": [
+          "Idle",
+          "Duplicate_RequestID_Detected"
+        ],
+        "critical_transitions": [
+          "Idle->Duplicate_RequestID_Detected"
+        ]
+      },
+      {
+        "property_name": "IDENTITY_BINDING",
+        "type": "authenticity",
+        "description": "CommissionNode must be sent from same NodeID and FabricID as RequestCommissioningApproval to prevent session hijacking",
+        "fsm_states_involved": [
+          "Approval_Granted",
+          "CommissionNode_Identity_Mismatch"
+        ],
+        "critical_transitions": [
+          "Approval_Granted->CommissionNode_Identity_Mismatch"
+        ]
+      },
+      {
+        "property_name": "APPROVAL_REQUIRED",
+        "type": "access_control",
+        "description": "CommissionNode cannot proceed without prior CommissioningRequestResult event with StatusCode SUCCESS for matching RequestID",
+        "fsm_states_involved": [
+          "Approval_Granted",
+          "CommissionNode_No_Approval_Success"
+        ],
+        "critical_transitions": [
+          "Approval_Granted->CommissionNode_No_Approval_Success"
+        ]
+      },
+      {
+        "property_name": "SINGLE_USE_APPROVAL",
+        "type": "consistency",
+        "description": "Each approved RequestID can only be used once for ReverseOpenCommissioningWindow unless client obtains new approval",
+        "fsm_states_involved": [
+          "Approval_Granted",
+          "CommissionNode_Already_Used"
+        ],
+        "critical_transitions": [
+          "Approval_Granted->CommissionNode_Already_Used"
+        ]
+      },
+      {
+        "property_name": "TIMEOUT_ENFORCEMENT",
+        "type": "timing",
+        "description": "Client must receive ReverseOpenCommissioningWindow within ResponseTimeoutSeconds (30-120s) or consider response invalid",
+        "fsm_states_involved": [
+          "Client_Awaiting_Response",
+          "Client_Response_Timeout"
+        ],
+        "critical_transitions": [
+          "Client_Awaiting_Response->Client_Response_Timeout"
+        ]
+      },
+      {
+        "property_name": "DEVICE_IDENTITY_VERIFICATION",
+        "type": "authenticity",
+        "description": "Server must verify device Basic Information Cluster VendorID and ProductID match approval request values, aborting commissioning on mismatch",
+        "fsm_states_involved": [
+          "Device_Attestation_Verification",
+          "Device_Identity_Mismatch",
+          "Commissioning_Aborted_With_Error",
+          "Commissioning_Complete"
+        ],
+        "critical_transitions": [
+          "Device_Attestation_Verification->Device_Identity_Mismatch",
+          "Device_Identity_Mismatch->Commissioning_Aborted_With_Error"
+        ]
+      },
+      {
+        "property_name": "FABRIC_ISOLATION",
+        "type": "confidentiality",
+        "description": "CommissioningRequestResult events are fabric-sensitive, visible only to nodes on same fabric, preventing cross-fabric information leakage",
+        "fsm_states_involved": [
+          "Approval_Granted",
+          "Approval_Denied",
+          "Approval_Timeout"
+        ],
+        "critical_transitions": [
+          "Approval_Request_Accepted->Approval_Granted"
+        ]
+      },
+      {
+        "property_name": "PAKE_PARAMETER_SECURITY",
+        "type": "cryptography",
+        "description": "ReverseOpenCommissioningWindow PAKE parameters must be within secure ranges: Iterations [1000, 100000], Salt [16, 32] bytes, Discriminator <= 4095",
+        "fsm_states_involved": [
+          "Commissioning_Window_Preparation",
+          "PAKE_Parameters_Invalid",
+          "Server_Window_Response_Sent"
+        ],
+        "critical_transitions": [
+          "Commissioning_Window_Preparation->PAKE_Parameters_Invalid",
+          "Commissioning_Window_Preparation->Server_Window_Response_Sent"
+        ]
+      },
+      {
+        "property_name": "CLIENT_DEVICE_MATCHING",
+        "type": "correctness",
+        "description": "Client must open commissioning window on device matching VendorID and ProductID from approval request to prevent device substitution",
+        "fsm_states_involved": [
+          "Client_Window_Opening",
+          "Client_Device_Mismatch",
+          "Client_Commissioning_Window_Open"
+        ],
+        "critical_transitions": [
+          "Client_Window_Opening->Client_Device_Mismatch",
+          "Client_Window_Opening->Client_Commissioning_Window_Open"
+        ]
+      },
+      {
+        "property_name": "COMMISSIONING_ABORT_ON_MISMATCH",
+        "type": "security",
+        "description": "Server shall not complete commissioning when device identity mismatch detected, and should indicate error to user",
+        "fsm_states_involved": [
+          "Device_Identity_Mismatch",
+          "Commissioning_Aborted_With_Error"
+        ],
+        "critical_transitions": [
+          "Device_Attestation_Verification->Device_Identity_Mismatch",
+          "Device_Identity_Mismatch->Commissioning_Aborted_With_Error"
+        ]
+      }
+    ],
+    "initial_state": "Idle",
+    "all_states": [
+      "Idle",
+      "CASE_Session_Validation_Failed",
+      "Device_Category_Check_Failed",
+      "Duplicate_RequestID_Detected",
+      "Approval_Request_Accepted",
+      "Awaiting_User_Approval",
+      "Approval_Granted",
+      "Approval_Denied",
+      "Approval_Timeout",
+      "CommissionNode_CASE_Validation_Failed",
+      "CommissionNode_Identity_Mismatch",
+      "CommissionNode_RequestID_Invalid",
+      "CommissionNode_No_Approval_Success",
+      "CommissionNode_Already_Used",
+      "Commissioning_Window_Preparation",
+      "PAKE_Parameters_Invalid",
+      "Server_Window_Response_Sent",
+      "Client_Awaiting_Response",
+      "Client_Response_Timeout",
+      "Client_Window_Opening",
+      "Client_Device_Mismatch",
+      "Client_Commissioning_Window_Open",
+      "Server_Commissioning_Device",
+      "Device_Attestation_Verification",
+      "Device_Identity_Mismatch",
+      "Commissioning_Aborted_With_Error",
+      "Commissioning_Complete"
+    ],
+    "all_triggers": [
+      "RequestCommissioningApproval",
+      "internal_decision",
+      "user_approval_obtained",
+      "user_approval_timeout",
+      "user_approval_denied",
+      "CommissionNode",
+      "internal_validation",
+      "timer_tick",
+      "timer_expiry",
+      "ReverseOpenCommissioningWindow",
+      "device_selection",
+      "commissioning_window_opened",
+      "device_attestation_complete",
+      "basic_info_verification",
+      "abort_complete",
+      "error_acknowledged",
+      "cleanup",
+      "timeout_acknowledged",
+      "new_request"
+    ],
+    "all_functions_used": [
+      "check_case_session",
+      "check_device_category_support",
+      "check_duplicate_request",
+      "store_approval_request",
+      "generate_commissioning_request_result_event",
+      "request_user_approval",
+      "validate_commission_node_identity",
+      "validate_commission_node_requestid",
+      "check_approval_success",
+      "check_already_responded",
+      "generate_reverse_open_commissioning_window",
+      "validate_pake_parameters",
+      "validate_discriminator",
+      "start_response_timer",
+      "match_device_identity",
+      "open_commissioning_window",
+      "verify_device_attestation",
+      "check_basic_info_match",
+      "abort_commissioning",
+      "indicate_error_to_user",
+      "complete_commissioning",
+      "get_device_attestation_certificate",
+      "get_basic_info_vendor_id",
+      "get_basic_info_product_id",
+      "generate_failure_response",
+      "generate_success_response",
+      "prepare_pake_parameters",
+      "send_reverse_open_commissioning_window",
+      "initiate_concurrent_commissioning",
+      "extract_window_parameters",
+      "consider_responses_invalid",
+      "describe_parameter_error",
+      "abort_window_preparation",
+      "generate_device_mismatch_error",
+      "generate_identity_mismatch_error_message",
+      "clear_error_state",
+      "clear_approval_state",
+      "clear_client_state",
+      "clear_commissioning_state",
+      "reset_for_new_request",
+      "start_approval_timer",
+      "generate_client_side_check_failure"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "CASE_Session_Establishment",
+        "algorithm": "CASE protocol using ECDSA with operational certificates",
+        "inputs": [
+          "Client operational certificate",
+          "Server operational certificate",
+          "Session establishment messages"
+        ],
+        "output": "Authenticated encrypted session with session keys",
+        "assumptions": [
+          "Operational certificates are valid and signed by trusted fabric CA",
+          "ECDSA signature verification is secure",
+          "Session keys derived via secure key derivation",
+          "No certificate private keys are compromised"
+        ]
+      },
+      {
+        "operation": "PAKE_Commissioning_Window",
+        "algorithm": "SPAKE2+ Password Authenticated Key Exchange",
+        "inputs": [
+          "PAKEPasscodeVerifier (derived from setup PIN)",
+          "Discriminator (12-bit device identifier)",
+          "Iterations (PBKDF iterations, 1000-100000)",
+          "Salt (16-32 bytes random)"
+        ],
+        "output": "Shared secret for commissioning session establishment",
+        "assumptions": [
+          "SPAKE2+ implementation is secure against offline dictionary attacks",
+          "Iterations count provides sufficient computational hardness (>= 1000)",
+          "Salt has sufficient entropy (>= 16 bytes)",
+          "PAKEPasscodeVerifier is not leaked or guessable",
+          "Setup PIN has sufficient entropy"
+        ]
+      },
+      {
+        "operation": "Device_Attestation_Verification",
+        "algorithm": "ECDSA signature verification using X.509 certificate chain",
+        "inputs": [
+          "Device Attestation Certificate (DAC)",
+          "Product Attestation Intermediate Certificate (PAI)",
+          "Product Attestation Authority root certificate",
+          "Device signature over attestation challenge"
+        ],
+        "output": "Verified device identity (VendorID, ProductID) from DAC",
+        "assumptions": [
+          "Product Attestation Authority root certificates are trusted",
+          "Certificate chain validation is correct",
+          "Device has not been cloned (private key is unique)",
+          "ECDSA signature algorithm is secure",
+          "Certificate revocation is checked (if applicable)"
+        ]
+      },
+      {
+        "operation": "Fabric_Sensitive_Event_Encryption",
+        "algorithm": "Matter event encryption using fabric session keys",
+        "inputs": [
+          "CommissioningRequestResult event data",
+          "Fabric session encryption key",
+          "Event counter for replay prevention"
+        ],
+        "output": "Encrypted event visible only to fabric members",
+        "assumptions": [
+          "Fabric session keys are not leaked across fabric boundaries",
+          "Event encryption provides confidentiality and integrity",
+          "Only fabric members have decryption keys",
+          "Fabric isolation is enforced at transport layer"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "CASE session protocol is secure and provides mutual authentication between fabric members",
+        "type": "implicit",
+        "if_violated": "Attacker could impersonate legitimate fabric member, send unauthorized RequestCommissioningApproval or CommissionNode commands, bypassing all access control checks"
+      },
+      {
+        "assumption": "Device Attestation Procedure correctly verifies device authenticity and VendorID/ProductID cannot be forged",
+        "type": "implicit",
+        "if_violated": "Attacker could commission counterfeit devices with fake VendorID/ProductID, defeating device identity verification and supply chain security"
+      },
+      {
+        "assumption": "Fabric isolation is maintained - nodes on different fabrics cannot observe each other's encrypted traffic or events",
+        "type": "implicit",
+        "if_violated": "Cross-fabric information leakage enables reconnaissance attacks, revealing commissioning operations and device identities to unauthorized fabrics"
+      },
+      {
+        "assumption": "Clock synchronization between client and server is sufficient for ResponseTimeoutSeconds enforcement",
+        "type": "implicit",
+        "if_violated": "Severe clock skew causes timeout violations: client may reject valid responses or accept expired responses, enabling replay attacks"
+      },
+      {
+        "assumption": "PAKE implementation (SPAKE2+) is secure and Iterations/Salt parameters provide sufficient hardness against brute-force",
+        "type": "explicit",
+        "if_violated": "Weak PAKE parameters enable offline dictionary attacks on commissioning window, allowing unauthorized access to commission devices"
+      },
+      {
+        "assumption": "Basic Information Cluster VendorID and ProductID attributes are immutable after device manufacture and match DAC",
+        "type": "implicit",
+        "if_violated": "Attacker could modify Basic Information Cluster post-attestation, bypassing device identity checks and commissioning wrong device"
+      },
+      {
+        "assumption": "RequestID space is sufficiently large (uint64) to prevent accidental or brute-force collisions",
+        "type": "implicit",
+        "if_violated": "RequestID collisions enable session hijacking where attacker guesses or observes victim's RequestID and steals approved commissioning slot"
+      },
+      {
+        "assumption": "No privileged node with Commissioner Control Cluster server access is compromised",
+        "type": "explicit",
+        "if_violated": "Compromised administrator can bypass all protocol checks, approve arbitrary devices, and commission unauthorized nodes onto fabric"
+      },
+      {
+        "assumption": "Server enforces approval validity timeout (manufacturer-determined) to prevent indefinite approval reuse",
+        "type": "explicit",
+        "if_violated": "Approved RequestIDs remain valid indefinitely, enabling time-shifted attacks where attacker delays CommissionNode to open window at unexpected time"
+      },
+      {
+        "assumption": "SupportedDeviceCategories bitmap accurately reflects server's commissioning capabilities",
+        "type": "explicit",
+        "if_violated": "Client capability negotiation fails, causing either rejected requests for supported devices or attempted commissioning of unsupported devices"
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

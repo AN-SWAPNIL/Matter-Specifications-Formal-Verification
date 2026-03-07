@@ -1,0 +1,657 @@
+{
+  "fsm_model": {
+    "section_name": "Administrator Removal",
+    "section_ref": "Matter 1.4 Core Specification, Chapter 12.2.7",
+    "description": "Complete FSM for removing a Joint Fabric Administrator. Models user consent verification, RemoveFabric command execution, datastore cleanup, CAT version increment, and NOC updates across all remaining administrators.",
+    "states": [
+      {
+        "name": "AdminRemoval_Idle",
+        "description": "Initial state where Joint Fabric is operational. No administrator removal is in progress.",
+        "is_initial": true,
+        "invariants": [
+          "no_removal_in_progress",
+          "all_admins_operational"
+        ],
+        "state_variables": {
+          "removal_active": "boolean (false)",
+          "active_administrators": "array_of_node_ids"
+        }
+      },
+      {
+        "name": "AdminRemoval_AnchorChecking Consent",
+        "description": "Anchor Administrator checking if user consent has been obtained to remove target administrator. Consent required before sending RemoveFabric command.",
+        "is_initial": false,
+        "invariants": [
+          "removal_initiated",
+          "consent_check_pending"
+        ],
+        "state_variables": {
+          "target_admin_node_id": "64-bit",
+          "user_consent_obtained": "boolean"
+        }
+      },
+      {
+        "name": "AdminRemoval_AnchorSendingRemoveFabric",
+        "description": "Anchor Administrator sending RemoveFabric command to target administrator over CASE session. Command instructs target to remove Joint Fabric and delete all fabric-scoped data.",
+        "is_initial": false,
+        "invariants": [
+          "consent_obtained",
+          "remove_fabric_command_sent"
+        ],
+        "state_variables": {
+          "remove_fabric_request_id": "identifier",
+          "case_session_to_target": "session_id"
+        }
+      },
+      {
+        "name": "AdminRemoval_TargetExecutingRemoval",
+        "description": "Target administrator executing RemoveFabric command. Removing Joint Fabric from its local configuration and deleting all associated fabric-scoped data (NOC, RCAC, ICAC, ACLs, keys).",
+        "is_initial": false,
+        "invariants": [
+          "remove_fabric_received",
+          "fabric_removal_in_progress"
+        ],
+        "state_variables": {
+          "fabric_index_to_remove": "8-bit",
+          "fabric_scoped_data_deletion_progress": "integer"
+        }
+      },
+      {
+        "name": "AdminRemoval_TargetDeletingDatastoreEntry",
+        "description": "Target administrator deleting its own entry from Joint Fabric Datastore before completing fabric removal. Updates datastore to reflect removal.",
+        "is_initial": false,
+        "invariants": [
+          "fabric_removed_locally",
+          "datastore_cleanup_in_progress"
+        ],
+        "state_variables": {
+          "datastore_entry_deleted": "boolean",
+          "target_admin_datastore_record": "datastore_entry"
+        }
+      },
+      {
+        "name": "AdminRemoval_TargetComplete",
+        "description": "Target administrator completed fabric removal and datastore cleanup. Sends acknowledgment to Anchor and is no longer part of Joint Fabric.",
+        "is_initial": false,
+        "invariants": [
+          "removal_complete_on_target",
+          "target_disconnected"
+        ],
+        "state_variables": {
+          "removal_acknowledged": "boolean",
+          "target_admin_removed": "boolean (true)"
+        }
+      },
+      {
+        "name": "AdminRemoval_AnchorIncrementingCAT",
+        "description": "Anchor Administrator incrementing Administrator CAT version after target removal. New version will be distributed to all remaining administrators.",
+        "is_initial": false,
+        "invariants": [
+          "target_removed",
+          "cat_version_incrementing"
+        ],
+        "state_variables": {
+          "old_admin_cat_version": "16-bit",
+          "new_admin_cat_version": "16-bit (incremented)"
+        }
+      },
+      {
+        "name": "AdminRemoval_AnchorIssuingSelfNOC",
+        "description": "Anchor Administrator issuing itself a new NOC with updated Administrator CAT version. Self-certification before updating other administrators.",
+        "is_initial": false,
+        "invariants": [
+          "cat_version_incremented",
+          "anchor_self_noc_issuance_pending"
+        ],
+        "state_variables": {
+          "new_anchor_noc": "X.509_certificate",
+          "new_admin_cat_version": "16-bit"
+        }
+      },
+      {
+        "name": "AdminRemoval_AnchorUpdatingOtherAdmins",
+        "description": "Anchor Administrator updating all remaining administrators with new NOCs containing updated Administrator CAT version. Ensures all admins have consistent CAT version.",
+        "is_initial": false,
+        "invariants": [
+          "anchor_self_noc_issued",
+          "updating_other_admins"
+        ],
+        "state_variables": {
+          "remaining_admins": "array_of_node_ids (excluding target and anchor)",
+          "admins_updated_count": "integer"
+        }
+      },
+      {
+        "name": "AdminRemoval_Complete",
+        "description": "Administrator removal complete. Target administrator removed from fabric. All remaining administrators updated with new CAT version. Joint Fabric operational with reduced administrator set.",
+        "is_initial": false,
+        "invariants": [
+          "all_remaining_admins_updated",
+          "cat_version_consistent",
+          "joint_fabric_operational"
+        ],
+        "state_variables": {
+          "removal_complete": "boolean (true)",
+          "active_administrators": "array_of_node_ids (excluding removed admin)"
+        }
+      },
+      {
+        "name": "AdminRemoval_Failed_ConsentDenied",
+        "description": "Error state: User consent not obtained to remove target administrator. Removal aborted.",
+        "is_initial": false,
+        "invariants": [
+          "consent_denied",
+          "removal_aborted",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "UserConsentDenied",
+          "error_reason": "User did not consent to administrator removal"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "AdminRemoval_Idle",
+        "to_state": "AdminRemoval_AnchorCheckingConsent",
+        "trigger": "user_initiates_admin_removal",
+        "guard_condition": "is_anchor_administrator == true && target_admin_exists == true",
+        "actions": [
+          "target_admin_node_id := select_target_admin()",
+          "user_consent_obtained := check_user_consent_for_removal()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AdminRemoval_AnchorCheckingConsent",
+        "to_state": "AdminRemoval_AnchorSendingRemoveFabric",
+        "trigger": "consent_obtained",
+        "guard_condition": "user_consent_obtained == true",
+        "actions": [
+          "case_session_to_target := establish_case_session_to_target_admin(target_admin_node_id)",
+          "remove_fabric_request_id := send_remove_fabric_command(target_admin_node_id)"
+        ],
+        "timing_requirement": "RemoveFabric command timeout: 120 seconds"
+      },
+      {
+        "from_state": "AdminRemoval_AnchorCheckingConsent",
+        "to_state": "AdminRemoval_Failed_ConsentDenied",
+        "trigger": "consent_denied",
+        "guard_condition": "user_consent_obtained == false",
+        "actions": [
+          "abort_admin_removal()",
+          "error_code := 'UserConsentDenied'",
+          "error_reason := 'User did not consent to administrator removal'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AdminRemoval_AnchorSendingRemoveFabric",
+        "to_state": "AdminRemoval_TargetExecutingRemoval",
+        "trigger": "remove_fabric_received",
+        "guard_condition": "remove_fabric_request_id != null",
+        "actions": [
+          "fabric_index_to_remove := identify_joint_fabric_index()",
+          "fabric_scoped_data_deletion_progress := 0"
+        ],
+        "timing_requirement": "Fabric removal timeout: 300 seconds (5 minutes)"
+      },
+      {
+        "from_state": "AdminRemoval_TargetExecutingRemoval",
+        "to_state": "AdminRemoval_TargetDeletingDatastoreEntry",
+        "trigger": "local_fabric_removed",
+        "guard_condition": "fabric_index_to_remove != null",
+        "actions": [
+          "delete_all_fabric_scoped_data(fabric_index_to_remove)",
+          "target_admin_datastore_record := get_self_datastore_entry()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AdminRemoval_TargetDeletingDatastoreEntry",
+        "to_state": "AdminRemoval_TargetComplete",
+        "trigger": "datastore_entry_deleted",
+        "guard_condition": "datastore_entry_deleted == true",
+        "actions": [
+          "delete_datastore_entry(target_admin_datastore_record)",
+          "removal_acknowledged := send_removal_acknowledgment_to_anchor()",
+          "target_admin_removed := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AdminRemoval_TargetComplete",
+        "to_state": "AdminRemoval_AnchorIncrementingCAT",
+        "trigger": "anchor_receives_acknowledgment",
+        "guard_condition": "removal_acknowledged == true",
+        "actions": [
+          "old_admin_cat_version := get_current_admin_cat_version()",
+          "new_admin_cat_version := increment_cat_version(old_admin_cat_version)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AdminRemoval_AnchorIncrementingCAT",
+        "to_state": "AdminRemoval_AnchorIssuingSelfNOC",
+        "trigger": "cat_version_incremented",
+        "guard_condition": "new_admin_cat_version > old_admin_cat_version",
+        "actions": [
+          "new_anchor_noc := issue_self_noc_with_updated_admin_cat(new_admin_cat_version)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AdminRemoval_AnchorIssuingSelfNOC",
+        "to_state": "AdminRemoval_AnchorUpdatingOtherAdmins",
+        "trigger": "anchor_self_noc_issued",
+        "guard_condition": "new_anchor_noc != null",
+        "actions": [
+          "remaining_admins := get_remaining_administrators_excluding_target_and_anchor()",
+          "admins_updated_count := 0"
+        ],
+        "timing_requirement": "Administrator update timeout: 300 seconds (5 minutes)"
+      },
+      {
+        "from_state": "AdminRemoval_AnchorUpdatingOtherAdmins",
+        "to_state": "AdminRemoval_Complete",
+        "trigger": "all_admins_updated",
+        "guard_condition": "admins_updated_count == length(remaining_admins)",
+        "actions": [
+          "foreach_remaining_admin(add_noc_with_updated_admin_cat(new_admin_cat_version))",
+          "active_administrators := remaining_admins + anchor_admin",
+          "removal_complete := true"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "select_target_admin",
+        "parameters": [],
+        "return_type": "64-bit (node_id)",
+        "description": "Selects target administrator to remove based on user input. Returns Node ID of administrator to be removed from Joint Fabric.",
+        "algorithm_detail": "Queries list of all Joint Fabric Administrators from datastore. Presents list to user via UI. User selects administrator to remove. Validates selection is not Anchor Administrator (cannot remove self). Returns selected administrator's Node ID.",
+        "usage_in_fsm": "Called in transition AdminRemoval_Idle → AdminRemoval_AnchorCheckingConsent to identify removal target."
+      },
+      {
+        "name": "check_user_consent_for_removal",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if user consent has been obtained to remove target administrator. Prompts user if consent not already obtained.",
+        "algorithm_detail": "Queries consent management subsystem. If consent not stored, displays UI prompt asking user to confirm administrator removal. Shows target administrator identity and warns about implications (administrator loses access to Joint Fabric). Returns true if consent obtained, false if denied. Consent decision stored for audit trail.",
+        "usage_in_fsm": "Called in transition AdminRemoval_Idle → AdminRemoval_AnchorCheckingConsent to verify authorization for removal."
+      },
+      {
+        "name": "establish_case_session_to_target_admin",
+        "parameters": [
+          {
+            "name": "target_node_id",
+            "type": "64-bit",
+            "description": "Node ID of administrator to remove"
+          }
+        ],
+        "return_type": "session_id",
+        "description": "Establishes CASE session from Anchor Administrator to target administrator. Required for secure RemoveFabric command transmission.",
+        "algorithm_detail": "Initiates CASE protocol using Anchor's NOC to authenticate to target administrator. Performs Sigma handshake with mutual certificate authentication. Derives session keys using HKDF-SHA256. Returns session_id for RemoveFabric command invocation. Session secured with AES-128-CCM encryption.",
+        "usage_in_fsm": "Called in transition AdminRemoval_AnchorCheckingConsent → AdminRemoval_AnchorSendingRemoveFabric to establish secure channel."
+      },
+      {
+        "name": "send_remove_fabric_command",
+        "parameters": [
+          {
+            "name": "target_node_id",
+            "type": "64-bit",
+            "description": "Node ID of administrator to remove"
+          }
+        ],
+        "return_type": "request_id",
+        "description": "Sends RemoveFabric command from Anchor Administrator to target administrator. Commands target to remove Joint Fabric and delete all fabric-scoped data.",
+        "algorithm_detail": "Invokes RemoveFabric command on Node Operational Credentials cluster (cluster ID 0x003E) over CASE session. FabricIndex parameter specifies Joint Fabric to remove (identified by RCAC). Command triggers deletion of NOC, RCAC, ICAC, ACLs, keys, bindings, group keys. Returns request_id for tracking response. Timeout: 120 seconds.",
+        "usage_in_fsm": "Called in transition AdminRemoval_AnchorCheckingConsent → AdminRemoval_AnchorSendingRemoveFabric to initiate removal."
+      },
+      {
+        "name": "abort_admin_removal",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Aborts administrator removal procedure. Cleans up removal state and returns to operational mode without removing administrator.",
+        "algorithm_detail": "Rolls back any partial removal state changes. Clears removal_active flag. Logs abort event with reason. Does not modify any fabric configuration or administrator credentials. Target administrator remains in Joint Fabric with full administrative access.",
+        "usage_in_fsm": "Called in transition AdminRemoval_AnchorCheckingConsent → AdminRemoval_Failed_ConsentDenied to cleanly terminate removal."
+      },
+      {
+        "name": "identify_joint_fabric_index",
+        "parameters": [],
+        "return_type": "8-bit (fabric_index)",
+        "description": "Identifies local Fabric Index corresponding to Joint Fabric on target administrator. Fabric Index is used in fabric-scoped data deletion.",
+        "algorithm_detail": "Queries local fabric table on target administrator. Searches for fabric entry matching Joint Fabric RCAC (Anchor CA RCAC). Returns Fabric Index (1-255) associated with Joint Fabric. If Joint Fabric not found, returns error (should not occur if administrator is legitimate Joint Fabric member).",
+        "usage_in_fsm": "Called in transition AdminRemoval_AnchorSendingRemoveFabric → AdminRemoval_TargetExecutingRemoval to identify removal target."
+      },
+      {
+        "name": "delete_all_fabric_scoped_data",
+        "parameters": [
+          {
+            "name": "fabric_index",
+            "type": "8-bit",
+            "description": "Fabric Index identifying fabric to remove"
+          }
+        ],
+        "return_type": "void",
+        "description": "Deletes all fabric-scoped data associated with specified Fabric Index. Includes NOC, RCAC, ICAC, ACL entries, operational keys, bindings, group keys.",
+        "algorithm_detail": "Iterates over all fabric-scoped data structures: Fabrics table, TrustedRootCertificates, NOCs, ACL table, Group Key Management table, Binding table. Deletes all entries where FabricIndex matches specified value. Frees Fabric Index slot. Securely wipes cryptographic keys from storage. Operation is irreversible. Returns after all data deleted.",
+        "usage_in_fsm": "Called in transition AdminRemoval_TargetExecutingRemoval → AdminRemoval_TargetDeletingDatastoreEntry to complete fabric removal."
+      },
+      {
+        "name": "get_self_datastore_entry",
+        "parameters": [],
+        "return_type": "datastore_entry",
+        "description": "Retrieves target administrator's own entry from Joint Fabric Datastore. Entry contains administrator's Node ID, ICAC, vendor info.",
+        "algorithm_detail": "Queries Joint Fabric Datastore for entry matching target administrator's Node ID. Returns datastore_entry structure containing administrator record. Entry will be deleted as part of removal process to reflect administrator's departure from Joint Fabric.",
+        "usage_in_fsm": "Called in transition AdminRemoval_TargetExecutingRemoval → AdminRemoval_TargetDeletingDatastoreEntry to identify entry for deletion."
+      },
+      {
+        "name": "delete_datastore_entry",
+        "parameters": [
+          {
+            "name": "entry",
+            "type": "datastore_entry",
+            "description": "Datastore entry to delete"
+          }
+        ],
+        "return_type": "void",
+        "description": "Deletes specified entry from Joint Fabric Datastore. Removes administrator record from canonical datastore.",
+        "algorithm_detail": "Invokes delete operation on Joint Fabric Datastore cluster. Removes entry matching provided datastore_entry identifier. Datastore propagates deletion to all subscribed administrators. Entry removal prevents removed administrator from being rediscovered or reauthorized. Deletion is immediate and visible to all datastore subscribers.",
+        "usage_in_fsm": "Called in transition AdminRemoval_TargetDeletingDatastoreEntry → AdminRemoval_TargetComplete to clean up datastore."
+      },
+      {
+        "name": "send_removal_acknowledgment_to_anchor",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Sends acknowledgment from target administrator to Anchor Administrator indicating successful removal completion.",
+        "algorithm_detail": "Constructs RemoveFabricResponse command with StatusCode Success. Sends over CASE session (if still active) or as best-effort message to Anchor. Acknowledgment indicates fabric-scoped data deleted and datastore entry removed. Returns true if acknowledgment sent, false if unable to send (acceptable failure since removal is local operation).",
+        "usage_in_fsm": "Called in transition AdminRemoval_TargetDeletingDatastoreEntry → AdminRemoval_TargetComplete to notify Anchor."
+      },
+      {
+        "name": "get_current_admin_cat_version",
+        "parameters": [],
+        "return_type": "16-bit",
+        "description": "Retrieves current Administrator CAT version number from datastore. Version will be incremented to revoke removed administrator's access.",
+        "algorithm_detail": "Queries AdministratorCATVersion attribute from Joint Fabric Datastore. Returns 16-bit version number currently in use. All active Administrator NOCs contain this version. Incrementing version will invalidate removed administrator's cached credentials.",
+        "usage_in_fsm": "Called in transition AdminRemoval_TargetComplete → AdminRemoval_AnchorIncrementingCAT to prepare version increment."
+      },
+      {
+        "name": "increment_cat_version",
+        "parameters": [
+          {
+            "name": "current_version",
+            "type": "16-bit",
+            "description": "Current CAT version number"
+          }
+        ],
+        "return_type": "16-bit",
+        "description": "Increments Administrator CAT version number. New version will be distributed to all remaining administrators, cryptographically revoking removed administrator.",
+        "algorithm_detail": "Adds 1 to current_version value. Handles overflow by wrapping at 16-bit boundary (0xFFFF + 1 = 0x0000). New version immediately stored in datastore and used for subsequent NOC issuance. Removed administrator's NOC contains old version and will be rejected by all nodes with ACL entries referencing new version.",
+        "usage_in_fsm": "Called in transition AdminRemoval_TargetComplete → AdminRemoval_AnchorIncrementingCAT to generate new CAT version."
+      },
+      {
+        "name": "issue_self_noc_with_updated_admin_cat",
+        "parameters": [
+          {
+            "name": "cat_version",
+            "type": "16-bit",
+            "description": "Updated Administrator CAT version"
+          }
+        ],
+        "return_type": "X.509_certificate",
+        "description": "Anchor Administrator issues itself a new NOC with updated Administrator CAT version. Self-certification before updating other administrators.",
+        "algorithm_detail": "Generates new NOC for Anchor with Subject DN containing: Node ID, Fabric ID, Anchor/Datastore CAT (if Anchor also Datastore), Administrator CAT with specified version. Signs NOC using Anchor's ICAC private key. Issuer is Anchor ICAC which chains to Anchor RCAC. Returns DER-encoded X.509 certificate. Anchor installs this NOC locally before updating others.",
+        "usage_in_fsm": "Called in transition AdminRemoval_AnchorIncrementingCAT → AdminRemoval_AnchorIssuingSelfNOC to update Anchor's credentials."
+      },
+      {
+        "name": "get_remaining_administrators_excluding_target_and_anchor",
+        "parameters": [],
+        "return_type": "array_of_node_ids",
+        "description": "Retrieves list of all remaining Joint Fabric Administrators excluding removed administrator and Anchor Administrator. These administrators need NOC updates.",
+        "algorithm_detail": "Queries Administrator list from Joint Fabric Datastore. Filters to include only administrators with valid Administrator CAT. Excludes target administrator (being removed) and Anchor Administrator (self, already updated). Returns array of Node IDs for administrators requiring NOC updates with new CAT version.",
+        "usage_in_fsm": "Called in transition AdminRemoval_AnchorIssuingSelfNOC → AdminRemoval_AnchorUpdatingOtherAdmins to identify update targets."
+      },
+      {
+        "name": "add_noc_with_updated_admin_cat",
+        "parameters": [
+          {
+            "name": "cat_version",
+            "type": "16-bit",
+            "description": "Updated Administrator CAT version"
+          }
+        ],
+        "return_type": "void",
+        "description": "Issues new NOC to administrator with updated Administrator CAT version. Uses AddNOC command from Node Operational Credentials cluster.",
+        "algorithm_detail": "Generates new NOC for administrator with Subject DN containing: Node ID, Fabric ID, Administrator CAT with specified version. Signs NOC using Anchor's ICAC private key. Invokes AddNOC command over CASE session to administrator. Administrator validates NOC chains to Anchor RCAC, installs new NOC, updates local credential storage. Returns after acknowledgment received.",
+        "usage_in_fsm": "Called via foreach_remaining_admin in transition AdminRemoval_AnchorUpdatingOtherAdmins to distribute updated credentials."
+      },
+      {
+        "name": "foreach_remaining_admin",
+        "parameters": [
+          {
+            "name": "action",
+            "type": "function_reference",
+            "description": "Action to perform on each remaining administrator (add_noc_with_updated_admin_cat)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Iterates over all remaining administrators and applies specified action. Used for fabric-wide NOC updates after administrator removal.",
+        "algorithm_detail": "Retrieves list of remaining administrators. For each administrator: establishes CASE session (if not active), invokes specified action function (add_noc_with_updated_admin_cat), waits for acknowledgment, handles errors. Tracks success/failure count. Updates admins_updated_count state variable. May run actions in parallel for efficiency.",
+        "usage_in_fsm": "Called in transition AdminRemoval_AnchorUpdatingOtherAdmins → AdminRemoval_Complete to update all remaining administrators."
+      }
+    ],
+    "definitions": [
+      {
+        "term": "Administrator Removal",
+        "definition": "Protocol for removing a Joint Fabric Administrator from Joint Fabric. Involves user consent verification, RemoveFabric command execution on target, datastore entry deletion, and Administrator CAT version increment distributed to all remaining administrators.",
+        "security_relevance": "Administrator removal is critical security operation for revoking administrative access. Without proper CAT version increment, removed administrator retains cached credentials with administrative privileges. Matter lacks ICAC revocation, making CAT version increment the only cryptographic revocation mechanism."
+      },
+      {
+        "term": "RemoveFabric Command",
+        "definition": "Command from Node Operational Credentials cluster (cluster ID 0x003E) that removes specified fabric from node. Deletes NOC, RCAC, ICAC, and all fabric-scoped data including ACLs, keys, bindings, group keys. Operation is irreversible.",
+        "security_relevance": "RemoveFabric is destructive operation removing all trust anchors and credentials for fabric. If executed on wrong fabric or without proper authorization, causes permanent lockout. Command MUST be authenticated via CASE session with administrative privileges."
+      },
+      {
+        "term": "Fabric-Scoped Data",
+        "definition": "Data associated with specific fabric including NOC, RCAC, ICAC, ACL entries, operational keys, bindings, group keys. All fabric-scoped data is indexed by Fabric Index and deleted atomically when fabric is removed.",
+        "security_relevance": "Fabric-scoped data isolation prevents cross-fabric information leakage. Incomplete deletion of fabric-scoped data leaves residual credentials or keys that could be exploited for unauthorized access. Deletion must be atomic and complete."
+      },
+      {
+        "term": "Administrator CAT Version Increment (Removal)",
+        "definition": "Cryptographic revocation mechanism where Administrator CAT version is incremented after administrator removal. All remaining administrators receive updated NOCs with new version. Removed administrator's old version becomes invalid.",
+        "security_relevance": "CAT version increment is ONLY revocation mechanism in Matter for administrators. Without increment, removed administrator retains valid credentials and can reconnect with full administrative privileges. Version must increment before removed administrator can cache new credentials."
+      },
+      {
+        "term": "ICAC Revocation Limitation",
+        "definition": "Matter specification does not include mechanism for Trusted Root Certificate to revoke previously issued ICAC. This limitation means removed administrator's ICAC remains technically valid from cryptographic perspective.",
+        "security_relevance": "ICAC revocation limitation is fundamental protocol weakness. Removed administrator's ICAC can still sign NOCs chaining to Anchor RCAC. Only mitigation is CAT version management and ACL updates. Specification recommends Anchor transition (Section 12.2.7.1) for fail-proof removal, which is expensive operation requiring fabric-wide re-commissioning."
+      },
+      {
+        "term": "RemoveFabric Warning",
+        "definition": "Specification warning that applies when removing Joint Fabric Administrator: operation requires user consent, is irreversible, and impacts administrator's ability to manage all devices on Joint Fabric.",
+        "security_relevance": "Warning emphasizes criticality of removal operation. Without user awareness, accidental or malicious removal causes loss of administrative access to entire Joint Fabric. User consent serves as confirmation of intent and authorization."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "PROP_043_Administrator_Removal_User_Consent",
+        "type": "authorization",
+        "description": "Joint Fabric Anchor Administrator SHALL obtain user consent before removing another administrator. RemoveFabric warning (from Section 5.4.3.7) SHALL be presented to user.",
+        "fsm_states_involved": [
+          "AdminRemoval_AnchorCheckingConsent",
+          "AdminRemoval_AnchorSendingRemoveFabric",
+          "AdminRemoval_Failed_ConsentDenied"
+        ],
+        "critical_transitions": [
+          "AdminRemoval_AnchorCheckingConsent → AdminRemoval_AnchorSendingRemoveFabric (guard: user_consent_obtained == true)",
+          "AdminRemoval_AnchorCheckingConsent → AdminRemoval_Failed_ConsentDenied (guard: user_consent_obtained == false)"
+        ]
+      },
+      {
+        "property_name": "PROP_024_Fabric_Scoped_Data_Deletion",
+        "type": "correctness",
+        "description": "When RemoveFabric command is executed, administrator MUST delete ALL associated fabric-scoped data including NOC, RCAC, ICAC, ACL entries, keys, bindings, and group keys. Deletion must be atomic and complete.",
+        "fsm_states_involved": [
+          "AdminRemoval_TargetExecutingRemoval",
+          "AdminRemoval_TargetDeletingDatastoreEntry"
+        ],
+        "critical_transitions": [
+          "AdminRemoval_TargetExecutingRemoval → AdminRemoval_TargetDeletingDatastoreEntry (action: delete_all_fabric_scoped_data includes all credential and key deletion)"
+        ]
+      },
+      {
+        "property_name": "PROP_044_Administrator_Datastore_Entry_Deletion",
+        "type": "consistency",
+        "description": "Joint Fabric Administrator being removed SHALL delete its own entry from Joint Fabric Datastore. Ensures datastore reflects current administrator set.",
+        "fsm_states_involved": [
+          "AdminRemoval_TargetDeletingDatastoreEntry",
+          "AdminRemoval_TargetComplete"
+        ],
+        "critical_transitions": [
+          "AdminRemoval_TargetDeletingDatastoreEntry → AdminRemoval_TargetComplete (action: delete_datastore_entry removes administrator record)"
+        ]
+      },
+      {
+        "property_name": "PROP_005_Administrator_CAT_Version_Increment_On_Removal",
+        "type": "security",
+        "description": "After administrator removal, Anchor Administrator SHALL increment Administrator CAT version and issue new NOCs to all remaining administrators. Removed administrator SHALL NOT receive updated NOC, cryptographically revoking its access.",
+        "fsm_states_involved": [
+          "AdminRemoval_AnchorIncrementingCAT",
+          "AdminRemoval_AnchorIssuingSelfNOC",
+          "AdminRemoval_AnchorUpdatingOtherAdmins"
+        ],
+        "critical_transitions": [
+          "AdminRemoval_AnchorIncrementingCAT → AdminRemoval_AnchorIssuingSelfNOC (action: increment_cat_version)",
+          "AdminRemoval_AnchorUpdatingOtherAdmins → AdminRemoval_Complete (action: update all remaining admins, excluding removed admin)"
+        ]
+      }
+    ],
+    "initial_state": "AdminRemoval_Idle",
+    "all_states": [
+      "AdminRemoval_Idle",
+      "AdminRemoval_AnchorCheckingConsent",
+      "AdminRemoval_AnchorSendingRemoveFabric",
+      "AdminRemoval_TargetExecutingRemoval",
+      "AdminRemoval_TargetDeletingDatastoreEntry",
+      "AdminRemoval_TargetComplete",
+      "AdminRemoval_AnchorIncrementingCAT",
+      "AdminRemoval_AnchorIssuingSelfNOC",
+      "AdminRemoval_AnchorUpdatingOtherAdmins",
+      "AdminRemoval_Complete",
+      "AdminRemoval_Failed_ConsentDenied"
+    ],
+    "all_triggers": [
+      "user_initiates_admin_removal",
+      "consent_obtained",
+      "consent_denied",
+      "remove_fabric_received",
+      "local_fabric_removed",
+      "datastore_entry_deleted",
+      "anchor_receives_acknowledgment",
+      "cat_version_incremented",
+      "anchor_self_noc_issued",
+      "all_admins_updated"
+    ],
+    "all_functions_used": [
+      "select_target_admin",
+      "check_user_consent_for_removal",
+      "establish_case_session_to_target_admin",
+      "send_remove_fabric_command",
+      "abort_admin_removal",
+      "identify_joint_fabric_index",
+      "delete_all_fabric_scoped_data",
+      "get_self_datastore_entry",
+      "delete_datastore_entry",
+      "send_removal_acknowledgment_to_anchor",
+      "get_current_admin_cat_version",
+      "increment_cat_version",
+      "issue_self_noc_with_updated_admin_cat",
+      "get_remaining_administrators_excluding_target_and_anchor",
+      "add_noc_with_updated_admin_cat",
+      "foreach_remaining_admin"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "RemoveFabric Authentication",
+        "algorithm": "CASE session with ECDSA-SHA256 signature verification",
+        "inputs": [
+          "anchor_noc (with Anchor CAT or Administrator CAT)",
+          "fabric_index_to_remove"
+        ],
+        "output": "Authenticated RemoveFabric command execution",
+        "assumptions": [
+          "RemoveFabric command authenticated via CASE session",
+          "Only Anchor Administrator with proper CAT can invoke RemoveFabric on other administrators",
+          "Target administrator verifies command issuer has administrative privileges before executing deletion"
+        ]
+      },
+      {
+        "operation": "Fabric-Scoped Key Deletion",
+        "algorithm": "Secure key erasure (overwrite with random data, physical key destruction)",
+        "inputs": [
+          "operational_keys (AES session keys, group keys)",
+          "private_keys (NOC private key)"
+        ],
+        "output": "Keys securely erased from storage",
+        "assumptions": [
+          "Key deletion is irreversible and cannot be recovered",
+          "Secure erasure prevents key recovery from storage media",
+          "Hardware security modules properly implement key destruction"
+        ]
+      },
+      {
+        "operation": "NOC Issuance with Updated CAT",
+        "algorithm": "X.509 certificate generation with ECDSA-SHA256 signature",
+        "inputs": [
+          "admin_node_id",
+          "new_admin_cat_version (incremented value)",
+          "icac_private_key"
+        ],
+        "output": "New NOC with updated Administrator CAT version",
+        "assumptions": [
+          "New CAT version embedded in NOC Subject DN",
+          "Removed administrator excluded from NOC distribution",
+          "ACL entries on all nodes reference new CAT version, rejecting old version"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "User consent mechanism is secure and cannot be bypassed. User understands implications of administrator removal (target loses all administrative access to Joint Fabric).",
+        "type": "Explicit",
+        "if_violated": "Property PROP_043 fails. Attacker bypasses consent check, removes legitimate administrators without authorization. Hostile administrator eliminates competition, establishes sole control over Joint Fabric, locks out rightful administrators."
+      },
+      {
+        "assumption": "RemoveFabric command completely deletes all fabric-scoped data. No residual credentials, keys, or ACL entries remain after fabric removal.",
+        "type": "Explicit",
+        "if_violated": "Property PROP_024 fails. Incomplete deletion leaves residual keys or credentials. Removed administrator retains cached credentials, uses residual keys to decrypt fabric communications, or exploits orphaned ACL entries for unauthorized access."
+      },
+      {
+        "assumption": "CAT version increment is distributed to all remaining administrators before removed administrator can reconnect to any nodes. Version rollback prevention mechanisms are in place.",
+        "type": "Explicit",
+        "if_violated": "Property PROP_005 fails. Removed administrator reconnects to nodes before CAT update propagates, uses old CAT version credentials to regain administrative access. If version rollback allowed, removed administrator downgrades CAT version to re-enable old credentials."
+      },
+      {
+        "assumption": "Removed administrator's ICAC cannot issue new NOCs chaining to Anchor RCAC after removal. Either ICAC is securely deleted or nodes reject NOCs from removed administrator's ICAC despite valid signature chain.",
+        "type": "Implicit",
+        "if_violated": "ICAC revocation limitation exploited. Removed administrator retains ICAC private key, issues new NOCs chaining to Anchor RCAC with updated CAT version. Nodes accept these NOCs as valid (signature chain correct), granting administrator renewed access despite removal."
+      },
+      {
+        "assumption": "Nodes correctly implement ACL matching that rejects NOCs with Administrator CAT versions lower than currently configured version. Version comparison is arithmetic, not equality check.",
+        "type": "Implicit",
+        "if_violated": "Nodes accept NOCs with old CAT versions if ACL entries use version-insensitive matching. Removed administrator's cached credentials remain valid indefinitely. CAT version increment becomes ineffective revocation mechanism."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

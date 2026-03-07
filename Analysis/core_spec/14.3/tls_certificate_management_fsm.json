@@ -1,0 +1,1871 @@
+{
+  "fsm_model": {
+    "section_name": "14.3 TLS Certificate Management",
+    "section_ref": "Matter Core Specification Section 14.3",
+    "description": "Complete FSM for TLS Certificate Management including CSR generation, validation, provisioning process, Root CA management, Client Certificate Details management, and endpoint lifecycle",
+    "specification_notes": [
+      "This FSM covers TLS Certificate Management Cluster (0x0801) as specified in section 14.3/14.4",
+      "Section 14.3.2 references TLS Client Management Cluster as separate required cluster but details are not provided in this specification section",
+      "Section 14.3.2.1 contains incomplete requirement: 'In addition, Nodes SHALL provide the following:' with no content specified",
+      "Client Certificate Details (CCD) provisioning is optional per spec 14.3.1.2: 'Nodes MAY choose to provision'",
+      "Commands referenced but not fully detailed: ClientCSR, ClientCSRResponse, ProvisionClientCertificate, ProvisionEndpoint, RemoveEndpoint, plus implied commands for get/update/remove via CAID and retrieve/update/remove via CCDID",
+      "External CA certificate signing (step 6 of CSR process) is explicitly noted as 'procedure not covered in this specification'"
+    ],
+    "states": [
+      {
+        "name": "Idle",
+        "description": "No certificate operation in progress. Node may have existing certificates but no active CSR or certificate management operation.",
+        "is_initial": true,
+        "invariants": [
+          "no_active_csr_process",
+          "time_sync_available == (has_ntp_client || has_timesync_client)",
+          "tlscert_cluster_on_root_endpoint"
+        ],
+        "state_variables": {
+          "root_ca_count": "integer [0..5+]",
+          "ccd_count": "integer [0..2+]",
+          "endpoint_count": "integer [0..2+]",
+          "time_synchronized": "boolean"
+        }
+      },
+      {
+        "name": "NonceGenerated",
+        "description": "Client has generated a cryptographically secure 32-byte nonce using Crypto_DRBG for CSR freshness check",
+        "is_initial": false,
+        "invariants": [
+          "nonce != null",
+          "nonce_length == 32",
+          "nonce_source == Crypto_DRBG",
+          "nonce_unique == true"
+        ],
+        "state_variables": {
+          "nonce": "32-byte bitstring",
+          "nonce_generation_time": "timestamp",
+          "is_rotation": "boolean",
+          "existing_ccdid": "optional identifier"
+        }
+      },
+      {
+        "name": "CSRRequested",
+        "description": "ClientCSR command sent to Node with nonce. If rotation, existing CCDID provided. Waiting for ClientCSRResponse.",
+        "is_initial": false,
+        "invariants": [
+          "csr_request_sent == true",
+          "nonce_in_request == nonce",
+          "is_rotation implies existing_ccdid != null",
+          "!is_rotation implies existing_ccdid == null"
+        ],
+        "state_variables": {
+          "nonce": "32-byte bitstring",
+          "csr_request_timestamp": "timestamp",
+          "is_rotation": "boolean",
+          "existing_ccdid": "optional identifier",
+          "awaiting_response": "boolean"
+        }
+      },
+      {
+        "name": "CSRResponseReceived",
+        "description": "ClientCSRResponse received from Node containing CSR field with PKCS#10 structure, NonceSignature, and returned CCDID. Not yet validated.",
+        "is_initial": false,
+        "invariants": [
+          "csr_response != null",
+          "csr_response.csr_field != null",
+          "csr_response.nonce_signature != null",
+          "csr_response.ccdid != null"
+        ],
+        "state_variables": {
+          "nonce": "32-byte bitstring",
+          "csr_field": "PKCS#10 CSR structure",
+          "nonce_signature": "signature bitstring",
+          "returned_ccdid": "identifier",
+          "pkcs10_verified": "boolean",
+          "nonce_sig_verified": "boolean",
+          "pubkey_consistency_verified": "boolean"
+        }
+      },
+      {
+        "name": "PKCS10SignatureVerified",
+        "description": "Inner signature in PKCS#10 CSR field has been verified per PKCS#10 standard. CSR authenticity confirmed.",
+        "is_initial": false,
+        "invariants": [
+          "pkcs10_verified == true",
+          "pkcs10_signature_valid == true",
+          "csr_field_integrity_confirmed == true"
+        ],
+        "state_variables": {
+          "nonce": "32-byte bitstring",
+          "csr_field": "PKCS#10 CSR structure",
+          "nonce_signature": "signature bitstring",
+          "returned_ccdid": "identifier",
+          "pkcs10_public_key": "public key from CSR",
+          "nonce_sig_verified": "boolean",
+          "pubkey_consistency_verified": "boolean"
+        }
+      },
+      {
+        "name": "NonceSignatureVerified",
+        "description": "NonceSignature field validated against original nonce value from ClientCSR command. Freshness confirmed.",
+        "is_initial": false,
+        "invariants": [
+          "pkcs10_verified == true",
+          "nonce_sig_verified == true",
+          "nonce_signature_matches_nonce == true"
+        ],
+        "state_variables": {
+          "nonce": "32-byte bitstring",
+          "csr_field": "PKCS#10 CSR structure",
+          "nonce_signature": "signature bitstring",
+          "returned_ccdid": "identifier",
+          "pkcs10_public_key": "public key from CSR",
+          "nonce_sig_public_key": "public key from nonce signature",
+          "pubkey_consistency_verified": "boolean"
+        }
+      },
+      {
+        "name": "PublicKeyConsistencyVerified",
+        "description": "Public key used for NonceSignature confirmed to be identical to public key in PKCS#10 CSR inner signature. All verifications complete.",
+        "is_initial": false,
+        "invariants": [
+          "pkcs10_verified == true",
+          "nonce_sig_verified == true",
+          "pubkey_consistency_verified == true",
+          "pkcs10_public_key == nonce_sig_public_key"
+        ],
+        "state_variables": {
+          "nonce": "32-byte bitstring",
+          "csr_field": "PKCS#10 CSR structure",
+          "nonce_signature": "signature bitstring",
+          "returned_ccdid": "identifier",
+          "verified_public_key": "public key confirmed in both signatures"
+        }
+      },
+      {
+        "name": "CertificateCreated",
+        "description": "External CA has created and signed TLS Client Certificate from CSR field. Certificate ready for provisioning.",
+        "is_initial": false,
+        "invariants": [
+          "client_certificate != null",
+          "certificate_signed_by_ca == true",
+          "certificate_derived_from_csr == true",
+          "intermediate_chain_complete == true"
+        ],
+        "state_variables": {
+          "client_certificate": "X.509 certificate",
+          "intermediate_chain": "array of X.509 certificates",
+          "returned_ccdid": "identifier",
+          "certificate_notBefore": "timestamp",
+          "certificate_notAfter": "timestamp"
+        }
+      },
+      {
+        "name": "CertificateProvisioned",
+        "description": "Client certificate and intermediate chain successfully provisioned into Node using ProvisionClientCertificate command with returned CCDID. Process complete.",
+        "is_initial": false,
+        "invariants": [
+          "ccd_stored == true",
+          "ccd_ccdid == returned_ccdid",
+          "ccd_contains_certificate == true",
+          "ccd_contains_private_key == true",
+          "ccd_contains_intermediate_chain == true"
+        ],
+        "state_variables": {
+          "stored_ccdid": "identifier",
+          "client_certificate": "X.509 certificate",
+          "private_key": "private key (protected)",
+          "intermediate_chain": "array of X.509 certificates",
+          "provisioning_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "PKCS10VerificationFailed",
+        "description": "PKCS#10 inner signature verification failed. CSR authenticity cannot be confirmed. Process aborted.",
+        "is_initial": false,
+        "invariants": [
+          "pkcs10_verified == false",
+          "verification_error == PKCS10_SIGNATURE_INVALID"
+        ],
+        "state_variables": {
+          "error_type": "PKCS10_SIGNATURE_INVALID",
+          "error_message": "string",
+          "csr_field": "failed PKCS#10 CSR",
+          "failure_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "NonceSignatureVerificationFailed",
+        "description": "NonceSignature validation against original nonce failed. Freshness check failed. Possible replay attack. Process aborted.",
+        "is_initial": false,
+        "invariants": [
+          "pkcs10_verified == true",
+          "nonce_sig_verified == false",
+          "verification_error == NONCE_SIGNATURE_INVALID"
+        ],
+        "state_variables": {
+          "error_type": "NONCE_SIGNATURE_INVALID",
+          "error_message": "string",
+          "expected_nonce": "32-byte bitstring",
+          "received_signature": "signature bitstring",
+          "failure_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "PublicKeyConsistencyFailed",
+        "description": "Public keys from NonceSignature and PKCS#10 CSR do not match. Key substitution attack detected. Process aborted.",
+        "is_initial": false,
+        "invariants": [
+          "pkcs10_verified == true",
+          "nonce_sig_verified == true",
+          "pubkey_consistency_verified == false",
+          "verification_error == PUBLIC_KEY_MISMATCH"
+        ],
+        "state_variables": {
+          "error_type": "PUBLIC_KEY_MISMATCH",
+          "error_message": "string",
+          "pkcs10_public_key": "public key from CSR",
+          "nonce_sig_public_key": "public key from nonce signature",
+          "failure_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "ProvisioningFailed",
+        "description": "ProvisionClientCertificate command failed. Certificate not stored. Possible storage full or invalid CCDID.",
+        "is_initial": false,
+        "invariants": [
+          "provisioning_attempted == true",
+          "provisioning_succeeded == false"
+        ],
+        "state_variables": {
+          "error_type": "PROVISIONING_FAILED",
+          "error_message": "string",
+          "failure_reason": "storage_full | invalid_ccdid | authentication_failed | other",
+          "attempted_ccdid": "identifier",
+          "failure_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "RootCAProvisioned",
+        "description": "Root CA certificate provisioned with unique CAID for a Fabric. Available for server authentication during TLS handshake.",
+        "is_initial": false,
+        "invariants": [
+          "root_ca_stored == true",
+          "caid != null",
+          "caid_unique_per_fabric == true",
+          "root_ca_count >= 1 && root_ca_count <= storage_capacity"
+        ],
+        "state_variables": {
+          "caid": "Certificate Authority ID",
+          "root_ca_certificate": "X.509 root certificate",
+          "fabric_id": "fabric identifier",
+          "certificate_notBefore": "timestamp",
+          "certificate_notAfter": "timestamp",
+          "time_validated": "boolean"
+        }
+      },
+      {
+        "name": "RootCAActive",
+        "description": "Root CA certificate actively being used to validate server certificates during TLS handshake establishment.",
+        "is_initial": false,
+        "invariants": [
+          "root_ca_in_use == true",
+          "time_synchronized == true",
+          "current_time >= certificate_notBefore",
+          "current_time <= certificate_notAfter"
+        ],
+        "state_variables": {
+          "caid": "Certificate Authority ID",
+          "root_ca_certificate": "X.509 root certificate",
+          "fabric_id": "fabric identifier",
+          "active_connections": "integer [0..2+]",
+          "last_used_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "RootCARemoved",
+        "description": "Root CA certificate removed via remove operation using CAID. No longer available for server authentication.",
+        "is_initial": false,
+        "invariants": [
+          "root_ca_deleted == true",
+          "caid_freed == true"
+        ],
+        "state_variables": {
+          "removed_caid": "Certificate Authority ID",
+          "removal_timestamp": "timestamp",
+          "removal_reason": "expired | compromised | replaced | administrative"
+        }
+      },
+      {
+        "name": "ClientCertDetailsActive",
+        "description": "Client Certificate Details actively being used for client authentication during TLS handshake with server requiring client certificates.",
+        "is_initial": false,
+        "invariants": [
+          "ccd_in_use == true",
+          "time_synchronized == true",
+          "current_time >= certificate_notBefore",
+          "current_time <= certificate_notAfter",
+          "private_key_protected == true"
+        ],
+        "state_variables": {
+          "ccdid": "Client Certificate Details ID",
+          "client_certificate": "X.509 certificate",
+          "private_key": "private key (protected)",
+          "intermediate_chain": "array of X.509 certificates",
+          "fabric_id": "fabric identifier",
+          "active_connections": "integer [0..2+]"
+        }
+      },
+      {
+        "name": "CCDRotationInProgress",
+        "description": "Client certificate rotation initiated. New CSR being generated for existing CCDID. Old certificate remains valid until new one provisioned.",
+        "is_initial": false,
+        "invariants": [
+          "rotation_active == true",
+          "existing_ccdid != null",
+          "old_certificate_valid == true",
+          "new_csr_in_progress == true"
+        ],
+        "state_variables": {
+          "existing_ccdid": "identifier being rotated",
+          "old_certificate": "X.509 certificate (still valid)",
+          "old_private_key": "private key (protected)",
+          "rotation_nonce": "32-byte bitstring",
+          "rotation_started_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "CCDRemoved",
+        "description": "Client Certificate Details removed atomically (certificate + private key + intermediate chain). No longer available for client authentication.",
+        "is_initial": false,
+        "invariants": [
+          "ccd_deleted == true",
+          "ccdid_freed == true",
+          "certificate_deleted == true",
+          "private_key_deleted == true",
+          "intermediate_chain_deleted == true"
+        ],
+        "state_variables": {
+          "removed_ccdid": "identifier",
+          "removal_timestamp": "timestamp",
+          "removal_reason": "expired | compromised | rotated | administrative"
+        }
+      },
+      {
+        "name": "EndpointProvisioned",
+        "description": "TLS endpoint provisioned via ProvisionEndpoint command. Associated with specific Fabric. Ready for TLS client connections.",
+        "is_initial": false,
+        "invariants": [
+          "endpoint_stored == true",
+          "endpoint_fabric_associated == true",
+          "endpoint_count >= 1 && endpoint_count <= storage_capacity"
+        ],
+        "state_variables": {
+          "endpoint_id": "endpoint identifier",
+          "endpoint_address": "hostname or IP address",
+          "endpoint_port": "port number",
+          "fabric_id": "fabric identifier",
+          "provisioning_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "EndpointActive",
+        "description": "TLS endpoint actively being used for TLS client connection. Node can support at least 2 concurrent connections per Fabric.",
+        "is_initial": false,
+        "invariants": [
+          "endpoint_in_use == true",
+          "concurrent_connections >= 0 && concurrent_connections <= concurrent_capacity"
+        ],
+        "state_variables": {
+          "endpoint_id": "endpoint identifier",
+          "endpoint_address": "hostname or IP address",
+          "endpoint_port": "port number",
+          "fabric_id": "fabric identifier",
+          "concurrent_connections": "integer [0..2+]",
+          "last_used_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "EndpointRemoved",
+        "description": "TLS endpoint removed via RemoveEndpoint command. No longer available for connections. Endpoint ID freed.",
+        "is_initial": false,
+        "invariants": [
+          "endpoint_deleted == true",
+          "endpoint_id_freed == true"
+        ],
+        "state_variables": {
+          "removed_endpoint_id": "identifier",
+          "removal_timestamp": "timestamp",
+          "removal_reason": "no_longer_needed | endpoint_changed | administrative"
+        }
+      },
+      {
+        "name": "TLSConnectionEstablishing",
+        "description": "TLS client connection being established. Time validation, server authentication via Root CA, optional client authentication in progress.",
+        "is_initial": false,
+        "invariants": [
+          "connection_mode == CLIENT_ONLY",
+          "time_synchronized == true",
+          "has_root_ca_for_fabric == true",
+          "has_endpoint_for_fabric == true"
+        ],
+        "state_variables": {
+          "endpoint_id": "endpoint identifier",
+          "fabric_id": "fabric identifier",
+          "server_certificate": "X.509 certificate from server",
+          "caid_for_validation": "Certificate Authority ID",
+          "client_auth_required": "boolean",
+          "ccdid_for_client_auth": "optional identifier"
+        }
+      },
+      {
+        "name": "TLSConnectionEstablished",
+        "description": "TLS client connection successfully established. Server authenticated via Root CA. Client authenticated if required. Secure channel active.",
+        "is_initial": false,
+        "invariants": [
+          "connection_established == true",
+          "connection_mode == CLIENT_ONLY",
+          "server_authenticated == true",
+          "client_authenticated == true if client_auth_required",
+          "secure_channel_active == true"
+        ],
+        "state_variables": {
+          "connection_id": "connection identifier",
+          "endpoint_id": "endpoint identifier",
+          "fabric_id": "fabric identifier",
+          "server_certificate": "validated X.509 certificate",
+          "client_certificate": "optional X.509 certificate if client auth",
+          "connection_established_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "TLSConnectionFailed",
+        "description": "TLS connection establishment failed. Server authentication failed, time validation failed, or client authentication failed.",
+        "is_initial": false,
+        "invariants": [
+          "connection_failed == true"
+        ],
+        "state_variables": {
+          "error_type": "SERVER_AUTH_FAILED | TIME_VALIDATION_FAILED | CLIENT_AUTH_FAILED | CERTIFICATE_EXPIRED | NO_ROOT_CA | OTHER",
+          "error_message": "string",
+          "endpoint_id": "endpoint identifier",
+          "failure_timestamp": "timestamp",
+          "failure_details": "string"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "Idle",
+        "to_state": "NonceGenerated",
+        "trigger": "initiate_csr_request",
+        "guard_condition": "tlscert_cluster_supported == true && (has_ntp_client == true || has_timesync_client == true)",
+        "actions": [
+          "nonce := generate_32byte_nonce()",
+          "nonce_generation_time := current_timestamp()",
+          "is_rotation := check_if_rotation()",
+          "generate_event(nonce_generated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NonceGenerated",
+        "to_state": "CSRRequested",
+        "trigger": "send_client_csr_command",
+        "guard_condition": "nonce != null && nonce_length == 32 && (is_rotation == false || (is_rotation == true && existing_ccdid != null))",
+        "actions": [
+          "send_csr_command(nonce, existing_ccdid)",
+          "csr_request_timestamp := current_timestamp()",
+          "awaiting_response := true",
+          "generate_event(csr_request_sent)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NonceGenerated",
+        "to_state": "Idle",
+        "trigger": "cancel_csr_request",
+        "guard_condition": "true",
+        "actions": [
+          "nonce := null",
+          "is_rotation := false",
+          "existing_ccdid := null",
+          "generate_event(csr_cancelled)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CSRRequested",
+        "to_state": "CSRResponseReceived",
+        "trigger": "receive_client_csr_response",
+        "guard_condition": "csr_response != null && csr_response.csr_field != null && csr_response.nonce_signature != null && csr_response.ccdid != null",
+        "actions": [
+          "csr_field := csr_response.csr_field",
+          "nonce_signature := csr_response.nonce_signature",
+          "returned_ccdid := csr_response.ccdid",
+          "pkcs10_verified := false",
+          "nonce_sig_verified := false",
+          "pubkey_consistency_verified := false",
+          "generate_event(csr_response_received)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CSRResponseReceived",
+        "to_state": "PKCS10SignatureVerified",
+        "trigger": "verify_pkcs10_signature",
+        "guard_condition": "verify_pkcs10_inner_signature(csr_field) == true",
+        "actions": [
+          "pkcs10_verified := true",
+          "pkcs10_public_key := extract_public_key_from_pkcs10(csr_field)",
+          "generate_event(pkcs10_signature_verified)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CSRResponseReceived",
+        "to_state": "PKCS10VerificationFailed",
+        "trigger": "verify_pkcs10_signature",
+        "guard_condition": "verify_pkcs10_inner_signature(csr_field) == false",
+        "actions": [
+          "pkcs10_verified := false",
+          "error_type := PKCS10_SIGNATURE_INVALID",
+          "error_message := create_error_message(PKCS10_SIGNATURE_INVALID)",
+          "failure_timestamp := current_timestamp()",
+          "generate_event(pkcs10_verification_failed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PKCS10SignatureVerified",
+        "to_state": "NonceSignatureVerified",
+        "trigger": "verify_nonce_signature",
+        "guard_condition": "verify_nonce_signature_validity(nonce_signature, nonce, pkcs10_public_key) == true",
+        "actions": [
+          "nonce_sig_verified := true",
+          "nonce_sig_public_key := extract_public_key_from_signature(nonce_signature)",
+          "generate_event(nonce_signature_verified)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PKCS10SignatureVerified",
+        "to_state": "NonceSignatureVerificationFailed",
+        "trigger": "verify_nonce_signature",
+        "guard_condition": "verify_nonce_signature_validity(nonce_signature, nonce, pkcs10_public_key) == false",
+        "actions": [
+          "nonce_sig_verified := false",
+          "error_type := NONCE_SIGNATURE_INVALID",
+          "error_message := create_error_message(NONCE_SIGNATURE_INVALID)",
+          "failure_timestamp := current_timestamp()",
+          "generate_event(nonce_signature_verification_failed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NonceSignatureVerified",
+        "to_state": "PublicKeyConsistencyVerified",
+        "trigger": "verify_public_key_consistency",
+        "guard_condition": "pkcs10_public_key == nonce_sig_public_key",
+        "actions": [
+          "pubkey_consistency_verified := true",
+          "verified_public_key := pkcs10_public_key",
+          "generate_event(public_key_consistency_verified)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NonceSignatureVerified",
+        "to_state": "PublicKeyConsistencyFailed",
+        "trigger": "verify_public_key_consistency",
+        "guard_condition": "pkcs10_public_key != nonce_sig_public_key",
+        "actions": [
+          "pubkey_consistency_verified := false",
+          "error_type := PUBLIC_KEY_MISMATCH",
+          "error_message := create_error_message(PUBLIC_KEY_MISMATCH)",
+          "failure_timestamp := current_timestamp()",
+          "generate_event(public_key_consistency_failed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PublicKeyConsistencyVerified",
+        "to_state": "CertificateCreated",
+        "trigger": "external_ca_signs_certificate",
+        "guard_condition": "external_ca_available == true && csr_field != null",
+        "actions": [
+          "client_certificate := create_and_sign_certificate_from_csr(csr_field)",
+          "intermediate_chain := get_intermediate_certificate_chain(client_certificate)",
+          "certificate_notBefore := extract_not_before(client_certificate)",
+          "certificate_notAfter := extract_not_after(client_certificate)",
+          "generate_event(certificate_created)"
+        ],
+        "timing_requirement": "External procedure not covered by specification"
+      },
+      {
+        "from_state": "CertificateCreated",
+        "to_state": "CertificateProvisioned",
+        "trigger": "provision_client_certificate_command",
+        "guard_condition": "client_certificate != null && intermediate_chain != null && returned_ccdid != null && storage_available == true",
+        "actions": [
+          "store_client_certificate_details(returned_ccdid, client_certificate, private_key, intermediate_chain)",
+          "stored_ccdid := returned_ccdid",
+          "provisioning_timestamp := current_timestamp()",
+          "generate_event(certificate_provisioned)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateCreated",
+        "to_state": "ProvisioningFailed",
+        "trigger": "provision_client_certificate_command",
+        "guard_condition": "storage_available == false || returned_ccdid == invalid || authentication_failed == true",
+        "actions": [
+          "error_type := PROVISIONING_FAILED",
+          "error_message := create_error_message(PROVISIONING_FAILED)",
+          "failure_reason := determine_failure_reason()",
+          "attempted_ccdid := returned_ccdid",
+          "failure_timestamp := current_timestamp()",
+          "generate_event(provisioning_failed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateProvisioned",
+        "to_state": "Idle",
+        "trigger": "complete_csr_process",
+        "guard_condition": "true",
+        "actions": [
+          "nonce := null",
+          "csr_field := null",
+          "generate_event(csr_process_complete)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PKCS10VerificationFailed",
+        "to_state": "Idle",
+        "trigger": "reset_after_error",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()",
+          "nonce := null",
+          "csr_field := null",
+          "generate_event(error_cleared)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NonceSignatureVerificationFailed",
+        "to_state": "Idle",
+        "trigger": "reset_after_error",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()",
+          "nonce := null",
+          "csr_field := null",
+          "generate_event(error_cleared)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PublicKeyConsistencyFailed",
+        "to_state": "Idle",
+        "trigger": "reset_after_error",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()",
+          "nonce := null",
+          "csr_field := null",
+          "generate_event(error_cleared)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ProvisioningFailed",
+        "to_state": "Idle",
+        "trigger": "reset_after_error",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()",
+          "client_certificate := null",
+          "generate_event(error_cleared)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "RootCAProvisioned",
+        "trigger": "provision_root_ca_command",
+        "guard_condition": "root_ca_certificate != null && caid != null && caid_unique == true && root_ca_count < storage_capacity",
+        "actions": [
+          "store_root_ca(caid, root_ca_certificate, fabric_id)",
+          "certificate_notBefore := extract_not_before(root_ca_certificate)",
+          "certificate_notAfter := extract_not_after(root_ca_certificate)",
+          "time_validated := false",
+          "root_ca_count := root_ca_count + 1",
+          "generate_event(root_ca_provisioned)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RootCAProvisioned",
+        "to_state": "RootCAActive",
+        "trigger": "use_root_ca_for_validation",
+        "guard_condition": "time_synchronized == true && current_time >= certificate_notBefore && current_time <= certificate_notAfter",
+        "actions": [
+          "root_ca_in_use := true",
+          "active_connections := 0",
+          "last_used_timestamp := current_timestamp()",
+          "generate_event(root_ca_activated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RootCAProvisioned",
+        "to_state": "TLSConnectionFailed",
+        "trigger": "use_root_ca_for_validation",
+        "guard_condition": "time_synchronized == false || current_time < certificate_notBefore || current_time > certificate_notAfter",
+        "actions": [
+          "error_type := TIME_VALIDATION_FAILED",
+          "error_message := create_error_message(TIME_VALIDATION_FAILED)",
+          "failure_timestamp := current_timestamp()",
+          "failure_details := determine_time_validation_failure_reason()",
+          "generate_event(root_ca_time_validation_failed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RootCAActive",
+        "to_state": "RootCAProvisioned",
+        "trigger": "stop_using_root_ca",
+        "guard_condition": "active_connections == 0",
+        "actions": [
+          "root_ca_in_use := false",
+          "generate_event(root_ca_deactivated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RootCAProvisioned",
+        "to_state": "RootCAProvisioned",
+        "trigger": "update_root_ca_command",
+        "guard_condition": "new_root_ca_certificate != null && caid_exists == true",
+        "actions": [
+          "update_root_ca(caid, new_root_ca_certificate)",
+          "certificate_notBefore := extract_not_before(new_root_ca_certificate)",
+          "certificate_notAfter := extract_not_after(new_root_ca_certificate)",
+          "time_validated := false",
+          "generate_event(root_ca_updated)"
+        ],
+        "timing_requirement": "Atomic update operation"
+      },
+      {
+        "from_state": "RootCAProvisioned",
+        "to_state": "RootCARemoved",
+        "trigger": "remove_root_ca_command",
+        "guard_condition": "caid_exists == true && active_connections == 0",
+        "actions": [
+          "remove_root_ca(caid)",
+          "root_ca_deleted := true",
+          "caid_freed := true",
+          "removed_caid := caid",
+          "removal_timestamp := current_timestamp()",
+          "root_ca_count := root_ca_count - 1",
+          "generate_event(root_ca_removed)"
+        ],
+        "timing_requirement": "Atomic removal operation"
+      },
+      {
+        "from_state": "RootCAActive",
+        "to_state": "RootCARemoved",
+        "trigger": "remove_root_ca_command",
+        "guard_condition": "caid_exists == true && active_connections == 0",
+        "actions": [
+          "remove_root_ca(caid)",
+          "root_ca_deleted := true",
+          "caid_freed := true",
+          "removed_caid := caid",
+          "removal_timestamp := current_timestamp()",
+          "root_ca_count := root_ca_count - 1",
+          "generate_event(root_ca_removed)"
+        ],
+        "timing_requirement": "Atomic removal operation"
+      },
+      {
+        "from_state": "RootCARemoved",
+        "to_state": "Idle",
+        "trigger": "complete_removal",
+        "guard_condition": "true",
+        "actions": [
+          "generate_event(root_ca_removal_complete)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateProvisioned",
+        "to_state": "ClientCertDetailsActive",
+        "trigger": "use_ccd_for_client_auth",
+        "guard_condition": "time_synchronized == true && current_time >= certificate_notBefore && current_time <= certificate_notAfter && private_key_protected == true",
+        "actions": [
+          "ccd_in_use := true",
+          "active_connections := 0",
+          "generate_event(ccd_activated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ClientCertDetailsActive",
+        "to_state": "CertificateProvisioned",
+        "trigger": "stop_using_ccd",
+        "guard_condition": "active_connections == 0",
+        "actions": [
+          "ccd_in_use := false",
+          "generate_event(ccd_deactivated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateProvisioned",
+        "to_state": "CCDRotationInProgress",
+        "trigger": "initiate_certificate_rotation",
+        "guard_condition": "stored_ccdid != null",
+        "actions": [
+          "rotation_active := true",
+          "existing_ccdid := stored_ccdid",
+          "old_certificate := client_certificate",
+          "old_private_key := private_key",
+          "rotation_started_timestamp := current_timestamp()",
+          "generate_event(rotation_initiated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CCDRotationInProgress",
+        "to_state": "NonceGenerated",
+        "trigger": "start_rotation_csr",
+        "guard_condition": "existing_ccdid != null",
+        "actions": [
+          "nonce := generate_32byte_nonce()",
+          "nonce_generation_time := current_timestamp()",
+          "is_rotation := true",
+          "generate_event(rotation_nonce_generated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateProvisioned",
+        "to_state": "CertificateProvisioned",
+        "trigger": "update_ccd_command",
+        "guard_condition": "new_client_certificate != null && new_private_key != null && ccdid_exists == true",
+        "actions": [
+          "update_client_certificate_details(ccdid, new_client_certificate, new_private_key, new_intermediate_chain)",
+          "client_certificate := new_client_certificate",
+          "private_key := new_private_key",
+          "intermediate_chain := new_intermediate_chain",
+          "generate_event(ccd_updated)"
+        ],
+        "timing_requirement": "Atomic update operation - all or nothing"
+      },
+      {
+        "from_state": "CertificateProvisioned",
+        "to_state": "CCDRemoved",
+        "trigger": "remove_ccd_command",
+        "guard_condition": "ccdid_exists == true && active_connections == 0",
+        "actions": [
+          "remove_client_certificate_details(ccdid)",
+          "ccd_deleted := true",
+          "ccdid_freed := true",
+          "certificate_deleted := true",
+          "private_key_deleted := true",
+          "intermediate_chain_deleted := true",
+          "removed_ccdid := ccdid",
+          "removal_timestamp := current_timestamp()",
+          "ccd_count := ccd_count - 1",
+          "generate_event(ccd_removed)"
+        ],
+        "timing_requirement": "Atomic removal - certificate, private key, and chain removed together"
+      },
+      {
+        "from_state": "ClientCertDetailsActive",
+        "to_state": "CCDRemoved",
+        "trigger": "remove_ccd_command",
+        "guard_condition": "ccdid_exists == true && active_connections == 0",
+        "actions": [
+          "remove_client_certificate_details(ccdid)",
+          "ccd_deleted := true",
+          "ccdid_freed := true",
+          "certificate_deleted := true",
+          "private_key_deleted := true",
+          "intermediate_chain_deleted := true",
+          "removed_ccdid := ccdid",
+          "removal_timestamp := current_timestamp()",
+          "ccd_count := ccd_count - 1",
+          "generate_event(ccd_removed)"
+        ],
+        "timing_requirement": "Atomic removal - certificate, private key, and chain removed together"
+      },
+      {
+        "from_state": "CCDRemoved",
+        "to_state": "Idle",
+        "trigger": "complete_removal",
+        "guard_condition": "true",
+        "actions": [
+          "generate_event(ccd_removal_complete)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "EndpointProvisioned",
+        "trigger": "provision_endpoint_command",
+        "guard_condition": "endpoint_address != null && endpoint_port != null && fabric_id != null && endpoint_count < storage_capacity",
+        "actions": [
+          "store_endpoint(endpoint_id, endpoint_address, endpoint_port, fabric_id)",
+          "endpoint_stored := true",
+          "endpoint_fabric_associated := true",
+          "provisioning_timestamp := current_timestamp()",
+          "endpoint_count := endpoint_count + 1",
+          "generate_event(endpoint_provisioned)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EndpointProvisioned",
+        "to_state": "EndpointActive",
+        "trigger": "use_endpoint_for_connection",
+        "guard_condition": "concurrent_connections < concurrent_capacity",
+        "actions": [
+          "endpoint_in_use := true",
+          "concurrent_connections := 0",
+          "last_used_timestamp := current_timestamp()",
+          "generate_event(endpoint_activated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EndpointActive",
+        "to_state": "EndpointProvisioned",
+        "trigger": "stop_using_endpoint",
+        "guard_condition": "concurrent_connections == 0",
+        "actions": [
+          "endpoint_in_use := false",
+          "generate_event(endpoint_deactivated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EndpointProvisioned",
+        "to_state": "EndpointRemoved",
+        "trigger": "remove_endpoint_command",
+        "guard_condition": "endpoint_id_exists == true && concurrent_connections == 0",
+        "actions": [
+          "remove_endpoint(endpoint_id)",
+          "endpoint_deleted := true",
+          "endpoint_id_freed := true",
+          "removed_endpoint_id := endpoint_id",
+          "removal_timestamp := current_timestamp()",
+          "endpoint_count := endpoint_count - 1",
+          "generate_event(endpoint_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EndpointActive",
+        "to_state": "EndpointRemoved",
+        "trigger": "remove_endpoint_command",
+        "guard_condition": "endpoint_id_exists == true && concurrent_connections == 0",
+        "actions": [
+          "remove_endpoint(endpoint_id)",
+          "endpoint_deleted := true",
+          "endpoint_id_freed := true",
+          "removed_endpoint_id := endpoint_id",
+          "removal_timestamp := current_timestamp()",
+          "endpoint_count := endpoint_count - 1",
+          "generate_event(endpoint_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EndpointRemoved",
+        "to_state": "Idle",
+        "trigger": "complete_removal",
+        "guard_condition": "true",
+        "actions": [
+          "generate_event(endpoint_removal_complete)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "EndpointActive",
+        "to_state": "TLSConnectionEstablishing",
+        "trigger": "establish_tls_connection",
+        "guard_condition": "has_root_ca_for_fabric == true && has_endpoint_for_fabric == true && time_synchronized == true",
+        "actions": [
+          "connection_mode := CLIENT_ONLY",
+          "initiate_tls_handshake(endpoint_address, endpoint_port)",
+          "generate_event(tls_connection_establishing)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TLSConnectionEstablishing",
+        "to_state": "TLSConnectionEstablished",
+        "trigger": "tls_handshake_complete",
+        "guard_condition": "server_authenticated == true && (client_auth_required == false || (client_auth_required == true && client_authenticated == true))",
+        "actions": [
+          "connection_established := true",
+          "secure_channel_active := true",
+          "connection_established_timestamp := current_timestamp()",
+          "concurrent_connections := concurrent_connections + 1",
+          "generate_event(tls_connection_established)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TLSConnectionEstablishing",
+        "to_state": "TLSConnectionFailed",
+        "trigger": "tls_handshake_failed",
+        "guard_condition": "server_authenticated == false || (client_auth_required == true && client_authenticated == false) || time_validation_failed == true",
+        "actions": [
+          "connection_failed := true",
+          "error_type := determine_tls_error_type()",
+          "error_message := create_error_message(error_type)",
+          "failure_timestamp := current_timestamp()",
+          "failure_details := get_tls_failure_details()",
+          "generate_event(tls_connection_failed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TLSConnectionEstablished",
+        "to_state": "EndpointActive",
+        "trigger": "close_tls_connection",
+        "guard_condition": "true",
+        "actions": [
+          "connection_established := false",
+          "secure_channel_active := false",
+          "concurrent_connections := concurrent_connections - 1",
+          "generate_event(tls_connection_closed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "TLSConnectionFailed",
+        "to_state": "EndpointActive",
+        "trigger": "reset_after_connection_failure",
+        "guard_condition": "true",
+        "actions": [
+          "clear_error_state()",
+          "generate_event(connection_failure_cleared)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RootCAProvisioned",
+        "to_state": "RootCAProvisioned",
+        "trigger": "get_root_ca_command",
+        "guard_condition": "caid_exists == true",
+        "actions": [
+          "root_ca_data := retrieve_root_ca_by_caid(caid)",
+          "generate_event(root_ca_retrieved)"
+        ],
+        "timing_requirement": "Query operation - does not modify state",
+        "comment": "GET operation via CAID as required by spec section 14.3.1.1"
+      },
+      {
+        "from_state": "RootCAActive",
+        "to_state": "RootCAActive",
+        "trigger": "get_root_ca_command",
+        "guard_condition": "caid_exists == true",
+        "actions": [
+          "root_ca_data := retrieve_root_ca_by_caid(caid)",
+          "generate_event(root_ca_retrieved)"
+        ],
+        "timing_requirement": "Query operation - does not modify state",
+        "comment": "GET operation via CAID while root CA is active"
+      },
+      {
+        "from_state": "CertificateProvisioned",
+        "to_state": "CertificateProvisioned",
+        "trigger": "retrieve_ccd_command",
+        "guard_condition": "ccdid_exists == true",
+        "actions": [
+          "ccd_data := retrieve_ccd_by_ccdid(ccdid)",
+          "generate_event(ccd_retrieved)"
+        ],
+        "timing_requirement": "Query operation - does not modify state",
+        "comment": "RETRIEVE operation via CCDID as required by spec section 14.3.1.2"
+      },
+      {
+        "from_state": "ClientCertDetailsActive",
+        "to_state": "ClientCertDetailsActive",
+        "trigger": "retrieve_ccd_command",
+        "guard_condition": "ccdid_exists == true",
+        "actions": [
+          "ccd_data := retrieve_ccd_by_ccdid(ccdid)",
+          "generate_event(ccd_retrieved)"
+        ],
+        "timing_requirement": "Query operation - does not modify state",
+        "comment": "RETRIEVE operation via CCDID while CCD is active"
+      },
+      {
+        "from_state": "Idle",
+        "to_state": "Idle",
+        "trigger": "skip_ccd_provisioning",
+        "guard_condition": "ccd_provisioning_optional == true && client_auth_not_required == true",
+        "actions": [
+          "generate_event(ccd_provisioning_skipped)"
+        ],
+        "timing_requirement": null,
+        "comment": "Nodes MAY choose not to provision CCD per spec 14.3.1.2 if client certificate authentication not needed"
+      },
+      {
+        "from_state": "EndpointProvisioned",
+        "to_state": "EndpointProvisioned",
+        "trigger": "query_endpoint_command",
+        "guard_condition": "endpoint_id_exists == true",
+        "actions": [
+          "endpoint_data := retrieve_endpoint_by_id(endpoint_id)",
+          "generate_event(endpoint_queried)"
+        ],
+        "timing_requirement": "Query operation - does not modify state",
+        "comment": "Query endpoint configuration data"
+      },
+      {
+        "from_state": "EndpointActive",
+        "to_state": "EndpointActive",
+        "trigger": "query_endpoint_command",
+        "guard_condition": "endpoint_id_exists == true",
+        "actions": [
+          "endpoint_data := retrieve_endpoint_by_id(endpoint_id)",
+          "generate_event(endpoint_queried)"
+        ],
+        "timing_requirement": "Query operation - does not modify state",
+        "comment": "Query endpoint configuration data while active"
+      }
+    ],
+    "functions": [
+      {
+        "name": "generate_32byte_nonce",
+        "parameters": [],
+        "return_type": "32-byte bitstring",
+        "description": "Generates a cryptographically secure random 32-byte nonce using Crypto_DRBG deterministic random bit generator",
+        "algorithm_detail": "Uses Crypto_DRBG() as specified in specification. DRBG must provide cryptographic strength randomness with sufficient entropy to ensure nonce uniqueness across all CSR requests. Implementation follows NIST SP 800-90A or equivalent. Output is 256-bit (32-byte) uniformly random bitstring.",
+        "usage_in_fsm": "Called in Idle->NonceGenerated transition when initiating CSR request. Also called in CCDRotationInProgress->NonceGenerated for certificate rotation CSR."
+      },
+      {
+        "name": "check_if_rotation",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Determines if current CSR request is for certificate rotation (true) or new certificate provisioning (false)",
+        "algorithm_detail": "Checks if there is an existing CCDID that needs certificate rotation. Returns true if rotating existing certificate, false if provisioning new certificate. Logic: if existing_ccdid != null then return true else return false.",
+        "usage_in_fsm": "Called in Idle->NonceGenerated transition to set is_rotation flag, which affects subsequent CSR command parameters."
+      },
+      {
+        "name": "current_timestamp",
+        "parameters": [],
+        "return_type": "timestamp",
+        "description": "Returns current system time from Time Synchronization cluster",
+        "algorithm_detail": "Retrieves current synchronized time from Time Synchronization cluster (NTPClient or TimeSyncClient feature). Time must be accurate for certificate validity period validation (notBefore/notAfter fields). Returns timestamp in standard format.",
+        "usage_in_fsm": "Called throughout FSM to record event timestamps and for certificate time validation."
+      },
+      {
+        "name": "send_csr_command",
+        "parameters": [
+          {"name": "nonce", "type": "32-byte bitstring", "description": "Freshness nonce for CSR"},
+          {"name": "existing_ccdid", "type": "optional identifier", "description": "CCDID if rotation, null otherwise"}
+        ],
+        "return_type": "void",
+        "description": "Sends ClientCSR command to Node with nonce. If rotating, includes existing CCDID.",
+        "algorithm_detail": "Constructs ClientCSR command message with nonce parameter. If is_rotation == true, includes existing_ccdid in command. Sends command via Matter protocol to target Node. Command uses Large Message qualifier per specification.",
+        "usage_in_fsm": "Called in NonceGenerated->CSRRequested transition to initiate CSR request from Node."
+      },
+      {
+        "name": "verify_pkcs10_inner_signature",
+        "parameters": [
+          {"name": "csr_field", "type": "PKCS#10 CSR structure", "description": "CSR from ClientCSRResponse"}
+        ],
+        "return_type": "boolean",
+        "description": "Verifies inner signature in PKCS#10 CSR field per PKCS#10 standard",
+        "algorithm_detail": "Performs PKCS#10 signature verification per RFC 2986. Extracts signature, signature algorithm, and public key from CSR. Verifies signature over CertificationRequestInfo using extracted public key. Algorithm typically ECDSA with P-256 curve for Matter. Returns true if signature valid, false otherwise.",
+        "usage_in_fsm": "Called in CSRResponseReceived->PKCS10SignatureVerified transition (success path) and CSRResponseReceived->PKCS10VerificationFailed transition (failure path)."
+      },
+      {
+        "name": "extract_public_key_from_pkcs10",
+        "parameters": [
+          {"name": "csr_field", "type": "PKCS#10 CSR structure", "description": "CSR from ClientCSRResponse"}
+        ],
+        "return_type": "public key",
+        "description": "Extracts public key from PKCS#10 CSR subjectPublicKeyInfo field",
+        "algorithm_detail": "Parses PKCS#10 CSR structure per RFC 2986. Locates subjectPublicKeyInfo field in CertificationRequestInfo. Extracts and decodes SubjectPublicKey. For Matter, typically EC public key on P-256 curve. Returns public key in internal representation.",
+        "usage_in_fsm": "Called in CSRResponseReceived->PKCS10SignatureVerified transition to extract public key for consistency check."
+      },
+      {
+        "name": "create_error_message",
+        "parameters": [
+          {"name": "error_type", "type": "error code enum", "description": "Type of error that occurred"}
+        ],
+        "return_type": "string",
+        "description": "Creates human-readable error message based on error type",
+        "algorithm_detail": "Maps error_type enumeration to descriptive error string. Examples: PKCS10_SIGNATURE_INVALID -> 'PKCS#10 inner signature verification failed', NONCE_SIGNATURE_INVALID -> 'NonceSignature validation failed against provided nonce', PUBLIC_KEY_MISMATCH -> 'Public key in PKCS#10 does not match public key in NonceSignature'.",
+        "usage_in_fsm": "Called in all error state transitions to populate error_message field for debugging and logging."
+      },
+      {
+        "name": "verify_nonce_signature_validity",
+        "parameters": [
+          {"name": "nonce_signature", "type": "signature bitstring", "description": "NonceSignature from ClientCSRResponse"},
+          {"name": "nonce", "type": "32-byte bitstring", "description": "Original nonce sent in ClientCSR"},
+          {"name": "public_key", "type": "public key", "description": "Public key from PKCS#10 CSR"}
+        ],
+        "return_type": "boolean",
+        "description": "Verifies NonceSignature field is valid signature over original nonce using public key",
+        "algorithm_detail": "Verifies digital signature using public key extracted from CSR. Signature algorithm typically ECDSA with P-256 curve. Message being signed is the 32-byte nonce. Performs signature verification: Verify(public_key, nonce, nonce_signature). Returns true if signature valid, false otherwise. This ensures freshness and binds CSR to specific request.",
+        "usage_in_fsm": "Called in PKCS10SignatureVerified->NonceSignatureVerified transition (success) and PKCS10SignatureVerified->NonceSignatureVerificationFailed transition (failure)."
+      },
+      {
+        "name": "extract_public_key_from_signature",
+        "parameters": [
+          {"name": "nonce_signature", "type": "signature bitstring", "description": "NonceSignature from ClientCSRResponse"}
+        ],
+        "return_type": "public key",
+        "description": "Extracts or derives public key used to create NonceSignature",
+        "algorithm_detail": "For ECDSA signatures, public key can be recovered from signature and message (nonce) using signature recovery algorithms. Alternatively, if signature includes key identifier, retrieves corresponding public key. For Matter ECDSA with P-256, standard ECDSA recovery yields public key. Returns public key in internal representation.",
+        "usage_in_fsm": "Called in PKCS10SignatureVerified->NonceSignatureVerified transition to extract public key for consistency verification with PKCS#10 public key."
+      },
+      {
+        "name": "create_and_sign_certificate_from_csr",
+        "parameters": [
+          {"name": "csr_field", "type": "PKCS#10 CSR structure", "description": "Verified CSR"}
+        ],
+        "return_type": "X.509 certificate",
+        "description": "External Certificate Authority procedure to create and sign TLS client certificate from CSR. Not covered by specification.",
+        "algorithm_detail": "External CA procedure (Step 6 in specification - not covered). CA extracts subject name, public key, and extensions from CSR. Creates X.509 certificate with appropriate validity period (notBefore/notAfter), serial number, issuer name. Signs certificate with CA private key using signature algorithm (typically ECDSA-SHA256). Returns signed X.509 certificate.",
+        "usage_in_fsm": "Called in PublicKeyConsistencyVerified->CertificateCreated transition. This is external procedure, modeled as function for completeness."
+      },
+      {
+        "name": "get_intermediate_certificate_chain",
+        "parameters": [
+          {"name": "client_certificate", "type": "X.509 certificate", "description": "Client certificate from CA"}
+        ],
+        "return_type": "array of X.509 certificates",
+        "description": "Retrieves chain of intermediate CA certificates from client certificate to root CA",
+        "algorithm_detail": "Builds certificate chain by following issuer chain. Starting from client_certificate, extracts Issuer DN, finds certificate with matching Subject DN (intermediate CA), repeats until reaching root CA. Chain must be complete for TLS handshake client authentication. Returns array of intermediate certificates in order from client cert issuer to root CA.",
+        "usage_in_fsm": "Called in PublicKeyConsistencyVerified->CertificateCreated transition to obtain intermediate chain for CCD provisioning."
+      },
+      {
+        "name": "extract_not_before",
+        "parameters": [
+          {"name": "certificate", "type": "X.509 certificate", "description": "Certificate"}
+        ],
+        "return_type": "timestamp",
+        "description": "Extracts notBefore timestamp from X.509 certificate Validity field",
+        "algorithm_detail": "Parses X.509 certificate structure per RFC 5280. Locates Validity field in TBSCertificate. Extracts notBefore timestamp (UTCTime or GeneralizedTime format). Converts to internal timestamp representation. Returns timestamp indicating start of certificate validity period.",
+        "usage_in_fsm": "Called when provisioning certificates (root CA or client) to extract validity period start time for time validation."
+      },
+      {
+        "name": "extract_not_after",
+        "parameters": [
+          {"name": "certificate", "type": "X.509 certificate", "description": "Certificate"}
+        ],
+        "return_type": "timestamp",
+        "description": "Extracts notAfter timestamp from X.509 certificate Validity field",
+        "algorithm_detail": "Parses X.509 certificate structure per RFC 5280. Locates Validity field in TBSCertificate. Extracts notAfter timestamp (UTCTime or GeneralizedTime format). Converts to internal timestamp representation. Returns timestamp indicating end of certificate validity period.",
+        "usage_in_fsm": "Called when provisioning certificates (root CA or client) to extract validity period end time for time validation."
+      },
+      {
+        "name": "store_client_certificate_details",
+        "parameters": [
+          {"name": "ccdid", "type": "identifier", "description": "Client Certificate Details ID"},
+          {"name": "client_certificate", "type": "X.509 certificate", "description": "Client certificate"},
+          {"name": "private_key", "type": "private key", "description": "Private key corresponding to certificate public key"},
+          {"name": "intermediate_chain", "type": "array of X.509 certificates", "description": "Intermediate certificate chain"}
+        ],
+        "return_type": "void",
+        "description": "Stores Client Certificate Details (certificate + private key + intermediate chain) associated with CCDID",
+        "algorithm_detail": "Creates CCD storage entry indexed by CCDID. Stores client_certificate, private_key (in protected storage with encryption/isolation), and intermediate_chain as atomic unit. Enforces uniqueness constraint: only one CCD per CCDID (specification requirement). Private key never exposed outside secure storage. Operation must be atomic - all components stored or none. If CCDID already exists and is_rotation==true, replaces existing CCD atomically.",
+        "usage_in_fsm": "Called in CertificateCreated->CertificateProvisioned transition to provision certificate details into Node storage."
+      },
+      {
+        "name": "determine_failure_reason",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Determines specific reason for provisioning failure",
+        "algorithm_detail": "Checks various failure conditions: if storage_capacity_reached() return 'storage_full', if ccdid_invalid() return 'invalid_ccdid', if authentication_check_failed() return 'authentication_failed', else return 'unknown_error'. Provides diagnostic information for provisioning failures.",
+        "usage_in_fsm": "Called in CertificateCreated->ProvisioningFailed transition to populate failure_reason field."
+      },
+      {
+        "name": "clear_error_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clears error state variables and prepares for new operation",
+        "algorithm_detail": "Resets all error-related state variables: error_type := null, error_message := null, failure_timestamp := null, failure_details := null. Clears any temporary data from failed operation. Prepares FSM to return to Idle state for new operation attempt.",
+        "usage_in_fsm": "Called in all error-to-Idle transitions to clean up error state before returning to idle."
+      },
+      {
+        "name": "store_root_ca",
+        "parameters": [
+          {"name": "caid", "type": "Certificate Authority ID", "description": "Unique identifier for this root CA"},
+          {"name": "root_ca_certificate", "type": "X.509 certificate", "description": "Root CA certificate"},
+          {"name": "fabric_id", "type": "fabric identifier", "description": "Fabric this root CA is associated with"}
+        ],
+        "return_type": "void",
+        "description": "Stores root CA certificate indexed by CAID, associated with specific Fabric",
+        "algorithm_detail": "Creates root CA storage entry indexed by CAID. Stores root_ca_certificate associated with fabric_id. Enforces uniqueness: CAID uniquely identifies one root CA per Fabric. Enforces storage capacity: at least 5 root CAs per Fabric must be supported. CAID allows get, update, remove operations per specification requirement.",
+        "usage_in_fsm": "Called in Idle->RootCAProvisioned transition when provisioning new root CA."
+      },
+      {
+        "name": "update_root_ca",
+        "parameters": [
+          {"name": "caid", "type": "Certificate Authority ID", "description": "CAID of root CA to update"},
+          {"name": "new_root_ca_certificate", "type": "X.509 certificate", "description": "New root CA certificate"}
+        ],
+        "return_type": "void",
+        "description": "Updates existing root CA certificate for given CAID atomically",
+        "algorithm_detail": "Locates existing root CA entry by CAID. Atomically replaces old root_ca_certificate with new_root_ca_certificate. Operation must be atomic: either new certificate completely replaces old, or old certificate remains unchanged on failure. Updates validity timestamps (notBefore/notAfter) from new certificate.",
+        "usage_in_fsm": "Called in RootCAProvisioned->RootCAProvisioned transition (self-loop) when updating root CA."
+      },
+      {
+        "name": "remove_root_ca",
+        "parameters": [
+          {"name": "caid", "type": "Certificate Authority ID", "description": "CAID of root CA to remove"}
+        ],
+        "return_type": "void",
+        "description": "Removes root CA certificate identified by CAID, frees CAID",
+        "algorithm_detail": "Locates root CA entry by CAID. Verifies no active connections using this root CA (guard condition enforces this). Deletes root CA certificate. Frees CAID for reuse. Decrements root_ca_count. Operation must only succeed if no active TLS connections depend on this root CA.",
+        "usage_in_fsm": "Called in RootCAProvisioned->RootCARemoved and RootCAActive->RootCARemoved transitions when removing root CA."
+      },
+      {
+        "name": "determine_time_validation_failure_reason",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Determines specific reason for certificate time validation failure",
+        "algorithm_detail": "Checks time validation failure conditions: if time_synchronized==false return 'time_not_synchronized', if current_time < certificate_notBefore return 'certificate_not_yet_valid', if current_time > certificate_notAfter return 'certificate_expired', else return 'unknown_time_validation_error'.",
+        "usage_in_fsm": "Called in RootCAProvisioned->TLSConnectionFailed transition when time validation fails."
+      },
+      {
+        "name": "update_client_certificate_details",
+        "parameters": [
+          {"name": "ccdid", "type": "identifier", "description": "CCDID to update"},
+          {"name": "new_client_certificate", "type": "X.509 certificate", "description": "New client certificate"},
+          {"name": "new_private_key", "type": "private key", "description": "New private key"},
+          {"name": "new_intermediate_chain", "type": "array of X.509 certificates", "description": "New intermediate chain"}
+        ],
+        "return_type": "void",
+        "description": "Atomically updates all components of Client Certificate Details for given CCDID",
+        "algorithm_detail": "Locates existing CCD entry by CCDID. Atomically replaces all three components: certificate, private key, and intermediate chain. Operation must be atomic (all-or-nothing) per specification requirement. If any component update fails, entire operation fails and old CCD remains unchanged. Private key remains protected in secure storage throughout update.",
+        "usage_in_fsm": "Called in CertificateProvisioned->CertificateProvisioned transition (self-loop) when updating CCD."
+      },
+      {
+        "name": "remove_client_certificate_details",
+        "parameters": [
+          {"name": "ccdid", "type": "identifier", "description": "CCDID to remove"}
+        ],
+        "return_type": "void",
+        "description": "Atomically removes all CCD components (certificate + private key + intermediate chain), frees CCDID",
+        "algorithm_detail": "Locates CCD entry by CCDID. Verifies no active connections using this CCD (guard enforces this). Atomically deletes certificate, private key, and intermediate chain together per specification requirement. Private key must be securely erased (zeroed). Frees CCDID for reuse. Decrements ccd_count. Operation must be atomic: all components deleted or none.",
+        "usage_in_fsm": "Called in CertificateProvisioned->CCDRemoved and ClientCertDetailsActive->CCDRemoved transitions when removing CCD."
+      },
+      {
+        "name": "store_endpoint",
+        "parameters": [
+          {"name": "endpoint_id", "type": "endpoint identifier", "description": "Unique endpoint identifier"},
+          {"name": "endpoint_address", "type": "hostname or IP address", "description": "Server address"},
+          {"name": "endpoint_port", "type": "port number", "description": "Server port"},
+          {"name": "fabric_id", "type": "fabric identifier", "description": "Fabric this endpoint is associated with"}
+        ],
+        "return_type": "void",
+        "description": "Stores TLS endpoint configuration associated with specific Fabric",
+        "algorithm_detail": "Creates endpoint storage entry indexed by endpoint_id. Stores endpoint_address, endpoint_port, and fabric_id association. Enforces storage capacity: at least 2 endpoints per Fabric must be supported. Endpoint is isolated to its Fabric per specification security requirement. Supports at least 2 concurrent connections per Fabric using this endpoint.",
+        "usage_in_fsm": "Called in Idle->EndpointProvisioned transition when provisioning endpoint via ProvisionEndpoint command."
+      },
+      {
+        "name": "remove_endpoint",
+        "parameters": [
+          {"name": "endpoint_id", "type": "endpoint identifier", "description": "Endpoint ID to remove"}
+        ],
+        "return_type": "void",
+        "description": "Removes TLS endpoint, frees endpoint ID",
+        "algorithm_detail": "Locates endpoint entry by endpoint_id. Verifies no active connections to this endpoint (guard enforces this). Deletes endpoint configuration. Frees endpoint_id for reuse. Decrements endpoint_count.",
+        "usage_in_fsm": "Called in EndpointProvisioned->EndpointRemoved and EndpointActive->EndpointRemoved transitions when removing endpoint via RemoveEndpoint command."
+      },
+      {
+        "name": "initiate_tls_handshake",
+        "parameters": [
+          {"name": "endpoint_address", "type": "hostname or IP address", "description": "Server address"},
+          {"name": "endpoint_port", "type": "port number", "description": "Server port"}
+        ],
+        "return_type": "void",
+        "description": "Initiates TLS client handshake to server endpoint",
+        "algorithm_detail": "Establishes TCP connection to endpoint_address:endpoint_port. Initiates TLS handshake in CLIENT mode only (server connections forbidden per specification). Sends ClientHello. Receives ServerHello and server certificate chain. Validates server certificate using provisioned root CA for this Fabric. If server requests client authentication, presents client certificate from CCD. Completes handshake establishing secure channel.",
+        "usage_in_fsm": "Called in EndpointActive->TLSConnectionEstablishing transition when establishing TLS connection."
+      },
+      {
+        "name": "determine_tls_error_type",
+        "parameters": [],
+        "return_type": "error code enum",
+        "description": "Determines specific TLS connection failure type",
+        "algorithm_detail": "Analyzes TLS handshake failure conditions: if server_certificate_validation_failed return SERVER_AUTH_FAILED, if certificate_time_validation_failed return TIME_VALIDATION_FAILED, if client_authentication_failed return CLIENT_AUTH_FAILED, if certificate_expired return CERTIFICATE_EXPIRED, if no_matching_root_ca return NO_ROOT_CA, else return OTHER.",
+        "usage_in_fsm": "Called in TLSConnectionEstablishing->TLSConnectionFailed transition to determine error type."
+      },
+      {
+        "name": "get_tls_failure_details",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Retrieves detailed diagnostic information about TLS connection failure",
+        "algorithm_detail": "Collects TLS handshake failure details: server certificate subject/issuer if available, validation failure reason, alert messages exchanged, cipher suite mismatch if any, protocol version incompatibility if relevant. Returns comprehensive diagnostic string for debugging.",
+        "usage_in_fsm": "Called in TLSConnectionEstablishing->TLSConnectionFailed transition to populate failure_details field."
+      },
+      {
+        "name": "retrieve_root_ca_by_caid",
+        "parameters": [
+          {"name": "caid", "type": "Certificate Authority ID", "description": "CAID to query"}
+        ],
+        "return_type": "root CA certificate data structure",
+        "description": "Retrieves root CA certificate and metadata associated with CAID for query purposes",
+        "algorithm_detail": "Locates root CA storage entry by CAID. Returns tuple containing: (root_ca_certificate, fabric_id, certificate_notBefore, certificate_notAfter, provisioning_timestamp). This is a read-only query operation that does not modify state. Per specification requirement in section 14.3.1.1: 'CAID can be used to get, update, or remove the TLSRCAC'.",
+        "usage_in_fsm": "Called in RootCAProvisioned->RootCAProvisioned and RootCAActive->RootCAActive self-loop transitions for GET operations via CAID."
+      },
+      {
+        "name": "retrieve_ccd_by_ccdid",
+        "parameters": [
+          {"name": "ccdid", "type": "Client Certificate Details ID", "description": "CCDID to query"}
+        ],
+        "return_type": "CCD metadata structure",
+        "description": "Retrieves Client Certificate Details metadata (NOT including private key) associated with CCDID for query purposes",
+        "algorithm_detail": "Locates CCD storage entry by CCDID. Returns tuple containing: (client_certificate, intermediate_chain, fabric_id, certificate_notBefore, certificate_notAfter, provisioning_timestamp). IMPORTANT: Private key is NEVER returned in retrieval operations to maintain security. This is a read-only query operation. Per specification requirement in section 14.3.1.2: 'CCDID can be used to retrieve, update or remove the CCD'.",
+        "usage_in_fsm": "Called in CertificateProvisioned->CertificateProvisioned and ClientCertDetailsActive->ClientCertDetailsActive self-loop transitions for RETRIEVE operations via CCDID."
+      },
+      {
+        "name": "retrieve_endpoint_by_id",
+        "parameters": [
+          {"name": "endpoint_id", "type": "endpoint identifier", "description": "Endpoint ID to query"}
+        ],
+        "return_type": "endpoint configuration structure",
+        "description": "Retrieves endpoint configuration data for query purposes",
+        "algorithm_detail": "Locates endpoint storage entry by endpoint_id. Returns tuple containing: (endpoint_address, endpoint_port, fabric_id, provisioning_timestamp, concurrent_connections_limit). This is a read-only query operation that does not modify state.",
+        "usage_in_fsm": "Called in EndpointProvisioned->EndpointProvisioned and EndpointActive->EndpointActive self-loop transitions for query operations."
+      }
+    ],
+    "definitions": [
+      {
+        "term": "CAID (Certificate Authority ID)",
+        "definition": "Unique identifier for a provisioned TLS Root CA Certificate (TLSRCAC) associated with a Fabric on a Node. Used for get, update, and remove operations on root CAs.",
+        "security_relevance": "CAID uniqueness per Fabric ensures correct root CA is used for server authentication, preventing cross-Fabric certificate validation and potential authentication bypass."
+      },
+      {
+        "term": "CCDID (Client Certificate Details ID)",
+        "definition": "Unique identifier for Client Certificate Details (certificate + private key + intermediate chain) associated with a Fabric on a Node. Used for retrieve, update, and remove operations on client certificates.",
+        "security_relevance": "CCDID uniqueness ensures only one CCD per identifier, preventing race conditions with multiple credential sets and ensuring atomic operations on certificate details including private key protection."
+      },
+      {
+        "term": "CCD (Client Certificate Details)",
+        "definition": "Complete set required for TLS client authentication: client certificate, corresponding private key, and chain of intermediate certificates from client cert to root CA.",
+        "security_relevance": "CCD atomicity (all three components treated as single unit) is critical. Private key must never be exposed. Incomplete chain causes authentication failure. Atomic storage/update/removal prevents key-certificate mismatch vulnerabilities."
+      },
+      {
+        "term": "Nonce",
+        "definition": "Cryptographically secure random 32-byte value generated using Crypto_DRBG, used in CSR procedure for freshness verification to prevent replay attacks.",
+        "security_relevance": "Nonce uniqueness and cryptographic randomness are critical security properties. Weak or reused nonces enable replay attacks where attacker reuses old CSRResponse to provision unauthorized certificates."
+      },
+      {
+        "term": "PKCS #10 CSR Inner Signature",
+        "definition": "Digital signature within PKCS #10 Certificate Signing Request structure, signing the CertificationRequestInfo containing subject name, public key, and extensions.",
+        "security_relevance": "Inner signature verification ensures CSR authenticity and integrity. Without verification, attacker can tamper with CSR fields (subject name, public key, extensions) enabling certificate misissuance and impersonation."
+      },
+      {
+        "term": "NonceSignature",
+        "definition": "Digital signature over the nonce value included in ClientCSRResponse, created using the same private key as PKCS #10 CSR inner signature.",
+        "security_relevance": "NonceSignature binds CSR to specific request, preventing replay attacks. Signature must be verified against original nonce and public key must match PKCS #10 public key to prevent key substitution attacks."
+      },
+      {
+        "term": "Public Key Consistency",
+        "definition": "Security property requiring the public key used for NonceSignature to be identical to the public key in PKCS #10 CSR inner signature.",
+        "security_relevance": "Prevents key substitution attack where attacker signs nonce with one key but embeds different public key in CSR, enabling attacker to obtain certificate for their key without proper authorization."
+      },
+      {
+        "term": "Certificate Rotation",
+        "definition": "Process of generating new client certificate for existing CCDID, replacing old certificate while maintaining same identifier. Initiated by providing existing CCDID in ClientCSR command.",
+        "security_relevance": "Enables periodic certificate renewal without changing CCDID. Critical for security to maintain old certificate validity until new one provisioned (overlap period) to avoid service disruption. Atomic replacement prevents credential gaps."
+      },
+      {
+        "term": "Time Synchronization Requirement",
+        "definition": "Mandatory requirement that Nodes supporting TLS Certificate Management must have Time Synchronization cluster with NTPClient or TimeSyncClient feature enabled for certificate validity period validation.",
+        "security_relevance": "Without accurate time, certificate notBefore/notAfter validation fails. Nodes may accept expired/revoked certificates or reject valid ones. Time-based revocation mechanisms become ineffective, enabling persistent unauthorized access."
+      },
+      {
+        "term": "Fabric Isolation",
+        "definition": "Security property ensuring certificates, CCDs, CAIDs, CCDIDs, and endpoints are isolated per Fabric and cannot be used across Fabric boundaries.",
+        "security_relevance": "Fundamental multi-tenancy security boundary. Cross-Fabric certificate use would enable privilege escalation where access to one Fabric grants unauthorized access to another Fabric, breaking isolation guarantees."
+      },
+      {
+        "term": "Atomic Operations",
+        "definition": "Operations that must complete entirely or not at all (all-or-nothing semantics). Applied to CCD update (all three components updated together) and CCD removal (certificate + key + chain deleted together).",
+        "security_relevance": "Prevents partial state leaving system with inconsistent credentials. Certificate-key mismatch causes authentication failure. Orphaned private keys create security risk if not properly erased. Atomicity ensures consistent state."
+      },
+      {
+        "term": "Client-Only Connection Mode",
+        "definition": "Security restriction that only TLS Client Connections are allowed using clusters and commands in this specification. TLS Server connections are forbidden.",
+        "security_relevance": "Prevents unauthorized incoming TLS server connections that could bypass access control. Node only initiates outbound client connections to authenticated servers, not accepting incoming connections that could be from attackers."
+      },
+      {
+        "term": "Root CA Certificate Management",
+        "definition": "Provisioning, updating, and removing X.509 Root CA certificates used to authenticate TLS servers during handshake, identified by CAID.",
+        "security_relevance": "Root CAs are trust anchors for server authentication. Compromised or malicious root CA can validate any certificate, enabling man-in-the-middle attacks. Root CA management controls who can authenticate as legitimate servers."
+      },
+      {
+        "term": "Large Message Qualifier",
+        "definition": "Protocol qualifier uniformly applied to all TLS Certificate Management cluster commands, even when command size doesn't require it, to reduce testing matrix.",
+        "security_relevance": "Ensures consistent message handling and buffer allocation. Non-uniform handling could cause truncation or rejection of large certificates, reducing interoperability and potentially creating denial of service vulnerabilities."
+      },
+      {
+        "term": "Storage Capacity Requirements",
+        "definition": "Minimum storage requirements: at least 5 root CAs per Fabric, at least 2 CCDs per Fabric, at least 2 endpoints per Fabric. Device types may increase these minimums.",
+        "security_relevance": "Insufficient storage prevents certificate rotation overlap (need 2 CCDs during rotation) or redundant endpoints. Forces premature certificate deletion creating service gaps. 5 root CAs support multiple trust domains for interoperability."
+      },
+      {
+        "term": "Concurrent Connection Capacity",
+        "definition": "Node must support at least 2 concurrent TLS client connections per Fabric using provisioned endpoints.",
+        "security_relevance": "Single connection limit creates bottleneck and timeout risks. Prevents parallel operations to multiple servers. Adequate concurrency ensures service availability and prevents denial of service through connection exhaustion."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "CSR_FRESHNESS_GUARANTEE",
+        "type": "authenticity",
+        "description": "Each CSR request uses unique cryptographically random nonce, and NonceSignature verification ensures freshness, preventing replay attacks.",
+        "fsm_states_involved": ["NonceGenerated", "CSRRequested", "CSRResponseReceived", "NonceSignatureVerified"],
+        "critical_transitions": ["Idle->NonceGenerated", "PKCS10SignatureVerified->NonceSignatureVerified", "PKCS10SignatureVerified->NonceSignatureVerificationFailed"]
+      },
+      {
+        "property_name": "CSR_AUTHENTICITY_VERIFICATION",
+        "type": "authenticity",
+        "description": "Triple verification (PKCS#10 signature, nonce signature, public key consistency) ensures CSR authenticity and prevents tampering and key substitution attacks.",
+        "fsm_states_involved": ["CSRResponseReceived", "PKCS10SignatureVerified", "NonceSignatureVerified", "PublicKeyConsistencyVerified"],
+        "critical_transitions": ["CSRResponseReceived->PKCS10SignatureVerified", "PKCS10SignatureVerified->NonceSignatureVerified", "NonceSignatureVerified->PublicKeyConsistencyVerified"]
+      },
+      {
+        "property_name": "CERTIFICATE_TIME_VALIDATION",
+        "type": "timing",
+        "description": "Certificate validity periods (notBefore/notAfter) validated using synchronized time before use, preventing use of expired or not-yet-valid certificates.",
+        "fsm_states_involved": ["RootCAProvisioned", "RootCAActive", "ClientCertDetailsActive", "TLSConnectionEstablishing"],
+        "critical_transitions": ["RootCAProvisioned->RootCAActive", "RootCAProvisioned->TLSConnectionFailed", "CertificateProvisioned->ClientCertDetailsActive"]
+      },
+      {
+        "property_name": "ATOMIC_CCD_OPERATIONS",
+        "type": "consistency",
+        "description": "CCD update and removal operations are atomic (all-or-nothing), preventing certificate-key mismatch and orphaned credentials.",
+        "fsm_states_involved": ["CertificateProvisioned", "ClientCertDetailsActive", "CCDRemoved"],
+        "critical_transitions": ["CertificateProvisioned->CertificateProvisioned (update)", "CertificateProvisioned->CCDRemoved", "ClientCertDetailsActive->CCDRemoved"]
+      },
+      {
+        "property_name": "PRIVATE_KEY_PROTECTION",
+        "type": "confidentiality",
+        "description": "Private keys in CCD stored in protected storage, never exposed outside secure storage, only used internally for TLS handshake signing.",
+        "fsm_states_involved": ["CertificateProvisioned", "ClientCertDetailsActive"],
+        "critical_transitions": ["CertificateCreated->CertificateProvisioned", "CertificateProvisioned->ClientCertDetailsActive"]
+      },
+      {
+        "property_name": "FABRIC_ISOLATION_ENFORCEMENT",
+        "type": "access_control",
+        "description": "Certificates, CCDs, endpoints isolated per Fabric; resources from one Fabric cannot be used in another Fabric.",
+        "fsm_states_involved": ["RootCAProvisioned", "CertificateProvisioned", "EndpointProvisioned", "TLSConnectionEstablishing"],
+        "critical_transitions": ["Idle->RootCAProvisioned", "CertificateCreated->CertificateProvisioned", "Idle->EndpointProvisioned", "EndpointActive->TLSConnectionEstablishing"]
+      },
+      {
+        "property_name": "CLIENT_ONLY_CONNECTION_MODE",
+        "type": "access_control",
+        "description": "Only TLS client connections permitted; TLS server connections forbidden, preventing unauthorized incoming connections.",
+        "fsm_states_involved": ["TLSConnectionEstablishing", "TLSConnectionEstablished"],
+        "critical_transitions": ["EndpointActive->TLSConnectionEstablishing", "TLSConnectionEstablishing->TLSConnectionEstablished"]
+      },
+      {
+        "property_name": "CAID_UNIQUENESS_PER_FABRIC",
+        "type": "correctness",
+        "description": "Each CAID uniquely identifies exactly one root CA per Fabric, ensuring correct CA used for server validation.",
+        "fsm_states_involved": ["RootCAProvisioned", "RootCAActive"],
+        "critical_transitions": ["Idle->RootCAProvisioned", "RootCAProvisioned->RootCAActive"]
+      },
+      {
+        "property_name": "CCDID_UNIQUENESS_PER_FABRIC",
+        "type": "correctness",
+        "description": "Each CCDID uniquely identifies exactly one CCD per Fabric, ensuring correct credentials used for client authentication.",
+        "fsm_states_involved": ["CertificateProvisioned", "ClientCertDetailsActive"],
+        "critical_transitions": ["CertificateCreated->CertificateProvisioned", "CertificateProvisioned->ClientCertDetailsActive"]
+      },
+      {
+        "property_name": "SERVER_AUTHENTICATION_VIA_ROOT_CA",
+        "type": "authenticity",
+        "description": "TLS servers authenticated using provisioned root CA during handshake, preventing connection to impostor servers.",
+        "fsm_states_involved": ["TLSConnectionEstablishing", "TLSConnectionEstablished", "TLSConnectionFailed"],
+        "critical_transitions": ["TLSConnectionEstablishing->TLSConnectionEstablished", "TLSConnectionEstablishing->TLSConnectionFailed"]
+      },
+      {
+        "property_name": "CERTIFICATE_ROTATION_CONTINUITY",
+        "type": "consistency",
+        "description": "During certificate rotation, old certificate remains valid until new certificate provisioned, preventing service gaps.",
+        "fsm_states_involved": ["CCDRotationInProgress", "NonceGenerated", "CertificateProvisioned"],
+        "critical_transitions": ["CertificateProvisioned->CCDRotationInProgress", "CCDRotationInProgress->NonceGenerated"]
+      },
+      {
+        "property_name": "VERIFICATION_BEFORE_PROVISIONING",
+        "type": "security",
+        "description": "All three verification steps (PKCS#10, nonce signature, public key consistency) must complete successfully before certificate provisioning.",
+        "fsm_states_involved": ["PublicKeyConsistencyVerified", "CertificateCreated", "CertificateProvisioned"],
+        "critical_transitions": ["NonceSignatureVerified->PublicKeyConsistencyVerified", "PublicKeyConsistencyVerified->CertificateCreated", "CertificateCreated->CertificateProvisioned"]
+      },
+      {
+        "property_name": "NO_CONCURRENT_OPERATIONS_ON_ACTIVE_RESOURCES",
+        "type": "consistency",
+        "description": "Resources (root CA, CCD, endpoint) cannot be removed while active connections using them, preventing use-after-free.",
+        "fsm_states_involved": ["RootCAActive", "ClientCertDetailsActive", "EndpointActive"],
+        "critical_transitions": ["RootCAActive->RootCARemoved", "ClientCertDetailsActive->CCDRemoved", "EndpointActive->EndpointRemoved"]
+      },
+      {
+        "property_name": "STORAGE_CAPACITY_ENFORCEMENT",
+        "type": "correctness",
+        "description": "Minimum storage capacities enforced (5 root CAs, 2 CCDs, 2 endpoints per Fabric) to ensure functionality and redundancy.",
+        "fsm_states_involved": ["Idle", "RootCAProvisioned", "CertificateProvisioned", "EndpointProvisioned"],
+        "critical_transitions": ["Idle->RootCAProvisioned", "CertificateCreated->CertificateProvisioned", "Idle->EndpointProvisioned"]
+      },
+      {
+        "property_name": "QUERY_OPERATIONS_AVAILABLE",
+        "type": "correctness",
+        "description": "GET operation via CAID and RETRIEVE operation via CCDID must be available as required by specification for querying provisioned certificates without modifying state.",
+        "fsm_states_involved": ["RootCAProvisioned", "RootCAActive", "CertificateProvisioned", "ClientCertDetailsActive"],
+        "critical_transitions": ["RootCAProvisioned->RootCAProvisioned (get)", "CertificateProvisioned->CertificateProvisioned (retrieve)"]
+      },
+      {
+        "property_name": "PRIVATE_KEY_NEVER_RETRIEVED",
+        "type": "confidentiality",
+        "description": "Private keys must never be returned by RETRIEVE operations; only certificate and chain metadata can be queried.",
+        "fsm_states_involved": ["CertificateProvisioned", "ClientCertDetailsActive"],
+        "critical_transitions": ["CertificateProvisioned->CertificateProvisioned (retrieve)", "ClientCertDetailsActive->ClientCertDetailsActive (retrieve)"]
+      },
+      {
+        "property_name": "OPTIONAL_CCD_PROVISIONING",
+        "type": "correctness",
+        "description": "CCD provisioning is optional per spec; nodes may skip client certificate provisioning if client authentication not required by TLS servers.",
+        "fsm_states_involved": ["Idle"],
+        "critical_transitions": ["Idle->Idle (skip provisioning)", "Idle->NonceGenerated (start provisioning)"]
+      }
+    ],
+    "initial_state": "Idle",
+    "all_states": [
+      "Idle",
+      "NonceGenerated",
+      "CSRRequested",
+      "CSRResponseReceived",
+      "PKCS10SignatureVerified",
+      "NonceSignatureVerified",
+      "PublicKeyConsistencyVerified",
+      "CertificateCreated",
+      "CertificateProvisioned",
+      "PKCS10VerificationFailed",
+      "NonceSignatureVerificationFailed",
+      "PublicKeyConsistencyFailed",
+      "ProvisioningFailed",
+      "RootCAProvisioned",
+      "RootCAActive",
+      "RootCARemoved",
+      "ClientCertDetailsActive",
+      "CCDRotationInProgress",
+      "CCDRemoved",
+      "EndpointProvisioned",
+      "EndpointActive",
+      "EndpointRemoved",
+      "TLSConnectionEstablishing",
+      "TLSConnectionEstablished",
+      "TLSConnectionFailed"
+    ],
+    "all_triggers": [
+      "initiate_csr_request",
+      "send_client_csr_command",
+      "cancel_csr_request",
+      "receive_client_csr_response",
+      "verify_pkcs10_signature",
+      "verify_nonce_signature",
+      "verify_public_key_consistency",
+      "external_ca_signs_certificate",
+      "provision_client_certificate_command",
+      "complete_csr_process",
+      "reset_after_error",
+      "provision_root_ca_command",
+      "use_root_ca_for_validation",
+      "stop_using_root_ca",
+      "update_root_ca_command",
+      "remove_root_ca_command",
+      "complete_removal",
+      "use_ccd_for_client_auth",
+      "stop_using_ccd",
+      "initiate_certificate_rotation",
+      "start_rotation_csr",
+      "update_ccd_command",
+      "remove_ccd_command",
+      "provision_endpoint_command",
+      "use_endpoint_for_connection",
+      "stop_using_endpoint",
+      "remove_endpoint_command",
+      "establish_tls_connection",
+      "tls_handshake_complete",
+      "tls_handshake_failed",
+      "close_tls_connection",
+      "reset_after_connection_failure",
+      "get_root_ca_command",
+      "retrieve_ccd_command",
+      "skip_ccd_provisioning",
+      "query_endpoint_command"
+    ],
+    "all_functions_used": [
+      "generate_32byte_nonce",
+      "check_if_rotation",
+      "current_timestamp",
+      "send_csr_command",
+      "verify_pkcs10_inner_signature",
+      "extract_public_key_from_pkcs10",
+      "create_error_message",
+      "verify_nonce_signature_validity",
+      "extract_public_key_from_signature",
+      "create_and_sign_certificate_from_csr",
+      "get_intermediate_certificate_chain",
+      "extract_not_before",
+      "extract_not_after",
+      "store_client_certificate_details",
+      "determine_failure_reason",
+      "clear_error_state",
+      "store_root_ca",
+      "update_root_ca",
+      "remove_root_ca",
+      "determine_time_validation_failure_reason",
+      "update_client_certificate_details",
+      "remove_client_certificate_details",
+      "store_endpoint",
+      "remove_endpoint",
+      "initiate_tls_handshake",
+      "determine_tls_error_type",
+      "get_tls_failure_details",
+      "retrieve_root_ca_by_caid",
+      "retrieve_ccd_by_ccdid",
+      "retrieve_endpoint_by_id"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "Nonce Generation",
+        "algorithm": "Crypto_DRBG (NIST SP 800-90A compliant DRBG)",
+        "inputs": ["entropy_source"],
+        "output": "32-byte (256-bit) cryptographically secure random nonce",
+        "assumptions": [
+          "DRBG has sufficient entropy for cryptographic strength",
+          "DRBG implementation prevents nonce collisions with overwhelming probability",
+          "Nonce uniqueness across all CSR requests"
+        ]
+      },
+      {
+        "operation": "PKCS#10 CSR Signature Verification",
+        "algorithm": "ECDSA with P-256 curve and SHA-256 hash (typical for Matter)",
+        "inputs": ["csr_field (PKCS#10 structure)", "public_key from CSR", "signature from CSR"],
+        "output": "Boolean (true if signature valid, false otherwise)",
+        "assumptions": [
+          "ECDSA signature algorithm is secure",
+          "Public key corresponds to private key that signed CSR",
+          "CSR structure not tampered with after signing"
+        ]
+      },
+      {
+        "operation": "Nonce Signature Verification",
+        "algorithm": "ECDSA with P-256 curve (typical for Matter)",
+        "inputs": ["nonce (32 bytes)", "nonce_signature", "public_key"],
+        "output": "Boolean (true if signature valid, false otherwise)",
+        "assumptions": [
+          "ECDSA signature algorithm is secure",
+          "Public key corresponds to private key that signed nonce",
+          "Nonce not modified after signature creation"
+        ]
+      },
+      {
+        "operation": "TLS Handshake with Client and Server Authentication",
+        "algorithm": "TLS 1.2 or TLS 1.3 with certificate-based authentication",
+        "inputs": ["root_ca_certificate", "server_certificate", "optional client_certificate", "optional client_private_key"],
+        "output": "Secure TLS channel or authentication failure",
+        "assumptions": [
+          "TLS protocol implementation is secure",
+          "Root CA certificate is trusted",
+          "Server certificate chains to root CA",
+          "Client private key is protected and not compromised",
+          "Time is synchronized for certificate validity checking"
+        ]
+      },
+      {
+        "operation": "X.509 Certificate Validation",
+        "algorithm": "X.509 certificate chain validation per RFC 5280",
+        "inputs": ["certificate to validate", "certificate chain", "root CA certificate", "current time"],
+        "output": "Boolean (true if certificate valid, false otherwise)",
+        "assumptions": [
+          "Certificate signatures are valid",
+          "Certificate chain is complete",
+          "Current time is within certificate validity period (notBefore <= current_time <= notAfter)",
+          "Certificate not revoked (CRL/OCSP not specified but assumed)",
+          "Root CA is trusted"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "Crypto_DRBG provides cryptographically secure random number generation with sufficient entropy",
+        "type": "explicit",
+        "if_violated": "Nonces become predictable or collide, enabling replay attacks where attacker reuses CSRResponse or predicts future nonces to forge certificates."
+      },
+      {
+        "assumption": "Time Synchronization cluster maintains accurate time within acceptable bounds for certificate validity checking",
+        "type": "implicit",
+        "if_violated": "Certificate time validation becomes unreliable. Expired certificates may be accepted or valid certificates rejected. Time-based revocation ineffective."
+      },
+      {
+        "assumption": "PKCS #10 signature verification correctly validates CSR authenticity and prevents tampering",
+        "type": "explicit",
+        "if_violated": "Attacker can forge or tamper with CSR contents without detection, enabling submission of CSRs with attacker-controlled subject names, extensions, or public keys."
+      },
+      {
+        "assumption": "Storage mechanisms provide integrity and isolation, preventing unauthorized modification or access to certificates and keys",
+        "type": "implicit",
+        "if_violated": "Attacker with storage access can corrupt certificates, replace keys, or extract private keys, completely compromising TLS security."
+      },
+      {
+        "assumption": "Fabric isolation mechanisms prevent cross-Fabric resource access",
+        "type": "implicit",
+        "if_violated": "Multi-tenancy security boundary breaks. Node in one Fabric can access certificates/keys/endpoints from another Fabric, enabling privilege escalation."
+      },
+      {
+        "assumption": "External Certificate Authority (step 6) creates valid certificates without introducing vulnerabilities",
+        "type": "explicit",
+        "if_violated": "Compromised or malicious CA can issue certificates with incorrect extensions, weak keys, or unauthorized subject names, undermining TLS authentication."
+      },
+      {
+        "assumption": "TLS handshake implementation correctly validates server certificates and performs client authentication",
+        "type": "implicit",
+        "if_violated": "Flawed TLS implementation may accept invalid server certificates, skip chain validation, or fail to detect man-in-the-middle attacks despite correct certificate provisioning."
+      },
+      {
+        "assumption": "Private keys stored in protected storage are never exposed and remain secure from extraction",
+        "type": "implicit",
+        "if_violated": "Private key exposure enables attacker to clone node credentials and impersonate node indefinitely to any server in Fabric."
+      },
+      {
+        "assumption": "Atomic operations (CCD update/removal) are truly atomic at storage layer",
+        "type": "implicit",
+        "if_violated": "Partial updates leave inconsistent state with certificate-key mismatch. Power loss during operation could corrupt credentials. Authentication failures or security breaches result."
+      },
+      {
+        "assumption": "CAID and CCDID uniqueness is enforced by storage layer per Fabric",
+        "type": "implicit",
+        "if_violated": "ID collisions cause operations to target wrong certificates. Wrong CA used for validation, accepting untrusted certificates. Wrong credentials used for authentication."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": false,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

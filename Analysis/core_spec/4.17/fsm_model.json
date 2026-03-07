@@ -1,0 +1,2315 @@
+{
+  "fsm_model": {
+    "section_name": "4.17 Group Key Management",
+    "section_ref": "Matter Core Specification, Section 4.17",
+    "description": "Complete FSM for operational group key management, including key derivation, distribution, rotation, and group membership lifecycle",
+    "states": [
+      {
+        "name": "Initial",
+        "description": "Node has been commissioned but no group membership established",
+        "is_initial": true,
+        "invariants": [
+          "group_count == 0",
+          "epoch_key_sets_count == 0",
+          "not_member_of_any_group == true"
+        ],
+        "state_variables": {
+          "fabric_id": "64-bit_compressed_fabric_identifier",
+          "node_id": "64-bit_node_identifier",
+          "is_administrator": "boolean",
+          "has_time_sync": "boolean"
+        }
+      },
+      {
+        "name": "GroupInstalling_KeySetWritten",
+        "description": "KeySetWrite command executed successfully, epoch keys stored but group not yet associated",
+        "is_initial": false,
+        "invariants": [
+          "key_set_exists == true",
+          "group_key_map_entry == false",
+          "endpoint_group_association == false",
+          "epoch_keys_count >= 1 && epoch_keys_count <= 3"
+        ],
+        "state_variables": {
+          "key_set_id": "16-bit_identifier",
+          "epoch_key0": "128-bit_symmetric_key",
+          "epoch_key0_start_time": "uint64_epoch_us",
+          "epoch_key1": "128-bit_symmetric_key_or_null",
+          "epoch_key1_start_time": "uint64_epoch_us_or_null",
+          "epoch_key2": "128-bit_symmetric_key_or_null",
+          "epoch_key2_start_time": "uint64_epoch_us_or_null",
+          "group_key_security_policy": "uint8"
+        }
+      },
+      {
+        "name": "GroupInstalling_KeySetMapped",
+        "description": "GroupKeyMap written, associating Group ID with Key Set ID, but endpoint not yet associated",
+        "is_initial": false,
+        "invariants": [
+          "key_set_exists == true",
+          "group_key_map_entry == true",
+          "endpoint_group_association == false",
+          "group_id_assigned == true"
+        ],
+        "state_variables": {
+          "group_id": "16-bit_group_identifier",
+          "key_set_id": "16-bit_key_set_identifier",
+          "epoch_key0": "128-bit_symmetric_key",
+          "epoch_key0_start_time": "uint64_epoch_us",
+          "epoch_key1": "128-bit_symmetric_key_or_null",
+          "epoch_key1_start_time": "uint64_epoch_us_or_null",
+          "epoch_key2": "128-bit_symmetric_key_or_null",
+          "epoch_key2_start_time": "uint64_epoch_us_or_null"
+        }
+      },
+      {
+        "name": "GroupMember_AdminRefresh",
+        "description": "Group fully installed, keys in AdminRefresh state: EpochKey2=New, EpochKey1=Current, EpochKey0=Previous",
+        "is_initial": false,
+        "invariants": [
+          "group_membership == true",
+          "ipv6_multicast_subscribed == true",
+          "epoch_key2_status == NEW",
+          "epoch_key1_status == CURRENT",
+          "epoch_key0_status == PREVIOUS",
+          "can_send == true",
+          "can_receive == true"
+        ],
+        "state_variables": {
+          "group_id": "16-bit_group_identifier",
+          "key_set_id": "16-bit_key_set_identifier",
+          "endpoint_id": "16-bit_endpoint",
+          "epoch_key0": "128-bit_symmetric_key",
+          "epoch_key0_start_time": "uint64_epoch_us",
+          "epoch_key0_status": "enum_PREVIOUS",
+          "epoch_key1": "128-bit_symmetric_key",
+          "epoch_key1_start_time": "uint64_epoch_us",
+          "epoch_key1_status": "enum_CURRENT",
+          "epoch_key2": "128-bit_symmetric_key",
+          "epoch_key2_start_time": "uint64_epoch_us",
+          "epoch_key2_status": "enum_NEW",
+          "ipv6_multicast_address": "ipv6_address_from_fabric_and_group",
+          "current_time": "uint64_epoch_us",
+          "operational_key_cache": "map_of_epoch_key_to_operational_key"
+        }
+      },
+      {
+        "name": "GroupMember_EpochActivate",
+        "description": "Time progressed, EpochKey2 activated: EpochKey2=Current, EpochKey1=Previous, EpochKey0=Old",
+        "is_initial": false,
+        "invariants": [
+          "group_membership == true",
+          "epoch_key2_status == CURRENT",
+          "epoch_key1_status == PREVIOUS",
+          "epoch_key0_status == OLD",
+          "can_send == true",
+          "can_receive == true",
+          "current_time >= epoch_key2_start_time"
+        ],
+        "state_variables": {
+          "group_id": "16-bit_group_identifier",
+          "key_set_id": "16-bit_key_set_identifier",
+          "epoch_key0": "128-bit_symmetric_key",
+          "epoch_key0_start_time": "uint64_epoch_us",
+          "epoch_key0_status": "enum_OLD",
+          "epoch_key1": "128-bit_symmetric_key",
+          "epoch_key1_start_time": "uint64_epoch_us",
+          "epoch_key1_status": "enum_PREVIOUS",
+          "epoch_key2": "128-bit_symmetric_key",
+          "epoch_key2_start_time": "uint64_epoch_us",
+          "epoch_key2_status": "enum_CURRENT",
+          "current_time": "uint64_epoch_us",
+          "operational_key_cache": "map_of_epoch_key_to_operational_key"
+        }
+      },
+      {
+        "name": "GroupMember_AdminUpdate",
+        "description": "Administrator updated old epoch key with new one: EpochKey2=New, EpochKey1=Current, EpochKey0=Previous",
+        "is_initial": false,
+        "invariants": [
+          "group_membership == true",
+          "epoch_key2_status == NEW",
+          "epoch_key1_status == CURRENT",
+          "epoch_key0_status == PREVIOUS",
+          "can_send == true",
+          "can_receive == true",
+          "all_old_keys_removed == true"
+        ],
+        "state_variables": {
+          "group_id": "16-bit_group_identifier",
+          "key_set_id": "16-bit_key_set_identifier",
+          "epoch_key0": "128-bit_symmetric_key",
+          "epoch_key0_start_time": "uint64_epoch_us",
+          "epoch_key0_status": "enum_PREVIOUS",
+          "epoch_key1": "128-bit_symmetric_key",
+          "epoch_key1_start_time": "uint64_epoch_us",
+          "epoch_key1_status": "enum_CURRENT",
+          "epoch_key2": "128-bit_symmetric_key",
+          "epoch_key2_start_time": "uint64_epoch_us",
+          "epoch_key2_status": "enum_NEW",
+          "current_time": "uint64_epoch_us",
+          "operational_key_cache": "map_of_epoch_key_to_operational_key"
+        }
+      },
+      {
+        "name": "GroupMember_NoTimeSync_BaseState",
+        "description": "Node without time synchronization, uses second-newest key as current until next admin contact",
+        "is_initial": false,
+        "invariants": [
+          "group_membership == true",
+          "has_time_sync == false",
+          "uses_second_newest_key == true",
+          "can_send == true",
+          "can_receive == true"
+        ],
+        "state_variables": {
+          "group_id": "16-bit_group_identifier",
+          "key_set_id": "16-bit_key_set_identifier",
+          "epoch_keys": "list_of_epoch_keys_with_start_times",
+          "current_key": "second_newest_epoch_key_by_start_time",
+          "operational_key_cache": "map_of_epoch_key_to_operational_key"
+        }
+      },
+      {
+        "name": "Sending_Message",
+        "description": "Node preparing to send group message using current epoch key derived operational key",
+        "is_initial": false,
+        "invariants": [
+          "group_membership == true",
+          "has_current_epoch_key == true",
+          "operational_key_for_current_derived == true"
+        ],
+        "state_variables": {
+          "current_epoch_key": "128-bit_symmetric_key",
+          "operational_group_key": "128-bit_derived_key",
+          "group_session_id": "16-bit_derived_identifier",
+          "message_plaintext": "bitstring",
+          "message_ciphertext": "bitstring_to_be_generated"
+        }
+      },
+      {
+        "name": "Receiving_Message",
+        "description": "Node received group message, attempting decryption with all installed epoch key candidates",
+        "is_initial": false,
+        "invariants": [
+          "group_membership == true",
+          "has_installed_epoch_keys == true",
+          "trying_key_candidates == true"
+        ],
+        "state_variables": {
+          "received_group_session_id": "16-bit",
+          "candidate_epoch_keys": "list_of_epoch_keys_matching_group_session_id",
+          "current_candidate_index": "integer",
+          "message_ciphertext": "bitstring",
+          "authentication_passed": "boolean"
+        }
+      },
+      {
+        "name": "Message_Authenticated",
+        "description": "Received message successfully decrypted and MIC verified with one of installed keys",
+        "is_initial": false,
+        "invariants": [
+          "authentication_passed == true",
+          "message_decrypted == true",
+          "mic_verified == true"
+        ],
+        "state_variables": {
+          "message_plaintext": "bitstring",
+          "authenticated_epoch_key": "128-bit_key_used_for_decrypt",
+          "sender_is_group_member": "true"
+        }
+      },
+      {
+        "name": "Message_Rejected",
+        "description": "Received message failed authentication with all installed key candidates",
+        "is_initial": false,
+        "invariants": [
+          "all_candidates_exhausted == true",
+          "authentication_passed == false"
+        ],
+        "state_variables": {
+          "rejection_reason": "string",
+          "attempted_keys_count": "integer"
+        }
+      },
+      {
+        "name": "GroupRemoved",
+        "description": "KeySetRemove executed, all epoch keys deleted, group membership revoked",
+        "is_initial": false,
+        "invariants": [
+          "key_set_exists == false",
+          "group_membership == false",
+          "all_epoch_keys_deleted == true",
+          "can_send == false",
+          "can_receive == false"
+        ],
+        "state_variables": {
+          "removal_timestamp": "uint64_epoch_us"
+        }
+      },
+      {
+        "name": "IPK_KeySet_Protected",
+        "description": "Special state for IPK Key Set (ID=0), which cannot be removed if it exists",
+        "is_initial": false,
+        "invariants": [
+          "key_set_id == 0",
+          "is_ipk == true",
+          "removal_forbidden == true"
+        ],
+        "state_variables": {
+          "key_set_id": "0",
+          "ipk_epoch_keys": "list_of_epoch_keys"
+        }
+      },
+      {
+        "name": "Error_InvalidKeySetWrite",
+        "description": "KeySetWrite command failed due to invalid parameters",
+        "is_initial": false,
+        "invariants": [
+          "error_occurred == true",
+          "command_rejected == true"
+        ],
+        "state_variables": {
+          "error_code": "status_code",
+          "error_reason": "string"
+        }
+      },
+      {
+        "name": "Error_GroupIDCollision",
+        "description": "Attempted to assign Group ID that already exists in fabric",
+        "is_initial": false,
+        "invariants": [
+          "group_id_collision == true",
+          "uniqueness_violated == true"
+        ],
+        "state_variables": {
+          "conflicting_group_id": "16-bit",
+          "fabric_id": "64-bit"
+        }
+      },
+      {
+        "name": "Error_MissingEpochKey0",
+        "description": "Partial key update attempted without EpochKey0",
+        "is_initial": false,
+        "invariants": [
+          "epoch_key0_missing == true",
+          "update_rejected == true"
+        ],
+        "state_variables": {
+          "error_reason": "EpochKey0_mandatory"
+        }
+      },
+      {
+        "name": "Error_InvalidKeyCount",
+        "description": "Key set has less than 1 or more than 3 epoch keys",
+        "is_initial": false,
+        "invariants": [
+          "epoch_keys_count < 1 || epoch_keys_count > 3",
+          "cardinality_violation == true"
+        ],
+        "state_variables": {
+          "actual_key_count": "integer",
+          "error_reason": "invalid_key_count"
+        }
+      },
+      {
+        "name": "Error_IPKRemovalAttempted",
+        "description": "Attempted to remove IPK Key Set (ID=0), which is forbidden",
+        "is_initial": false,
+        "invariants": [
+          "removal_denied == true",
+          "key_set_id == 0"
+        ],
+        "state_variables": {
+          "error_reason": "IPK_irremovable"
+        }
+      },
+      {
+        "name": "Error_KeyDerivationFailed",
+        "description": "KDF failed to derive operational key from epoch key",
+        "is_initial": false,
+        "invariants": [
+          "derivation_failed == true"
+        ],
+        "state_variables": {
+          "epoch_key": "128-bit",
+          "failure_reason": "string"
+        }
+      },
+      {
+        "name": "Error_NonDeterministicKDF",
+        "description": "KDF produced different operational keys from same inputs on repeated derivation",
+        "is_initial": false,
+        "invariants": [
+          "determinism_violated == true",
+          "operational_key1 != operational_key2",
+          "same_inputs == true"
+        ],
+        "state_variables": {
+          "epoch_key": "128-bit",
+          "operational_key1": "128-bit",
+          "operational_key2": "128-bit"
+        }
+      },
+      {
+        "name": "Error_CrossFabricKeySharing",
+        "description": "Detected epoch key shared across multiple fabrics, violating per-fabric isolation",
+        "is_initial": false,
+        "invariants": [
+          "same_epoch_key_in_multiple_fabrics == true",
+          "fabric_isolation_violated == true"
+        ],
+        "state_variables": {
+          "epoch_key": "128-bit",
+          "fabric1_id": "64-bit",
+          "fabric2_id": "64-bit"
+        }
+      },
+      {
+        "name": "Revoked_Member_WithOldKey",
+        "description": "Node not updated with new epoch keys, still possesses old keys that receivers accept until explicit deletion",
+        "is_initial": false,
+        "invariants": [
+          "not_updated_with_new_keys == true",
+          "old_keys_still_valid_for_decrypt == true",
+          "should_be_revoked == true",
+          "revocation_incomplete == true"
+        ],
+        "state_variables": {
+          "old_epoch_keys": "list_of_outdated_keys",
+          "last_admin_contact": "uint64_epoch_us"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "Initial",
+        "to_state": "GroupInstalling_KeySetWritten",
+        "trigger": "KeySetWrite_command",
+        "guard_condition": "is_administrator(sender) == true && key_set_id != 0 && epoch_key0 != null && (epoch_keys_count >= 1 && epoch_keys_count <= 3)",
+        "actions": [
+          "store_key_set_id(key_set_id)",
+          "store_epoch_key0(epoch_key0, epoch_key0_start_time)",
+          "if_provided_store_epoch_key1(epoch_key1, epoch_key1_start_time)",
+          "if_provided_store_epoch_key2(epoch_key2, epoch_key2_start_time)",
+          "store_group_key_security_policy(policy)",
+          "validate_acl_restricts_to_admin()",
+          "generate_event(key_set_written)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Initial",
+        "to_state": "IPK_KeySet_Protected",
+        "trigger": "KeySetWrite_command",
+        "guard_condition": "is_administrator(sender) == true && key_set_id == 0 && epoch_key0 != null",
+        "actions": [
+          "store_ipk_key_set_id(0)",
+          "store_epoch_key0(epoch_key0, epoch_key0_start_time)",
+          "if_provided_store_epoch_key1(epoch_key1, epoch_key1_start_time)",
+          "if_provided_store_epoch_key2(epoch_key2, epoch_key2_start_time)",
+          "mark_as_ipk(true)",
+          "mark_removal_forbidden(true)",
+          "generate_event(ipk_key_set_created)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Initial",
+        "to_state": "Error_InvalidKeySetWrite",
+        "trigger": "KeySetWrite_command",
+        "guard_condition": "is_administrator(sender) == false",
+        "actions": [
+          "reject_command()",
+          "error_code := UNAUTHORIZED",
+          "error_reason := 'non_administrator_attempted_key_write'",
+          "generate_event(command_rejected_acl_violation)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Initial",
+        "to_state": "Error_MissingEpochKey0",
+        "trigger": "KeySetWrite_command",
+        "guard_condition": "epoch_key0 == null",
+        "actions": [
+          "reject_command()",
+          "error_reason := 'EpochKey0_mandatory'",
+          "generate_event(key_write_failed_missing_key0)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Initial",
+        "to_state": "Error_InvalidKeyCount",
+        "trigger": "KeySetWrite_command",
+        "guard_condition": "epoch_keys_count < 1 || epoch_keys_count > 3",
+        "actions": [
+          "reject_command()",
+          "actual_key_count := count_provided_keys()",
+          "error_reason := 'invalid_key_count'",
+          "generate_event(key_write_failed_cardinality)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupInstalling_KeySetWritten",
+        "to_state": "GroupInstalling_KeySetMapped",
+        "trigger": "GroupKeyMap_write",
+        "guard_condition": "is_administrator(sender) == true && group_id_unique_in_fabric(group_id, fabric_id) == true && key_set_id_exists(key_set_id) == true",
+        "actions": [
+          "create_group_key_map_entry(group_id, key_set_id)",
+          "validate_group_id_uniqueness(group_id, fabric_id)",
+          "generate_event(group_key_map_written)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupInstalling_KeySetWritten",
+        "to_state": "Error_GroupIDCollision",
+        "trigger": "GroupKeyMap_write",
+        "guard_condition": "group_id_unique_in_fabric(group_id, fabric_id) == false",
+        "actions": [
+          "reject_write()",
+          "conflicting_group_id := group_id",
+          "fabric_id := current_fabric_id",
+          "generate_event(group_id_collision_detected)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupInstalling_KeySetMapped",
+        "to_state": "GroupMember_AdminRefresh",
+        "trigger": "AddGroup_command",
+        "guard_condition": "is_administrator(sender) == true && endpoint_id_valid(endpoint_id) == true && has_time_sync == true && all_three_keys_present == true",
+        "actions": [
+          "associate_group_with_endpoint(group_id, endpoint_id)",
+          "compute_ipv6_multicast_address(fabric_id, group_id)",
+          "subscribe_to_ipv6_multicast(ipv6_multicast_address)",
+          "order_keys_oldest_to_newest()",
+          "epoch_key0_status := PREVIOUS",
+          "epoch_key1_status := CURRENT",
+          "epoch_key2_status := NEW",
+          "can_send := true",
+          "can_receive := true",
+          "generate_event(group_membership_established)"
+        ],
+        "timing_requirement": "Happens after GroupKeyMap write"
+      },
+      {
+        "from_state": "GroupInstalling_KeySetMapped",
+        "to_state": "GroupMember_NoTimeSync_BaseState",
+        "trigger": "AddGroup_command",
+        "guard_condition": "is_administrator(sender) == true && endpoint_id_valid(endpoint_id) == true && has_time_sync == false",
+        "actions": [
+          "associate_group_with_endpoint(group_id, endpoint_id)",
+          "compute_ipv6_multicast_address(fabric_id, group_id)",
+          "subscribe_to_ipv6_multicast(ipv6_multicast_address)",
+          "order_keys_by_start_time()",
+          "current_key := select_second_newest_key()",
+          "can_send := true",
+          "can_receive := true",
+          "generate_event(group_membership_established_no_time_sync)"
+        ],
+        "timing_requirement": "Administrator SHOULD update before new key activation"
+      },
+      {
+        "from_state": "GroupMember_AdminRefresh",
+        "to_state": "GroupMember_EpochActivate",
+        "trigger": "time_progression",
+        "guard_condition": "has_time_sync == true && current_time >= epoch_key2_start_time",
+        "actions": [
+          "epoch_key2_status := CURRENT",
+          "epoch_key1_status := PREVIOUS",
+          "epoch_key0_status := OLD",
+          "current_time := get_current_time()",
+          "generate_event(epoch_key_activated)"
+        ],
+        "timing_requirement": "Automatic when system time >= epoch_key2_start_time"
+      },
+      {
+        "from_state": "GroupMember_EpochActivate",
+        "to_state": "GroupMember_AdminRefresh",
+        "trigger": "KeySetWrite_command",
+        "guard_condition": "is_administrator(sender) == true && epoch_key0 != null && epoch_key1 != null && epoch_key2 != null && is_complete_refresh == true",
+        "actions": [
+          "remove_all_previous_keys_atomically()",
+          "store_epoch_key0(new_epoch_key0, new_start_time0)",
+          "store_epoch_key1(new_epoch_key1, new_start_time1)",
+          "store_epoch_key2(new_epoch_key2, new_start_time2)",
+          "order_keys_oldest_to_newest()",
+          "epoch_key0_status := PREVIOUS",
+          "epoch_key1_status := CURRENT",
+          "epoch_key2_status := NEW",
+          "all_old_keys_removed := true",
+          "operational_key_cache := clear_cache()",
+          "generate_event(complete_group_security_reset)"
+        ],
+        "timing_requirement": "Complete security reset - all 3 keys refreshed"
+      },
+      {
+        "from_state": "GroupMember_EpochActivate",
+        "to_state": "GroupMember_AdminUpdate",
+        "trigger": "KeySetWrite_command",
+        "guard_condition": "is_administrator(sender) == true && epoch_key0 != null && is_key_update == true && is_complete_refresh == false",
+        "actions": [
+          "remove_all_previous_keys_atomically()",
+          "store_epoch_key0(new_epoch_key0, new_start_time0)",
+          "if_provided_store_epoch_key1(new_epoch_key1, new_start_time1)",
+          "if_provided_store_epoch_key2(new_epoch_key2, new_start_time2)",
+          "order_keys_oldest_to_newest()",
+          "epoch_key0_status := PREVIOUS",
+          "epoch_key1_status := CURRENT",
+          "epoch_key2_status := NEW",
+          "all_old_keys_removed := true",
+          "operational_key_cache := clear_cache()",
+          "generate_event(admin_update_complete)"
+        ],
+        "timing_requirement": "Old key updated by Administrator"
+      },
+      {
+        "from_state": "GroupMember_AdminRefresh",
+        "to_state": "GroupMember_EpochActivate",
+        "trigger": "KeySetWrite_command",
+        "guard_condition": "is_administrator(sender) == true && epoch_key0 != null && is_key_update == true",
+        "actions": [
+          "remove_all_previous_keys_atomically()",
+          "store_epoch_key0(new_epoch_key0, new_start_time0)",
+          "if_provided_store_epoch_key1(new_epoch_key1, new_start_time1)",
+          "if_provided_store_epoch_key2(new_epoch_key2, new_start_time2)",
+          "order_keys_oldest_to_newest()",
+          "epoch_key2_status := CURRENT",
+          "epoch_key1_status := PREVIOUS",
+          "epoch_key0_status := OLD",
+          "operational_key_cache := clear_cache()",
+          "generate_event(keys_updated_from_admin_refresh)"
+        ],
+        "timing_requirement": "Key update from AdminRefresh state before time activation"
+      },
+      {
+        "from_state": "GroupMember_AdminUpdate",
+        "to_state": "GroupMember_EpochActivate",
+        "trigger": "time_progression",
+        "guard_condition": "has_time_sync == true && current_time >= epoch_key2_start_time",
+        "actions": [
+          "epoch_key2_status := CURRENT",
+          "epoch_key1_status := PREVIOUS",
+          "epoch_key0_status := OLD",
+          "current_time := get_current_time()",
+          "generate_event(epoch_key_activated)"
+        ],
+        "timing_requirement": "Automatic when system time >= epoch_key2_start_time"
+      },
+      {
+        "from_state": "GroupMember_AdminRefresh",
+        "to_state": "Sending_Message",
+        "trigger": "send_group_message",
+        "guard_condition": "can_send == true && has_current_epoch_key() == true",
+        "actions": [
+          "current_epoch_key := select_current_epoch_key()",
+          "operational_group_key := derive_operational_group_key(current_epoch_key, fabric_id)",
+          "group_session_id := derive_group_session_id(operational_group_key)",
+          "message_ciphertext := encrypt_and_authenticate(message_plaintext, operational_group_key)",
+          "generate_event(message_sent)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_EpochActivate",
+        "to_state": "Sending_Message",
+        "trigger": "send_group_message",
+        "guard_condition": "can_send == true && has_current_epoch_key() == true",
+        "actions": [
+          "current_epoch_key := select_current_epoch_key()",
+          "operational_group_key := derive_operational_group_key(current_epoch_key, fabric_id)",
+          "group_session_id := derive_group_session_id(operational_group_key)",
+          "message_ciphertext := encrypt_and_authenticate(message_plaintext, operational_group_key)",
+          "generate_event(message_sent)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_AdminUpdate",
+        "to_state": "Sending_Message",
+        "trigger": "send_group_message",
+        "guard_condition": "can_send == true && has_current_epoch_key() == true",
+        "actions": [
+          "current_epoch_key := select_current_epoch_key()",
+          "operational_group_key := derive_operational_group_key(current_epoch_key, fabric_id)",
+          "group_session_id := derive_group_session_id(operational_group_key)",
+          "message_ciphertext := encrypt_and_authenticate(message_plaintext, operational_group_key)",
+          "generate_event(message_sent)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_NoTimeSync_BaseState",
+        "to_state": "Sending_Message",
+        "trigger": "send_group_message",
+        "guard_condition": "can_send == true && current_key != null",
+        "actions": [
+          "operational_group_key := derive_operational_group_key(current_key, fabric_id)",
+          "group_session_id := derive_group_session_id(operational_group_key)",
+          "message_ciphertext := encrypt_and_authenticate(message_plaintext, operational_group_key)",
+          "generate_event(message_sent)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Sending_Message",
+        "to_state": "GroupMember_AdminRefresh",
+        "trigger": "message_sent_complete",
+        "guard_condition": "previous_state == GroupMember_AdminRefresh",
+        "actions": [
+          "restore_previous_state()",
+          "generate_event(returned_to_group_member_state)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Sending_Message",
+        "to_state": "GroupMember_EpochActivate",
+        "trigger": "message_sent_complete",
+        "guard_condition": "previous_state == GroupMember_EpochActivate",
+        "actions": [
+          "restore_previous_state()",
+          "generate_event(returned_to_group_member_state)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Sending_Message",
+        "to_state": "GroupMember_AdminUpdate",
+        "trigger": "message_sent_complete",
+        "guard_condition": "previous_state == GroupMember_AdminUpdate",
+        "actions": [
+          "restore_previous_state()",
+          "generate_event(returned_to_group_member_state)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Sending_Message",
+        "to_state": "GroupMember_NoTimeSync_BaseState",
+        "trigger": "message_sent_complete",
+        "guard_condition": "previous_state == GroupMember_NoTimeSync_BaseState",
+        "actions": [
+          "restore_previous_state()",
+          "generate_event(returned_to_group_member_state)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_AdminRefresh",
+        "to_state": "Receiving_Message",
+        "trigger": "receive_group_message",
+        "guard_condition": "can_receive == true && message_session_type == 1",
+        "actions": [
+          "received_group_session_id := extract_group_session_id(message)",
+          "candidate_epoch_keys := get_candidate_keys_for_group_session_id(received_group_session_id)",
+          "current_candidate_index := 0",
+          "authentication_passed := false",
+          "generate_event(attempting_message_decrypt)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_EpochActivate",
+        "to_state": "Receiving_Message",
+        "trigger": "receive_group_message",
+        "guard_condition": "can_receive == true && message_session_type == 1",
+        "actions": [
+          "received_group_session_id := extract_group_session_id(message)",
+          "candidate_epoch_keys := get_candidate_keys_for_group_session_id(received_group_session_id)",
+          "current_candidate_index := 0",
+          "authentication_passed := false",
+          "generate_event(attempting_message_decrypt)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_AdminUpdate",
+        "to_state": "Receiving_Message",
+        "trigger": "receive_group_message",
+        "guard_condition": "can_receive == true && message_session_type == 1",
+        "actions": [
+          "received_group_session_id := extract_group_session_id(message)",
+          "candidate_epoch_keys := get_candidate_keys_for_group_session_id(received_group_session_id)",
+          "current_candidate_index := 0",
+          "authentication_passed := false",
+          "generate_event(attempting_message_decrypt)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_NoTimeSync_BaseState",
+        "to_state": "Receiving_Message",
+        "trigger": "receive_group_message",
+        "guard_condition": "can_receive == true && message_session_type == 1",
+        "actions": [
+          "received_group_session_id := extract_group_session_id(message)",
+          "candidate_epoch_keys := get_all_installed_epoch_keys()",
+          "current_candidate_index := 0",
+          "authentication_passed := false",
+          "generate_event(attempting_message_decrypt)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Receiving_Message",
+        "to_state": "Message_Authenticated",
+        "guard_condition": "current_candidate_index < length(candidate_epoch_keys) && try_decrypt_with_candidate() == true && verify_mic() == true",
+        "trigger": "decrypt_attempt",
+        "actions": [
+          "authenticated_epoch_key := candidate_epoch_keys[current_candidate_index]",
+          "operational_key := derive_operational_group_key(authenticated_epoch_key, fabric_id)",
+          "message_plaintext := decrypt_message(message_ciphertext, operational_key)",
+          "authentication_passed := true",
+          "sender_is_group_member := true",
+          "generate_event(message_authenticated_and_accepted)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Receiving_Message",
+        "to_state": "Receiving_Message",
+        "trigger": "decrypt_attempt",
+        "guard_condition": "current_candidate_index < length(candidate_epoch_keys) && try_decrypt_with_candidate() == false",
+        "actions": [
+          "current_candidate_index := current_candidate_index + 1",
+          "generate_event(candidate_failed_trying_next)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Receiving_Message",
+        "to_state": "Message_Rejected",
+        "trigger": "decrypt_attempt",
+        "guard_condition": "current_candidate_index >= length(candidate_epoch_keys) && authentication_passed == false",
+        "actions": [
+          "all_candidates_exhausted := true",
+          "rejection_reason := 'no_valid_key_found'",
+          "attempted_keys_count := length(candidate_epoch_keys)",
+          "generate_event(message_rejected_authentication_failed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Message_Authenticated",
+        "to_state": "GroupMember_AdminRefresh",
+        "trigger": "message_processing_complete",
+        "guard_condition": "previous_member_state == GroupMember_AdminRefresh",
+        "actions": [
+          "restore_previous_state()",
+          "generate_event(returned_to_group_member_state)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Message_Authenticated",
+        "to_state": "GroupMember_EpochActivate",
+        "trigger": "message_processing_complete",
+        "guard_condition": "previous_member_state == GroupMember_EpochActivate",
+        "actions": [
+          "restore_previous_state()",
+          "generate_event(returned_to_group_member_state)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Message_Authenticated",
+        "to_state": "GroupMember_AdminUpdate",
+        "trigger": "message_processing_complete",
+        "guard_condition": "previous_member_state == GroupMember_AdminUpdate",
+        "actions": [
+          "restore_previous_state()",
+          "generate_event(returned_to_group_member_state)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Message_Authenticated",
+        "to_state": "GroupMember_NoTimeSync_BaseState",
+        "trigger": "message_processing_complete",
+        "guard_condition": "previous_member_state == GroupMember_NoTimeSync_BaseState",
+        "actions": [
+          "restore_previous_state()",
+          "generate_event(returned_to_group_member_state)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Message_Rejected",
+        "to_state": "GroupMember_AdminRefresh",
+        "trigger": "rejection_handled",
+        "guard_condition": "previous_member_state == GroupMember_AdminRefresh",
+        "actions": [
+          "log_rejection(rejection_reason)",
+          "restore_previous_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Message_Rejected",
+        "to_state": "GroupMember_EpochActivate",
+        "trigger": "rejection_handled",
+        "guard_condition": "previous_member_state == GroupMember_EpochActivate",
+        "actions": [
+          "log_rejection(rejection_reason)",
+          "restore_previous_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Message_Rejected",
+        "to_state": "GroupMember_AdminUpdate",
+        "trigger": "rejection_handled",
+        "guard_condition": "previous_member_state == GroupMember_AdminUpdate",
+        "actions": [
+          "log_rejection(rejection_reason)",
+          "restore_previous_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Message_Rejected",
+        "to_state": "GroupMember_NoTimeSync_BaseState",
+        "trigger": "rejection_handled",
+        "guard_condition": "previous_member_state == GroupMember_NoTimeSync_BaseState",
+        "actions": [
+          "log_rejection(rejection_reason)",
+          "restore_previous_state()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_AdminRefresh",
+        "to_state": "GroupRemoved",
+        "trigger": "KeySetRemove_command",
+        "guard_condition": "is_administrator(sender) == true && key_set_id != 0",
+        "actions": [
+          "delete_all_epoch_keys_atomically()",
+          "remove_group_key_map_entry(group_id)",
+          "unsubscribe_from_ipv6_multicast(ipv6_multicast_address)",
+          "can_send := false",
+          "can_receive := false",
+          "all_epoch_keys_deleted := true",
+          "removal_timestamp := get_current_time()",
+          "generate_event(group_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_EpochActivate",
+        "to_state": "GroupRemoved",
+        "trigger": "KeySetRemove_command",
+        "guard_condition": "is_administrator(sender) == true && key_set_id != 0",
+        "actions": [
+          "delete_all_epoch_keys_atomically()",
+          "remove_group_key_map_entry(group_id)",
+          "unsubscribe_from_ipv6_multicast(ipv6_multicast_address)",
+          "can_send := false",
+          "can_receive := false",
+          "all_epoch_keys_deleted := true",
+          "removal_timestamp := get_current_time()",
+          "generate_event(group_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_AdminUpdate",
+        "to_state": "GroupRemoved",
+        "trigger": "KeySetRemove_command",
+        "guard_condition": "is_administrator(sender) == true && key_set_id != 0",
+        "actions": [
+          "delete_all_epoch_keys_atomically()",
+          "remove_group_key_map_entry(group_id)",
+          "unsubscribe_from_ipv6_multicast(ipv6_multicast_address)",
+          "can_send := false",
+          "can_receive := false",
+          "all_epoch_keys_deleted := true",
+          "removal_timestamp := get_current_time()",
+          "generate_event(group_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_NoTimeSync_BaseState",
+        "to_state": "GroupRemoved",
+        "trigger": "KeySetRemove_command",
+        "guard_condition": "is_administrator(sender) == true && key_set_id != 0",
+        "actions": [
+          "delete_all_epoch_keys_atomically()",
+          "remove_group_key_map_entry(group_id)",
+          "unsubscribe_from_ipv6_multicast(ipv6_multicast_address)",
+          "can_send := false",
+          "can_receive := false",
+          "all_epoch_keys_deleted := true",
+          "removal_timestamp := get_current_time()",
+          "generate_event(group_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "IPK_KeySet_Protected",
+        "to_state": "Error_IPKRemovalAttempted",
+        "trigger": "KeySetRemove_command",
+        "guard_condition": "key_set_id == 0",
+        "actions": [
+          "reject_command()",
+          "removal_denied := true",
+          "error_reason := 'IPK_irremovable'",
+          "generate_event(ipk_removal_denied)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_NoTimeSync_BaseState",
+        "to_state": "GroupMember_NoTimeSync_BaseState",
+        "trigger": "KeySetWrite_command",
+        "guard_condition": "is_administrator(sender) == true && has_time_sync == false",
+        "actions": [
+          "remove_all_previous_keys_atomically()",
+          "store_epoch_key0(new_epoch_key0, new_start_time0)",
+          "if_provided_store_epoch_key1(new_epoch_key1, new_start_time1)",
+          "if_provided_store_epoch_key2(new_epoch_key2, new_start_time2)",
+          "order_keys_by_start_time()",
+          "current_key := select_second_newest_key()",
+          "operational_key_cache := clear_cache()",
+          "last_admin_contact := get_current_time()",
+          "generate_event(keys_updated_no_time_sync)"
+        ],
+        "timing_requirement": "Administrator SHOULD update before new key activates on time-synced nodes"
+      },
+      {
+        "from_state": "GroupMember_AdminRefresh",
+        "to_state": "Error_KeyDerivationFailed",
+        "trigger": "send_group_message",
+        "guard_condition": "can_send == true && derive_operational_group_key(current_epoch_key, fabric_id) == null",
+        "actions": [
+          "derivation_failed := true",
+          "failure_reason := 'kdf_failure'",
+          "generate_event(operational_key_derivation_failed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Revoked_Member_WithOldKey",
+        "to_state": "Sending_Message",
+        "trigger": "send_group_message",
+        "guard_condition": "has_old_epoch_keys() == true",
+        "actions": [
+          "current_epoch_key := select_oldest_available_key()",
+          "operational_group_key := derive_operational_group_key(current_epoch_key, fabric_id)",
+          "group_session_id := derive_group_session_id(operational_group_key)",
+          "message_ciphertext := encrypt_and_authenticate(message_plaintext, operational_group_key)",
+          "generate_event(revoked_member_sent_message)"
+        ],
+        "timing_requirement": "Revocation incomplete until receivers delete old keys"
+      },
+      {
+        "from_state": "Sending_Message",
+        "to_state": "Revoked_Member_WithOldKey",
+        "trigger": "message_sent_complete",
+        "guard_condition": "previous_state == Revoked_Member_WithOldKey",
+        "actions": [
+          "restore_previous_state()",
+          "generate_event(returned_to_revoked_state)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "GroupMember_AdminRefresh",
+        "to_state": "Revoked_Member_WithOldKey",
+        "trigger": "time_progression",
+        "guard_condition": "key_update_missed == true && other_nodes_rotated == true",
+        "actions": [
+          "old_epoch_keys := current_epoch_keys",
+          "not_updated_with_new_keys := true",
+          "old_keys_still_valid_for_decrypt := true",
+          "should_be_revoked := true",
+          "revocation_incomplete := true",
+          "generate_event(became_revoked_member_with_old_keys)"
+        ],
+        "timing_requirement": "Eventually occurs if node not updated during key rotation"
+      },
+      {
+        "from_state": "GroupMember_EpochActivate",
+        "to_state": "Revoked_Member_WithOldKey",
+        "trigger": "time_progression",
+        "guard_condition": "key_update_missed == true && other_nodes_rotated == true",
+        "actions": [
+          "old_epoch_keys := current_epoch_keys",
+          "not_updated_with_new_keys := true",
+          "old_keys_still_valid_for_decrypt := true",
+          "should_be_revoked := true",
+          "revocation_incomplete := true",
+          "generate_event(became_revoked_member_with_old_keys)"
+        ],
+        "timing_requirement": "Eventually occurs if node not updated during key rotation"
+      },
+      {
+        "from_state": "GroupMember_AdminUpdate",
+        "to_state": "Revoked_Member_WithOldKey",
+        "trigger": "time_progression",
+        "guard_condition": "key_update_missed == true && other_nodes_rotated == true",
+        "actions": [
+          "old_epoch_keys := current_epoch_keys",
+          "not_updated_with_new_keys := true",
+          "old_keys_still_valid_for_decrypt := true",
+          "should_be_revoked := true",
+          "revocation_incomplete := true",
+          "generate_event(became_revoked_member_with_old_keys)"
+        ],
+        "timing_requirement": "Eventually occurs if node not updated during key rotation"
+      },
+      {
+        "from_state": "Revoked_Member_WithOldKey",
+        "to_state": "GroupRemoved",
+        "trigger": "KeySetRemove_command",
+        "guard_condition": "is_administrator(sender) == true",
+        "actions": [
+          "delete_all_epoch_keys_atomically()",
+          "remove_group_key_map_entry(group_id)",
+          "can_send := false",
+          "can_receive := false",
+          "all_epoch_keys_deleted := true",
+          "removal_timestamp := get_current_time()",
+          "generate_event(revoked_member_explicitly_removed)"
+        ],
+        "timing_requirement": "Completes revocation by explicit key deletion"
+      }
+    ],
+    "functions": [
+      {
+        "name": "derive_operational_group_key",
+        "parameters": [
+          {
+            "name": "epoch_key",
+            "type": "128-bit_symmetric_key",
+            "description": "Input epoch key from administrator"
+          },
+          {
+            "name": "compressed_fabric_identifier",
+            "type": "64-bit_identifier",
+            "description": "Compressed Fabric Identifier used as salt"
+          }
+        ],
+        "return_type": "128-bit_symmetric_key",
+        "description": "Derives operational group key using HKDF from epoch key and fabric identifier",
+        "algorithm_detail": "HKDF-based Crypto_KDF: InputKey=epoch_key, Salt=CompressedFabricIdentifier (64-bit), Info='GroupKey v1.0' (UTF-8 bytes: 0x47 0x72 0x6f 0x75 0x70 0x4b 0x65 0x79 0x20 0x76 0x31 0x2e 0x30), Length=CRYPTO_SYMMETRIC_KEY_LENGTH_BITS (128 bits). Output is deterministic - same inputs always produce same output. Used for AES-CCM encryption.",
+        "usage_in_fsm": "Called in all Sending_Message transitions to derive encryption key from current epoch key. Called in Receiving_Message when trying each candidate key."
+      },
+      {
+        "name": "derive_group_session_id",
+        "parameters": [
+          {
+            "name": "operational_group_key",
+            "type": "128-bit_symmetric_key",
+            "description": "Derived operational group key"
+          }
+        ],
+        "return_type": "16-bit_unsigned_integer",
+        "description": "Derives Group Session ID as big-endian 16-bit identifier from operational group key",
+        "algorithm_detail": "Crypto_KDF: InputKey=operational_group_key, Salt=[] (zero-length), Info='GroupKeyHash' (UTF-8 bytes), Length=16 bits. Output is 2-byte array GroupKeyHash. GroupSessionId = (GroupKeyHash[0] << 8) | GroupKeyHash[1] where bytes treated as big-endian. Result is probabilistic identifier (collision chance 2^-16) used to locate key candidates, NOT authoritative identifier.",
+        "usage_in_fsm": "Called when sending message to include in message header. Called when receiving message to locate candidate operational keys for decryption attempt."
+      },
+      {
+        "name": "generate_epoch_key",
+        "parameters": [
+          {
+            "name": "length_bits",
+            "type": "integer",
+            "description": "Key length (CRYPTO_SYMMETRIC_KEY_LENGTH_BITS = 128)"
+          }
+        ],
+        "return_type": "128-bit_random_key",
+        "description": "Generates cryptographically random epoch key using DRBG",
+        "algorithm_detail": "Crypto_DRBG(len=CRYPTO_SYMMETRIC_KEY_LENGTH_BITS): Uses deterministic random bit generator with sufficient entropy. Output must be unpredictable and uniformly distributed. Only called by Administrator, never by regular nodes.",
+        "usage_in_fsm": "Called by Administrator before issuing KeySetWrite command to create new epoch keys for distribution."
+      },
+      {
+        "name": "select_current_epoch_key",
+        "parameters": [],
+        "return_type": "128-bit_symmetric_key",
+        "description": "Selects current epoch key for sending messages based on time synchronization status",
+        "algorithm_detail": "If has_time_sync==true: Select epoch key with latest start_time where start_time <= current_time. If has_time_sync==false: Select epoch key with second-newest start_time by comparing relative ordering. Current key is the one to be used for encrypting outgoing messages.",
+        "usage_in_fsm": "Called in Sending_Message transitions to determine which epoch key to use for deriving operational key."
+      },
+      {
+        "name": "get_candidate_keys_for_group_session_id",
+        "parameters": [
+          {
+            "name": "group_session_id",
+            "type": "16-bit_unsigned_integer",
+            "description": "Group Session ID from received message"
+          }
+        ],
+        "return_type": "list_of_128-bit_keys",
+        "description": "Returns list of all installed epoch keys whose derived operational keys hash to the given Group Session ID",
+        "algorithm_detail": "For each installed epoch_key: derive operational_key = derive_operational_group_key(epoch_key, fabric_id), compute candidate_gid = derive_group_session_id(operational_key), if candidate_gid == group_session_id then add to result list. Returns all matches because Group Session ID may collide (probability 2^-16).",
+        "usage_in_fsm": "Called in Receiving_Message state to build list of candidate keys to try for decryption."
+      },
+      {
+        "name": "try_decrypt_with_candidate",
+        "parameters": [
+          {
+            "name": "message_ciphertext",
+            "type": "bitstring",
+            "description": "Encrypted message"
+          },
+          {
+            "name": "candidate_epoch_key",
+            "type": "128-bit_symmetric_key",
+            "description": "Epoch key candidate to try"
+          },
+          {
+            "name": "fabric_id",
+            "type": "64-bit_identifier",
+            "description": "Fabric identifier for key derivation"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Attempts to decrypt and verify MIC of message using candidate epoch key",
+        "algorithm_detail": "Derive operational_key = derive_operational_group_key(candidate_epoch_key, fabric_id). Attempt AES-CCM decryption of message_ciphertext using operational_key. Verify MIC (Message Integrity Code). Return true if decryption succeeds AND MIC verification passes. Return false otherwise. MIC verification provides authentication - successful verification proves sender possessed same operational key.",
+        "usage_in_fsm": "Called repeatedly in Receiving_Message state for each candidate until success or candidates exhausted."
+      },
+      {
+        "name": "verify_mic",
+        "parameters": [
+          {
+            "name": "message",
+            "type": "bitstring",
+            "description": "Decrypted message"
+          },
+          {
+            "name": "mic",
+            "type": "bitstring",
+            "description": "Message Integrity Code from message"
+          },
+          {
+            "name": "operational_key",
+            "type": "128-bit_symmetric_key",
+            "description": "Key used for encryption"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies Message Integrity Code to authenticate sender as group member",
+        "algorithm_detail": "AES-CCM authentication tag verification. Recompute expected MIC using operational_key and message. Compare with received MIC using constant-time comparison. Return true if match, false otherwise. Collision probability of MIC with wrong key is 2^-64, making combined Group Session ID + MIC collision probability 2^-80.",
+        "usage_in_fsm": "Called after successful decryption to authenticate message sender."
+      },
+      {
+        "name": "encrypt_and_authenticate",
+        "parameters": [
+          {
+            "name": "plaintext",
+            "type": "bitstring",
+            "description": "Message to encrypt"
+          },
+          {
+            "name": "operational_group_key",
+            "type": "128-bit_symmetric_key",
+            "description": "Derived operational key for encryption"
+          }
+        ],
+        "return_type": "bitstring",
+        "description": "Encrypts message and generates MIC using AES-CCM with operational group key",
+        "algorithm_detail": "AES-CCM authenticated encryption: Encrypt plaintext using operational_group_key, generate authentication tag (MIC). Output is ciphertext || MIC. AES-CCM provides both confidentiality and authenticity. Only nodes with correct operational key (derived from correct epoch key) can decrypt and verify.",
+        "usage_in_fsm": "Called in Sending_Message state to encrypt outgoing group messages."
+      },
+      {
+        "name": "order_keys_oldest_to_newest",
+        "parameters": [
+          {
+            "name": "epoch_keys",
+            "type": "list_of_epoch_keys_with_start_times",
+            "description": "Unordered epoch keys"
+          }
+        ],
+        "return_type": "list_of_epoch_keys",
+        "description": "Sorts epoch keys by start_time in ascending order (oldest first)",
+        "algorithm_detail": "Compare start_time fields of epoch keys. Sort such that epoch_key0 has earliest start_time, epoch_key1 has middle start_time, epoch_key2 has latest start_time. Required by spec: 'An epoch key update SHALL order the keys from oldest to newest.'",
+        "usage_in_fsm": "Called when processing KeySetWrite to ensure consistent ordering for state machine transitions."
+      },
+      {
+        "name": "select_second_newest_key",
+        "parameters": [
+          {
+            "name": "epoch_keys",
+            "type": "list_of_epoch_keys_with_start_times",
+            "description": "Ordered epoch keys"
+          }
+        ],
+        "return_type": "128-bit_symmetric_key",
+        "description": "Selects epoch key with second-newest start time for nodes without time sync",
+        "algorithm_detail": "Sort keys by start_time. Return key at index [length-2]. Spec states: 'using the current epoch key which has the second newest time'. This allows time-unsynchronized nodes to avoid using future keys while still using recent keys.",
+        "usage_in_fsm": "Called by nodes without time synchronization to determine current key."
+      },
+      {
+        "name": "compute_ipv6_multicast_address",
+        "parameters": [
+          {
+            "name": "fabric_id",
+            "type": "64-bit_identifier",
+            "description": "Fabric identifier"
+          },
+          {
+            "name": "group_id",
+            "type": "16-bit_identifier",
+            "description": "Group identifier"
+          }
+        ],
+        "return_type": "ipv6_address",
+        "description": "Computes IPv6 multicast address from fabric and group identifiers",
+        "algorithm_detail": "Generate IPv6 multicast address by combining fabric_id and group_id according to Matter IPv6 addressing scheme. Exact algorithm defined in Matter Core Specification networking section. Result is unique multicast address for this group within this fabric.",
+        "usage_in_fsm": "Called during AddGroup command to determine multicast address for subscription."
+      },
+      {
+        "name": "subscribe_to_ipv6_multicast",
+        "parameters": [
+          {
+            "name": "multicast_address",
+            "type": "ipv6_address",
+            "description": "IPv6 multicast address"
+          }
+        ],
+        "return_type": "void",
+        "description": "Subscribes node to IPv6 multicast address to receive group messages",
+        "algorithm_detail": "Issue MLD (Multicast Listener Discovery) join request to local network stack. Node will receive all IPv6 packets sent to this multicast address. Required for receiving groupcast messages.",
+        "usage_in_fsm": "Called during group installation (AddGroup) to enable message reception."
+      },
+      {
+        "name": "unsubscribe_from_ipv6_multicast",
+        "parameters": [
+          {
+            "name": "multicast_address",
+            "type": "ipv6_address",
+            "description": "IPv6 multicast address"
+          }
+        ],
+        "return_type": "void",
+        "description": "Unsubscribes node from IPv6 multicast address when leaving group",
+        "algorithm_detail": "Issue MLD leave request to local network stack. Node will no longer receive packets sent to this multicast address.",
+        "usage_in_fsm": "Called during KeySetRemove to disable message reception after group removal."
+      },
+      {
+        "name": "remove_all_previous_keys_atomically",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Atomically removes all previously installed epoch keys from key set",
+        "algorithm_detail": "Delete all epoch keys in single atomic transaction. Spec states: 'Any update of the key set, including a partial update, SHALL remove all previous keys in the set, however many were defined.' Atomicity critical for security - must be all-or-nothing operation to prevent partial state.",
+        "usage_in_fsm": "Called during KeySetWrite updates to enforce atomic replacement requirement."
+      },
+      {
+        "name": "delete_all_epoch_keys_atomically",
+        "parameters": [
+          {
+            "name": "key_set_id",
+            "type": "16-bit_identifier",
+            "description": "Key set to delete"
+          }
+        ],
+        "return_type": "void",
+        "description": "Atomically deletes all epoch keys in specified key set during group removal",
+        "algorithm_detail": "Delete all epoch keys associated with key_set_id in single atomic transaction. Also remove GroupKeyMap entry and endpoint associations. Must be atomic to prevent intermediate states where node has partial group membership.",
+        "usage_in_fsm": "Called during KeySetRemove to completely remove group membership."
+      },
+      {
+        "name": "validate_acl_restricts_to_admin",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates that ACL entries restrict key material access to administrators only",
+        "algorithm_detail": "Check Access Control List entries for Group Key Management Cluster attributes. Verify that only principals with Administrator privilege can read/write key material. Spec states: 'key material of a Node is exposed via Attributes with ACL entries that only allow access by the key distribution Administrator.'",
+        "usage_in_fsm": "Called during KeySetWrite to verify security policy enforcement."
+      },
+      {
+        "name": "is_administrator",
+        "parameters": [
+          {
+            "name": "sender",
+            "type": "node_identifier",
+            "description": "Node attempting operation"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if sender has administrator privilege for key management operations",
+        "algorithm_detail": "Verify sender's ACL principal has Administrator privilege level. Check certificates and credentials. Only administrators can execute KeySetWrite, KeySetRemove, GroupKeyMap writes, and AddGroup commands.",
+        "usage_in_fsm": "Guard condition for all administrative transitions."
+      },
+      {
+        "name": "group_id_unique_in_fabric",
+        "parameters": [
+          {
+            "name": "group_id",
+            "type": "16-bit_identifier",
+            "description": "Group ID to check"
+          },
+          {
+            "name": "fabric_id",
+            "type": "64-bit_identifier",
+            "description": "Fabric context"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Verifies Group ID is unique within the specified Fabric",
+        "algorithm_detail": "Query existing GroupKeyMap entries in fabric. Return false if group_id already exists. Spec states: 'Administrators SHALL assign Group Ids such that no two operational groups within a Fabric have the same Group ID.'",
+        "usage_in_fsm": "Guard condition when writing GroupKeyMap to prevent ID collision."
+      },
+      {
+        "name": "get_current_time",
+        "parameters": [],
+        "return_type": "uint64_epoch_us",
+        "description": "Returns current system time in microseconds since UTC epoch",
+        "algorithm_detail": "Read system clock. Return absolute UTC time in microseconds (epoch-us representation). Used for comparing against epoch key start times. Accuracy depends on time synchronization capability of node.",
+        "usage_in_fsm": "Called to determine if epoch key start time has been reached for activation."
+      },
+      {
+        "name": "has_time_sync",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Indicates whether node can reliably keep track of time",
+        "algorithm_detail": "Check if node has reliable time source (NTP, GPS, etc.). If true, node uses absolute start times for key activation. If false, node uses relative ordering approach. Spec: 'Nodes that cannot reliably keep track of time calculate the current epoch key as described in Section 4.17.3.4'",
+        "usage_in_fsm": "Determines which state machine path to follow (time-synced vs non-time-synced)."
+      },
+      {
+        "name": "has_current_epoch_key",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if node has at least one epoch key eligible for use as current key",
+        "algorithm_detail": "If has_time_sync: Check if at least one epoch key has start_time <= current_time. If no time sync: Check if at least 2 keys exist (to select second-newest). Return false if no suitable key available.",
+        "usage_in_fsm": "Guard condition for sending messages - cannot send without current key."
+      },
+      {
+        "name": "restore_previous_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Restores node to previous group member state after transient operation",
+        "algorithm_detail": "Track state before entering Sending_Message, Receiving_Message, Message_Authenticated, or Message_Rejected states. Restore all state variables to values from tracked previous state.",
+        "usage_in_fsm": "Called when returning from transient message processing states to stable group member states."
+      },
+      {
+        "name": "extract_group_session_id",
+        "parameters": [
+          {
+            "name": "message",
+            "type": "bitstring",
+            "description": "Received message"
+          }
+        ],
+        "return_type": "16-bit_unsigned_integer",
+        "description": "Extracts Group Session ID from message header Session ID field",
+        "algorithm_detail": "Parse message header. When Session Type field == 1 (group session), extract 16-bit Session ID field value. This is the Group Session ID used to locate candidate keys.",
+        "usage_in_fsm": "Called when receiving message to determine which keys to try for decryption."
+      },
+      {
+        "name": "get_all_installed_epoch_keys",
+        "parameters": [],
+        "return_type": "list_of_128-bit_keys",
+        "description": "Returns all epoch keys currently installed in node's key storage",
+        "algorithm_detail": "Query key storage for all epoch keys in all key sets. For nodes without time sync, spec states: 'all valid, installed, operational group key candidates referenced by the given Group Session ID SHALL be attempted'. Returns complete list regardless of start times.",
+        "usage_in_fsm": "Called by non-time-synced nodes when receiving message to get all possible candidate keys."
+      },
+      {
+        "name": "key_set_id_exists",
+        "parameters": [
+          {
+            "name": "key_set_id",
+            "type": "16-bit_identifier",
+            "description": "Key set ID to check"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if key set with given ID exists in node storage",
+        "algorithm_detail": "Query key storage. Return true if key set with specified ID is present, false otherwise.",
+        "usage_in_fsm": "Guard condition when writing GroupKeyMap to ensure referenced key set exists."
+      },
+      {
+        "name": "endpoint_id_valid",
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "type": "16-bit_identifier",
+            "description": "Endpoint to validate"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Validates that endpoint exists on node and can be associated with group",
+        "algorithm_detail": "Check if endpoint_id corresponds to existing endpoint on node. Verify endpoint supports Groups cluster. Return false if endpoint does not exist or cannot be grouped.",
+        "usage_in_fsm": "Guard condition for AddGroup command."
+      },
+      {
+        "name": "associate_group_with_endpoint",
+        "parameters": [
+          {
+            "name": "group_id",
+            "type": "16-bit_identifier",
+            "description": "Group identifier"
+          },
+          {
+            "name": "endpoint_id",
+            "type": "16-bit_identifier",
+            "description": "Endpoint identifier"
+          }
+        ],
+        "return_type": "void",
+        "description": "Associates operational group with specific endpoint, enabling group commands on that endpoint",
+        "algorithm_detail": "Update Groups cluster on specified endpoint. Add group_id to endpoint's group table. Endpoint will now accept commands addressing this group_id.",
+        "usage_in_fsm": "Called during AddGroup command to complete group installation."
+      },
+      {
+        "name": "create_group_key_map_entry",
+        "parameters": [
+          {
+            "name": "group_id",
+            "type": "16-bit_identifier",
+            "description": "Group identifier"
+          },
+          {
+            "name": "key_set_id",
+            "type": "16-bit_identifier",
+            "description": "Key set identifier"
+          }
+        ],
+        "return_type": "void",
+        "description": "Creates GroupKeyMap entry associating Group ID with Key Set ID",
+        "algorithm_detail": "Write entry to GroupKeyMap attribute in Group Key Management Cluster. Maps group_id to key_set_id, establishing which epoch keys are used for which group.",
+        "usage_in_fsm": "Called during group installation to link group to its key set."
+      },
+      {
+        "name": "remove_group_key_map_entry",
+        "parameters": [
+          {
+            "name": "group_id",
+            "type": "16-bit_identifier",
+            "description": "Group identifier"
+          }
+        ],
+        "return_type": "void",
+        "description": "Removes GroupKeyMap entry for specified group during group removal",
+        "algorithm_detail": "Delete entry from GroupKeyMap attribute. Breaks association between group_id and key_set_id.",
+        "usage_in_fsm": "Called during KeySetRemove as part of group removal process."
+      },
+      {
+        "name": "validate_group_id_uniqueness",
+        "parameters": [
+          {
+            "name": "group_id",
+            "type": "16-bit_identifier",
+            "description": "Group ID to validate"
+          },
+          {
+            "name": "fabric_id",
+            "type": "64-bit_identifier",
+            "description": "Fabric context"
+          }
+        ],
+        "return_type": "void",
+        "description": "Validates that assigned Group ID does not collide with existing groups in fabric",
+        "algorithm_detail": "Check all existing GroupKeyMap entries in fabric. Raise error if group_id already exists. Enforces uniqueness requirement from spec.",
+        "usage_in_fsm": "Called when creating GroupKeyMap entry to detect collisions."
+      },
+      {
+        "name": "clear_cache",
+        "parameters": [],
+        "return_type": "map",
+        "description": "Clears cached operational keys when epoch keys are updated",
+        "algorithm_detail": "Delete all entries from operational_key_cache. Forces re-derivation of operational keys from new epoch keys. Called during key updates to ensure stale derived keys are not used.",
+        "usage_in_fsm": "Called during KeySetWrite updates and AdminUpdate transitions."
+      },
+      {
+        "name": "count_provided_keys",
+        "parameters": [
+          {
+            "name": "key_set",
+            "type": "key_set_structure",
+            "description": "Key set from KeySetWrite command"
+          }
+        ],
+        "return_type": "integer",
+        "description": "Counts number of non-null epoch keys in provided key set",
+        "algorithm_detail": "Count epoch_key0, epoch_key1, epoch_key2 fields that are non-null. Return count. Used to validate cardinality requirement (1-3 keys).",
+        "usage_in_fsm": "Guard condition validation for KeySetWrite command."
+      },
+      {
+        "name": "has_old_epoch_keys",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if revoked member node still possesses any old epoch keys",
+        "algorithm_detail": "Check if node has any epoch keys in storage. For revoked members who missed key updates, they still have old keys until explicit deletion. Return true if any keys remain.",
+        "usage_in_fsm": "Guard condition for Revoked_Member_WithOldKey state - can still send if has old keys."
+      },
+      {
+        "name": "select_oldest_available_key",
+        "parameters": [],
+        "return_type": "128-bit_symmetric_key",
+        "description": "Selects oldest epoch key still available to revoked member",
+        "algorithm_detail": "From remaining old epoch keys, select one with earliest start_time. Revoked member uses old keys since it has no new keys.",
+        "usage_in_fsm": "Called by revoked member attempting to send message with outdated keys."
+      },
+      {
+        "name": "log_rejection",
+        "parameters": [
+          {
+            "name": "reason",
+            "type": "string",
+            "description": "Reason for message rejection"
+          }
+        ],
+        "return_type": "void",
+        "description": "Logs message rejection for debugging and security monitoring",
+        "algorithm_detail": "Write rejection event to system log with timestamp, group_id, group_session_id, and reason. Helps detect attacks or configuration issues.",
+        "usage_in_fsm": "Called when returning from Message_Rejected state."
+      },
+      {
+        "name": "reject_command",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Rejects administrative command and returns error status",
+        "algorithm_detail": "Return error status code to command sender. Do not modify any state. Used for ACL violations, invalid parameters, etc.",
+        "usage_in_fsm": "Called in error transitions when commands violate constraints."
+      },
+      {
+        "name": "if_provided_store_epoch_key1",
+        "parameters": [
+          {
+            "name": "epoch_key1",
+            "type": "128-bit_symmetric_key_or_null",
+            "description": "Optional second epoch key"
+          },
+          {
+            "name": "start_time1",
+            "type": "uint64_epoch_us_or_null",
+            "description": "Optional start time for key1"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores EpochKey1 if provided in KeySetWrite command",
+        "algorithm_detail": "Check if epoch_key1 parameter is non-null. If provided, store both epoch_key1 and start_time1. If null, leave slot empty. Spec allows partial key sets with only EpochKey0.",
+        "usage_in_fsm": "Called during KeySetWrite processing to handle optional keys."
+      },
+      {
+        "name": "if_provided_store_epoch_key2",
+        "parameters": [
+          {
+            "name": "epoch_key2",
+            "type": "128-bit_symmetric_key_or_null",
+            "description": "Optional third epoch key"
+          },
+          {
+            "name": "start_time2",
+            "type": "uint64_epoch_us_or_null",
+            "description": "Optional start time for key2"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores EpochKey2 if provided in KeySetWrite command",
+        "algorithm_detail": "Check if epoch_key2 parameter is non-null. If provided, store both epoch_key2 and start_time2. If null, leave slot empty. Spec allows partial key sets with only EpochKey0 or EpochKey0+EpochKey1.",
+        "usage_in_fsm": "Called during KeySetWrite processing to handle optional keys."
+      },
+      {
+        "name": "mark_as_ipk",
+        "parameters": [
+          {
+            "name": "is_ipk",
+            "type": "boolean",
+            "description": "Mark key set as IPK"
+          }
+        ],
+        "return_type": "void",
+        "description": "Marks key set as Identity Protection Key set",
+        "algorithm_detail": "Set internal flag indicating this is IPK key set. Used to enforce irremovability constraint.",
+        "usage_in_fsm": "Called when creating IPK key set (ID=0)."
+      },
+      {
+        "name": "mark_removal_forbidden",
+        "parameters": [
+          {
+            "name": "forbidden",
+            "type": "boolean",
+            "description": "Set removal forbidden flag"
+          }
+        ],
+        "return_type": "void",
+        "description": "Marks key set as irremovable (for IPK)",
+        "algorithm_detail": "Set internal flag preventing KeySetRemove operation. Spec states: 'It SHALL NOT be possible to remove the IPK Key Set if it exists.'",
+        "usage_in_fsm": "Called when creating IPK key set to enforce permanent existence."
+      },
+      {
+        "name": "store_key_set_id",
+        "parameters": [
+          {
+            "name": "key_set_id",
+            "type": "16-bit_identifier",
+            "description": "Key set identifier"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores key set identifier in key storage",
+        "algorithm_detail": "Write key_set_id to persistent storage. Used to identify this key set in GroupKeyMap entries.",
+        "usage_in_fsm": "Called during KeySetWrite to store key set ID."
+      },
+      {
+        "name": "store_epoch_key0",
+        "parameters": [
+          {
+            "name": "epoch_key0",
+            "type": "128-bit_symmetric_key",
+            "description": "First epoch key (mandatory)"
+          },
+          {
+            "name": "start_time0",
+            "type": "uint64_epoch_us",
+            "description": "Start time for key0"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores mandatory EpochKey0 and its start time",
+        "algorithm_detail": "Write epoch_key0 and start_time0 to secure key storage. EpochKey0 is always required - spec states any update SHALL include EpochKey0.",
+        "usage_in_fsm": "Called during all KeySetWrite operations to store mandatory base key."
+      },
+      {
+        "name": "store_ipk_key_set_id",
+        "parameters": [
+          {
+            "name": "key_set_id",
+            "type": "16-bit_identifier",
+            "description": "Must be 0 for IPK"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores IPK key set with reserved ID 0",
+        "algorithm_detail": "Store key_set_id=0 with special IPK flag. Enforces reservation: 'The Group Key Set ID of 0 SHALL be reserved for managing the Identity Protection Key (IPK)'.",
+        "usage_in_fsm": "Called when creating IPK key set."
+      },
+      {
+        "name": "store_group_key_security_policy",
+        "parameters": [
+          {
+            "name": "policy",
+            "type": "uint8",
+            "description": "Security policy value"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores group key security policy associated with key set",
+        "algorithm_detail": "Write GroupKeySecurityPolicy value to key set metadata. Policy value determines security constraints for this key set.",
+        "usage_in_fsm": "Called during KeySetWrite to store policy parameter."
+      },
+      {
+        "name": "order_keys_by_start_time",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Orders installed epoch keys by start_time for non-time-synced nodes",
+        "algorithm_detail": "Sort all installed epoch keys by start_time field in ascending order. Used by non-time-synced nodes to determine relative ordering.",
+        "usage_in_fsm": "Called by non-time-synced nodes during key updates and group installation."
+      },
+      {
+        "name": "decrypt_message",
+        "parameters": [
+          {
+            "name": "ciphertext",
+            "type": "bitstring",
+            "description": "Encrypted message"
+          },
+          {
+            "name": "operational_key",
+            "type": "128-bit_symmetric_key",
+            "description": "Operational group key"
+          }
+        ],
+        "return_type": "bitstring",
+        "description": "Decrypts message using AES-CCM with operational group key",
+        "algorithm_detail": "AES-CCM decryption: Use operational_key to decrypt ciphertext. Return plaintext if decryption succeeds. Called after MIC verification passes.",
+        "usage_in_fsm": "Called in Message_Authenticated transition after successful authentication."
+      },
+      {
+        "name": "is_complete_refresh",
+        "parameters": [
+          {
+            "name": "epoch_key0",
+            "type": "128-bit_key",
+            "description": "First epoch key"
+          },
+          {
+            "name": "epoch_key1",
+            "type": "128-bit_key",
+            "description": "Second epoch key"
+          },
+          {
+            "name": "epoch_key2",
+            "type": "128-bit_key",
+            "description": "Third epoch key"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Determines if KeySetWrite is a complete security reset (all 3 keys provided)",
+        "algorithm_detail": "Returns true if all three epoch keys (epoch_key0, epoch_key1, epoch_key2) are non-null and provided in the KeySetWrite command, indicating a complete group security reset rather than a partial update. Per spec: 'When in steady state, the Admin Refresh state MAY be entered in place of an Admin Update state transition to update additional keys to the required ones or to completely reset the group security.'",
+        "usage_in_fsm": "Called in guard condition when transitioning from GroupMember_EpochActivate to distinguish between complete refresh (→ AdminRefresh) and partial update (→ AdminUpdate)."
+      }
+    ],
+    "definitions": [
+      {
+        "term": "Operational Group",
+        "definition": "A logical collection of Nodes running one or more common application clusters, sharing a common security domain via shared symmetric group key. Membership determined by possession of all epoch keys required to generate current valid operational group key.",
+        "security_relevance": "Defines trust boundary - only members can encrypt/decrypt group messages and prove membership"
+      },
+      {
+        "term": "Epoch Key",
+        "definition": "Symmetric key (128-bit) generated by Administrator, distributed to group members, and used as input to KDF for deriving operational group keys. Has associated start time for activation scheduling.",
+        "security_relevance": "Foundation of key hierarchy - possession determines group membership. Limited lifetime enables revocation through non-distribution of new keys."
+      },
+      {
+        "term": "Operational Group Key",
+        "definition": "Symmetric key derived from epoch key via KDF, used directly for AES-CCM encryption/decryption of group messages. Deterministically derived: same epoch key + fabric ID always produces same operational key.",
+        "security_relevance": "Actual encryption key. Compromising operational key only affects messages encrypted with that specific epoch key derivation."
+      },
+      {
+        "term": "Group Session ID",
+        "definition": "16-bit probabilistic identifier derived from operational group key via KDF. Used to efficiently locate candidate keys for decryption without trying all keys. Collision probability 2^-16.",
+        "security_relevance": "Performance optimization only - SHALL NOT be used as sole means of key location due to collision risk. Security relies on MIC verification (2^-80 combined collision probability)."
+      },
+      {
+        "term": "Group Key Set",
+        "definition": "Collection of 1-3 epoch keys with associated metadata (start times, policy). Identified by 16-bit Key Set ID unique within fabric. Multiple groups may share same key set to create subgroups over shared security domain.",
+        "security_relevance": "Limits key derivation to authorized nodes. Access control enforced by controlling who receives key set via ACLs."
+      },
+      {
+        "term": "Key Rotation",
+        "definition": "Process of periodically generating new epoch keys and distributing them to group members. State machine cycles: AdminRefresh → EpochActivate → AdminUpdate → EpochActivate. Old keys remain valid until explicitly deleted to support transition overlap.",
+        "security_relevance": "Bounds lifetime of compromised keys. Non-distribution of new keys to specific nodes serves as revocation mechanism."
+      },
+      {
+        "term": "Current Epoch Key",
+        "definition": "For time-synced nodes: epoch key with latest start_time ≤ current_time. For non-time-synced nodes: epoch key with second-newest start_time. Used by senders to derive operational key for outgoing messages.",
+        "security_relevance": "Determines which key is used for encryption. Mismatch between sender's and receiver's view of current key causes communication failure."
+      },
+      {
+        "term": "Group Key Management Cluster",
+        "definition": "Matter cluster (ID 11.2) exposing key material via attributes with ACL entries restricting access to administrator. Provides KeySetWrite, KeySetRemove commands and GroupKeyMap attribute.",
+        "security_relevance": "Single point of access control enforcement. Misconfigured ACLs expose all epoch keys to unauthorized nodes, completely breaking group security."
+      },
+      {
+        "term": "Identity Protection Key (IPK)",
+        "definition": "Special key set (ID=0) used for protecting node identities in Matter. Cannot be removed if it exists.",
+        "security_relevance": "Irremovability prevents permanent identity exposure. Compromise unrecoverable without fabric decommissioning."
+      },
+      {
+        "term": "Compressed Fabric Identifier",
+        "definition": "64-bit identifier uniquely identifying a Matter fabric, used as salt in operational key derivation KDF. Ensures key separation between fabrics.",
+        "security_relevance": "Prevents cross-fabric key reuse. If same epoch key used in multiple fabrics without this salt, operational keys would collide."
+      },
+      {
+        "term": "MIC (Message Integrity Code)",
+        "definition": "Authentication tag produced by AES-CCM authenticated encryption. Verifies sender possessed correct operational key. Collision probability with wrong key: 2^-64.",
+        "security_relevance": "Provides authentication. Successful MIC verification proves sender is group member (has correct epoch key)."
+      },
+      {
+        "term": "Key Propagation Interval",
+        "definition": "Configurable time period between new epoch key distribution start and key activation (start_time). Must be large enough for administrator to distribute key to all nodes.",
+        "security_relevance": "Insufficient interval causes nodes to miss key updates, losing group connectivity. Too long interval delays revocation effectiveness."
+      },
+      {
+        "term": "Administrator",
+        "definition": "Node with privilege level enabling key management operations. Generates epoch keys, distributes to members, manages group lifecycle. Has complete knowledge of all epoch keys and group membership.",
+        "security_relevance": "Single point of trust. Compromised administrator can extract all keys, join any group, and control entire group security domain."
+      },
+      {
+        "term": "Time Synchronization",
+        "definition": "Node capability to reliably keep track of absolute UTC time. Determines whether node uses absolute start times vs relative ordering for key selection.",
+        "security_relevance": "Affects key rotation behavior. Unsynchronized nodes require different update strategy (must be updated before key activation)."
+      },
+      {
+        "term": "GroupKeyMap",
+        "definition": "Attribute in Group Key Management Cluster mapping Group IDs to Key Set IDs. Establishes which epoch keys are used for which group.",
+        "security_relevance": "Incorrect mapping routes messages to wrong security domain. Group ID collisions cause cross-group message leakage."
+      },
+      {
+        "term": "Idempotent Key Update",
+        "definition": "Property that repeated identical KeySetWrite commands produce same final state. Ensures administrator is always source of truth.",
+        "security_relevance": "Enables safe retry during network failures without creating inconsistent states."
+      },
+      {
+        "term": "Atomic Key Replacement",
+        "definition": "Requirement that any key update removes ALL previous keys in set atomically before installing new keys. No partial intermediate states permitted.",
+        "security_relevance": "Prevents race conditions where old keys remain valid during updates, allowing revoked nodes continued access."
+      },
+      {
+        "term": "Subgroup",
+        "definition": "Multiple operational groups sharing same operational group key but having distinct Group IDs. Creates logical subdivisions within shared security domain.",
+        "security_relevance": "All subgroups with shared key have identical security properties - compromise of one compromises all. Use only for related functionality."
+      },
+      {
+        "term": "Revocation via Key Withdrawal",
+        "definition": "Mechanism to eject member by not distributing new epoch keys during rotation. Member retains old keys until receivers explicitly delete them.",
+        "security_relevance": "Revocation is delayed - not effective until old keys explicitly deleted. Temporal gap where revoked member retains access."
+      },
+      {
+        "term": "Per-Fabric Key Material",
+        "definition": "Requirement that all key material (except hard-coded group security info) must be maintained separately for each fabric. No cross-fabric sharing.",
+        "security_relevance": "Enforces fabric isolation. Shared keys across fabrics cause compromise of one fabric to cascade to all sharing fabrics."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "EPOCH_KEY_ACCESS_CONTROL",
+        "type": "access_control",
+        "description": "Only nodes with administrator privilege can write epoch keys; only designated group members can read epoch keys via ACL",
+        "fsm_states_involved": [
+          "Initial",
+          "GroupInstalling_KeySetWritten",
+          "Error_InvalidKeySetWrite"
+        ],
+        "critical_transitions": [
+          "Initial -> GroupInstalling_KeySetWritten (guarded by is_administrator)",
+          "Initial -> Error_InvalidKeySetWrite (ACL violation)"
+        ]
+      },
+      {
+        "property_name": "OPERATIONAL_KEY_DERIVATION_DETERMINISM",
+        "type": "cryptography",
+        "description": "Same epoch key and fabric ID always produce same operational group key via deterministic KDF",
+        "fsm_states_involved": [
+          "Sending_Message",
+          "Receiving_Message",
+          "Error_NonDeterministicKDF"
+        ],
+        "critical_transitions": [
+          "GroupMember_* -> Sending_Message (calls derive_operational_group_key)",
+          "GroupMember_* -> Receiving_Message (calls derive_operational_group_key for each candidate)"
+        ]
+      },
+      {
+        "property_name": "KEY_ROTATION_ATOMICITY",
+        "type": "atomicity",
+        "description": "Key updates atomically remove all old keys before installing new keys, preventing intermediate states with mixed old/new keys",
+        "fsm_states_involved": [
+          "GroupMember_EpochActivate",
+          "GroupMember_AdminUpdate"
+        ],
+        "critical_transitions": [
+          "GroupMember_EpochActivate -> GroupMember_AdminUpdate (calls remove_all_previous_keys_atomically)"
+        ]
+      },
+      {
+        "property_name": "GROUP_ID_UNIQUENESS",
+        "type": "correctness",
+        "description": "No two operational groups within same fabric have same Group ID",
+        "fsm_states_involved": [
+          "GroupInstalling_KeySetMapped",
+          "Error_GroupIDCollision"
+        ],
+        "critical_transitions": [
+          "GroupInstalling_KeySetWritten -> Error_GroupIDCollision (guard: group_id_unique_in_fabric == false)"
+        ]
+      },
+      {
+        "property_name": "IPK_IRREMOVABILITY",
+        "type": "security",
+        "description": "IPK Key Set (ID=0) cannot be removed if it exists, protecting identity privacy permanently",
+        "fsm_states_involved": [
+          "IPK_KeySet_Protected",
+          "Error_IPKRemovalAttempted"
+        ],
+        "critical_transitions": [
+          "IPK_KeySet_Protected -> Error_IPKRemovalAttempted (attempted removal blocked)"
+        ]
+      },
+      {
+        "property_name": "SENDER_USES_CURRENT_KEY",
+        "type": "timing",
+        "description": "Sending nodes use operational key derived from current epoch key (latest non-future start time or second-newest for non-time-synced)",
+        "fsm_states_involved": [
+          "GroupMember_AdminRefresh",
+          "GroupMember_EpochActivate",
+          "GroupMember_AdminUpdate",
+          "GroupMember_NoTimeSync_BaseState",
+          "Sending_Message"
+        ],
+        "critical_transitions": [
+          "GroupMember_* -> Sending_Message (calls select_current_epoch_key)"
+        ]
+      },
+      {
+        "property_name": "RECEIVER_ACCEPTS_ALL_INSTALLED_KEYS",
+        "type": "timing",
+        "description": "Receiving nodes accept messages encrypted with any currently installed epoch key, regardless of start time",
+        "fsm_states_involved": [
+          "Receiving_Message",
+          "Message_Authenticated",
+          "Message_Rejected"
+        ],
+        "critical_transitions": [
+          "Receiving_Message -> Message_Authenticated (tries all candidate keys)",
+          "Receiving_Message -> Message_Rejected (only after exhausting all candidates)"
+        ]
+      },
+      {
+        "property_name": "MIC_AUTHENTICATION_REQUIRED",
+        "type": "authenticity",
+        "description": "Messages accepted only after successful MIC verification proving sender possessed correct operational key",
+        "fsm_states_involved": [
+          "Receiving_Message",
+          "Message_Authenticated",
+          "Message_Rejected"
+        ],
+        "critical_transitions": [
+          "Receiving_Message -> Message_Authenticated (guard: verify_mic() == true)"
+        ]
+      },
+      {
+        "property_name": "KEY_CARDINALITY_BOUNDS",
+        "type": "correctness",
+        "description": "Every group key set has at least 1 and at most 3 epoch keys in rotation",
+        "fsm_states_involved": [
+          "GroupInstalling_KeySetWritten",
+          "Error_InvalidKeyCount"
+        ],
+        "critical_transitions": [
+          "Initial -> Error_InvalidKeyCount (guard: epoch_keys_count < 1 || epoch_keys_count > 3)"
+        ]
+      },
+      {
+        "property_name": "EPOCHKEY0_MANDATORY",
+        "type": "consistency",
+        "description": "Any epoch key update must include EpochKey0; partial updates without it are rejected",
+        "fsm_states_involved": [
+          "Initial",
+          "Error_MissingEpochKey0"
+        ],
+        "critical_transitions": [
+          "Initial -> Error_MissingEpochKey0 (guard: epoch_key0 == null)"
+        ]
+      },
+      {
+        "property_name": "PER_FABRIC_KEY_ISOLATION",
+        "type": "security",
+        "description": "All key material maintained separately per fabric; no cross-fabric sharing of epoch keys",
+        "fsm_states_involved": [
+          "Error_CrossFabricKeySharing"
+        ],
+        "critical_transitions": [
+          "Any state -> Error_CrossFabricKeySharing (detected if same epoch key used in multiple fabrics)"
+        ]
+      },
+      {
+        "property_name": "GROUP_SESSION_ID_NOT_SOLE_LOCATOR",
+        "type": "security",
+        "description": "Group Session ID used as hint only; all matching candidates must be tried due to collision risk",
+        "fsm_states_involved": [
+          "Receiving_Message",
+          "Message_Authenticated",
+          "Message_Rejected"
+        ],
+        "critical_transitions": [
+          "Receiving_Message -> Receiving_Message (stay transition trying next candidate)",
+          "Receiving_Message -> Message_Rejected (only after all_candidates_exhausted)"
+        ]
+      },
+      {
+        "property_name": "REVOCATION_VIA_KEY_WITHDRAWAL",
+        "type": "revocation",
+        "description": "Members not receiving new epoch keys lose access after key rotation completes and old keys are deleted",
+        "fsm_states_involved": [
+          "GroupMember_AdminRefresh",
+          "GroupMember_EpochActivate",
+          "GroupMember_AdminUpdate",
+          "Revoked_Member_WithOldKey",
+          "GroupRemoved"
+        ],
+        "critical_transitions": [
+          "GroupMember_* -> Revoked_Member_WithOldKey (missed key update during rotation)",
+          "Revoked_Member_WithOldKey -> GroupRemoved (explicit deletion completes revocation)"
+        ]
+      },
+      {
+        "property_name": "TIME_BASED_KEY_ACTIVATION",
+        "type": "timing",
+        "description": "Epoch keys activate automatically when system time reaches start_time for time-synchronized nodes",
+        "fsm_states_involved": [
+          "GroupMember_AdminRefresh",
+          "GroupMember_EpochActivate"
+        ],
+        "critical_transitions": [
+          "GroupMember_AdminRefresh -> GroupMember_EpochActivate (guard: current_time >= epoch_key2_start_time)"
+        ]
+      },
+      {
+        "property_name": "KEY_PROPAGATION_BEFORE_ACTIVATION",
+        "type": "timing",
+        "description": "New epoch key start time scheduled after propagation interval to ensure distribution completes before activation",
+        "fsm_states_involved": [
+          "GroupMember_NoTimeSync_BaseState"
+        ],
+        "critical_transitions": [
+          "GroupMember_NoTimeSync_BaseState -> GroupMember_NoTimeSync_BaseState (Administrator SHOULD update before activation)"
+        ]
+      },
+      {
+        "property_name": "MULTICAST_SUBSCRIPTION_ON_GROUP_JOIN",
+        "type": "correctness",
+        "description": "Node subscribes to IPv6 multicast address when group installed, enabling receipt of group messages",
+        "fsm_states_involved": [
+          "GroupInstalling_KeySetMapped",
+          "GroupMember_AdminRefresh",
+          "GroupMember_NoTimeSync_BaseState"
+        ],
+        "critical_transitions": [
+          "GroupInstalling_KeySetMapped -> GroupMember_AdminRefresh (calls subscribe_to_ipv6_multicast)",
+          "GroupInstalling_KeySetMapped -> GroupMember_NoTimeSync_BaseState (calls subscribe_to_ipv6_multicast)"
+        ]
+      },
+      {
+        "property_name": "KEY_UPDATE_IDEMPOTENCY",
+        "type": "consistency",
+        "description": "Repeated identical KeySetWrite commands produce same final state, ensuring administrator is source of truth",
+        "fsm_states_involved": [
+          "GroupMember_EpochActivate",
+          "GroupMember_AdminUpdate"
+        ],
+        "critical_transitions": [
+          "GroupMember_EpochActivate -> GroupMember_AdminUpdate (idempotent operation)"
+        ]
+      },
+      {
+        "property_name": "CROSS_GROUP_MESSAGE_ISOLATION",
+        "type": "security",
+        "description": "Messages encrypted for one group ID cannot be decrypted by nodes in different group (unless deliberately sharing key set)",
+        "fsm_states_involved": [
+          "GroupMember_AdminRefresh",
+          "GroupMember_EpochActivate",
+          "GroupMember_AdminUpdate",
+          "Receiving_Message"
+        ],
+        "critical_transitions": [
+          "GroupMember_* -> Receiving_Message (only tries keys from groups node is member of)"
+        ]
+      }
+    ],
+    "initial_state": "Initial",
+    "all_states": [
+      "Initial",
+      "GroupInstalling_KeySetWritten",
+      "GroupInstalling_KeySetMapped",
+      "GroupMember_AdminRefresh",
+      "GroupMember_EpochActivate",
+      "GroupMember_AdminUpdate",
+      "GroupMember_NoTimeSync_BaseState",
+      "Sending_Message",
+      "Receiving_Message",
+      "Message_Authenticated",
+      "Message_Rejected",
+      "GroupRemoved",
+      "IPK_KeySet_Protected",
+      "Error_InvalidKeySetWrite",
+      "Error_GroupIDCollision",
+      "Error_MissingEpochKey0",
+      "Error_InvalidKeyCount",
+      "Error_IPKRemovalAttempted",
+      "Error_KeyDerivationFailed",
+      "Error_NonDeterministicKDF",
+      "Error_CrossFabricKeySharing",
+      "Revoked_Member_WithOldKey"
+    ],
+    "all_triggers": [
+      "KeySetWrite_command",
+      "GroupKeyMap_write",
+      "AddGroup_command",
+      "KeySetRemove_command",
+      "time_progression",
+      "send_group_message",
+      "receive_group_message",
+      "decrypt_attempt",
+      "message_sent_complete",
+      "message_processing_complete",
+      "rejection_handled"
+    ],
+    "all_functions_used": [
+      "derive_operational_group_key",
+      "derive_group_session_id",
+      "generate_epoch_key",
+      "select_current_epoch_key",
+      "get_candidate_keys_for_group_session_id",
+      "try_decrypt_with_candidate",
+      "verify_mic",
+      "encrypt_and_authenticate",
+      "order_keys_oldest_to_newest",
+      "select_second_newest_key",
+      "compute_ipv6_multicast_address",
+      "subscribe_to_ipv6_multicast",
+      "unsubscribe_from_ipv6_multicast",
+      "remove_all_previous_keys_atomically",
+      "delete_all_epoch_keys_atomically",
+      "validate_acl_restricts_to_admin",
+      "is_administrator",
+      "group_id_unique_in_fabric",
+      "get_current_time",
+      "has_time_sync",
+      "has_current_epoch_key",
+      "restore_previous_state",
+      "extract_group_session_id",
+      "get_all_installed_epoch_keys",
+      "key_set_id_exists",
+      "endpoint_id_valid",
+      "associate_group_with_endpoint",
+      "create_group_key_map_entry",
+      "remove_group_key_map_entry",
+      "validate_group_id_uniqueness",
+      "clear_cache",
+      "count_provided_keys",
+      "has_old_epoch_keys",
+      "select_oldest_available_key",
+      "log_rejection",
+      "reject_command",
+      "if_provided_store_epoch_key1",
+      "if_provided_store_epoch_key2",
+      "mark_as_ipk",
+      "mark_removal_forbidden",
+      "store_key_set_id",
+      "store_epoch_key0",
+      "store_ipk_key_set_id",
+      "store_group_key_security_policy",
+      "order_keys_by_start_time",
+      "decrypt_message",
+      "is_complete_refresh"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "operational_group_key_derivation",
+        "algorithm": "HKDF-based Crypto_KDF",
+        "inputs": [
+          "epoch_key (128-bit symmetric key)",
+          "CompressedFabricIdentifier (64-bit salt)",
+          "Info='GroupKey v1.0' (13 bytes: 0x47 0x72 0x6f 0x75 0x70 0x4b 0x65 0x79 0x20 0x76 0x31 0x2e 0x30)"
+        ],
+        "output": "128-bit operational group key (CRYPTO_SYMMETRIC_KEY_LENGTH_BITS)",
+        "assumptions": [
+          "HKDF is cryptographically secure",
+          "Same inputs always produce same output (deterministic)",
+          "Without epoch key, deriving operational key is computationally infeasible",
+          "CompressedFabricIdentifier provides sufficient domain separation between fabrics"
+        ]
+      },
+      {
+        "operation": "group_session_id_derivation",
+        "algorithm": "HKDF-based Crypto_KDF with big-endian extraction",
+        "inputs": [
+          "operational_group_key (128-bit)",
+          "Salt=[] (zero-length)",
+          "Info='GroupKeyHash' (12 bytes)"
+        ],
+        "output": "16-bit Group Session ID (big-endian: (hash[0] << 8) | hash[1])",
+        "assumptions": [
+          "Collision probability is 2^-16 (acceptable as probabilistic hint)",
+          "Combined Group Session ID + MIC collision probability is 2^-80",
+          "Group Session ID not used as sole key locator"
+        ]
+      },
+      {
+        "operation": "epoch_key_generation",
+        "algorithm": "Crypto_DRBG",
+        "inputs": [
+          "Length=CRYPTO_SYMMETRIC_KEY_LENGTH_BITS (128 bits)",
+          "Sufficient entropy source"
+        ],
+        "output": "128-bit random epoch key",
+        "assumptions": [
+          "DRBG has sufficient entropy",
+          "Output is uniformly distributed and unpredictable",
+          "Only Administrator can generate epoch keys"
+        ]
+      },
+      {
+        "operation": "message_encryption",
+        "algorithm": "AES-CCM authenticated encryption",
+        "inputs": [
+          "plaintext (bitstring)",
+          "operational_group_key (128-bit)",
+          "nonce/IV (generated per message)",
+          "additional_authenticated_data (message header)"
+        ],
+        "output": "ciphertext || MIC (authentication tag)",
+        "assumptions": [
+          "AES-CCM provides both confidentiality and authenticity",
+          "MIC collision probability with wrong key is 2^-64",
+          "Nonce is never reused with same key"
+        ]
+      },
+      {
+        "operation": "message_decryption",
+        "algorithm": "AES-CCM authenticated decryption",
+        "inputs": [
+          "ciphertext || MIC",
+          "operational_group_key (128-bit)",
+          "nonce/IV (from message)",
+          "additional_authenticated_data (message header)"
+        ],
+        "output": "plaintext (if MIC valid) or failure",
+        "assumptions": [
+          "MIC verification fails with probability 1 - 2^-64 if wrong key used",
+          "Successful MIC verification proves sender possessed correct operational key"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "HKDF and DRBG cryptographic primitives are secure and implemented correctly",
+        "type": "implicit",
+        "if_violated": "All key derivation security breaks. Attacker can derive operational keys without epoch keys, predict future epoch keys, or exploit weak randomness."
+      },
+      {
+        "assumption": "Administrator has reliable network connectivity to all group members",
+        "type": "implicit",
+        "if_violated": "Nodes miss key updates during rotation, become orphaned, lose group connectivity. Revocation fails as old keys remain active longer than intended."
+      },
+      {
+        "assumption": "ACL mechanisms correctly enforce access restrictions on Group Key Management Cluster",
+        "type": "implicit",
+        "if_violated": "Any node can read epoch keys, join any group without authorization. Administrator loses control over group membership. Entire group security model collapses."
+      },
+      {
+        "assumption": "Barring software error or compromise of privileged Node, access to shared keys is computationally infeasible for non-trusted parties",
+        "type": "explicit",
+        "if_violated": "If implementation has vulnerabilities or privileged node is compromised, non-trusted parties can access epoch keys and break all group security."
+      },
+      {
+        "assumption": "Administrator has sufficient access to centralized knowledge to allocate unique Group IDs without collisions",
+        "type": "explicit",
+        "if_violated": "Multiple administrators operating without coordination create Group ID collisions, causing cross-group message leakage and security boundary violations."
+      },
+      {
+        "assumption": "Key propagation interval is set sufficiently large for administrator to distribute new keys to all nodes before activation",
+        "type": "explicit",
+        "if_violated": "Nodes do not receive new keys before activation. Group communication partially fails during rotation as some nodes use old keys while others use new."
+      },
+      {
+        "assumption": "Time-synchronized nodes have sufficiently accurate clocks that drift does not cause significant skew during propagation intervals",
+        "type": "explicit",
+        "if_violated": "Clock drift causes time-synced nodes to activate keys at different real times. Communication fails during transition window between early and late activators."
+      },
+      {
+        "assumption": "Nodes without time synchronization contact Administrator frequently enough (at least as fast as key propagation interval)",
+        "type": "explicit",
+        "if_violated": "Unsynchronized nodes miss key rotation, continue using old keys that other nodes have expired. They lose group connectivity until next admin contact."
+      },
+      {
+        "assumption": "State machine implementations correctly handle atomic operations without race conditions",
+        "type": "implicit",
+        "if_violated": "Non-atomic key updates leave old keys installed alongside new keys. Race conditions during updates create inconsistent states. Revocation mechanism fails."
+      },
+      {
+        "assumption": "Nodes correctly implement key ordering (oldest to newest) as specified",
+        "type": "implicit",
+        "if_violated": "Misordered keys cause nodes to select wrong epoch key as current. Senders encrypt with different keys than receivers expect. Communication fails."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

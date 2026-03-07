@@ -1,0 +1,540 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Water Heater Management",
+    "cluster_id": "0x0094",
+    "pics_code": "EWATERHTR",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 9.5, Pages 746-753",
+
+    "properties": [
+      {
+        "id": "PROP_WHM_001",
+        "name": "Boost_Requires_Manage_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The Boost command SHALL only be accepted from a client holding at minimum Manage (M) privilege.",
+        "formal": "∀client, cmd. invoke(client, Boost, cmd) ⟹ has_privilege(client, M)",
+        "spec_source": "Section 9.5.8 Commands table: Access = M for Boost (0x00).",
+        "violation": {
+          "description": "A client with only Operate (O) or View (V) privilege could activate the boost heater, overriding Off or Timed mode settings and causing unexpected energy consumption and potential thermal hazards. Any device that conflates O with M on this command allows unauthorized heating.",
+          "attack_vector": "Send Boost command from a controller node holding Operate-level ACL entry. If server does not strictly enforce M, command is accepted.",
+          "physical_impact": "Unauthorized heating of water tank, potentially overriding scheduled-off periods, wasting energy, and causing thermal risk if TemporarySetpoint is near MaxHeatSetpointLimit."
+        },
+        "proverifQuery": "query client:principal, cmd:boostcmd. event(boost_accepted(client, cmd)) ==> event(has_manage_privilege(client))"
+      },
+      {
+        "id": "PROP_WHM_002",
+        "name": "CancelBoost_Requires_Manage_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "The CancelBoost command SHALL only be accepted from a client holding at minimum Manage (M) privilege.",
+        "formal": "∀client. invoke(client, CancelBoost) ⟹ has_privilege(client, M)",
+        "spec_source": "Section 9.5.8 Commands table: Access = M for CancelBoost (0x01).",
+        "violation": {
+          "description": "An Operate-level client can cancel a legitimately authorized boost (e.g., an emergency hot-water request) without holding Manage privilege. This constitutes an availability attack against the intended heating operation.",
+          "attack_vector": "Send CancelBoost from an Operate-level ACL entry on the same fabric. If server does not enforce M, the active boost is silently cancelled, generating a BoostEnded event with no reason field to indicate cancellation cause.",
+          "physical_impact": "Premature termination of water heating during an emergency-boost scenario; loss of hot water availability."
+        },
+        "proverifQuery": "query client:principal. event(cancelboost_accepted(client)) ==> event(has_manage_privilege(client))"
+      },
+      {
+        "id": "PROP_WHM_003",
+        "name": "BoostState_Activates_On_Successful_Boost",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "If the Boost command is accepted, BoostState SHALL transition to Active and a SUCCESS response SHALL be returned.",
+        "formal": "∀cmd. boost_accepted(cmd) ⟹ BoostState == Active ∧ response == SUCCESS",
+        "spec_source": "Section 9.5.8.1.1: 'If successful, the value of the BoostState attribute SHALL transition to Active, and a response with status of SUCCESS SHALL be returned.'",
+        "violation": {
+          "description": "If BoostState does not transition to Active after a successful command response, a monitoring client (e.g., an energy manager) receives a misleading SUCCESS while the heater remains uncontrolled. The resulting BoostStarted event would be generated without the corresponding state being active.",
+          "attack_vector": "Exploit a TOCTOU race between command acceptance and state update; inject a CancelBoost between the SUCCESS response and the state write on a device with non-atomic processing.",
+          "physical_impact": "Energy management system believes heating is active when it is not, causing inaccurate scheduling and cost calculation."
+        },
+        "proverifQuery": "query cmd:boostcmd. event(boost_response_success(cmd)) ==> event(booststate_active())"
+      },
+      {
+        "id": "PROP_WHM_004",
+        "name": "BoostState_Transitions_To_Inactive_On_Duration_Expiry",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When the boost duration timer expires, BoostState SHALL transition from Active to Inactive and the BoostEnded event SHALL be generated.",
+        "formal": "∀t. BoostState(t) == Active ∧ timer_boost(t) == 0 ⟹ BoostState(t+1) == Inactive ∧ event_generated(BoostEnded, t+1)",
+        "spec_source": "Section 9.5.8.1.1: 'or the boost command's duration times out after the specified Duration, then BoostState transitions to Inactive. This SHALL cause the BoostEnded event to be generated.'",
+        "violation": {
+          "description": "If the device does not honor the duration timer, BoostState remains Active indefinitely after the agreed duration. This violates the energy management contract and keeps the heater energized beyond the authorized period.",
+          "attack_vector": "Exploit a missing or stoppable timer implementation; issue Boost with very long Duration if no maximum is enforced (see GAP_001), then disable the timer by sending a rapid stream of refreshed Boost commands.",
+          "physical_impact": "Continuous unauthorized heating beyond intended period; potential energy waste and overheating of tank."
+        },
+        "proverifQuery": "query t:time. event(timer_expired(t)) ∧ event(booststate_was_active(t)) ==> event(boostended_generated(t))"
+      },
+      {
+        "id": "PROP_WHM_005",
+        "name": "OneShot_Terminates_Boost_On_Target_Reached",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When OneShot is specified in the active boost parameters, BoostState SHALL transition to Inactive and BoostEnded SHALL be generated as soon as the target temperature or TargetPercentage is reached.",
+        "formal": "∀t. BoostState(t) == Active ∧ boost_params.OneShot == true ∧ (CurrentTemperature(t) >= effective_setpoint ∨ (Feature_TP ∧ TankPercentage(t) >= boost_params.TargetPercentage)) ⟹ BoostState(t+δ) == Inactive ∧ event_generated(BoostEnded, t+δ)",
+        "spec_source": "Section 9.5.8.1.1: 'If OneShot is specified then once the hot water has reached the set point temperature...or the TargetPercentage...then BoostState transitions to Inactive. This SHALL cause the BoostEnded event to be generated.' Section 9.5.6.3.2.",
+        "violation": {
+          "description": "If OneShot termination is not implemented, the heater continues heating after hitting the target, consuming excess energy and forcing water temperature above the intended limit. This also violates the energy management contract established by the Boost command parameters.",
+          "attack_vector": "Craft a Boost command with OneShot=false (or omit it, relying on default=false) and a TargetPercentage of 100% to force sustained heating regardless of temperature, if the server confuses OneShot enforcement between the Active→Active refresh (T002) and the initial command.",
+          "physical_impact": "Overheating of water beyond target setpoint; compounded risk if TemporarySetpoint is near MaxHeatSetpointLimit of the thermostat cluster."
+        },
+        "proverifQuery": "query t:time. event(target_reached(t)) ∧ event(oneshot_param_set()) ==> event(boostended_generated(t))"
+      },
+      {
+        "id": "PROP_WHM_006",
+        "name": "BoostState_Inactive_On_Successful_CancelBoost",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When CancelBoost is issued and BoostState is Active, BoostState SHALL transition to Inactive and BoostEnded SHALL be generated before returning SUCCESS.",
+        "formal": "∀client. invoke(client, CancelBoost) ∧ BoostState == Active ⟹ BoostState' == Inactive ∧ event_generated(BoostEnded) ∧ response == SUCCESS",
+        "spec_source": "Section 9.5.8.2.1: 'Otherwise the Water Heater SHALL transition the BoostState to Inactive, generate a BoostEnded event, and the water heating reverts to being controlled through the current Water Heater Mode.'",
+        "violation": {
+          "description": "If BoostState remains Active after CancelBoost returns SUCCESS, monitoring clients believe heating is cancelled while the heater continues operating. This constitutes a false-state vulnerability exploitable for covert long-duration heating.",
+          "attack_vector": "Exploit a non-atomic transition: send CancelBoost and immediately send another Boost command (race condition), observing whether BoostState ever correctly passes through Inactive.",
+          "physical_impact": "Uncontrolled continued heating after a cancel attempt; energy manager may remove the heater from its active-load schedule while heating continues, leading to grid imbalance."
+        },
+        "proverifQuery": "query client:principal. event(cancelboost_accepted(client)) ∧ event(booststate_was_active()) ==> event(booststate_inactive()) ∧ event(boostended_generated())"
+      },
+      {
+        "id": "PROP_WHM_007",
+        "name": "CancelBoost_Idempotent_When_Inactive",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When CancelBoost is received and BoostState is already Inactive, the BoostState SHALL remain Inactive and the server SHALL return SUCCESS without generating a BoostEnded event.",
+        "formal": "∀client. invoke(client, CancelBoost) ∧ BoostState == Inactive ⟹ BoostState' == Inactive ∧ response == SUCCESS ∧ ¬event_generated(BoostEnded)",
+        "spec_source": "Section 9.5.8.2.1: 'If the BoostState attribute value was already Inactive when this command is received, the BoostState attribute value shall remain Inactive and the server SHALL return SUCCESS.'",
+        "violation": {
+          "description": "A non-idempotent implementation might generate a spurious BoostEnded event on CancelBoost when already Inactive, polluting the event log and causing monitoring clients to believe a boost had been in progress. This can be exploited to generate phantom audit trail entries.",
+          "attack_vector": "Send repeated CancelBoost commands to an Inactive server to flood the event log with false BoostEnded events, degrading audit trail integrity.",
+          "physical_impact": "None directly; audit/forensic integrity degraded."
+        },
+        "proverifQuery": "query client:principal. event(cancelboost_accepted(client)) ∧ event(booststate_was_inactive()) ==> ¬event(boostended_generated())"
+      },
+      {
+        "id": "PROP_WHM_008",
+        "name": "Boost_Refresh_Discards_Prior_Parameters",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When a Boost command is received while BoostState is Active, the server SHALL discard all field values from prior Boost commands and apply only the new command's parameters without interrupting BoostState.",
+        "formal": "∀cmd_new. BoostState == Active ∧ boost_accepted(cmd_new) ⟹ boost_params' == cmd_new.BoostInfo ∧ BoostState' == Active ∧ event_generated(BoostStarted, cmd_new.BoostInfo)",
+        "spec_source": "Section 9.5.8.1.1: 'it SHALL continue in this BoostState, but SHALL discard the effect of the values of the fields from the previous Boost commands, and SHALL continue with the values of the fields from the new Boost command. A new BoostStarted event SHALL be generated to include the field values received in the new command.'",
+        "violation": {
+          "description": "If a server retains any field from a prior Boost command (e.g., an older OneShot=true constraint) after accepting a new Boost command, the effective behavior diverges from what the new command specified. A malicious client can exploit partial parameter updates to inject mixed parameters that achieve unintended heating control.",
+          "attack_vector": "Send initial Boost with OneShot=true, TargetPercentage=80. Immediately follow with a new Boost carrying OneShot omitted (defaulting=false) and no TargetPercentage, expecting continuous heating. If server merges parameters rather than replacing them, OneShot from first command may still terminate heating early.",
+          "physical_impact": "Incorrect heating termination (early stop) or incorrect continuation (no stop) depending on which stale field persists."
+        },
+        "proverifQuery": "query cmd_old:boostcmd, cmd_new:boostcmd. event(boost_refresh(cmd_old, cmd_new)) ==> event(params_equal_new(cmd_new.BoostInfo))"
+      },
+      {
+        "id": "PROP_WHM_009",
+        "name": "BoostStarted_Generated_On_Every_Accepted_Boost",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "The BoostStarted event SHALL be generated every time a Boost command is accepted, both for initial activation and for parameter refresh while already Active.",
+        "formal": "∀cmd. boost_accepted(cmd) ⟹ event_generated(BoostStarted, {BoostInfo: cmd.BoostInfo})",
+        "spec_source": "Section 9.5.8.1.1: 'a BoostStarted event SHALL be generated to include the field values received in the command.' Also: 'A new BoostStarted event SHALL be generated to include the field values received in the new command.' Section 9.5.9.1: 'This event SHALL be generated whenever a Boost command is accepted.'",
+        "violation": {
+          "description": "If BoostStarted is not generated on a parameter-refresh Boost (Active→Active case), a monitoring energy management system loses visibility into the new heating parameters (changed duration, emergency mode, setpoint). Silent parameter changes are invisible in the event log.",
+          "attack_vector": "Exploit the Active→Active refresh path to silently change TemporarySetpoint or Duration on a server that only emits BoostStarted on Inactive→Active transitions. The monitoring system continues operating under the assumption of the original parameters.",
+          "physical_impact": "Energy manager makes decisions based on stale heating parameters, potentially scheduling conflicting loads or failing to curtail energy during grid stress events."
+        },
+        "proverifQuery": "query cmd:boostcmd. event(boost_accepted(cmd)) ==> event(booststarted_event_generated(cmd.BoostInfo))"
+      },
+      {
+        "id": "PROP_WHM_010",
+        "name": "BoostEnded_Generated_On_Every_Active_To_Inactive_Transition",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "The BoostEnded event SHALL be generated on every transition of BoostState from Active to Inactive, regardless of the cause (timer expiry, OneShot completion, or CancelBoost command).",
+        "formal": "∀t. BoostState(t) == Active ∧ BoostState(t+1) == Inactive ⟹ event_generated(BoostEnded, t+1)",
+        "spec_source": "Section 9.5.8.1.1: 'This SHALL cause the BoostEnded event to be generated.' Section 9.5.8.2.1: 'generate a BoostEnded event.' Section 9.5.9.2: 'This event SHALL be generated whenever the BoostState transitions from Active to Inactive.'",
+        "violation": {
+          "description": "If BoostEnded is not generated for all three termination causes, the energy management system loses audit coverage for one class of boost endings. In particular, a suppressed BoostEnded on timer expiry means the monitor does not know when normal heating resumes.",
+          "attack_vector": "Exploit specific termination paths where the server only generates BoostEnded for CancelBoost but not for timer expiry. A malicious device firmware could suppress BoostEnded on timer expiry, keeping the monitor in a phantom 'still boosting' state.",
+          "physical_impact": "Energy manager makes erroneous scheduling decisions; grid coordination functions may fail to re-enable the heater after the boost period ends."
+        },
+        "proverifQuery": "query t:time. event(booststate_transition_active_to_inactive(t)) ==> event(boostended_generated(t))"
+      },
+      {
+        "id": "PROP_WHM_011",
+        "name": "BoostStarted_Fields_Match_Command",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "The BoostInfo field in the BoostStarted event SHALL contain the exact field values received in the accepted Boost command, with no modification or omission.",
+        "formal": "∀cmd. event_generated(BoostStarted, info) ∧ boost_accepted(cmd) ⟹ info == cmd.BoostInfo",
+        "spec_source": "Section 9.5.8.1.1: 'a BoostStarted event SHALL be generated to include the field values received in the command.' Section 9.5.9.1: 'The corresponding structure fields within the WaterHeaterBoostInfoStruct are copied from the Boost command.'",
+        "violation": {
+          "description": "If the server reports different BoostInfo in the event (e.g., clips Duration, ignores TemporarySetpoint), monitoring clients operate with incorrect assumptions about the active heating parameters. A server that sanitizes or truncates fields silently prevents accurate energy accounting.",
+          "attack_vector": "A compromised firmware truncates Duration in BoostStarted to a small value, making the energy manager believe the boost is short, while the heater actually runs for the full (possibly indefinite) commanded duration.",
+          "physical_impact": "Incorrect energy forecasting; potential disagreement between physical device state and monitoring system state."
+        },
+        "proverifQuery": "query cmd:boostcmd, info:boostinfo. event(booststarted_with_info(info)) ∧ event(boost_accepted(cmd)) ==> info == cmd.BoostInfo"
+      },
+      {
+        "id": "PROP_WHM_012",
+        "name": "ShortDuration_Boost_Rejected_With_INVALID_IN_STATE",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "If the Boost command's Duration field is too short for the water heater to accept, the command SHALL be rejected with status INVALID_IN_STATE and BoostState SHALL NOT transition.",
+        "formal": "∀cmd. Duration(cmd) < device_minimum_boost_duration ⟹ response == INVALID_IN_STATE ∧ BoostState' == BoostState",
+        "spec_source": "Section 9.5.8.1.1: 'If the duration field is too short for the water heater to accept, for example a heat pump may take several minutes to ramp up in operation, then the boost command SHALL be rejected with a status of INVALID_IN_STATE.'",
+        "violation": {
+          "description": "If a server accepts an extremely short Duration without rejection, the heater may activate and immediately expire, generating BoostStarted followed instantly by BoostEnded. This constitutes event log flooding and can be used to mask legitimate heating events.",
+          "attack_vector": "Send repeated Boost commands with Duration=1 second to generate rapid BoostStarted/BoostEnded event pairs, exhausting the event log buffer and pushing older security-relevant events out of the log.",
+          "physical_impact": "Event log exhaustion; legitimate boost-start and boost-end events may be lost from the audit trail."
+        },
+        "proverifQuery": "query cmd:boostcmd. Duration(cmd) < device_min_duration ==> event(boost_rejected_invalid_in_state(cmd)) ∧ ¬event(booststate_active())"
+      },
+      {
+        "id": "PROP_WHM_013",
+        "name": "TemporarySetpoint_Within_Thermostat_Bounds",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "If TemporarySetpoint is included in a Boost command, its value SHALL be within MinHeatSetpointLimit and MaxHeatSetpointLimit of the co-located Thermostat cluster (inclusive).",
+        "formal": "∀cmd. TemporarySetpoint_present(cmd) ⟹ Thermostat.MinHeatSetpointLimit ≤ cmd.BoostInfo.TemporarySetpoint ≤ Thermostat.MaxHeatSetpointLimit",
+        "spec_source": "Section 9.5.6.3.4: 'The value of this field SHALL be within the constraints of the MinHeatSetpointLimit and MaxHeatSetpointLimit attributes (inclusive), of the thermostat cluster.'",
+        "violation": {
+          "description": "A TemporarySetpoint above MaxHeatSetpointLimit directs the heater to heat water to an unsafe temperature beyond the thermostat's configured safety ceiling. This can cause scalding, legionella-bypass-threshold violations, or tank/pipe damage.",
+          "attack_vector": "Send a Boost command with TemporarySetpoint set to the maximum temperature type value (e.g., 0x7FFF for temperature type). If the server does not validate against Thermostat.MaxHeatSetpointLimit before heating, the heater targets an unsafe temperature.",
+          "physical_impact": "Water heated above safe limits causing scalding risk; thermal damage to pipes, fittings, or the tank itself; potential legionella control protocol violation."
+        },
+        "proverifQuery": "query cmd:boostcmd, sp:temperature. TemporarySetpoint(cmd) == sp ∧ event(boost_accepted(cmd)) ==> sp >= Thermostat.MinHeatSetpointLimit ∧ sp <= Thermostat.MaxHeatSetpointLimit"
+      },
+      {
+        "id": "PROP_WHM_014",
+        "name": "TargetReheat_Leq_TargetPercentage",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The TargetReheat field SHALL be less than or equal to TargetPercentage when both are present in the Boost command.",
+        "formal": "∀cmd. TargetReheat_present(cmd) ∧ TargetPercentage_present(cmd) ⟹ cmd.BoostInfo.TargetReheat ≤ cmd.BoostInfo.TargetPercentage",
+        "spec_source": "Section 9.5.6.3.6: 'This field SHALL be less than or equal to the TargetPercentage field.'",
+        "violation": {
+          "description": "If TargetReheat > TargetPercentage, the server enters a logically impossible cycling state: it heats to X%, then waits for the tank to fall below Y% where Y>X. The reheat trigger can never be satisfied by normal water draw, or the device may enter an undefined cycling behavior.",
+          "attack_vector": "Send Boost with TargetReheat=90 and TargetPercentage=50. If the server does not validate this constraint, undefined cycling behavior results.",
+          "physical_impact": "Device enters undefined state; uncontrolled heating cycles may result in energy waste or continuous heating without proper termination."
+        },
+        "proverifQuery": "query cmd:boostcmd. event(boost_accepted(cmd)) ∧ TargetReheat_present(cmd) ==> TargetReheat(cmd) <= TargetPercentage(cmd)"
+      },
+      {
+        "id": "PROP_WHM_015",
+        "name": "EmergencyBoost_May_Activate_Multiple_Sources",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "When EmergencyBoost is true in an accepted Boost command, the heater MAY activate multiple heat sources simultaneously; the selection is manufacturer-specific and SHALL only involve sources declared in HeaterTypes.",
+        "formal": "∀cmd. EmergencyBoost(cmd) == true ∧ boost_accepted(cmd) ⟹ ∀bit. HeatDemand_bit_set(bit) ⟹ HeaterTypes_bit_set(bit)",
+        "spec_source": "Section 9.5.6.3.3: 'This MAY cause multiple heat sources to be activated (e.g. a heat pump and direct electric immersion heating element). The choice of which heat sources are activated is manufacturer specific.' Section 9.5.7.1: HeaterTypes indicates supported sources.",
+        "violation": {
+          "description": "If the server activates heat sources not declared in HeaterTypes, the HeatDemand attribute becomes inconsistent with HeaterTypes, and the energy manager may underestimate the power draw. Additionally, activating unsupported hardware heat paths risks electrical faults.",
+          "attack_vector": "Set EmergencyBoost=true and observe HeatDemand for bits set beyond those declared in HeaterTypes. If present, the server violated the bitmap consistency constraint.",
+          "physical_impact": "Electrical overload on unsupported heating paths; energy management system underestimates current consumption, potentially causing breaker trips or grid-coordination failures."
+        },
+        "proverifQuery": "query b:bit. event(heatdemand_bit_set(b)) ⟹ event(heatertype_bit_set(b))"
+      },
+      {
+        "id": "PROP_WHM_016",
+        "name": "Boost_Overrides_Off_Mode_Only_With_Manage_Privilege",
+        "category": "Authorization",
+        "importance": "CRITICAL",
+        "claim": "The ability of a Boost command to override Off or Timed-Off mode water heating restrictions is gated exclusively behind the Manage (M) privilege; no command with lower privilege is permitted to achieve heating in Off mode.",
+        "formal": "∀client, cmd. (WaterHeaterMode == Off ∨ WaterHeaterMode == TimedOff) ∧ heating_active() ⟹ has_privilege(client, M) ∧ boost_accepted_from(client, cmd)",
+        "spec_source": "Section 9.5.8.1.1: 'this SHALL allow the water heater to attempt to heat the water, which may override other settings, for example, if the Water Heater Mode is set to Off, or Timed and it is during one of the Off periods.' Access=M on Boost command.",
+        "violation": {
+          "description": "If the access control enforcement on Boost is incomplete, a lower-privilege client can force the heater active during scheduled-off periods. This is not only an energy management violation but a physical safety concern for households relying on off-peak tariffs and thermal rest periods.",
+          "attack_vector": "Send Boost from an Operate-level ACL entry. If the server conflates O and M or has misconfigured ACLs, heating is activated during a programmed Off period, violating both the schedule and the privilege model.",
+          "physical_impact": "Unauthorized energy consumption; bypasses energy management schedules established by the home energy manager (e.g., during demand-response events)."
+        },
+        "proverifQuery": "query client:principal. event(heating_active_during_off_mode()) ==> event(has_manage_privilege(client)) ∧ event(boost_accepted_from(client))"
+      },
+      {
+        "id": "PROP_WHM_017",
+        "name": "Duration_Field_Min_One_Second",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The Duration field in WaterHeaterBoostInfoStruct SHALL have a minimum value of 1 second; a value of 0 is not permitted.",
+        "formal": "∀cmd. boost_accepted(cmd) ⟹ cmd.BoostInfo.Duration ≥ 1",
+        "spec_source": "Section 9.5.6.3 WaterHeaterBoostInfoStruct table: Duration — Constraint: min 1.",
+        "violation": {
+          "description": "A Duration value of 0 would create an immediately expiring boost; BoostState would transition to Active and then immediately to Inactive, generating BoostStarted and BoostEnded in rapid succession. This is a degenerate state and event-flooding vector.",
+          "attack_vector": "Send Boost with Duration=0. If not validated, the device toggles state immediately, contributing to event log exhaustion.",
+          "physical_impact": "No meaningful heating occurs; event log is polluted."
+        },
+        "proverifQuery": "query cmd:boostcmd. event(boost_accepted(cmd)) ==> Duration(cmd) >= 1"
+      },
+      {
+        "id": "PROP_WHM_018",
+        "name": "HeaterTypes_Fixed_Attribute",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "HeaterTypes is a fixed (F quality) attribute and SHALL NOT change after device commissioning; HeatDemand SHALL only set bits that are also set in HeaterTypes.",
+        "formal": "∀t, bit. HeatDemand_bit(bit, t) == true ⟹ HeaterTypes_bit(bit) == true ∧ ∀t1,t2. HeaterTypes(t1) == HeaterTypes(t2)",
+        "spec_source": "Section 9.5.7 Attributes table: HeaterTypes — Quality = F (Fixed). Section 9.5.7.1: 'If a bit is set then the water heater supports the corresponding heat source.'",
+        "violation": {
+          "description": "If HeatDemand reflects heat sources not present in HeaterTypes, an energy management system makes incorrect power-consumption assumptions. If HeaterTypes changes post-commissioning, all previously computed energy estimates based on it become invalid.",
+          "attack_vector": "Exploit a firmware bug or malicious update that changes HeaterTypes at runtime, invalidating all energy management decisions made against the original bitmap.",
+          "physical_impact": "Energy management system computes incorrect EstimatedHeatRequired; grid coordination becomes unreliable."
+        },
+        "proverifQuery": "query b:bit, t:time. event(heatdemand_set(b, t)) ==> event(heatertype_supports(b))"
+      },
+      {
+        "id": "PROP_WHM_019",
+        "name": "Thermostat_Cluster_Must_Coexist_On_Endpoint",
+        "category": "CrossCluster",
+        "importance": "HIGH",
+        "claim": "An endpoint implementing the Water Heater Management cluster SHALL also implement the Thermostat cluster on the same endpoint.",
+        "formal": "∀endpoint. has_cluster(endpoint, WaterHeaterManagement) ⟹ has_cluster(endpoint, Thermostat)",
+        "spec_source": "Section 9.5.5: 'This cluster SHALL be on an endpoint that also includes the Thermostat cluster as this cluster is dependent on the Thermostat cluster.'",
+        "violation": {
+          "description": "Without the Thermostat cluster, the reference setpoint for heating termination (used in OneShot and TemporarySetpoint constraints) is unavailable. A device missing the Thermostat cluster has no authoritative temperature target, making OneShot termination undefined and TemporarySetpoint bound checking impossible.",
+          "attack_vector": "Commission a non-compliant device without the Thermostat cluster. Issue Boost commands with OneShot=true: since no thermostat setpoint is available, the OneShot condition can never be evaluated, causing the heater to run until Duration expires regardless of water temperature.",
+          "physical_impact": "Uncontrolled heating without uppertemperature bound enforcement; OneShot safety termination becomes unreliable."
+        },
+        "proverifQuery": "query ep:endpoint. event(water_heater_mgmt_present(ep)) ==> event(thermostat_present(ep))"
+      },
+      {
+        "id": "PROP_WHM_020",
+        "name": "No_Privilege_Escalation_Via_Boost_Mode_Override",
+        "category": "Authorization",
+        "importance": "CRITICAL",
+        "claim": "A client MUST NOT achieve the effect of overriding Water Heater Mode (Off, Timed) through any path that bypasses the Manage privilege check on the Boost command.",
+        "formal": "∀client. heating_active_in_off_mode() ⟹ ¬(has_privilege(client, O) ∧ ¬has_privilege(client, M))",
+        "spec_source": "Section 9.5.8.1.1 and Section 9.5.8 Access column (M). Derived from: Boost access=M and Boost is the only mechanism to override mode.",
+        "violation": {
+          "description": "If any indirect path (e.g., writing an attribute on a dependent cluster, sending a cross-cluster command, or exploiting a shared state variable) can cause the Water Heater Management server to enter the equivalent of Boost_Active without going through the Manage-privileged Boost command, the access control model is broken.",
+          "attack_vector": "Modify the Thermostat cluster's occupiedHeatingSetpoint via an Operate-level write, causing the device's internal logic to treat the heater as 'needing to boost' without an explicit Boost command issued at Manage privilege.",
+          "physical_impact": "Unauthorized heating during Off/Timed-Off periods; energy management contract violated."
+        },
+        "proverifQuery": "query client:principal, t:time. event(heating_active(t)) ∧ event(boost_state_active(t)) ==> event(has_manage_privilege(client)) ∧ event(boost_command_accepted_from(client))"
+      },
+      {
+        "id": "PROP_WHM_021",
+        "name": "Attributes_Read_Requires_View_Privilege",
+        "category": "AccessControl",
+        "importance": "MEDIUM",
+        "claim": "All cluster attributes (HeaterTypes, HeatDemand, TankVolume, EstimatedHeatRequired, TankPercentage, BoostState) SHALL be readable only by clients with at least View (V) privilege.",
+        "formal": "∀client, attr. read(client, attr) ∧ attr ∈ {HeaterTypes, HeatDemand, TankVolume, EstimatedHeatRequired, TankPercentage, BoostState} ⟹ has_privilege(client, V)",
+        "spec_source": "Section 9.5.7 Attributes table: Access = R V for all listed attributes.",
+        "violation": {
+          "description": "Unauthenticated access to TankPercentage and BoostState reveals occupancy patterns (when hot water is being drawn and how frequently). HeatDemand leaks which heat sources are active, enabling inference of heating patterns useful for planning physical intrusion.",
+          "attack_vector": "Access the Read Attributes command without any fabricated ACL entry if the server omits View-privilege enforcement. Read BoostState and TankPercentage repeatedly over time to infer occupancy patterns.",
+          "physical_impact": "Privacy breach; occupancy inference from energy usage data."
+        },
+        "proverifQuery": "query client:principal, attr:attribute. event(attr_read_success(client, attr)) ==> event(has_view_privilege(client))"
+      },
+      {
+        "id": "PROP_WHM_022",
+        "name": "TankPercentage_Conditional_On_TP_Feature",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The TankPercentage attribute SHALL only be present and reportable when the TankPercent (TP) feature is enabled; TargetPercentage and TargetReheat fields in WaterHeaterBoostInfoStruct SHALL only be accepted when TP is enabled.",
+        "formal": "∀client. (read(client, TankPercentage) ∨ boost_with_TargetPercentage(client)) ⟹ Feature_TP == true",
+        "spec_source": "Section 9.5.7 Attributes table: TankPercentage — Conformance = TP. Section 9.5.6.3 struct table: TargetPercentage — Conformance = TargetReheat, [TP]; TargetReheat — Conformance = [TP].a-",
+        "violation": {
+          "description": "Accepting TargetPercentage in a Boost command when TP is not enabled means the server must evaluate a TankPercentage that does not exist, leading to undefined OneShot termination behavior and a potential state machine deadlock in Boost_Active.",
+          "attack_vector": "Send Boost with TargetPercentage=50 and OneShot=true on a device where TP feature is disabled. If the server does not reject TargetPercentage, OneShot termination hangs indefinitely since TankPercentage is never computed.",
+          "physical_impact": "Heater runs continuously until Duration expires, potentially longer than intended; OneShot safety termination disabled by feature interaction."
+        },
+        "proverifQuery": "query cmd:boostcmd. TargetPercentage_present(cmd) ∧ event(boost_accepted(cmd)) ==> Feature_TP_enabled()"
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "The Matter fabric provides secure, authenticated, and replay-protected message transport, ensuring that command invocations attributed to a fabric node are genuinely from that node.",
+        "type": "Implicit",
+        "source": "Derived from Matter core protocol specification (CASE session, MRP)",
+        "dependencies": ["PROP_WHM_001", "PROP_WHM_002", "PROP_WHM_016", "PROP_WHM_020"],
+        "impact_if_violated": "All access control properties become unenforceable if message authentication is broken; an attacker could impersonate a Manage-privilege client and issue Boost or CancelBoost freely."
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "The Thermostat cluster on the same endpoint is correctly configured with valid MinHeatSetpointLimit and MaxHeatSetpointLimit values that reflect the physical safety bounds of the water heater.",
+        "type": "Implicit",
+        "source": "Derived from Section 9.5.5 and Section 9.5.6.3.4",
+        "dependencies": ["PROP_WHM_013", "PROP_WHM_005"],
+        "impact_if_violated": "PROP_WHM_013 (TemporarySetpoint bounds) becomes meaningless if the Thermostat's MaxHeatSetpointLimit is itself set to an unsafe value; TemporarySetpoint could direct heating to dangerous temperatures while remaining formally compliant."
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "The server correctly maintains a countdown timer initialized from BoostInfo.Duration and enforces its expiry, independent of any received network messages during the countdown.",
+        "type": "Implicit",
+        "source": "Derived from Section 9.5.8.1.1 and Section 9.5.6.3.1",
+        "dependencies": ["PROP_WHM_004", "PROP_WHM_017"],
+        "impact_if_violated": "PROP_WHM_004 (timer expiry transitions BoostState to Inactive) fails; boost duration becomes indefinite, enabling continuous unauthorized heating."
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "Access Control List (ACL) entries are managed by an authorized Administrator and correctly reflect the intended privilege assignments for clients on the fabric.",
+        "type": "Explicit",
+        "source": "Matter Access Control Cluster specification; Implicit from Section 9.5.8 Access = M",
+        "dependencies": ["PROP_WHM_001", "PROP_WHM_002"],
+        "impact_if_violated": "Mis-provisioned ACL entries grant Manage privilege to untrusted clients. All access control properties depending on M privilege enforcement are then bypassable without any protocol flaw."
+      },
+      {
+        "id": "ASSUM_005",
+        "statement": "The device_minimum_boost_duration is a positive, non-zero value known internally to the device and is applied consistently across all received Boost commands.",
+        "type": "Implicit",
+        "source": "Derived from Section 9.5.8.1.1 INVALID_IN_STATE rejection clause",
+        "dependencies": ["PROP_WHM_012"],
+        "impact_if_violated": "If device_minimum_boost_duration is zero or not enforced, any Duration value (including 1 second) is accepted, enabling event-log flooding via minimal-duration Boost commands."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 9.5.6.3.1",
+        "normative_weakness": "Unspecified",
+        "description": "Duration has a minimum constraint of 1 second but NO maximum value is defined. The elapsed-s type permits arbitrarily large values, allowing a boost to be commanded for effectively indefinite periods.",
+        "properties_affected": ["PROP_WHM_004"],
+        "security_impact": "A compromised Manage-privilege client can set Duration to the maximum elapsed-s representable value, keeping BoostState Active for years without requiring repeated commands. No rate-limiting on refreshes compounds this."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 9.5.8.1.1",
+        "normative_weakness": "Unspecified",
+        "description": "No minimum interval or rate limit between successive Boost commands is specified. The Active→Active refresh path (T002 in FSM) can be triggered at unlimited frequency by a Manage-privilege client.",
+        "properties_affected": ["PROP_WHM_009", "PROP_WHM_012"],
+        "security_impact": "Event log exhaustion via high-frequency Boost commands continuously generating BoostStarted events (INFO priority). Older security-relevant events are evicted from the finite event log. Additionally, timer_boost can be perpetually reset, preventing natural expiry (PROP_WHM_004)."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 9.5.9.2",
+        "normative_weakness": "Unspecified",
+        "description": "The BoostEnded event has no payload fields. There is no way to determine from the event alone whether boost ended due to: (a) timer expiry, (b) OneShot target reached, or (c) CancelBoost command.",
+        "properties_affected": ["PROP_WHM_010"],
+        "security_impact": "Audit trail gap: a security monitoring system cannot distinguish a legitimately completed boost from one maliciously cancelled. A compromised CancelBoost call is forensically indistinguishable from a normal completion, preventing post-incident investigation."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 9.5.8.1.1",
+        "normative_weakness": "Ambiguous",
+        "description": "When a Boost command is received while Active (parameter refresh), the spec says 'SHALL discard the effect of the values of the fields from the previous Boost commands' but does not state whether timer_boost is reset to the full new Duration or continues from its remaining value.",
+        "properties_affected": ["PROP_WHM_008", "PROP_WHM_004"],
+        "security_impact": "Interoperability inconsistency: a client intending to extend an active boost may actually shorten it (or vice versa) depending on implementation. Differing interpretations allow a client to either covertly shorten a legitimate boost or extend it beyond authorized limits."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 9.5.7.6 and Section 9.5.8.1.1",
+        "normative_weakness": "Unspecified",
+        "description": "No fault or power-loss recovery behavior is specified for BoostState. Whether the device persists and resumes Active boost state after a power cycle, or resets to Inactive, is undefined.",
+        "properties_affected": ["PROP_WHM_003", "PROP_WHM_009", "PROP_WHM_010"],
+        "security_impact": "After power restoration, a device that resumes Boost_Active without generating a new BoostStarted event leaves monitoring clients with a stale view. Conversely, a device that resets to Inactive without generating BoostEnded leaves clients believing boost is still active, creating phantom state divergence exploitable by attackers."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 9.5.6.3.4",
+        "normative_weakness": "Ambiguous",
+        "description": "TemporarySetpoint 'SHALL be within the constraints of MinHeatSetpointLimit and MaxHeatSetpointLimit of the thermostat cluster' but the enforcement point is not specified: it is unclear whether the server validates this at command receipt (input validation) or only at heating time (runtime evaluation).",
+        "properties_affected": ["PROP_WHM_013"],
+        "security_impact": "If validation is deferred to heating time, a malicious Boost command with an out-of-bounds TemporarySetpoint is accepted (SUCCESS returned, BoostStarted generated) and only rejected during actual heating. If the Thermostat limits change between command receipt and heating time, the validation window is invalid."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 9.5.8.1.1",
+        "normative_weakness": "MAY",
+        "description": "EmergencyBoost 'MAY cause multiple heat sources to be activated.' The choice is manufacturer-specific with no upper bound on simultaneous heat sources or maximum combined power draw.",
+        "properties_affected": ["PROP_WHM_015"],
+        "security_impact": "A malicious Manage-privilege client can issue EmergencyBoost to maximize simultaneous heat source activation, causing maximum power draw. Without a standardized power limit, this can trigger electrical circuit protection (breaker trip) or exceed grid demand-response commitment limits."
+      },
+      {
+        "id": "GAP_008",
+        "location": "Section 9.5.6.3.2",
+        "normative_weakness": "Unspecified",
+        "description": "OneShot field conformance is '[!TP], [TP].a-', meaning: when TP feature is NOT present, OneShot is included; when TP is present, OneShot is excluded (a-). However, the behavior when OneShot is omitted (defaulting to False) with no TargetPercentage and no TP feature is that heating continues until Duration expires with no early termination. This creates an indefinite-heat-until-timeout default that is not explicitly called out as a security consideration.",
+        "properties_affected": ["PROP_WHM_005", "PROP_WHM_004"],
+        "security_impact": "Default state (OneShot omitted, no TargetPercentage) always results in full-Duration heating with no early termination. Combined with GAP_001 (no max Duration), this is the worst-case heating duration vector."
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": ["Water Heater Management", "Thermostat"],
+        "property": {
+          "claim": "The TemporarySetpoint used during Boost_Active heating SHALL be bounded by the co-located Thermostat cluster's MinHeatSetpointLimit and MaxHeatSetpointLimit, making the Thermostat cluster a safety dependency.",
+          "formal": "∀t. BoostState(t) == Active ∧ TemporarySetpoint_active(t) ⟹ Thermostat.MinHeatSetpointLimit ≤ effective_setpoint(t) ≤ Thermostat.MaxHeatSetpointLimit"
+        },
+        "violation_scenario": "If an attacker with Manage privilege on both clusters first raises Thermostat.MaxHeatSetpointLimit (if writable via the Thermostat cluster with appropriate privilege), then sends a Boost with a correspondingly elevated TemporarySetpoint, the bounds check passes while the actual heating target is unsafe. The Water Heater Management cluster's input validation is only as strong as the Thermostat cluster's attribute write controls."
+      },
+      {
+        "id": "XPROP_002",
+        "clusters_involved": ["Water Heater Management", "Water Heater Mode"],
+        "property": {
+          "claim": "A Boost command's ability to override the current Water Heater Mode (e.g., Off, Timed) creates a cross-cluster authorization dependency: the Boost command must carry sufficient privilege to override the mode set by the Water Heater Mode cluster.",
+          "formal": "∀client, cmd. WaterHeaterMode ∈ {Off, Timed} ∧ boost_accepted(client, cmd) ⟹ has_privilege(client, M) ∧ mode_override_authorized(client)"
+        },
+        "violation_scenario": "If the Water Heater Mode cluster's mode-setting command requires a higher or different privilege level than M, a client with M privilege can issue Boost to override a mode it could not have set itself. Conversely, if the Water Heater Mode command only requires Operate and Boost requires Manage, mode settings made by an Operate-level client can be overridden by a Manage-level client, creating an authorization asymmetry."
+      },
+      {
+        "id": "XPROP_003",
+        "clusters_involved": ["Water Heater Management", "Energy Management (referenced in Section 9.5.4)"],
+        "property": {
+          "claim": "When the EnergyManagement (EM) feature is enabled, TankVolume and EstimatedHeatRequired SHALL be consistent with the Thermostat's current temperature readings and the TankPercentage (if TP also enabled), so that energy management decisions are based on accurate data.",
+          "formal": "∀t. Feature_EM ∧ Feature_TP ⟹ EstimatedHeatRequired(t) == f(TankVolume, CurrentTemperature, TargetSetpoint, TankPercentage(t))"
+        },
+        "violation_scenario": "If EstimatedHeatRequired is not updated when TankPercentage changes, the energy management system makes heating decisions based on stale energy estimates, potentially scheduling insufficient or excessive energy for the heating cycle. An attacker controlling TankPercentage reporting (e.g., defective sensor) can cause systematic energy management errors."
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_WHM_013",
+        "safety_category": "ThermalSafety",
+        "failure_mode": "Water heated above MaxHeatSetpointLimit causes scalding risk at taps, pipe and fitting thermal damage, and potential violation of Legionella-control protocols that require water to not exceed certain temperatures.",
+        "spec_mitigation": "Section 9.5.6.3.4 mandates TemporarySetpoint within thermostat MinHeatSetpointLimit/MaxHeatSetpointLimit bounds. Enforcement timing is unspecified (see GAP_006)."
+      },
+      {
+        "property_id": "PROP_WHM_016",
+        "safety_category": "EnergyManagement",
+        "failure_mode": "Unauthorized heating during demand-response Off periods can cause grid instability, violate energy procurement agreements, and prevent household participation in grid curtailment programs.",
+        "spec_mitigation": "Manage privilege requirement on Boost command. No additional mechanism (e.g., confirmation, energy manager approval) is specified."
+      },
+      {
+        "property_id": "PROP_WHM_015",
+        "safety_category": "ElectricalSafety",
+        "failure_mode": "EmergencyBoost simultaneously activating all supported heat sources (ImmersionElement1, ImmersionElement2, HeatPump, Boiler) can exceed the household electrical circuit capacity, causing breaker trips or, in worst case, wiring overload.",
+        "spec_mitigation": "Section 9.5.6.3.3 states heat source selection is manufacturer-specific (MAY). No standardized power cap or safety interlock is mandated."
+      },
+      {
+        "property_id": "PROP_WHM_020",
+        "safety_category": "EnergyManagement",
+        "failure_mode": "Privilege escalation enabling Off-mode override through non-Boost paths removes the last software safety barrier preventing unauthorized heating during grid curtailment or scheduled maintenance periods.",
+        "spec_mitigation": "Boost is the only specified path to override Off/Timed mode. No additional interlock or confirmation mechanism is defined."
+      },
+      {
+        "property_id": "PROP_WHM_004",
+        "safety_category": "EnergyManagement",
+        "failure_mode": "If timer_boost is not enforced and BoostState remains Active indefinitely, the water heater runs continuously beyond any authorized period, causing uncontrolled energy consumption and possible tank damage from sustained high-temperature operation.",
+        "spec_mitigation": "Duration field with min 1 second. No maximum Duration specified (see GAP_001); no watchdog or alternative timer enforcement required by spec."
+      }
+    ],
+
+    "summary": {
+      "total_properties": 22,
+      "by_importance": {
+        "CRITICAL": 4,
+        "HIGH": 13,
+        "MEDIUM": 5
+      },
+      "by_category": {
+        "AccessControl": 3,
+        "StateIntegrity": 10,
+        "PhysicalSafety": 3,
+        "Authentication": 0,
+        "SecretProtection": 0,
+        "Availability": 0,
+        "Authorization": 2,
+        "Timing": 1,
+        "EventIntegrity": 3,
+        "CrossCluster": 1
+      },
+      "spec_gaps_found": 8,
+      "safety_critical_count": 5,
+      "cross_cluster_properties_count": 3,
+      "assumptions_count": 5,
+      "notes": "No Authentication or SecretProtection category properties arise because the cluster has no PIN or credential mechanisms; authentication is entirely delegated to the Matter fabric CASE session and ACL. No explicit Availability properties are listed as standalone properties — DoS via event flooding and timer reset are captured as violation vectors within StateIntegrity and EventIntegrity properties and in GAP_002."
+    }
+  }
+}

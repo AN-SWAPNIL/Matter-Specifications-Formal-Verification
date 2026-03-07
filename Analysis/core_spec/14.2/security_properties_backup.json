@@ -1,0 +1,540 @@
+{
+  "specification": "Matter Core Specification - Chapter 14.2: Transport Layer Security Common Conventions",
+  "analysis_date": "2026-02-12",
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "TLS_Version_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Nodes supporting TLS SHALL implement TLS 1.3 or later and SHALL NOT support any earlier version.",
+      "formal": "∀node. supports_tls(node) ==> (implements(node, tls_1_3) ∨ implements(node, tls_later)) ∧ ¬implements(node, tls_1_2) ∧ ¬implements(node, tls_1_1) ∧ ¬implements(node, tls_1_0)",
+      "violation": "If a node supports TLS versions earlier than 1.3, it becomes vulnerable to downgrade attacks (e.g., BEAST, CRIME, POODLE, Logjam). An attacker can force protocol negotiation to a weaker version with known vulnerabilities, compromising confidentiality and integrity of all communications.",
+      "proverifQuery": "query node:principal ⊢ event tls_handshake(node, version) ==> (version = tls_1_3 ∨ version > tls_1_3)"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Perfect_Forward_Secrecy_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "TLS SHALL support only key exchange and cipher suites which provide Perfect Forward Security.",
+      "formal": "∀suite. cipher_suite_allowed(suite) ==> provides_pfs(suite) ∧ (uses_ephemeral_dh(suite) ∨ uses_ephemeral_ecdh(suite))",
+      "violation": "Without PFS, compromise of long-term private keys allows decryption of all past recorded sessions. An attacker who captures encrypted traffic and later obtains the server's private key can retroactively decrypt all historical communications, breaking past session confidentiality.",
+      "proverifQuery": "query suite:cipher_suite, session:bitstring ⊢ event decrypt_past_session(attacker, session) ==> compromise_ephemeral_key(attacker, session)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "X509v3_Certificate_Compliance",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "TLS certificates used SHALL be based on X.509v3-compliant certificates as defined in RFC 5280.",
+      "formal": "∀cert. tls_certificate(cert) ==> x509v3_compliant(cert) ∧ conforms_to_rfc5280(cert)",
+      "violation": "Non-compliant certificates may lack critical extensions (BasicConstraints, KeyUsage, SubjectAltName), enabling certificate chain attacks. An attacker can craft malformed certificates that bypass validation checks, impersonate legitimate servers, or create unauthorized CAs.",
+      "proverifQuery": "query cert:certificate ⊢ event certificate_accepted(cert) ==> x509v3_valid(cert)"
+    },
+    {
+      "id": "PROP_004",
+      "name": "DER_Encoding_Determinism",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "TLS certificates SHALL be encoded using Distinguished Encoding Rules (DER) format as defined in X.690.",
+      "formal": "∀cert, encoding. certificate_encoding(cert, encoding) ==> encoding = DER ∧ deterministic(encoding) ∧ unique_representation(cert, encoding)",
+      "violation": "Non-DER encodings (e.g., BER with multiple representations) break signature verification and fingerprint calculation. Two identical certificates with different encodings produce different fingerprints, allowing signature substitution attacks or breaking fingerprint-based revocation checks.",
+      "proverifQuery": "query cert:certificate, fp1:bitstring, fp2:bitstring ⊢ fingerprint(cert, fp1) ∧ fingerprint(cert, fp2) ==> fp1 = fp2"
+    },
+    {
+      "id": "PROP_005",
+      "name": "SHA256_Fingerprint_Security",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "X.509 certificate fingerprints SHALL be calculated using SHA-256 hash algorithm on the DER-encoded certificate.",
+      "formal": "∀cert, fingerprint. cert_fingerprint(cert, fingerprint) ==> fingerprint = SHA256(DER_encode(cert)) ∧ collision_resistant(SHA256)",
+      "violation": "Using weaker hash functions (MD5, SHA-1) enables collision attacks where an attacker generates a malicious certificate with the same fingerprint as a legitimate one. This breaks certificate pinning, allowing man-in-the-middle attacks despite fingerprint verification.",
+      "proverifQuery": "query cert1:certificate, cert2:certificate, fp:bitstring ⊢ fingerprint(cert1, fp) ∧ fingerprint(cert2, fp) ==> cert1 = cert2"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Certificate_Chain_Trust_Validation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "TLS clients SHALL validate server certificates using the Chain of Trust from a trusted TLS Root CA Certificate (TLSRCAC) as described in RFC 4158.",
+      "formal": "∀client, server_cert, ca_cert. accept_server_cert(client, server_cert) ==> ∃chain. valid_chain(chain, server_cert, ca_cert) ∧ trusted_root(client, ca_cert) ∧ signatures_valid(chain)",
+      "violation": "Without proper chain validation, an attacker can present a self-signed or untrusted certificate, impersonating a legitimate server. This enables complete man-in-the-middle attacks, compromising confidentiality, integrity, and authentication of all communications.",
+      "proverifQuery": "query client:principal, server:principal, cert:certificate ⊢ event accept_server(client, server, cert) ==> ∃root:certificate. trusted_root(client, root) ∧ valid_chain(cert, root)"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Client_Certificate_Authentication",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "When client certificates are used, they SHALL be validated during the TLS handshake according to RFC 8446 to authenticate the client's identity.",
+      "formal": "∀server, client, client_cert. use_client_cert(client) ==> verify_client_cert(server, client_cert) ∧ proven_possession(client, private_key(client_cert))",
+      "violation": "Skipping client certificate validation allows any client to impersonate authorized clients by presenting valid-looking but unverified certificates. Attackers gain unauthorized access to protected resources without proper authentication.",
+      "proverifQuery": "query server:principal, client:principal, cert:certificate ⊢ event client_authenticated(server, client) ==> verified_client_cert(server, cert) ∧ owns_private_key(client, cert)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "CSR_PKCS10_Compliance",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "All Certificate Signing Requests (CSRs) SHALL be created following the format and procedure defined in PKCS #10.",
+      "formal": "∀csr. certificate_signing_request(csr) ==> pkcs10_format(csr) ∧ contains_public_key(csr) ∧ signature_valid(csr)",
+      "violation": "Non-compliant CSRs may lack proper signature verification or public key binding, enabling certificate misissuance. An attacker can submit a CSR without proving possession of the corresponding private key, obtaining certificates for keys they don't control.",
+      "proverifQuery": "query entity:principal, csr:csr, cert:certificate ⊢ event ca_issues_cert(ca, entity, cert, csr) ==> pkcs10_valid(csr) ∧ owns_private_key(entity, public_key(csr))"
+    },
+    {
+      "id": "PROP_009",
+      "name": "TLS_Hostname_Format_Validity",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "A TLS Hostname SHALL be a valid domain name or IP address, supporting public DNS, mDNS (.local), or locally reachable addresses.",
+      "formal": "∀hostname. tls_hostname(hostname) ==> (valid_domain_name(hostname) ∨ valid_ipv4(hostname) ∨ valid_ipv6(hostname)) ∧ resolvable(hostname)",
+      "violation": "Invalid or unresolvable hostnames prevent connection establishment or enable DNS spoofing attacks. An attacker can exploit hostname validation weaknesses to redirect connections to malicious servers via DNS poisoning.",
+      "proverifQuery": "query client:principal, hostname:bitstring, server:principal ⊢ event connect_to_server(client, hostname, server) ==> valid_hostname(hostname) ∧ resolves_to(hostname, server)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "TLS_Port_Default_Consistency",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If a TLS Port Number is omitted, the value of 443 SHALL be assumed for consistent endpoint addressing.",
+      "formal": "∀endpoint. tls_endpoint(endpoint) ∧ ¬specified(port(endpoint)) ==> port(endpoint) = 443",
+      "violation": "Inconsistent port defaults cause connection failures or enable port confusion attacks. An attacker exploits ambiguous port handling to redirect traffic to unauthorized services on non-standard ports.",
+      "proverifQuery": "query client:principal, hostname:bitstring ⊢ event connect_tls(client, hostname, port) ∧ ¬port_specified(hostname) ==> port = 443"
+    },
+    {
+      "id": "PROP_011",
+      "name": "TLS_Handshake_RFC8446_Compliance",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Establishment and usage of all TLS Connections SHALL use the standard procedure defined in RFC 8446 or later.",
+      "formal": "∀connection. tls_connection(connection) ==> follows_rfc8446_handshake(connection) ∧ proper_key_derivation(connection) ∧ authenticated_encryption(connection)",
+      "violation": "Non-standard handshake procedures bypass security features (version negotiation, cipher suite agreement, certificate validation), creating vulnerabilities to downgrade attacks, cipher suite manipulation, or authentication bypass.",
+      "proverifQuery": "query client:principal, server:principal ⊢ event tls_established(client, server) ==> event handshake_complete(client, server) ∧ rfc8446_compliant(client, server)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Hostname_Verification_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "TLS clients SHALL verify that the server's certificate matches the requested TLS Hostname to prevent impersonation.",
+      "formal": "∀client, hostname, server_cert. connect(client, hostname) ==> verify_hostname_match(hostname, server_cert) ∧ (hostname ∈ subject_alt_names(server_cert) ∨ hostname = common_name(server_cert))",
+      "violation": "Without hostname verification, an attacker with any valid certificate can impersonate any server. This enables man-in-the-middle attacks despite certificate validation, as the attacker uses their own legitimate certificate for a different domain.",
+      "proverifQuery": "query client:principal, hostname:bitstring, cert:certificate ⊢ event accept_connection(client, hostname, cert) ==> hostname_matches_cert(hostname, cert)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Certificate_Expiry_Validation",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "TLS implementations SHALL validate certificate validity periods (notBefore, notAfter) to prevent use of expired or not-yet-valid certificates.",
+      "formal": "∀cert, current_time. accept_certificate(cert, current_time) ==> current_time ≥ not_before(cert) ∧ current_time ≤ not_after(cert)",
+      "violation": "Accepting expired certificates allows use of revoked or compromised certificates beyond their intended lifetime. Accepting not-yet-valid certificates enables attackers to use pre-issued certificates before proper validation infrastructure is ready.",
+      "proverifQuery": "query cert:certificate, time:timestamp ⊢ event cert_accepted(cert, time) ==> time >= cert_not_before(cert) ∧ time <= cert_not_after(cert)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Private_Key_Secrecy_TLS_Client",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Private keys corresponding to TLS client certificates SHALL remain confidential and accessible only to the authenticated node.",
+      "formal": "∀node, priv_key, cert. owns_cert(node, cert) ==> knows(node, priv_key) ∧ ¬knows(attacker, priv_key) ∧ corresponding_keys(priv_key, public_key(cert))",
+      "violation": "Compromised client private keys allow complete impersonation of the legitimate client. An attacker can authenticate as the victim node, accessing all protected resources and services available to that client identity.",
+      "proverifQuery": "query attacker:principal, node:principal, key:private_key ⊢ event attacker_knows(attacker, key) ∧ owns_private_key(node, key) ==> compromised(node)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "CA_Private_Key_Protection",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Certificate Authority private keys used to sign certificates SHALL be protected from unauthorized access and compromise.",
+      "formal": "∀ca, ca_priv_key. certificate_authority(ca) ==> secure_storage(ca_priv_key) ∧ ¬accessible(attacker, ca_priv_key) ∧ signs_with(ca, ca_priv_key)",
+      "violation": "Compromised CA private keys enable attackers to issue arbitrary trusted certificates for any identity, completely breaking the PKI trust model. Attackers can create certificates for any domain, enabling undetectable man-in-the-middle attacks against all nodes trusting that CA.",
+      "proverifQuery": "query attacker:principal, ca:principal, ca_key:private_key ⊢ event attacker_knows(attacker, ca_key) ∧ ca_private_key(ca, ca_key) ==> ∀cert:certificate. can_forge_cert(attacker, cert)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "Matter_Context_Isolation",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "TLS usage in Matter SHALL be isolated from non-Matter TLS contexts to prevent cross-context attacks and credential leakage.",
+      "formal": "∀node, matter_session, non_matter_session. tls_session(matter_session, matter_context) ∧ tls_session(non_matter_session, non_matter_context) ==> ¬shares_credentials(matter_session, non_matter_session)",
+      "violation": "Credential reuse between Matter and non-Matter TLS contexts creates cross-protocol attacks. An attacker compromising non-Matter TLS services can extract certificates/keys usable in Matter, or vice versa, expanding attack surface.",
+      "proverifQuery": "query node:principal, matter_cert:certificate, other_cert:certificate ⊢ used_in_matter(matter_cert) ∧ used_in_non_matter(other_cert) ==> matter_cert ≠ other_cert"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Dual_Stack_Connectivity_Availability",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Ecosystems implementing Matter linked TLS services SHOULD ensure their TLS services have both IPv6 and IPv4 connectivity to prevent connection failures.",
+      "formal": "∀tls_service. matter_linked(tls_service) ==> supports_ipv6(tls_service) ∧ supports_ipv4(tls_service)",
+      "violation": "Single-stack services create connectivity failures for nodes on IPv4-only or IPv6-only networks. In network transitions or NAT64 environments, lack of dual-stack support causes service unavailability, which attackers can exploit for denial-of-service.",
+      "proverifQuery": "query node:principal, service:principal ⊢ event connect_success(node, service) ==> (supports_ipv6(service) ∨ supports_ipv4(service))"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Certificate_Signature_Algorithm_Security",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "Certificate signatures SHALL use cryptographically secure algorithms (e.g., RSA with SHA-256, ECDSA with SHA-256) and SHALL NOT use deprecated algorithms (MD5, SHA-1).",
+      "formal": "∀cert, sig_alg. signed_certificate(cert, sig_alg) ==> (sig_alg ∈ {RSA_SHA256, ECDSA_SHA256, RSA_SHA384, ECDSA_SHA384, EdDSA}) ∧ sig_alg ∉ {MD5, SHA1, RSA_MD5}",
+      "violation": "Weak signature algorithms enable collision attacks where attackers generate malicious certificates with the same signature as legitimate ones. This breaks certificate validation, enabling impersonation and man-in-the-middle attacks.",
+      "proverifQuery": "query cert:certificate, alg:signature_algorithm ⊢ event cert_validated(cert) ==> signature_algorithm(cert, alg) ∧ secure_algorithm(alg)"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Certificate_Key_Length_Strength",
+      "category": "Cryptography",
+      "importance": "HIGH",
+      "claim": "Certificate public keys SHALL meet minimum cryptographic strength requirements (e.g., RSA ≥2048 bits, ECC ≥256 bits) to resist brute-force attacks.",
+      "formal": "∀cert, pub_key. certificate_public_key(cert, pub_key) ==> ((rsa_key(pub_key) ∧ key_size(pub_key) ≥ 2048) ∨ (ecc_key(pub_key) ∧ key_size(pub_key) ≥ 256))",
+      "violation": "Short keys (e.g., RSA-1024, ECC-160) are vulnerable to computational attacks. Attackers can factor weak RSA moduli or solve ECDLP for weak curves, recovering private keys and enabling certificate forgery and impersonation.",
+      "proverifQuery": "query cert:certificate, key:public_key ⊢ event cert_accepted(cert) ==> public_key(cert, key) ∧ sufficient_key_strength(key)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "TLS_Session_Replay_Prevention",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "TLS implementations SHALL prevent replay attacks through proper use of nonces, timestamps, and sequence numbers as defined in RFC 8446.",
+      "formal": "∀msg, session. receive_tls_message(msg, session) ==> unique_sequence_number(msg, session) ∧ ¬previously_received(msg, session)",
+      "violation": "Without replay protection, attackers can capture and retransmit valid TLS messages to repeat actions (e.g., authentication, transactions). This enables unauthorized operations, duplicate resource allocation, or authentication bypass.",
+      "proverifQuery": "query msg:bitstring, session:session_id ⊢ event accept_message(msg, session) ==> ¬event previously_accepted(msg, session)"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Certificate_Revocation_Checking",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "TLS clients SHOULD check certificate revocation status via CRL or OCSP before accepting certificates to detect compromised or invalidated certificates.",
+      "formal": "∀client, cert. accept_certificate(client, cert) ==> (check_crl(cert) ∨ check_ocsp(cert)) ∧ ¬revoked(cert)",
+      "violation": "Without revocation checking, clients accept compromised or administratively revoked certificates. Attackers using stolen certificates continue impersonating legitimate servers even after the compromise is detected and certificates are revoked.",
+      "proverifQuery": "query client:principal, cert:certificate ⊢ event cert_accepted(client, cert) ==> ¬revoked(cert) ∧ (crl_checked(cert) ∨ ocsp_checked(cert))"
+    },
+    {
+      "id": "PROP_022",
+      "name": "TLS_Extension_Handling_Security",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "TLS implementations SHALL safely handle unknown extensions and reject potentially dangerous extension combinations that could weaken security.",
+      "formal": "∀extension, handshake. receive_extension(extension, handshake) ==> (known_safe(extension) ∨ ignore_safely(extension)) ∧ ¬breaks_security(extension, handshake)",
+      "violation": "Improper extension handling enables downgrade attacks or cipher suite manipulation. Attackers inject malicious extensions that weaken negotiated security parameters, bypass security features, or cause implementation vulnerabilities.",
+      "proverifQuery": "query client:principal, server:principal, ext:extension ⊢ event handshake_complete(client, server) ∧ extension_used(ext) ==> safe_extension(ext)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "ALPN_Protocol_Negotiation_Integrity",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "When Application-Layer Protocol Negotiation (ALPN) is used, the negotiated protocol SHALL be authenticated within the TLS handshake to prevent protocol confusion attacks.",
+      "formal": "∀client, server, protocol. alpn_negotiated(client, server, protocol) ==> authenticated_in_handshake(protocol) ∧ mutually_agreed(client, server, protocol)",
+      "violation": "Unauthenticated ALPN allows attackers to manipulate protocol negotiation, causing client and server to use incompatible protocols. This creates parsing vulnerabilities, bypass of protocol-specific security checks, or cross-protocol attacks.",
+      "proverifQuery": "query client:principal, server:principal, proto:protocol ⊢ event protocol_in_use(client, server, proto) ==> alpn_authenticated(client, server, proto)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "SNI_Hostname_Confidentiality_Limitation",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "TLS implementations SHALL recognize that Server Name Indication (SNI) is sent in plaintext, potentially exposing target hostnames to network observers.",
+      "formal": "∀client, hostname. send_sni(client, hostname) ==> visible_to_network_observer(hostname) ∧ encrypted_after_handshake(hostname)",
+      "violation": "Plaintext SNI leaks target server identity to passive observers, enabling traffic analysis, censorship, and targeted attacks. Attackers can selectively block or intercept connections to specific services identified via SNI.",
+      "proverifQuery": "query attacker:principal, client:principal, hostname:bitstring ⊢ event sni_sent(client, hostname) ==> can_observe(attacker, hostname)"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Cipher_Suite_Order_Enforcement",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "TLS servers SHALL prioritize stronger cipher suites and clients SHALL advertise preferred cipher suites in priority order to ensure selection of the most secure mutually supported option.",
+      "formal": "∀client, server, suite1, suite2. mutually_supported(suite1, suite2) ∧ stronger(suite1, suite2) ==> selected_suite(suite1)",
+      "violation": "Poor cipher suite ordering enables downgrade to weaker but acceptable ciphers. Attackers manipulate negotiations to force selection of export-grade or legacy ciphers with known weaknesses, compromising session security.",
+      "proverifQuery": "query client:principal, server:principal, suite:cipher_suite ⊢ event cipher_selected(client, server, suite) ==> ¬∃stronger:cipher_suite. mutually_supported(stronger) ∧ security_level(stronger) > security_level(suite)"
+    },
+    {
+      "id": "PROP_026",
+      "name": "TLS_Endpoint_Authenticity_Binding",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "TLS connections SHALL cryptographically bind the endpoint identity (hostname, certificate) to the session to prevent session hijacking or endpoint substitution.",
+      "formal": "∀session, endpoint. established_session(session, endpoint) ==> bound_to_certificate(session, cert(endpoint)) ∧ ¬transferable(session)",
+      "violation": "Unbound sessions allow attackers to hijack or transfer sessions between endpoints. An attacker can steal session credentials and use them to impersonate the legitimate client or server at different network locations.",
+      "proverifQuery": "query session:session_id, endpoint1:principal, endpoint2:principal ⊢ event session_used_by(session, endpoint1) ∧ event session_used_by(session, endpoint2) ==> endpoint1 = endpoint2"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "Cryptographic primitives (SHA-256, RSA, ECDSA, AES-GCM) are computationally secure and provide their claimed security guarantees.",
+      "type": "Implicit",
+      "impact_if_violated": "All cryptographic properties (PROP_004, PROP_005, PROP_018, PROP_019) fail. Attackers can break encryption, forge signatures, create certificate collisions, enabling complete system compromise."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "Certificate Authorities properly validate identity before issuing certificates and maintain secure infrastructure for CA private key protection.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_006, PROP_015 fail. Misissued certificates enable impersonation attacks. Compromised CA keys break entire PKI trust model, allowing forgery of trusted certificates for any identity."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "System clocks are sufficiently synchronized for certificate expiry validation to be meaningful.",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_013 fails. Nodes with incorrect clocks accept expired or not-yet-valid certificates. Attack window: attacker presents revoked certificate to node with backdated clock, or future certificate before validation infrastructure is ready."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "DNS infrastructure (including mDNS for .local addresses) is not fully compromised and provides reasonably accurate hostname resolution.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_009, PROP_012 fail. DNS poisoning redirects connections to attacker-controlled servers. Even with valid certificates, hostname misdirection enables targeted man-in-the-middle attacks via DNS manipulation."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "TLS implementations (e.g., OpenSSL, mbedTLS) correctly implement RFC 8446 without critical bugs or side-channel vulnerabilities.",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_011 fails. Implementation bugs (e.g., Heartbleed, padding oracle attacks) bypass protocol-level security. Side-channel attacks (timing, cache) leak keys despite cryptographically sound protocol design."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Random number generators provide sufficient entropy for key generation, nonce creation, and session IDs.",
+      "type": "Implicit",
+      "impact_if_violated": "Properties PROP_002, PROP_020 fail. Weak randomness enables key prediction attacks, ephemeral key compromise (breaking PFS), nonce reuse (breaking replay protection), and session ID guessing (enabling session hijacking)."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Private keys remain confidential and are not accessible through side channels, physical attacks, or software vulnerabilities on the host system.",
+      "type": "Explicit",
+      "impact_if_violated": "Properties PROP_014, PROP_015 fail. Extracted private keys enable complete impersonation. For client keys: attacker impersonates legitimate nodes. For CA keys: attacker forges certificates, breaking entire trust infrastructure."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "Certificate revocation infrastructure (CRL distribution, OCSP responders) is available and responsive when clients attempt revocation checking.",
+      "type": "Implicit",
+      "impact_if_violated": "Property PROP_021 fails. Unreachable revocation services create dilemma: fail-closed (DoS) or fail-open (accept revoked certificates). Attackers exploit fail-open implementations, using stolen certificates despite revocation."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "TLS version downgrade attack: Attacker forces negotiation to TLS 1.0/1.1/1.2, exploiting known vulnerabilities (BEAST, CRIME, POODLE, weak ciphers).",
+      "severity": "CRITICAL",
+      "attack_vector": "Man-in-the-middle attacker intercepts ClientHello, modifies supported versions list to exclude TLS 1.3, forcing server to select vulnerable older version."
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Loss of Perfect Forward Secrecy: Attacker captures encrypted traffic, later compromises server's long-term private key, decrypts all historical sessions.",
+      "severity": "CRITICAL",
+      "attack_vector": "Passive traffic capture followed by server compromise. With non-PFS cipher (e.g., RSA key exchange), attacker decrypts session keys from recorded handshakes using stolen server private key."
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Malformed certificate acceptance: Attacker crafts non-compliant certificate lacking critical extensions, bypassing CA constraints or key usage restrictions.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker presents certificate without BasicConstraints:CA=FALSE, uses it as intermediate CA to sign malicious leaf certificates that appear valid in chain."
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Certificate signature substitution: Attacker exploits non-deterministic encoding to create alternate representation with different signature, bypassing validation.",
+      "severity": "HIGH",
+      "attack_vector": "Using BER encoding with multiple valid representations, attacker modifies certificate encoding after signing, changing fingerprint while keeping signature mathematically valid on original."
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Certificate fingerprint collision: Attacker generates malicious certificate with same MD5/SHA-1 fingerprint as legitimate certificate, bypassing certificate pinning.",
+      "severity": "CRITICAL",
+      "attack_vector": "Using collision attacks against weak hash functions, attacker creates rogue certificate matching pinned fingerprint of legitimate certificate, accepted by clients using fingerprint pinning."
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "Untrusted certificate acceptance: Attacker presents self-signed or improperly issued certificate, impersonating legitimate server without detection.",
+      "severity": "CRITICAL",
+      "attack_vector": "Client skips chain validation, accepts any certificate. Attacker generates self-signed certificate for target domain, performs man-in-the-middle attack capturing all traffic."
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Client impersonation: Attacker presents any certificate claiming to be authorized client, gains unauthorized access without proper authentication.",
+      "severity": "HIGH",
+      "attack_vector": "Server accepts client certificate without verifying signature or ownership. Attacker copies legitimate client certificate (public portion), uses it without possessing private key."
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "CA issues certificate to entity without verifying private key possession, enabling certificate theft and impersonation.",
+      "severity": "HIGH",
+      "attack_vector": "Attacker submits non-PKCS#10 CSR containing victim's public key without signature. CA issues certificate to victim's identity but attacker receives it, impersonating victim."
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "DNS spoofing redirect: Attacker exploits invalid hostname handling to redirect connection to malicious server via DNS poisoning.",
+      "severity": "HIGH",
+      "attack_vector": "Client accepts malformed hostname, attacker poisons DNS/mDNS to resolve target hostname to attacker-controlled IP, intercepting connection."
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Port confusion attack: Attacker exploits inconsistent port defaulting to redirect traffic to unauthorized service on non-standard port.",
+      "severity": "MEDIUM",
+      "attack_vector": "Implementation uses inconsistent port defaults (80 vs 443), attacker runs service on unexpected port, client connects to wrong service with different security properties."
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Custom handshake bypass: Non-standard TLS handshake skips critical security validations, enabling downgrade, authentication bypass, or cipher manipulation.",
+      "severity": "CRITICAL",
+      "attack_vector": "Implementation uses proprietary handshake variant omitting certificate validation phase. Attacker connects without valid certificate, establishes encrypted but unauthenticated connection."
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Certificate mismatch impersonation: Attacker with valid certificate for domain A impersonates domain B, exploiting missing hostname verification.",
+      "severity": "CRITICAL",
+      "attack_vector": "Client connects to bank.example.com, attacker presents valid certificate for attacker.com. Without hostname verification, client accepts certificate, attacker intercepts all communications."
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Expired certificate acceptance: Client accepts revoked or expired certificate beyond its validity period, enabling use of compromised credentials.",
+      "severity": "HIGH",
+      "attack_vector": "Certificate expires or is revoked after compromise. Client ignores expiry, attacker continues using stolen expired certificate for impersonation."
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Private key extraction enables complete client impersonation, accessing all resources and services available to legitimate client.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker compromises client device via malware, extracts private key from storage. Using stolen key, attacker authenticates to all services as victim client."
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Compromised CA key enables forgery of trusted certificates for arbitrary identities, breaking entire PKI trust model.",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker compromises CA infrastructure via vulnerability or insider threat, extracts CA private key. Attacker forges certificates for any domain, performs undetectable man-in-the-middle attacks."
+    },
+    {
+      "property_id": "PROP_016",
+      "vulnerability": "Cross-context credential reuse: Attacker compromises non-Matter TLS service, extracts reused certificates/keys, uses them to impersonate Matter nodes.",
+      "severity": "HIGH",
+      "attack_vector": "Node uses same TLS certificate for Matter and public web service. Attacker compromises web service, extracts certificate, authenticates as that node in Matter ecosystem."
+    },
+    {
+      "property_id": "PROP_017",
+      "vulnerability": "Denial of service via single-stack connectivity: IPv6-only or IPv4-only service prevents access from opposite stack, exploitable for targeted DoS.",
+      "severity": "MEDIUM",
+      "attack_vector": "Service supports only IPv4, attacker blocks IPv4 connectivity for target nodes (firewall rules, routing attacks). Nodes on IPv6-only networks cannot reach service."
+    },
+    {
+      "property_id": "PROP_018",
+      "vulnerability": "Collision attack on certificate signature: Attacker generates malicious certificate with same MD5/SHA-1 signature as legitimate one, forges C certificates.",
+      "severity": "HIGH",
+      "attack_vector": "CA uses MD5 for signatures, attacker employs chosen-prefix collision to create two certificates with same hash - one legitimate, one malicious - swaps after CA signs legitimate one."
+    },
+    {
+      "property_id": "PROP_019",
+      "vulnerability": "Key factorization attack: Attacker factors weak RSA modulus or solves ECDLP for weak curve, recovers private key, forges signatures and decrypts traffic.",
+      "severity": "HIGH",
+      "attack_vector": "Certificate uses 1024-bit RSA key, attacker applies modern factorization algorithms (GNFS) to factor modulus, derives private key, impersonates certificate owner."
+    },
+    {
+      "property_id": "PROP_020",
+      "vulnerability": "Replay attack: Attacker captures valid TLS messages, retransmits them to repeat authenticated actions or duplicate transactions.",
+      "severity": "CRITICAL",
+      "attack_vector": "Implementation lacks proper sequence number checking, attacker records encrypted authentication message, replays it to gain unauthorized access multiple times."
+    },
+    {
+      "property_id": "PROP_021",
+      "vulnerability": "Revoked certificate acceptance: Client accepts certificate revoked after compromise, attacker continues impersonating legitimate entity with stolen credentials.",
+      "severity": "HIGH",
+      "attack_vector": "Certificate is revoked after detected theft, client skips OCSP/CRL check due to performance optimization, accepts revoked certificate from attacker."
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Malicious extension injection: Attacker injects extension that degrades security (e.g., forces compression despite CRIME vulnerability).",
+      "severity": "MEDIUM",
+      "attack_vector": "Man-in-the-middle injects compression extension in handshake, implementation enables compression despite known vulnerability, attacker exploits CRIME to extract secrets."
+    },
+    {
+      "property_id": "PROP_023",
+      "vulnerability": "Protocol confusion attack: Attacker manipulates ALPN negotiation, causing client and server to interpret traffic using incompatible protocols.",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker modifies ALPN in handshake, client uses HTTP/2 framing, server interprets as HTTP/1.1, creates parser confusion enabling request smuggling or bypass."
+    },
+    {
+      "property_id": "PROP_024",
+      "vulnerability": "Traffic analysis and targeted censorship: Passive observer reads plaintext SNI, identifies target service, selectively blocks or monitors connections.",
+      "severity": "MEDIUM",
+      "attack_vector": "Network observer (ISP, government) monitors SNI Extension in ClientHello, identifies connections to sensitive services (e.g., VPN, prohibited sites), blocks connections."
+    },
+    {
+      "property_id": "PROP_025",
+      "vulnerability": "Cipher suite downgrade: Attacker manipulates negotiation to select weak but supported cipher (e.g., export-grade), compromises session security.",
+      "severity": "MEDIUM",
+      "attack_vector": "Server offers both strong and weak ciphers, attacker removes strong ciphers from ClientHello, server selects weak cipher from remaining options, attacker breaks weak cipher."
+    },
+    {
+      "property_id": "PROP_026",
+      "vulnerability": "Session hijacking: Attacker steals session credentials, transfers session to different endpoint, impersonates legitimate party.",
+      "severity": "CRITICAL",
+      "attack_vector": "Session tokens not bound to certificate/hostname, attacker extracts session ID via XSS or memory dump, uses it from attacker-controlled machine to access protected resources."
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "TLS_Handshake_Initiated",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_011"],
+      "critical_property": "PROP_001 - If state allows TLS < 1.3, handshake proceeds with vulnerable version, enabling downgrade attacks"
+    },
+    {
+      "state_name": "Certificate_Validation",
+      "properties_enforcing_transitions": ["PROP_003", "PROP_006", "PROP_012", "PROP_013"],
+      "critical_property": "PROP_006 - If state accepts certificate without valid chain to trusted root, authentication is bypassed, enabling impersonation"
+    },
+    {
+      "state_name": "Client_Certificate_Authentication",
+      "properties_enforcing_transitions": ["PROP_007", "PROP_014"],
+      "critical_property": "PROP_007 - If state accepts client certificate without verifying signature and private key possession, attacker impersonates any client"
+    },
+    {
+      "state_name": "Cipher_Suite_Negotiation",
+      "properties_enforcing_transitions": ["PROP_002", "PROP_025"],
+      "critical_property": "PROP_002 - If state allows non-PFS ciphers, compromise of long-term keys breaks past session security"
+    },
+    {
+      "state_name": "Session_Established",
+      "properties_enforcing_transitions": ["PROP_020", "PROP_026"],
+      "critical_property": "PROP_020 - If state doesn't enforce replay protection, attacker retransmits captured messages to repeat authenticated actions"
+    },
+    {
+      "state_name": "Certificate_Issuance_Request",
+      "properties_enforcing_transitions": ["PROP_008"],
+      "critical_property": "PROP_008 - If CSR validation skipped, CA issues certificates to entities without private key proof, enabling certificate theft"
+    },
+    {
+      "state_name": "Endpoint_Resolution",
+      "properties_enforcing_transitions": ["PROP_009", "PROP_010"],
+      "critical_property": "PROP_009 - If hostname validation fails, DNS spoofing redirects connections to attacker-controlled servers"
+    },
+    {
+      "state_name": "Certificate_Revocation_Check",
+      "properties_enforcing_transitions": ["PROP_021"],
+      "critical_property": "PROP_021 - If revocation check skipped, compromised certificates remain accepted after revocation"
+    }
+  ],
+  "additionalInsights": "**Emergent Vulnerabilities Identified:**\n\n1. **Time Synchronization Attack Surface**: Multiple properties (PROP_013, PROP_020) rely on accurate system time for expiry validation and replay prevention. Nodes with manipulated clocks (via NTP attacks or hardware tampering) bypass temporal security controls. Recommendation: Implement secure time synchronization with authenticated time sources.\n\n2. **Certificate Reuse Risk**: Specification allows nodes to use TLS in non-Matter contexts (Section 14.1), but lacks explicit guidance on certificate isolation. This creates attack propagation risk where compromise in one context affects others. Property PROP_016 addresses this but needs enforcement mechanisms in certificate provisioning.\n\n3. **Dual-Stack Availability vs Security Tradeoff**: Property PROP_017 (SHOULD for dual-stack) is marked MEDIUM importance, but has HIGH security impact. Single-stack services create deterministic DoS vectors during IPv4/IPv6 transition periods. Attackers can force protocol downgrade by selectively blocking one protocol stack.\n\n4. **Implicit Trust in DNS Infrastructure**: Properties PROP_009 and PROP_012 depend on DNS resolution integrity, but specification provides no guidance for DNS security (DNSSEC, DoT, DoH). In local mDNS environments, spoofing attacks are trivial. Recommendation: Require DNSSEC validation or certificate-based hostname binding.\n\n5. **Certificate Fingerprint Dependence**: Property PROP_005 mandates SHA-256 fingerprints, but specification doesn't address fingerprint pinning mechanisms or update procedures. Clients implementing pinning face brittleness (legitimate cert rotation breaks), while those not pinning gain no benefit from fingerprint calculation.\n\n6. **Revocation Infrastructure Reliability**: Property PROP_021 is marked SHOULD (not SHALL), but revocation checking failure modes aren't specified. The classic fail-open vs fail-closed dilemma creates either security bypass (fail-open) or availability impact (fail-closed). Specification should mandate behavior during OCSP/CRL unavailability.\n\n7. **Client Certificate Provisioning Gap**: Specification defines client certificate authentication (PROP_007) but provides no guidance on secure provisioning, key generation location (hardware vs software), or key lifecycle management. This leaves critical security decisions to implementations.\n\n8. **Perfect Forward Secrecy Verification Gap**: PROP_002 mandates PFS cipher suites, but doesn't specify verification mechanisms for proper ephemeral key generation and handling. Weak random number generators (ASSUM_006) or deterministic ephemeral keys break PFS despite protocol compliance.\n\n9. **Extension Attack Surface**: Property PROP_022 addresses malicious extensions, but specification doesn't enumerate which TLS 1.3 extensions are required, forbidden, or restricted for Matter TLS. This creates implementation inconsistencies and potential downgrade vectors via extension manipulation.\n\n10. **Context Isolation Enforcement**: Property PROP_016 identifies context isolation need, but specification lacks architectural guidance. Without explicit separation (separate keystores, certificates, trust anchors), implementations default to credential reuse, expanding attack surface.\n\n**Vulnerability Patterns by Category:**\n- **Protocol Downgrade** (PROP_001, PROP_002, PROP_025): 3 properties address version/cipher negotiation attacks\n- **PKI Trust Failures** (PROP_003, PROP_006, PROP_015): 3 properties address certificate validation and CA compromise\n- **Impersonation** (PROP_007, PROP_012, PROP_014): 3 properties address authentication bypass\n- **Cryptographic Weakness** (PROP_004, PROP_005, PROP_018, PROP_019): 4 properties address weak crypto enabling forgery\n\n**FSM State Transition Risks:**\nThe TLS handshake state machine has 8 identified critical states where property violations enable state corruption. Most critical: Certificate_Validation state where 4 properties (PROP_003, PROP_006, PROP_012, PROP_013) must hold simultaneously. Failure of any one enables impersonation.\n\n**Recommendation Priority:**\n1. Mandate certificate revocation checking (upgrade PROP_021 from SHOULD to SHALL)\n2. Add explicit context isolation requirements with separate credentials per context\n3. Define DNS security requirements for hostname resolution\n4. Specify ephemeral key generation and entropy requirements for PFS\n5. Enumerate required/forbidden TLS extensions for Matter TLS\n6. Add secure time synchronization requirements\n7. Define certificate provisioning and lifecycle management for client certificates",
+  "summary": {
+    "total_properties": 26,
+    "by_importance": {
+      "CRITICAL": 11,
+      "HIGH": 10,
+      "MEDIUM": 5
+    },
+    "by_category": {
+      "Security": 16,
+      "Cryptography": 5,
+      "Correctness": 5,
+      "Consistency": 0,
+      "Timing": 0,
+      "Atomicity": 0,
+      "AccessControl": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 8,
+    "vulnerabilities_identified": 26,
+    "critical_vulnerabilities": 11,
+    "high_severity_vulnerabilities": 10,
+    "fsm_states_identified": 8
+  }
+}

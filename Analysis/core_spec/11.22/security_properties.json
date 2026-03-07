@@ -1,0 +1,897 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Encryption_Session_Mandatory",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "BDX protocol SHALL only be executed over PASE or CASE encrypted sessions",
+      "formal": "∀ bdx_message: (transport(bdx_message) = PASE ∨ transport(bdx_message) = CASE)",
+      "violation": "If BDX runs without PASE/CASE encryption, data-in-transit confidentiality is lost, allowing attackers to read file contents, metadata, and control messages. Authenticated message flows are also compromised.",
+      "attack_vector": "Attacker forces BDX to run over unencrypted transport, enabling man-in-the-middle attacks to intercept, read, or modify file data and protocol messages in transit"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Reliable_Transport_Mandatory",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "BDX SHALL always be used over reliable transports with transport-level reliability",
+      "formal": "∀ bdx_session: (reliable(transport(bdx_session)) = true) ∧ (transport = UDP → MRP_enabled = true)",
+      "violation": "Without reliable transport, messages can be lost, reordered, or duplicated, breaking protocol state machine assumptions. Block ordering guarantees fail, and file integrity cannot be assured.",
+      "attack_vector": "Attacker forces BDX over unreliable transport (UDP without MRP), then drops or reorders packets to corrupt file transfers, cause state confusion, or enable replay attacks"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Single_Exchange_Scope",
+      "category": "ScopeIsolation",
+      "importance": "CRITICAL",
+      "claim": "All messages in a BDX session SHALL be sent within the scope of a single Exchange",
+      "formal": "∀ msg1, msg2 ∈ session: exchange_id(msg1) = exchange_id(msg2)",
+      "violation": "If messages span multiple Exchanges, session isolation breaks. Different security contexts could be mixed, or messages could be injected from other sessions.",
+      "attack_vector": "Attacker attempts to inject messages from a different Exchange context to hijack or interfere with an ongoing BDX session"
+    },
+    {
+      "id": "PROP_004",
+      "name": "Session_Exclusivity",
+      "category": "StateLifecycle",
+      "importance": "CRITICAL",
+      "claim": "Only one bulk data transfer session can be in progress at any time during an Exchange",
+      "formal": "∀ exchange: |{sessions : active(sessions) ∧ exchange_id(sessions) = exchange}| ≤ 1",
+      "violation": "Multiple concurrent sessions in one Exchange would cause message ambiguity, state confusion, and potential mixing of data from different transfers.",
+      "attack_vector": "Attacker initiates multiple BDX sessions concurrently in the same Exchange to create race conditions, mix data streams, or cause resource exhaustion"
+    },
+    {
+      "id": "PROP_005",
+      "name": "Sequential_Block_Counter_Ordering",
+      "category": "ReplayProtection",
+      "importance": "CRITICAL",
+      "claim": "Block counters SHALL be sent in ascending and sequential order, with out-of-order counters triggering BAD_BLOCK_COUNTER abort",
+      "formal": "∀ block_i, block_{i+1}: counter(block_{i+1}) = (counter(block_i) + 1) mod 2^32 ∨ ABORT(BAD_BLOCK_COUNTER)",
+      "violation": "Out-of-order block counters indicate message replay, reordering attack, or state desynchronization. File integrity would be compromised if blocks are processed out of order.",
+      "attack_vector": "Attacker replays old blocks, reorders blocks during transmission, or injects blocks with arbitrary counters to corrupt file transfer or cause denial of service"
+    },
+    {
+      "id": "PROP_006",
+      "name": "BlockQuery_Sequential_Ordering",
+      "category": "ReplayProtection",
+      "importance": "HIGH",
+      "claim": "BlockQuery messages SHALL be made in ascending and sequential Block Counter order",
+      "formal": "∀ query_i, query_{i+1}: counter(query_{i+1}) = (counter(query_i) + 1) mod 2^32",
+      "violation": "Non-sequential BlockQuery allows receiver to request same block multiple times or skip blocks, potentially causing data loss, duplication, or resource exhaustion.",
+      "attack_vector": "Malicious receiver sends non-sequential BlockQuery messages to replay data blocks, skip critical blocks, or exhaust sender resources"
+    },
+    {
+      "id": "PROP_007",
+      "name": "BlockAck_Counter_Correspondence",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "BlockAck SHALL be sent with the same Block Counter as the previously received Block/BlockEOF",
+      "formal": "∀ block, ack: (ack acknowledges block) → counter(ack) = counter(block)",
+      "violation": "Mismatched acknowledgment counters cause sender/receiver state desynchronization, could acknowledge wrong blocks leading to data loss or corruption.",
+      "attack_vector": "Attacker modifies BlockAck counter values to acknowledge non-existent blocks, causing data loss or allowing partially-transferred data to be considered complete"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Out_Of_Order_Abort_Requirement",
+      "category": "StateLifecycle",
+      "importance": "CRITICAL",
+      "claim": "On any out-of-order block counter, recipient SHALL send BAD_BLOCK_COUNTER StatusReport and abort the transfer",
+      "formal": "∀ msg: out_of_order(counter(msg)) → SEND(StatusReport(BAD_BLOCK_COUNTER)) ∧ ABORT(session)",
+      "violation": "Failure to abort on out-of-order counters allows attacks to proceed, potentially compromising file integrity through block reordering or replay.",
+      "attack_vector": "Attacker exploits lenient counter validation to replay blocks, reorder blocks, or create forked transfer states"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Block_Counter_Modulo_Arithmetic",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Block Counter ordering SHALL use modulo 2^32 arithmetic, with 0x00000000 following 0xFFFFFFFF",
+      "formal": "next_counter(c) = (c + 1) mod 2^32",
+      "violation": "Incorrect wraparound handling could cause legitimate transfers to fail after 2^32 blocks (very rare), or attackers could exploit wraparound edge cases.",
+      "attack_vector": "Attacker forces transfer to wraparound point (0xFFFFFFFF → 0x00000000) and exploits incorrect wraparound validation to inject blocks or cause denial of service"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Transfer_Mode_Exclusivity",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Exactly one transfer mode SHALL be chosen (SENDER_DRIVE xor RECEIVER_DRIVE), and at least one SHALL be proposed",
+      "formal": "(TC[SENDER_DRIVE] ⊕ TC[RECEIVER_DRIVE]) ∧ (PTC[SENDER_DRIVE] ∨ PTC[RECEIVER_DRIVE])",
+      "violation": "Multiple or zero transfer modes would cause ambiguous control flow, unclear driver/follower roles, and protocol state confusion.",
+      "attack_vector": "Attacker manipulates transfer control bits to set both modes or neither, causing state confusion where both parties wait for the other to drive, or both try to drive simultaneously"
+    },
+    {
+      "id": "PROP_011",
+      "name": "Responder_Mode_Selection_From_Proposal",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Responder SHALL choose transfer mode that was in the original proposed transfer methods from Initiator",
+      "formal": "∀ mode: selected(mode) → mode ∈ proposed_modes",
+      "violation": "Responder selecting unsupported mode causes Initiator to receive unexpected control flow, potentially leading to protocol deadlock or state confusion.",
+      "attack_vector": "Malicious responder selects transfer mode not supported by initiator, causing initiator to fail or enter undefined behavior"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Sender_Drive_Preference",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If Initiator proposes both RECEIVER_DRIVE and SENDER_DRIVE, Responder SHALL default to SENDER_DRIVE to retain request/response semantics",
+      "formal": "(PTC[RECEIVER_DRIVE] ∧ PTC[SENDER_DRIVE]) → TC[SENDER_DRIVE]",
+      "violation": "Not preferring SENDER_DRIVE loses request/response semantics, potentially leading to less efficient transfers or unexpected behavior.",
+      "attack_vector": "Attacker forces RECEIVER_DRIVE selection to exploit potential vulnerabilities in receiver-driven flow or to enable timing-based attacks on sleepy devices"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Async_Mode_Prohibition",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "Asynchronous mode is provisional and SHALL NOT be chosen by the Responder",
+      "formal": "∀ responder_accept: TC[ASYNC] = 0",
+      "violation": "Selecting provisional async mode could expose untested code paths, incomplete security validation, or undefined behavior.",
+      "attack_vector": "Attacker tricks responder into selecting async mode to exploit incomplete implementation or security validation in provisional code paths"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Version_Negotiation_Downgrade_Protection",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Version SHALL be the newest version supported by Responder that is not newer than proposed version",
+      "formal": "selected_version = max{v : v ∈ responder_versions ∧ v ≤ proposed_version}",
+      "violation": "Forcing older version than necessary could expose known vulnerabilities fixed in newer versions.",
+      "attack_vector": "Attacker performs downgrade attack by manipulating version negotiation to force use of older protocol version with known vulnerabilities"
+    },
+    {
+      "id": "PROP_015",
+      "name": "Version_Incompatibility_Rejection",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If Responder cannot support version equal or older to proposed version, SHALL send VERSION_NOT_SUPPORTED and end transfer",
+      "formal": "¬∃ v: (v ∈ responder_versions ∧ v ≤ proposed_version) → ABORT(VERSION_NOT_SUPPORTED)",
+      "violation": "Proceeding without common version leads to protocol interpretation mismatch, causing message parsing errors or undefined behavior.",
+      "attack_vector": "Attacker forces version mismatch to trigger error conditions or exploits inconsistent protocol interpretation between versions"
+    },
+    {
+      "id": "PROP_016",
+      "name": "Max_Block_Size_Constraint",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Max Block Size (MBS) SHALL be less than or equal to Proposed Max Block Size (PMBS)",
+      "formal": "MBS ≤ PMBS",
+      "violation": "Responder demanding larger block size than Initiator supports causes buffer overflows, memory exhaustion, or inability to process blocks.",
+      "attack_vector": "Malicious responder sets MBS > PMBS to trigger buffer overflow in initiator when processing oversized blocks"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Accepted_Parameters_Mandatory_Use",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Parameters in SendAccept/ReceiveAccept message SHALL be used in the transfer",
+      "formal": "∀ param ∈ accept_msg: used_params[param] = accept_msg[param]",
+      "violation": "Using different parameters than negotiated causes mismatch between sender/receiver expectations, leading to data corruption or protocol errors.",
+      "attack_vector": "Attacker modifies parameters mid-transfer after negotiation to cause block size mismatches, triggering buffer overflows or data corruption"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Parameter_Rejection_Abort",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "If parameters from SendAccept/ReceiveAccept are unacceptable to Initiator, it SHALL abort the transfer with appropriate error",
+      "formal": "¬acceptable(accept_params) → ABORT(StatusReport(appropriate_error))",
+      "violation": "Proceeding with unacceptable parameters leads to transfer failure, data corruption, or resource exhaustion.",
+      "attack_vector": "Attacker forces unacceptable parameters to be accepted, then exploits resulting resource exhaustion or data handling errors"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Definite_Length_Commitment",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "For SendInit with definite length, Sender commits to sending exactly that number of bytes",
+      "formal": "RC[DEFLEN] = 1 → total_bytes_sent = DEFLEN",
+      "violation": "Sending less data than committed causes premature termination, incomplete file. Sending more data than committed could overflow receiver buffers.",
+      "attack_vector": "Attacker commits to small length in SendInit but sends much more data to overflow receiver buffers or exhaust storage"
+    },
+    {
+      "id": "PROP_020",
+      "name": "Length_Verification_Requirement",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Upon receiving BlockEOF, recipient SHALL verify pre-negotiated file size was transferred if definite size was given",
+      "formal": "RC[DEFLEN] = 1 → verify(total_bytes_received = negotiated_length) ∨ FAIL(transfer)",
+      "violation": "Not verifying length allows truncated or extended files to be accepted as valid, compromising file integrity.",
+      "attack_vector": "Attacker sends BlockEOF prematurely to truncate file, or sends extra data to extend file beyond intended size"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Length_Mismatch_Response",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If Receiver finds discrepancy between pre-negotiated size and actual data transferred, it MAY respond with LENGTH_MISMATCH",
+      "formal": "negotiated_length ≠ actual_length → MAY_SEND(StatusReport(LENGTH_MISMATCH))",
+      "violation": "Silent acceptance of length mismatch allows corrupted or manipulated files to be processed as valid.",
+      "attack_vector": "Attacker manipulates transfer to send wrong amount of data, then exploits lack of length validation to inject malicious content"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Premature_BlockEOF_Failure",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "A Receiver receiving a premature BlockEOF would have to consider the transfer failed",
+      "formal": "received_length < negotiated_length ∧ received(BlockEOF) → FAIL(transfer)",
+      "violation": "Accepting premature BlockEOF results in truncated file being treated as complete, causing data loss or corrupted output.",
+      "attack_vector": "Attacker sends BlockEOF early to truncate file at strategic point, potentially removing security checks or integrity validation code from transferred file"
+    },
+    {
+      "id": "PROP_023",
+      "name": "Block_Data_Length_Constraint",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Block message data length SHALL be in range (0 < Length ≤ Max Block Size)",
+      "formal": "∀ block: 0 < len(block.data) ≤ MBS",
+      "violation": "Empty blocks waste bandwidth and could indicate protocol error. Oversized blocks cause buffer overflows.",
+      "attack_vector": "Attacker sends empty Block messages to cause denial of service through infinite loop, or sends oversized blocks to trigger buffer overflow"
+    },
+    {
+      "id": "PROP_024",
+      "name": "BlockEOF_Data_Length_Constraint",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "BlockEOF message data length SHALL be in range [0 ≤ Length ≤ Max Block Size], allowing zero length for empty files",
+      "formal": "∀ blockEOF: 0 ≤ len(blockEOF.data) ≤ MBS",
+      "violation": "Oversized BlockEOF causes buffer overflow. Not allowing zero-length BlockEOF prevents empty file transfers.",
+      "attack_vector": "Attacker sends oversized BlockEOF to trigger buffer overflow in final block processing"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Synchronous_Acknowledgment_Requirement",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "In synchronous mode, each message SHALL be acknowledged before the next message will be sent",
+      "formal": "synchronous_mode(session) → ∀ msg_i: received(ack_i) before send(msg_{i+1})",
+      "violation": "Sending messages without waiting for acknowledgment in synchronous mode violates flow control, causing buffer overflow and state desynchronization.",
+      "attack_vector": "Attacker floods receiver with unacknowledged messages in synchronous mode to exhaust receiver buffers and cause denial of service"
+    },
+    {
+      "id": "PROP_026",
+      "name": "Sender_Drive_BlockAck_Mandatory",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "If Sender is driving in synchronous transfer, Receiver SHALL send BlockAck in response to each block of data received",
+      "formal": "sync_mode ∧ sender_drive → ∀ block: send(BlockAck(block.counter))",
+      "violation": "Missing BlockAck causes sender to wait indefinitely or timeout, failing transfer. Sender cannot confirm delivery.",
+      "attack_vector": "Malicious receiver withholds BlockAck messages to cause denial of service by keeping sender waiting or forcing timeout"
+    },
+    {
+      "id": "PROP_027",
+      "name": "StatusReport_Termination_Requirement",
+      "category": "StateLifecycle",
+      "importance": "CRITICAL",
+      "claim": "If any unexpected StatusReport is received, the receiving peer SHALL terminate its processing of the transfer and invalidate the exchange",
+      "formal": "received(StatusReport) ∧ unexpected(StatusReport) → TERMINATE(processing) ∧ INVALIDATE(exchange)",
+      "violation": "Continuing after error StatusReport leads to undefined state, data corruption, or security vulnerabilities from proceeding in error condition.",
+      "attack_vector": "Attacker sends StatusReport to prematurely terminate legitimate transfers, causing denial of service"
+    },
+    {
+      "id": "PROP_028",
+      "name": "Transport_Failure_Abort",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "If transport fails to deliver message within specified parameters, BDX session SHOULD be aborted",
+      "formal": "transport_failure(msg) → SHOULD_ABORT(session)",
+      "violation": "Not aborting on transport failure leaves session in inconsistent state, with parties having different views of transfer progress.",
+      "attack_vector": "Attacker causes transport failures to desynchronize sender/receiver state, then exploits inconsistent state for data corruption"
+    },
+    {
+      "id": "PROP_029",
+      "name": "Driver_Timeout_Abort",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "For synchronous transfers, if Driver fails to receive response within application-determined time, it SHOULD abort the session",
+      "formal": "sync_mode ∧ is_driver ∧ no_response_within(timeout) → SHOULD_ABORT(session)",
+      "violation": "Not aborting on timeout causes indefinite resource holding, prevents cleanup, and leaves session in limbo state.",
+      "attack_vector": "Attacker intentionally delays responses to exhaust driver resources through forced timeout waiting, or exploits lack of timeout to keep resources locked indefinitely"
+    },
+    {
+      "id": "PROP_030",
+      "name": "Follower_Never_Sleepy_Constraint",
+      "category": "StateLifecycle",
+      "importance": "MEDIUM",
+      "claim": "The protocol defines followers as devices that can never be sleepy",
+      "formal": "is_follower(device) → ¬sleepy(device)",
+      "violation": "Sleepy follower would fail to respond to driver requests, causing timeouts and transfer failures.",
+      "attack_vector": "Attacker forces sleepy device into follower role, causing transfer failures and denial of service"
+    },
+    {
+      "id": "PROP_031",
+      "name": "BlockQuery_Implicit_Acknowledgment",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "BlockQuery message implies a BlockAck of the previous block if no BlockAck was explicitly sent",
+      "formal": "send(BlockQuery(k)) ∧ ¬sent(BlockAck(k-1)) → implicit_ack(k-1)",
+      "violation": "Not treating BlockQuery as implicit ack could cause sender to retransmit unnecessarily or fail to advance state.",
+      "attack_vector": "Attacker exploits ambiguity in implicit acknowledgment to cause duplicate block transmission or state confusion"
+    },
+    {
+      "id": "PROP_032",
+      "name": "BlockQueryWithSkip_Cursor_Advancement",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Before next Block is sent after BlockQueryWithSkip, cursor SHALL be advanced by BytesToSkip bytes",
+      "formal": "received(BlockQueryWithSkip(n, skip)) → cursor_position = cursor_position + skip before send(Block(n))",
+      "violation": "Not advancing cursor causes wrong data to be sent, violating skip semantics and corrupting transfer.",
+      "attack_vector": "Attacker sends BlockQueryWithSkip with large values to cause integer overflow in cursor position calculation"
+    },
+    {
+      "id": "PROP_033",
+      "name": "Skip_Past_End_No_Error",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If after skipping BytesToSkip the cursor reaches end of file or beyond, next message SHALL be BlockEOF with empty contents, with no error",
+      "formal": "cursor_position + BytesToSkip ≥ file_size → send(BlockEOF(empty))",
+      "violation": "Signaling error on skip-past-end prevents legitimate seek operations and complicates client logic.",
+      "attack_vector": "Attacker intentionally skips past end to probe file boundaries or cause unexpected empty BlockEOF handling"
+    },
+    {
+      "id": "PROP_034",
+      "name": "BlockQueryWithSkip_Arbitrary_Size",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "BytesToSkip in BlockQueryWithSkip MAY be a size that does not match current transfer's maximum block size",
+      "formal": "∀ skip: skip_value(BlockQueryWithSkip) ∈ [0, 2^64-1]",
+      "violation": "Restricting skip size to block boundaries would prevent flexible seeking within files.",
+      "attack_vector": "Attacker uses very large BytesToSkip values to cause resource exhaustion in cursor management or integer overflow"
+    },
+    {
+      "id": "PROP_035",
+      "name": "BlockAckEOF_Session_Termination",
+      "category": "StateLifecycle",
+      "importance": "CRITICAL",
+      "claim": "BlockAckEOF indicates receipt of all transmitted data and ends the session",
+      "formal": "send(BlockAckEOF) → session_state = TERMINATED",
+      "violation": "Session not terminating after BlockAckEOF causes resource leaks, allows post-session messages, and creates ambiguous session state.",
+      "attack_vector": "Attacker sends additional messages after BlockAckEOF to inject malicious data or exploit post-session processing vulnerabilities"
+    },
+    {
+      "id": "PROP_036",
+      "name": "BlockAckEOF_Both_Modes_Required",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "BlockAckEOF message SHALL be sent in both synchronous and asynchronous transfers",
+      "formal": "∀ transfer: received(BlockEOF) → MUST_SEND(BlockAckEOF)",
+      "violation": "Not sending BlockAckEOF in async mode leaves sender uncertain whether file was fully received, preventing proper cleanup and confirmation.",
+      "attack_vector": "Receiver withholds BlockAckEOF in async mode, preventing sender from confirming successful delivery and freeing resources"
+    },
+    {
+      "id": "PROP_037",
+      "name": "No_BlockQuery_In_Async_Mode",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "In asynchronous transfers, no BlockQuery messages are sent",
+      "formal": "async_mode(transfer) → ¬∃ msg: type(msg) = BlockQuery",
+      "violation": "Sending BlockQuery in async mode violates protocol mode semantics and creates state confusion about control flow.",
+      "attack_vector": "Attacker sends BlockQuery in async mode to confuse protocol state machine or test for implementation vulnerabilities"
+    },
+    {
+      "id": "PROP_038",
+      "name": "No_BlockAck_In_Async_Mode",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "In asynchronous transfers, no BlockAck messages are sent (except BlockAckEOF)",
+      "formal": "async_mode(transfer) → ¬∃ msg: type(msg) = BlockAck",
+      "violation": "Sending BlockAck in async mode adds unnecessary overhead and violates async flow control model where transport provides reliability.",
+      "attack_vector": "Attacker floods sender with BlockAck messages in async mode to exhaust resources or test protocol confusion"
+    },
+    {
+      "id": "PROP_039",
+      "name": "No_BlockQueryWithSkip_In_Async_Mode",
+      "category": "StateLifecycle",
+      "importance": "MEDIUM",
+      "claim": "In asynchronous transfers, no BlockQueryWithSkip messages are sent",
+      "formal": "async_mode(transfer) → ¬∃ msg: type(msg) = BlockQueryWithSkip",
+      "violation": "BlockQueryWithSkip in async mode violates push-based async model where sender controls data flow.",
+      "attack_vector": "Attacker sends BlockQueryWithSkip in async mode to attempt protocol state confusion"
+    },
+    {
+      "id": "PROP_040",
+      "name": "Start_Offset_Rejection_Allowed",
+      "category": "AccessControl",
+      "importance": "MEDIUM",
+      "claim": "Receivers are not required to accept non-zero start offset transfers, and SHALL reject with START_OFFSET_NOT_SUPPORTED if cannot accept",
+      "formal": "STARTOFS ≠ 0 ∧ ¬supports_offset(receiver) → REJECT(START_OFFSET_NOT_SUPPORTED)",
+      "violation": "Not rejecting unsupported offset leads to incorrect file region being transferred or protocol confusion.",
+      "attack_vector": "Attacker uses start offset to access unauthorized file regions or bypass access controls that only apply to full file access"
+    },
+    {
+      "id": "PROP_041",
+      "name": "Start_Offset_Support_Recommendation",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Devices SHOULD make every attempt to support non-zero start offset",
+      "formal": "device_capability(device) → SHOULD_SUPPORT(non_zero_offset)",
+      "violation": "Not supporting start offset prevents resumption of interrupted transfers and requires full retransmission on failure.",
+      "attack_vector": "Attacker triggers transfer interruptions knowing victim doesn't support offset, forcing expensive full retransmissions causing resource exhaustion"
+    },
+    {
+      "id": "PROP_042",
+      "name": "File_Designator_Validation",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "If file designator field contains unsupported or unknown file designator, responder SHALL reject with FILE_DESIGNATOR_UNKNOWN",
+      "formal": "¬valid_designator(FD) → REJECT(FILE_DESIGNATOR_UNKNOWN)",
+      "violation": "Proceeding with unknown file designator could expose unauthorized files or cause processing of invalid data.",
+      "attack_vector": "Attacker enumerates file designators to discover available files or access files beyond authorized scope"
+    },
+    {
+      "id": "PROP_043",
+      "name": "Responder_Busy_Backoff",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "After receiving RESPONDER_BUSY, initiator SHOULD wait at least 60 seconds before attempting new transfer",
+      "formal": "received(RESPONDER_BUSY) → wait(≥60s) before retry",
+      "violation": "Immediate retry after RESPONDER_BUSY causes resource exhaustion and denial of service through retry storm.",
+      "attack_vector": "Attacker ignores RESPONDER_BUSY backoff requirement, flooding responder with requests to cause denial of service"
+    },
+    {
+      "id": "PROP_044",
+      "name": "ReceiveAccept_Length_Accuracy",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "In ReceiveAccept, if Initiator indicated definite length, response length SHALL be equal to proposed or smaller if remaining file data is smaller",
+      "formal": "RC[DEFLEN] = 1 → (LEN = proposed_length ∨ (remaining_data < proposed_length ∧ LEN = remaining_data))",
+      "violation": "Incorrect length in ReceiveAccept causes mismatch in expected transfer size, leading to premature termination or buffer issues.",
+      "attack_vector": "Malicious responder sets incorrect length in ReceiveAccept to cause buffer overflow or truncation"
+    },
+    {
+      "id": "PROP_045",
+      "name": "Exactly_One_Session_Initiator_Message",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "Any BDX transfer exchange begins with exactly one of SendInit or ReceiveInit",
+      "formal": "∀ session: initiating_message(session) ∈ {SendInit, ReceiveInit} ∧ |initiating_messages| = 1",
+      "violation": "Multiple or zero initiator messages creates ambiguous session start, unclear roles, and state confusion.",
+      "attack_vector": "Attacker sends both SendInit and ReceiveInit to create role confusion or tests protocol handling of ambiguous initialization"
+    },
+    {
+      "id": "PROP_046",
+      "name": "Transfer_Method_Rejection_On_Unsupported",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If Responder does not support proposed transfer control method, SHALL reject with TRANSFER_METHOD_NOT_SUPPORTED",
+      "formal": "proposed_method ∉ supported_methods → REJECT(TRANSFER_METHOD_NOT_SUPPORTED)",
+      "violation": "Accepting unsupported transfer method leads to protocol deadlock or undefined behavior.",
+      "attack_vector": "Attacker proposes unsupported transfer methods to probe implementation capabilities or trigger error handling vulnerabilities"
+    },
+    {
+      "id": "PROP_047",
+      "name": "Malformed_Message_Rejection",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When peer receives malformed protocol message, it SHALL respond with BAD_MESSAGE_CONTENTS and terminate processing",
+      "formal": "malformed(msg) → SEND(StatusReport(BAD_MESSAGE_CONTENTS)) ∧ TERMINATE(processing)",
+      "violation": "Processing malformed messages can trigger parsing vulnerabilities, buffer overflows, or undefined behavior.",
+      "attack_vector": "Attacker sends malformed messages with invalid field lengths, corrupted TLV structures, or boundary violations to trigger parsing vulnerabilities"
+    },
+    {
+      "id": "PROP_048",
+      "name": "Contextually_Inappropriate_Message_Rejection",
+      "category": "StateLifecycle",
+      "importance": "CRITICAL",
+      "claim": "When peer receives well-formed but contextually inappropriate message, SHALL respond with UNEXPECTED_MESSAGE and terminate",
+      "formal": "well_formed(msg) ∧ ¬appropriate_for_state(msg, current_state) → SEND(StatusReport(UNEXPECTED_MESSAGE)) ∧ TERMINATE",
+      "violation": "Processing out-of-sequence messages violates state machine, causing state confusion and potential security vulnerabilities.",
+      "attack_vector": "Attacker sends Block before SendAccept, or BlockQuery in sender-drive mode to exploit state machine vulnerabilities"
+    },
+    {
+      "id": "PROP_049",
+      "name": "Length_Too_Large_Rejection",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If proposed definite length is too large for responder to support, SHALL reject with LENGTH_TOO_LARGE",
+      "formal": "DEFLEN > max_supported_length → REJECT(LENGTH_TOO_LARGE)",
+      "violation": "Accepting too-large length causes resource exhaustion, storage overflow, or out-of-memory conditions.",
+      "attack_vector": "Attacker proposes extremely large length values to exhaust responder storage or memory resources"
+    },
+    {
+      "id": "PROP_050",
+      "name": "Length_Too_Short_Rejection",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If proposed definite length is too short based on responder's knowledge of expected size, SHALL reject with LENGTH_TOO_SHORT",
+      "formal": "DEFLEN < expected_min_length → REJECT(LENGTH_TOO_SHORT)",
+      "violation": "Accepting too-short length allows incomplete or truncated data to be transferred as if complete.",
+      "attack_vector": "Attacker proposes short length to transfer only part of file, bypassing integrity checks or security validation that requires complete file"
+    },
+    {
+      "id": "PROP_051",
+      "name": "Length_Required_Enforcement",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If responder can only support transfer with definite length, SHALL reject with LENGTH_REQUIRED if not provided",
+      "formal": "requires_definite_length(responder) ∧ RC[DEFLEN] = 0 → REJECT(LENGTH_REQUIRED)",
+      "violation": "Accepting indefinite length when not supported causes issues with resource allocation and progress tracking.",
+      "attack_vector": "Attacker omits length to force responder to allocate unbounded resources or prevents proper progress monitoring"
+    },
+    {
+      "id": "PROP_052",
+      "name": "Sleep_Acknowledgment_Requirement",
+      "category": "StateLifecycle",
+      "importance": "MEDIUM",
+      "claim": "In receiver-drive mode, Receiver SHOULD send BlockAck if it knows it will be going to sleep before next BlockQuery",
+      "formal": "receiver_drive ∧ going_to_sleep(receiver) → SHOULD_SEND(BlockAck) before sleep",
+      "violation": "Not acknowledging before sleep leaves sender uncertain about block delivery, potentially causing retransmission or timeout.",
+      "attack_vector": "Receiver repeatedly sleeps without acknowledging to cause sender resource exhaustion through uncertainty and retry logic"
+    },
+    {
+      "id": "PROP_053",
+      "name": "Single_Block_Transfer_Via_BlockEOF",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If entire transfer fits within negotiated block size, BlockEOF SHALL be the one and only message sent with no Block messages",
+      "formal": "file_size ≤ MBS → transfer_messages = {BlockEOF(counter=0)}",
+      "violation": "Sending Block messages when entire transfer fits in one BlockEOF adds unnecessary overhead and messages.",
+      "attack_vector": "Attacker forces multi-block transfer of small files to increase resource usage and protocol overhead"
+    },
+    {
+      "id": "PROP_054",
+      "name": "Block_Counter_Starts_At_Zero",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Block counter SHOULD start at 0 at the start of the transfer and increment by one for each subsequent block",
+      "formal": "first_block.counter = 0 ∧ ∀ i: block_{i+1}.counter = block_i.counter + 1",
+      "violation": "Starting at non-zero or using non-sequential increments breaks ordering assumptions and counter validation logic.",
+      "attack_vector": "Attacker starts block counter at non-zero value to confuse tracking logic or overlap with previous session counters"
+    },
+    {
+      "id": "PROP_055",
+      "name": "Block_Numbering_Independent_Of_Offset",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Block numbering always begins at 0 for every transfer, even if start offset is not 0",
+      "formal": "∀ transfer: first_block.counter = 0 regardless of STARTOFS",
+      "violation": "Coupling block numbering to offset complicates counter management and creates confusion in offset-based transfers.",
+      "attack_vector": "Attacker exploits confusion between block counter and file offset to access wrong data regions"
+    },
+    {
+      "id": "PROP_056",
+      "name": "Transfer_Parameter_Immutability",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "Once negotiated in Accept messages, transfer parameters are immutable for the entire session",
+      "formal": "∀ param ∈ negotiated_params: param_value remains constant throughout session",
+      "violation": "Changing parameters mid-transfer causes sender/receiver mismatch, buffer issues, and data corruption.",
+      "attack_vector": "Attacker injects messages attempting to renegotiate parameters mid-transfer to cause desynchronization or exploit parameter change vulnerabilities"
+    },
+    {
+      "id": "PROP_057",
+      "name": "Metadata_TLV_Format_Requirement",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Metadata (MDATA) field SHALL be in TLV format and consume rest of payload after previous fields",
+      "formal": "format(MDATA) = TLV ∧ MDATA_offset = end_of_previous_fields",
+      "violation": "Invalid TLV format causes parsing errors. Incorrect offset causes field overlap or data corruption.",
+      "attack_vector": "Attacker crafts malicious TLV metadata with overlapping tags, infinite lengths, or invalid structures to trigger parsing vulnerabilities"
+    },
+    {
+      "id": "PROP_058",
+      "name": "Little_Endian_Encoding_Requirement",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Multi-byte fields (PMBS, MBS, FDL, block counters, lengths, offsets) SHALL use unsigned little-endian encoding",
+      "formal": "∀ multi_byte_field: encoding(field) = unsigned_little_endian",
+      "violation": "Wrong endianness causes value misinterpretation, leading to wrong block sizes, offsets, or counters.",
+      "attack_vector": "Attacker exploits endianness confusion in cross-platform implementations to cause incorrect size/offset interpretation"
+    },
+    {
+      "id": "PROP_059",
+      "name": "Range_Field_Size_Consistency",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "When RC[WIDERANGE]=0, offset and length fields are 32-bit; when RC[WIDERANGE]=1, they are 64-bit",
+      "formal": "RC[WIDERANGE] = 0 → (sizeof(STARTOFS) = 4 ∧ sizeof(LEN) = 4) ∧ RC[WIDERANGE] = 1 → (sizeof(STARTOFS) = 8 ∧ sizeof(LEN) = 8)",
+      "violation": "Mismatched field sizes cause buffer overruns in parsing or incorrect value interpretation.",
+      "attack_vector": "Attacker sets RC[WIDERANGE] incorrectly to cause parser to read wrong number of bytes, triggering buffer overflow"
+    },
+    {
+      "id": "PROP_060",
+      "name": "Optional_Field_Presence_Flag_Consistency",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Optional fields (STARTOFS, DEFLEN) SHALL be present if and only if corresponding flag bits are set",
+      "formal": "(RC[STARTOFS] = 1 ↔ present(STARTOFS)) ∧ (RC[DEFLEN] = 1 ↔ present(DEFLEN))",
+      "violation": "Mismatch between flag and field presence causes parsing errors, buffer overruns, or missing data.",
+      "attack_vector": "Attacker sets flag bit but omits field (or vice versa) to cause parser confusion and memory corruption"
+    },
+    {
+      "id": "PROP_061",
+      "name": "File_Designator_Length_Consistency",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "File Designator Length (FDL) field SHALL accurately specify the length of the File Designator (FD) field",
+      "formal": "FDL = len(FD)",
+      "violation": "Incorrect FDL causes parser to read wrong amount of data, causing buffer overrun or incomplete parsing.",
+      "attack_vector": "Attacker sets FDL larger than actual FD to cause parser to read beyond FD into subsequent fields or memory"
+    },
+    {
+      "id": "PROP_062",
+      "name": "At_Most_Once_Delivery_Semantics",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "BDX utilizes underlying message layer to provide at-most-once delivery semantics",
+      "formal": "∀ msg: delivery_count(msg) ≤ 1",
+      "violation": "Message duplication could cause duplicate block processing, data corruption, or replay attacks.",
+      "attack_vector": "Attacker duplicates messages at transport layer to cause double-processing of blocks or commands"
+    },
+    {
+      "id": "PROP_063",
+      "name": "Session_Atomicity",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "BDX session either completes successfully with BlockAckEOF or fails completely with no partial success state",
+      "formal": "session_state ∈ {IN_PROGRESS, COMPLETED, FAILED} ∧ (COMPLETED ↔ received(BlockAckEOF))",
+      "violation": "Partial success state allows incomplete transfers to be treated as complete, causing data loss or corruption.",
+      "attack_vector": "Attacker interrupts transfer at strategic point, then exploits partial data being treated as complete to bypass validation"
+    },
+    {
+      "id": "PROP_064",
+      "name": "Exchange_Context_Binding",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "BDX session is cryptographically bound to single Exchange context through PASE/CASE session",
+      "formal": "∀ msg ∈ session: security_context(msg) = session_security_context",
+      "violation": "Weak binding allows messages from different security contexts to be mixed, enabling session hijacking.",
+      "attack_vector": "Attacker injects messages from different Exchange or security context to hijack transfer or inject malicious data"
+    },
+    {
+      "id": "PROP_065",
+      "name": "No_Concurrent_Sessions_Same_Designator",
+      "category": "ScopeIsolation",
+      "importance": "HIGH",
+      "claim": "No two active BDX sessions should transfer same file designator concurrently",
+      "formal": "∀ s1, s2 ∈ active_sessions: s1 ≠ s2 → file_designator(s1) ≠ file_designator(s2)",
+      "violation": "Concurrent access to same file could cause race conditions, data corruption, or conflicting operations.",
+      "attack_vector": "Attacker initiates multiple concurrent transfers of same file to create race conditions or corrupt file state"
+    },
+    {
+      "id": "PROP_066",
+      "name": "Transfer_Completion_Before_New_Session",
+      "category": "StateLifecycle",
+      "importance": "HIGH",
+      "claim": "New BDX session in same Exchange cannot start until previous session terminates (BlockAckEOF or error)",
+      "formal": "∀ exchange: start(session_2) → (terminated(session_1) ∨ ¬exists(session_1))",
+      "violation": "Overlapping sessions in same Exchange cause message ambiguity and state confusion.",
+      "attack_vector": "Attacker attempts to start new session before previous completes to create resource exhaustion or message interleaving"
+    },
+    {
+      "id": "PROP_067",
+      "name": "Variable_Block_Size_Allowed",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Block data payload length does not need to exactly match Max Block Size, allowing variable-sized blocks up to MBS",
+      "formal": "∀ block: 0 < len(block.data) ≤ MBS (no equality requirement)",
+      "violation": "Requiring fixed-size blocks prevents optimization and forces padding of final blocks.",
+      "attack_vector": "Implementation assumes fixed block sizes; attacker sends variable sizes to trigger incorrect offset calculations"
+    },
+    {
+      "id": "PROP_068",
+      "name": "No_Offset_Calculation_Assumption",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Relationship current_offset = start_offset + (max_block_size * block_counter) SHALL NOT be assumed except when contextually known",
+      "formal": "¬assume(offset_from_counter) unless explicitly_guaranteed_by_application",
+      "violation": "Assuming offset relationship when using variable block sizes causes incorrect offset tracking and data corruption.",
+      "attack_vector": "Attacker exploits incorrect offset assumptions to cause data to be written to wrong file locations"
+    },
+    {
+      "id": "PROP_069",
+      "name": "Reserved_Opcodes_Prohibition",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Reserved protocol opcodes (0x03, 0x06-0x0F) SHALL NOT be used",
+      "formal": "∀ msg: opcode(msg) ∉ {0x03, 0x06-0x0F}",
+      "violation": "Using reserved opcodes causes undefined behavior and breaks future protocol extensions.",
+      "attack_vector": "Attacker sends messages with reserved opcodes to probe for implementation vulnerabilities or trigger undefined behavior"
+    },
+    {
+      "id": "PROP_070",
+      "name": "StatusReport_Protocol_ID_Requirement",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "StatusReport messages SHALL specify ProtocolId as BDX protocol (VendorID=0x0000, ProtocolId=BDX)",
+      "formal": "∀ status_report: protocol_id(status_report) = {VendorID: 0x0000, ProtocolId: PROTOCOL_ID_BDX}",
+      "violation": "Wrong protocol ID causes message routing errors and prevents proper error handling.",
+      "attack_vector": "Attacker sends StatusReport with wrong protocol ID to bypass error handling or route errors incorrectly"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "PASE and CASE sessions provide sufficient confidentiality, integrity, and authenticity for bulk data transfers",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_001, PROP_064 fail - data can be read, modified, or injected in transit"
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "Transport layer provides reliable, in-order delivery when specified (especially with MRP over UDP)",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_002, PROP_005, PROP_062 fail - messages lost, duplicated, or reordered"
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "Exchange IDs are unique and not reused while sessions are active",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_003, PROP_004, PROP_064 fail - session isolation breaks, messages can be mixed"
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Application layer determines and enforces appropriate timeout values for synchronous transfers",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_029 becomes ineffective - hung transfers may never timeout"
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "File designators are either pre-negotiated or metadata provides sufficient information for authorization decisions",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_042 cannot be properly enforced - unauthorized files may be accessed"
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Both parties have sufficient memory to maintain session state throughout transfer",
+      "type": "Implicit",
+      "impact_if_violated": "Multiple properties fail - session cannot be maintained, leading to failures"
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Block counter starts at 0 for each new session",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_005, PROP_006, PROP_054, PROP_055 fail - counter validation breaks"
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "Follower devices can remain continuously active during entire session duration",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_030 fail - follower sleeping causes timeouts and transfer failures"
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "start_offset + length does not overflow maximum file size representation",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_032, PROP_044 fail - incorrect offset calculations, buffer overflows"
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "Block counter wraparound (after 2^32 blocks) is extremely rare and handled correctly",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_009 fail - counter validation breaks at wraparound boundary"
+    },
+    {
+      "id": "ASSUM_011",
+      "statement": "Responder can validate file designators and determine if they're authorized for access",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_042 cannot be enforced - unauthorized file access possible"
+    },
+    {
+      "id": "ASSUM_012",
+      "statement": "No clock synchronization required - protocol depends only on message ordering",
+      "type": "Implicit",
+      "impact_if_violated": "N/A - this is an advantage; violation would require timing properties"
+    },
+    {
+      "id": "ASSUM_013",
+      "statement": "Application layer provides file access control separate from BDX protocol",
+      "type": "Implicit",
+      "impact_if_violated": "BDX itself provides no access control - unauthorized transfers possible"
+    },
+    {
+      "id": "ASSUM_014",
+      "statement": "Driver device can wake up or remain active as needed to drive the transfer",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_025, PROP_026 fail - synchronous mode cannot function properly"
+    },
+    {
+      "id": "ASSUM_015",
+      "statement": "TLV parsing is robust against malformed structures and implements bounds checking",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_057 fails to protect against malformed metadata attacks"
+    },
+    {
+      "id": "ASSUM_016",
+      "statement": "Matter message layer ensures definite length for all messages",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_023, PROP_024, PROP_061 fail - cannot determine field boundaries"
+    },
+    {
+      "id": "ASSUM_017",
+      "statement": "Implementations correctly handle all reserved field bits as RFU (Reserved for Future Use)",
+      "type": "Implicit",
+      "impact_if_violated": "Future protocol extensions may break compatibility"
+    },
+    {
+      "id": "ASSUM_018",
+      "statement": "No concurrent modifications to file content during transfer from external sources",
+      "type": "Implicit",
+      "impact_if_violated": "File integrity cannot be guaranteed if file changes during transfer"
+    },
+    {
+      "id": "ASSUM_019",
+      "statement": "Storage space is available for the full transfer size on receiver",
+      "type": "Implicit",
+      "impact_if_violated": "Transfer will fail partway through, violating atomicity"
+    },
+    {
+      "id": "ASSUM_020",
+      "statement": "Version 0 is the first and currently only defined BDX protocol version",
+      "type": "Explicit",
+      "impact_if_violated": "Version negotiation may select undefined protocol behavior"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "IDLE",
+      "properties_enforcing_transitions": ["PROP_045"],
+      "critical_property": "Session must start with SendInit or ReceiveInit only"
+    },
+    {
+      "state_name": "INIT_SENT",
+      "properties_enforcing_transitions": ["PROP_011", "PROP_015", "PROP_046"],
+      "critical_property": "Must receive Accept or error StatusReport; no other messages allowed"
+    },
+    {
+      "state_name": "NEGOTIATED",
+      "properties_enforcing_transitions": ["PROP_010", "PROP_017", "PROP_025"],
+      "critical_property": "Transfer parameters locked; must follow selected drive mode"
+    },
+    {
+      "state_name": "TRANSFERRING_SENDER_DRIVE",
+      "properties_enforcing_transitions": ["PROP_005", "PROP_023", "PROP_026"],
+      "critical_property": "Sequential blocks with mandatory acknowledgments"
+    },
+    {
+      "state_name": "TRANSFERRING_RECEIVER_DRIVE",
+      "properties_enforcing_transitions": ["PROP_006", "PROP_031"],
+      "critical_property": "Sequential BlockQuery with BlockQuery implying previous BlockAck"
+    },
+    {
+      "state_name": "TRANSFERRING_ASYNC",
+      "properties_enforcing_transitions": ["PROP_037", "PROP_038", "PROP_039"],
+      "critical_property": "No BlockQuery/BlockAck messages; flow control via transport"
+    },
+    {
+      "state_name": "EOF_SENT",
+      "properties_enforcing_transitions": ["PROP_020", "PROP_036"],
+      "critical_property": "Must receive BlockAckEOF to complete; length must match negotiated"
+    },
+    {
+      "state_name": "COMPLETED",
+      "properties_enforcing_transitions": ["PROP_035", "PROP_063", "PROP_066"],
+      "critical_property": "Session terminated; no further messages; new session can start"
+    },
+    {
+      "state_name": "ERROR",
+      "properties_enforcing_transitions": ["PROP_008", "PROP_027", "PROP_048"],
+      "critical_property": "Session aborted; exchange invalidated; no recovery"
+    }
+  ],
+  "additionalInsights": "The BDX protocol exhibits several emergent security properties and potential vulnerabilities:\n\n1. **Denial of Service Vectors**: Multiple properties (PROP_043 backoff, PROP_028 transport failure, PROP_029 timeout) create potential DoS vectors where attackers can exhaust resources through forced retries, timeouts, or connection holding.\n\n2. **State Machine Complexity**: The protocol has complex state transitions with three different drive modes (sender-drive, receiver-drive, async), creating significant attack surface for state confusion attacks (PROP_048).\n\n3. **Provisional Features Risk**: Async mode is provisional but fully specified (PROP_013, PROP_037-039), creating risk that implementations may include it despite prohibition, expanding attack surface.\n\n4. **Counter Wraparound Edge Case**: The modulo 2^32 arithmetic (PROP_009) creates a rare but exploitable edge case at counter wraparound requiring careful validation.\n\n5. **Implicit Access Control Gap**: Protocol assumes external access control (ASSUM_013) but provides file designator mechanism (PROP_042) that could be abused for unauthorized access enumeration.\n\n6. **Variable Block Size Complexity**: Allowing variable block sizes (PROP_067) adds flexibility but creates risk of incorrect offset calculations (PROP_068) if implementations make wrong assumptions.\n\n7. **Sleepy Device Constraints**: Strict constraints on follower being non-sleepy (PROP_030) but driver can be sleepy creates asymmetric requirements that could be exploited to force devices into inappropriate roles.\n\n8. **Length Mismatch Ambiguity**: Length verification is mandatory (PROP_020) but response is optional MAY (PROP_021), creating inconsistent error handling.\n\n9. **Metadata Security**: Metadata uses extensible TLV (PROP_057) but has no specified validation, creating risk of parser vulnerabilities through malicious metadata.\n\n10. **Partial Transfer Risk**: Despite atomicity goal (PROP_063), interrupted transfers leave partial data that must be cleaned up by application layer, not protocol.",
+  "summary": {
+    "total_properties": 70,
+    "by_importance": {
+      "CRITICAL": 21,
+      "HIGH": 31,
+      "MEDIUM": 18
+    },
+    "by_category": {
+      "Security": 7,
+      "Correctness": 26,
+      "StateLifecycle": 15,
+      "ReplayProtection": 4,
+      "ScopeIsolation": 2,
+      "Consistency": 2,
+      "Timing": 2,
+      "AccessControl": 2,
+      "Atomicity": 1,
+      "Cryptography": 0,
+      "IdentityBinding": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 20
+  }
+}

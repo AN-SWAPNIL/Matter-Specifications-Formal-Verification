@@ -1,0 +1,1271 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Energy EVSE",
+    "cluster_id": "0x0099",
+    "pics_code": "EEVSE",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 9.3, Pages 716-742",
+    "revision": 4,
+
+    "features": [
+      {
+        "bit": 0,
+        "code": "PREF",
+        "name": "ChargingPreferences",
+        "conformance": "M",
+        "description": "EVSE supports storing user charging preferences (mandatory)",
+        "affects_states": ["Plugged_ChargingScheduled"],
+        "affects_transitions": ["T015", "T016", "T017"]
+      },
+      {
+        "bit": 1,
+        "code": "SOC",
+        "name": "SoCReporting",
+        "conformance": "O",
+        "description": "EVSE supports reporting of vehicle State of Charge",
+        "affects_states": [],
+        "affects_transitions": ["T006", "T007"]
+      },
+      {
+        "bit": 2,
+        "code": "PNC",
+        "name": "PlugAndCharge",
+        "conformance": "O",
+        "description": "EVSE supports PLC to support Plug and Charge; requires compatible EV",
+        "affects_states": [],
+        "affects_transitions": []
+      },
+      {
+        "bit": 3,
+        "code": "RFID",
+        "name": "RFID",
+        "conformance": "O",
+        "description": "EVSE is fitted with an RFID reader for user/vehicle identification",
+        "affects_states": [],
+        "affects_transitions": []
+      },
+      {
+        "bit": 4,
+        "code": "V2X",
+        "name": "V2X",
+        "conformance": "O",
+        "description": "EVSE supports bi-directional charging and discharging",
+        "affects_states": ["PluggedInDischarging"],
+        "affects_transitions": ["T009", "T010", "T011", "T012", "T013"]
+      }
+    ],
+
+    "dependencies": [
+      {
+        "cluster": "Time Synchronization",
+        "relationship": "RECOMMENDED",
+        "description": "Server side SHALL depend on setting time from another device or using a real-time clock; Time Synchronization cluster recommended for Epoch timestamps in events and attributes"
+      },
+      {
+        "cluster": "Device Energy Management",
+        "relationship": "OPTIONAL_INTERACTION",
+        "description": "EVSE devices supporting PFR/FA features of Device Energy Management interact for charging profile control; EMS may use PA feature to adjust charge/discharge current"
+      },
+      {
+        "cluster": "Commodity Price",
+        "relationship": "OPTIONAL_INTERACTION",
+        "description": "Optimizer may use Commodity Price cluster for cheapest/lowest-GHG charging schedule"
+      }
+    ],
+
+    "states": [
+      {
+        "name": "NotPluggedIn",
+        "description": "No EV is connected to the EVSE. Idle state awaiting vehicle connection.",
+        "is_initial": true,
+        "invariants": [
+          "State == NotPluggedIn",
+          "SessionID == null OR SessionID == previous_session_value",
+          "SessionDuration == null OR SessionDuration == previous_session_value",
+          "SessionEnergyCharged == null OR previous_session_value",
+          "FaultState == NoError"
+        ],
+        "state_attributes": {
+          "State": "NotPluggedIn",
+          "SupplyState": "Disabled|ChargingEnabled|DischargingEnabled|Enabled",
+          "FaultState": "NoError"
+        },
+        "feature_requirements": [],
+        "safety_implications": null
+      },
+      {
+        "name": "PluggedInNoDemand",
+        "description": "EV is physically connected but not demanding current from the EVSE.",
+        "is_initial": false,
+        "invariants": [
+          "State == PluggedInNoDemand",
+          "SessionID != null",
+          "SessionDuration >= 0",
+          "SessionEnergyCharged >= 0"
+        ],
+        "state_attributes": {
+          "State": "PluggedInNoDemand",
+          "SupplyState": "Disabled|ChargingEnabled|DischargingEnabled|Enabled"
+        },
+        "feature_requirements": [],
+        "safety_implications": "EV connected but not charging; pilot signal negotiation may be in progress"
+      },
+      {
+        "name": "PluggedInDemand",
+        "description": "EV is connected and demanding current, but EVSE is not currently allowing current flow.",
+        "is_initial": false,
+        "invariants": [
+          "State == PluggedInDemand",
+          "SessionID != null",
+          "SessionDuration >= 0",
+          "SessionEnergyCharged >= 0"
+        ],
+        "state_attributes": {
+          "State": "PluggedInDemand",
+          "SupplyState": "Disabled|ChargingEnabled|DischargingEnabled|Enabled"
+        },
+        "feature_requirements": [],
+        "safety_implications": "EV is ready and waiting for EVSE authorization; no energy transfer occurring"
+      },
+      {
+        "name": "PluggedInCharging",
+        "description": "EV is connected and actively charging; current is flowing from EVSE to EV.",
+        "is_initial": false,
+        "invariants": [
+          "State == PluggedInCharging",
+          "SupplyState == ChargingEnabled OR SupplyState == Enabled",
+          "SessionID != null",
+          "MaximumChargeCurrent > 0",
+          "FaultState == NoError"
+        ],
+        "state_attributes": {
+          "State": "PluggedInCharging",
+          "SupplyState": "ChargingEnabled|Enabled"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Active high-current energy transfer; overcurrent, overvoltage, ground fault conditions are safety-critical"
+      },
+      {
+        "name": "PluggedInDischarging",
+        "description": "EV is connected and actively discharging (V2G/V2H); current is flowing from EV to EVSE/grid.",
+        "is_initial": false,
+        "invariants": [
+          "State == PluggedInDischarging",
+          "SupplyState == DischargingEnabled OR SupplyState == Enabled",
+          "Feature_V2X == true",
+          "SessionID != null",
+          "MaximumDischargeCurrent > 0",
+          "FaultState == NoError"
+        ],
+        "state_attributes": {
+          "State": "PluggedInDischarging",
+          "SupplyState": "DischargingEnabled|Enabled"
+        },
+        "feature_requirements": ["Feature_V2X == true"],
+        "safety_implications": "Bi-directional power flow; backfeed to grid or home; requires compatible EV and contactor safety interlocks"
+      },
+      {
+        "name": "SessionEnding",
+        "description": "Transitional state: EVSE is ending any plugged-in session, preparing to return to NotPluggedIn. May take a few seconds for cleanup.",
+        "is_initial": false,
+        "invariants": [
+          "State == SessionEnding",
+          "SessionID != null"
+        ],
+        "state_attributes": {
+          "State": "SessionEnding"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Contactors opening; current must cease before physical disconnect to prevent arcing"
+      },
+      {
+        "name": "Fault",
+        "description": "EVSE has detected a hardware or electrical fault. Further details in FaultState attribute.",
+        "is_initial": false,
+        "invariants": [
+          "State == Fault",
+          "SupplyState == DisabledError",
+          "FaultState != NoError"
+        ],
+        "state_attributes": {
+          "State": "Fault",
+          "SupplyState": "DisabledError",
+          "FaultState": "MeterFailure|OverVoltage|UnderVoltage|OverCurrent|ContactWetFailure|ContactDryFailure|GroundFault|PowerLoss|PowerQuality|PilotShortCircuit|EmergencyStop|EVDisconnected|WrongPowerSupply|LiveNeutralSwap|OverTemperature|Other"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Critical safety state. Charging and discharging MUST be prevented. Some faults (GFCI, CCID) require physical operator intervention (e.g., button on equipment or breaker panel) to clear."
+      },
+      {
+        "name": "Diagnostics",
+        "description": "EVSE is running self-diagnostics initiated by StartDiagnostics command. Charging/discharging not permitted.",
+        "is_initial": false,
+        "invariants": [
+          "SupplyState == DisabledDiagnostics",
+          "FaultState == NoError"
+        ],
+        "state_attributes": {
+          "SupplyState": "DisabledDiagnostics"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Charging suspended during diagnostics; may involve internal electrical self-tests"
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T001",
+        "from_state": "NotPluggedIn",
+        "to_state": "PluggedInNoDemand",
+        "trigger": {
+          "type": "event",
+          "name": "EV_Plugin_Detected",
+          "command_id": null
+        },
+        "guard_condition": "EV physically connected AND pilot signal detected",
+        "actions": [
+          "SessionID := SessionID + 1",
+          "SessionDuration := 0",
+          "SessionEnergyCharged := 0",
+          "SessionEnergyDischarged := 0",
+          "State := PluggedInNoDemand",
+          "generate_event(EVConnected, {SessionID: SessionID})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.3.8.20 'Session Attributes', Section 9.3.10.1 'EVConnected Event'"
+      },
+      {
+        "id": "T002",
+        "from_state": "PluggedInNoDemand",
+        "to_state": "PluggedInDemand",
+        "trigger": {
+          "type": "event",
+          "name": "EV_Current_Demand_Signaled",
+          "command_id": null
+        },
+        "guard_condition": "EV pilot signal indicates current demand (J1772/IEC61851 state change)",
+        "actions": [
+          "State := PluggedInDemand"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.3.8.1 'State Attribute', Section 9.3.7.2 'StateEnum Type'"
+      },
+      {
+        "id": "T003",
+        "from_state": "PluggedInDemand",
+        "to_state": "PluggedInNoDemand",
+        "trigger": {
+          "type": "event",
+          "name": "EV_Current_Demand_Withdrawn",
+          "command_id": null
+        },
+        "guard_condition": "EV pilot signal no longer indicates demand",
+        "actions": [
+          "State := PluggedInNoDemand"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.3.8.1 'State Attribute'"
+      },
+      {
+        "id": "T004",
+        "from_state": "PluggedInDemand",
+        "to_state": "PluggedInCharging",
+        "trigger": {
+          "type": "command",
+          "name": "EnableCharging",
+          "command_id": "0x02"
+        },
+        "guard_condition": "SupplyState == Disabled AND FaultState == NoError AND SupplyState != DisabledDiagnostics AND ChargingEnabledUntil is null OR ChargingEnabledUntil > current_time",
+        "actions": [
+          "MinimumChargeCurrent := command.MinimumChargeCurrent",
+          "MaximumChargeCurrent := min(CircuitCapacity, CableAssemblyCurrentLimit, command.MaximumChargeCurrent, UserMaximumChargeCurrent)",
+          "ChargingEnabledUntil := command.ChargingEnabledUntil",
+          "SupplyState := ChargingEnabled",
+          "State := PluggedInCharging",
+          "generate_event(EnergyTransferStarted, {SessionID: SessionID, State: PluggedInCharging, MaximumCurrent: MaximumChargeCurrent})",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": "ChargingEnabledUntil sets auto-stop time; timer_ChargingEnabledUntil started if not null",
+        "error_responses": [
+          {
+            "condition": "FaultState != NoError",
+            "status_code": "FAILURE",
+            "description": "Error present on EVSE; charging cannot be enabled"
+          },
+          {
+            "condition": "SupplyState == DisabledDiagnostics",
+            "status_code": "FAILURE",
+            "description": "Diagnostics currently active; command ignored"
+          }
+        ],
+        "spec_reference": "Section 9.3.9.2.4 'Effect on Receipt' EnableCharging"
+      },
+      {
+        "id": "T005",
+        "from_state": "PluggedInDemand",
+        "to_state": "PluggedInCharging",
+        "trigger": {
+          "type": "command",
+          "name": "EnableCharging",
+          "command_id": "0x02"
+        },
+        "guard_condition": "SupplyState == DischargingEnabled AND Feature_V2X == true AND FaultState == NoError AND SupplyState != DisabledDiagnostics",
+        "actions": [
+          "MinimumChargeCurrent := command.MinimumChargeCurrent",
+          "MaximumChargeCurrent := min(CircuitCapacity, CableAssemblyCurrentLimit, command.MaximumChargeCurrent, UserMaximumChargeCurrent)",
+          "ChargingEnabledUntil := command.ChargingEnabledUntil",
+          "SupplyState := Enabled",
+          "State := PluggedInCharging",
+          "generate_event(EnergyTransferStarted, {SessionID: SessionID, State: PluggedInCharging, MaximumCurrent: MaximumChargeCurrent})",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "FaultState != NoError",
+            "status_code": "FAILURE",
+            "description": "Error present on EVSE; charging cannot be enabled"
+          },
+          {
+            "condition": "SupplyState == DisabledDiagnostics",
+            "status_code": "FAILURE",
+            "description": "Diagnostics currently active; command ignored"
+          }
+        ],
+        "spec_reference": "Section 9.3.9.2.4 'Effect on Receipt' EnableCharging (previously DischargingEnabled -> Enabled)"
+      },
+      {
+        "id": "T006",
+        "from_state": "PluggedInDemand",
+        "to_state": "PluggedInDischarging",
+        "trigger": {
+          "type": "command",
+          "name": "EnableDischarging",
+          "command_id": "0x03"
+        },
+        "guard_condition": "Feature_V2X == true AND SupplyState == Disabled AND FaultState == NoError AND SupplyState != DisabledDiagnostics AND (DischargingEnabledUntil is null OR DischargingEnabledUntil > current_time)",
+        "actions": [
+          "MaximumDischargeCurrent := min(CircuitCapacity, CableAssemblyCurrentLimit, command.MaximumDischargeCurrent)",
+          "DischargingEnabledUntil := command.DischargingEnabledUntil",
+          "SupplyState := DischargingEnabled",
+          "State := PluggedInDischarging",
+          "generate_event(EnergyTransferStarted, {SessionID: SessionID, State: PluggedInDischarging, MaximumCurrent: 0, MaximumDischargeCurrent: MaximumDischargeCurrent})",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": "DischargingEnabledUntil sets auto-stop time; timer_DischargingEnabledUntil started if not null",
+        "error_responses": [
+          {
+            "condition": "FaultState != NoError",
+            "status_code": "FAILURE",
+            "description": "Error present on EVSE; discharging cannot be enabled"
+          },
+          {
+            "condition": "SupplyState == DisabledDiagnostics",
+            "status_code": "FAILURE",
+            "description": "Diagnostics currently active; command ignored"
+          },
+          {
+            "condition": "Feature_V2X == false",
+            "status_code": "INVALID_COMMAND",
+            "description": "V2X feature not supported; EnableDischarging unavailable"
+          }
+        ],
+        "spec_reference": "Section 9.3.9.3.3 'Effect on Receipt' EnableDischarging"
+      },
+      {
+        "id": "T007",
+        "from_state": "PluggedInDemand",
+        "to_state": "PluggedInDischarging",
+        "trigger": {
+          "type": "command",
+          "name": "EnableDischarging",
+          "command_id": "0x03"
+        },
+        "guard_condition": "Feature_V2X == true AND SupplyState == ChargingEnabled AND FaultState == NoError AND SupplyState != DisabledDiagnostics",
+        "actions": [
+          "MaximumDischargeCurrent := min(CircuitCapacity, CableAssemblyCurrentLimit, command.MaximumDischargeCurrent)",
+          "DischargingEnabledUntil := command.DischargingEnabledUntil",
+          "SupplyState := Enabled",
+          "State := PluggedInDischarging",
+          "generate_event(EnergyTransferStarted, {SessionID: SessionID, State: PluggedInDischarging, MaximumCurrent: MaximumChargeCurrent, MaximumDischargeCurrent: MaximumDischargeCurrent})",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "FaultState != NoError",
+            "status_code": "FAILURE",
+            "description": "Error present on EVSE; discharging cannot be enabled"
+          },
+          {
+            "condition": "SupplyState == DisabledDiagnostics",
+            "status_code": "FAILURE",
+            "description": "Diagnostics currently active; command ignored"
+          }
+        ],
+        "spec_reference": "Section 9.3.9.3.3 'Effect on Receipt' EnableDischarging (previously ChargingEnabled -> Enabled)"
+      },
+      {
+        "id": "T008",
+        "from_state": "PluggedInCharging",
+        "to_state": "PluggedInDemand",
+        "trigger": {
+          "type": "command",
+          "name": "Disable",
+          "command_id": "0x01"
+        },
+        "guard_condition": "SupplyState != Disabled",
+        "actions": [
+          "ChargingEnabledUntil := 0x0",
+          "DischargingEnabledUntil := 0x0",
+          "SupplyState := Disabled",
+          "State := PluggedInDemand",
+          "generate_event(EnergyTransferStopped, {SessionID: SessionID, State: PluggedInDemand, Reason: EVSEStopped, EnergyTransferred: SessionEnergyCharged})",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "command processing fails internally",
+            "status_code": "FAILURE",
+            "description": "Command cannot be handled"
+          }
+        ],
+        "spec_reference": "Section 9.3.9.1.1 'Effect on Receipt' Disable"
+      },
+      {
+        "id": "T009",
+        "from_state": "PluggedInDischarging",
+        "to_state": "PluggedInDemand",
+        "trigger": {
+          "type": "command",
+          "name": "Disable",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Feature_V2X == true AND SupplyState != Disabled",
+        "actions": [
+          "ChargingEnabledUntil := 0x0",
+          "DischargingEnabledUntil := 0x0",
+          "SupplyState := Disabled",
+          "State := PluggedInDemand",
+          "generate_event(EnergyTransferStopped, {SessionID: SessionID, State: PluggedInDemand, Reason: EVSEStopped, EnergyTransferred: SessionEnergyCharged, EnergyDischarged: SessionEnergyDischarged})",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "command processing fails internally",
+            "status_code": "FAILURE",
+            "description": "Command cannot be handled"
+          }
+        ],
+        "spec_reference": "Section 9.3.9.1.1 'Effect on Receipt' Disable"
+      },
+      {
+        "id": "T010",
+        "from_state": "PluggedInNoDemand",
+        "to_state": "PluggedInNoDemand",
+        "trigger": {
+          "type": "command",
+          "name": "Disable",
+          "command_id": "0x01"
+        },
+        "guard_condition": "SupplyState == Disabled",
+        "actions": [
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.3.9.1.1 'Effect on Receipt' Disable (already Disabled)"
+      },
+      {
+        "id": "T011",
+        "from_state": "PluggedInCharging",
+        "to_state": "PluggedInCharging",
+        "trigger": {
+          "type": "timer",
+          "name": "timer_ChargingEnabledUntil_expired",
+          "command_id": null
+        },
+        "guard_condition": "ChargingEnabledUntil != null AND current_time >= ChargingEnabledUntil AND DischargingEnabledUntil <= current_time OR DischargingEnabledUntil == null_past",
+        "actions": [
+          "SupplyState := Disabled",
+          "State := PluggedInDemand",
+          "generate_event(EnergyTransferStopped, {SessionID: SessionID, State: PluggedInDemand, Reason: EVSEStopped, EnergyTransferred: SessionEnergyCharged})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Auto-triggers when ChargingEnabledUntil timestamp is reached",
+        "error_responses": [],
+        "spec_reference": "Section 9.3.9.2.4 'Effect on Receipt' EnableCharging (expiry behavior)"
+      },
+      {
+        "id": "T012",
+        "from_state": "PluggedInCharging",
+        "to_state": "PluggedInDischarging",
+        "trigger": {
+          "type": "timer",
+          "name": "timer_ChargingEnabledUntil_expired_discharging_active",
+          "command_id": null
+        },
+        "guard_condition": "Feature_V2X == true AND ChargingEnabledUntil != null AND current_time >= ChargingEnabledUntil AND DischargingEnabledUntil > current_time OR DischargingEnabledUntil == null",
+        "actions": [
+          "SupplyState := DischargingEnabled",
+          "State := PluggedInDischarging"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Auto-triggers when ChargingEnabledUntil expires but DischargingEnabledUntil is still active",
+        "error_responses": [],
+        "spec_reference": "Section 9.3.9.2.4 'Effect on Receipt' EnableCharging (DischargingEnabled if DischargingEnabledUntil in future or null)"
+      },
+      {
+        "id": "T013",
+        "from_state": "PluggedInDischarging",
+        "to_state": "PluggedInDemand",
+        "trigger": {
+          "type": "timer",
+          "name": "timer_DischargingEnabledUntil_expired",
+          "command_id": null
+        },
+        "guard_condition": "Feature_V2X == true AND DischargingEnabledUntil != null AND current_time >= DischargingEnabledUntil AND ChargingEnabledUntil <= current_time OR ChargingEnabledUntil is past",
+        "actions": [
+          "SupplyState := Disabled",
+          "State := PluggedInDemand",
+          "generate_event(EnergyTransferStopped, {SessionID: SessionID, State: PluggedInDemand, Reason: EVSEStopped, EnergyTransferred: SessionEnergyCharged, EnergyDischarged: SessionEnergyDischarged})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Auto-triggers when DischargingEnabledUntil timestamp is reached",
+        "error_responses": [],
+        "spec_reference": "Section 9.3.9.3.3 'Effect on Receipt' EnableDischarging (expiry behavior)"
+      },
+      {
+        "id": "T014",
+        "from_state": "PluggedInDischarging",
+        "to_state": "PluggedInCharging",
+        "trigger": {
+          "type": "timer",
+          "name": "timer_DischargingEnabledUntil_expired_charging_active",
+          "command_id": null
+        },
+        "guard_condition": "Feature_V2X == true AND DischargingEnabledUntil != null AND current_time >= DischargingEnabledUntil AND ChargingEnabledUntil > current_time OR ChargingEnabledUntil == null",
+        "actions": [
+          "SupplyState := ChargingEnabled",
+          "State := PluggedInCharging"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Auto-triggers when DischargingEnabledUntil expires but ChargingEnabledUntil is still active",
+        "error_responses": [],
+        "spec_reference": "Section 9.3.9.3.3 'Effect on Receipt' EnableDischarging (ChargingEnabled if ChargingEnabledUntil in future or null)"
+      },
+      {
+        "id": "T015",
+        "from_state": "PluggedInNoDemand|PluggedInDemand|PluggedInCharging|PluggedInDischarging",
+        "to_state": "SAME",
+        "trigger": {
+          "type": "command",
+          "name": "SetTargets",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_PREF == true AND all ChargingTargets are within valid range AND each day of week is in at most one ChargingTargetSchedule AND total targets <= device_maximum",
+        "actions": [
+          "ChargingTargetSchedules := command.ChargingTargetSchedules",
+          "update_NextChargeStartTime()",
+          "update_NextChargeTargetTime()",
+          "update_NextChargeRequiredEnergy()",
+          "update_NextChargeTargetSoC()",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "any charging target out of valid range OR a day of week appears in more than one ChargingTargetSchedule",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Invalid charging targets or duplicate day assignment"
+          },
+          {
+            "condition": "total number of charging targets exceeds device maximum",
+            "status_code": "RESOURCE_EXHAUSTED",
+            "description": "Device cannot store the requested number of charging targets"
+          }
+        ],
+        "spec_reference": "Section 9.3.9.5.2 'Effect on Receipt' SetTargets"
+      },
+      {
+        "id": "T016",
+        "from_state": "PluggedInNoDemand|PluggedInDemand|PluggedInCharging|PluggedInDischarging|NotPluggedIn",
+        "to_state": "SAME",
+        "trigger": {
+          "type": "command",
+          "name": "GetTargets",
+          "command_id": "0x06"
+        },
+        "guard_condition": "Feature_PREF == true",
+        "actions": [
+          "send_response(GetTargetsResponse, {ChargingTargetSchedules: stored_ChargingTargetSchedules})"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.3.9.6.1 'Effect on Receipt' GetTargets"
+      },
+      {
+        "id": "T017",
+        "from_state": "PluggedInNoDemand|PluggedInDemand|PluggedInCharging|PluggedInDischarging|NotPluggedIn",
+        "to_state": "SAME",
+        "trigger": {
+          "type": "command",
+          "name": "ClearTargets",
+          "command_id": "0x07"
+        },
+        "guard_condition": "Feature_PREF == true",
+        "actions": [
+          "ChargingTargetSchedules := []",
+          "stop_automatic_charging_if_active()",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.3.9.8.1 'Effect on Receipt' ClearTargets"
+      },
+      {
+        "id": "T018",
+        "from_state": "NotPluggedIn|PluggedInNoDemand|PluggedInDemand",
+        "to_state": "Diagnostics",
+        "trigger": {
+          "type": "command",
+          "name": "StartDiagnostics",
+          "command_id": "0x04"
+        },
+        "guard_condition": "SupplyState == Disabled",
+        "actions": [
+          "SupplyState := DisabledDiagnostics",
+          "return SUCCESS"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "SupplyState != Disabled",
+            "status_code": "FAILURE",
+            "description": "EVSE can only enter diagnostics from Disabled SupplyState"
+          }
+        ],
+        "spec_reference": "Section 9.3.9.4.1 'Effect on Receipt' StartDiagnostics"
+      },
+      {
+        "id": "T019",
+        "from_state": "Diagnostics",
+        "to_state": "NotPluggedIn|PluggedInNoDemand|PluggedInDemand",
+        "trigger": {
+          "type": "event",
+          "name": "Diagnostics_Completed",
+          "command_id": null
+        },
+        "guard_condition": "manufacturer_diagnostics_complete == true",
+        "actions": [
+          "SupplyState := Disabled"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Diagnostics duration is at manufacturer's discretion",
+        "error_responses": [],
+        "spec_reference": "Section 9.3.9.4.1 'Effect on Receipt' StartDiagnostics (completion behavior)"
+      },
+      {
+        "id": "T020",
+        "from_state": "PluggedInNoDemand|PluggedInDemand|PluggedInCharging|PluggedInDischarging",
+        "to_state": "Fault",
+        "trigger": {
+          "type": "event",
+          "name": "Fault_Detected",
+          "command_id": null
+        },
+        "guard_condition": "FaultState != NoError AND fault detected by EVSE hardware or pilot signal monitoring",
+        "actions": [
+          "FaultState := detected_fault_value",
+          "SupplyState := DisabledError",
+          "State := Fault",
+          "generate_event(Fault, {SessionID: SessionID, State: Fault, FaultStatePreviousState: previous_FaultState, CurrentFaultState: FaultState})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.3.8.3 'FaultState Attribute', Section 9.3.10.5 'Fault Event'"
+      },
+      {
+        "id": "T021",
+        "from_state": "Fault",
+        "to_state": "NotPluggedIn|PluggedInNoDemand|PluggedInDemand",
+        "trigger": {
+          "type": "event",
+          "name": "Fault_Cleared",
+          "command_id": null
+        },
+        "guard_condition": "fault condition resolved (possibly by physical operator action for GFCI/CCID faults)",
+        "actions": [
+          "FaultState := NoError",
+          "SupplyState := Disabled",
+          "State := appropriate_state_for_physical_condition"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Some faults require physical operator intervention before clearing",
+        "error_responses": [],
+        "spec_reference": "Section 9.3 'Safety mechanism that may lockout remote operation until initial latching conditions met'"
+      },
+      {
+        "id": "T022",
+        "from_state": "SessionEnding",
+        "to_state": "NotPluggedIn",
+        "trigger": {
+          "type": "event",
+          "name": "EV_Unplug_Complete",
+          "command_id": null
+        },
+        "guard_condition": "EV physically disconnected AND contactors safely opened",
+        "actions": [
+          "State := NotPluggedIn",
+          "generate_event(EVNotDetected, {SessionID: SessionID, State: SessionEnding, SessionDuration: SessionDuration, SessionEnergyCharged: SessionEnergyCharged, SessionEnergyDischarged: SessionEnergyDischarged})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.3.10.2 'EVNotDetected Event'"
+      },
+      {
+        "id": "T023",
+        "from_state": "PluggedInNoDemand|PluggedInDemand|PluggedInCharging|PluggedInDischarging",
+        "to_state": "SessionEnding",
+        "trigger": {
+          "type": "event",
+          "name": "EV_Unplug_Initiated",
+          "command_id": null
+        },
+        "guard_condition": "EV cable disconnection detected by pilot signal monitoring",
+        "actions": [
+          "State := SessionEnding",
+          "generate_event(EnergyTransferStopped, {SessionID: SessionID, State: SessionEnding, Reason: Other, EnergyTransferred: SessionEnergyCharged})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "SessionEnding is a transitional state that may last a few seconds",
+        "error_responses": [],
+        "spec_reference": "Section 9.3.8.1 'State Attribute' NOTE: SessionEnding is a transition period"
+      },
+      {
+        "id": "T024",
+        "from_state": "PluggedInCharging",
+        "to_state": "PluggedInNoDemand",
+        "trigger": {
+          "type": "event",
+          "name": "EV_Stops_Demanding_Charge",
+          "command_id": null
+        },
+        "guard_condition": "EV pilot signal shows charging complete or EV-side stop",
+        "actions": [
+          "State := PluggedInNoDemand",
+          "generate_event(EnergyTransferStopped, {SessionID: SessionID, State: PluggedInNoDemand, Reason: EVStopped, EnergyTransferred: SessionEnergyCharged})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.3.10.4 'EnergyTransferStopped Event'"
+      },
+      {
+        "id": "T025",
+        "from_state": "NotPluggedIn|PluggedInNoDemand|PluggedInDemand|PluggedInCharging|PluggedInDischarging",
+        "to_state": "SAME",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "UserMaximumChargeCurrent_Write",
+          "command_id": null
+        },
+        "guard_condition": "MinimumChargeCurrent <= new_value <= MaximumChargeCurrent",
+        "actions": [
+          "UserMaximumChargeCurrent := new_value",
+          "MaximumChargeCurrent := min(CircuitCapacity, CableAssemblyCurrentLimit, EnableCharging_MaximumChargeCurrent, UserMaximumChargeCurrent)"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": "Value SHALL be persisted across reboots",
+        "error_responses": [
+          {
+            "condition": "new_value < MinimumChargeCurrent OR new_value > MaximumChargeCurrent",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Value out of permitted range"
+          }
+        ],
+        "spec_reference": "Section 9.3.8.10 'UserMaximumChargeCurrent Attribute'"
+      },
+      {
+        "id": "T026",
+        "from_state": "NotPluggedIn|PluggedInNoDemand|PluggedInDemand|PluggedInCharging|PluggedInDischarging",
+        "to_state": "SAME",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "RandomizationDelayWindow_Write",
+          "command_id": null
+        },
+        "guard_condition": "0 <= new_value <= 86400",
+        "actions": [
+          "RandomizationDelayWindow := new_value"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": "Default 600s; mandated in some markets (e.g. UK)",
+        "error_responses": [
+          {
+            "condition": "new_value > 86400",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Value exceeds maximum constraint of 86400 seconds"
+          }
+        ],
+        "spec_reference": "Section 9.3.8.11 'RandomizationDelayWindow Attribute'"
+      }
+    ],
+
+    "events": [
+      {
+        "id": "0x00",
+        "name": "EVConnected",
+        "priority": "INFO",
+        "generated_by": ["T001"],
+        "fields": [
+          {
+            "name": "SessionID",
+            "type": "uint32",
+            "description": "The new session ID created after the vehicle is plugged in"
+          }
+        ],
+        "description": "Generated when the EV is plugged in and a new session begins"
+      },
+      {
+        "id": "0x01",
+        "name": "EVNotDetected",
+        "priority": "INFO",
+        "generated_by": ["T022"],
+        "fields": [
+          {
+            "name": "SessionID",
+            "type": "uint32",
+            "description": "Current value of the SessionID attribute"
+          },
+          {
+            "name": "State",
+            "type": "StateEnum",
+            "description": "Value of the State attribute prior to EV not being detected"
+          },
+          {
+            "name": "SessionDuration",
+            "type": "elapsed-s",
+            "description": "Total duration of the session from plug-in to unplug"
+          },
+          {
+            "name": "SessionEnergyCharged",
+            "type": "energy-mWh",
+            "description": "Total energy transferred from EVSE to EV during session; NOT a net value"
+          },
+          {
+            "name": "SessionEnergyDischarged",
+            "type": "energy-mWh",
+            "description": "Total energy transferred from EV to EVSE during session; V2X conformance; NOT a net value",
+            "conformance": "V2X"
+          }
+        ],
+        "description": "Generated when EV is unplugged or not detected after previously being plugged in; ends the session"
+      },
+      {
+        "id": "0x02",
+        "name": "EnergyTransferStarted",
+        "priority": "INFO",
+        "generated_by": ["T004", "T005", "T006", "T007"],
+        "fields": [
+          {
+            "name": "SessionID",
+            "type": "uint32",
+            "description": "Value of SessionID attribute at event generation time"
+          },
+          {
+            "name": "State",
+            "type": "StateEnum",
+            "description": "Value of State attribute at event generation time (PluggedInCharging or PluggedInDischarging)"
+          },
+          {
+            "name": "MaximumCurrent",
+            "type": "amperage-mA",
+            "description": "Maximum charging current; 0 if EV not enabled for charging"
+          },
+          {
+            "name": "MaximumDischargeCurrent",
+            "type": "amperage-mA",
+            "description": "Maximum discharging current; 0 if EV not enabled for discharging; V2X conformance",
+            "conformance": "V2X"
+          }
+        ],
+        "description": "Generated whenever EV starts charging or discharging, EXCEPT when switching between charge/discharge modes under PowerAdjustment feature control"
+      },
+      {
+        "id": "0x03",
+        "name": "EnergyTransferStopped",
+        "priority": "INFO",
+        "generated_by": ["T008", "T009", "T011", "T013", "T023", "T024"],
+        "fields": [
+          {
+            "name": "SessionID",
+            "type": "uint32",
+            "description": "Value of SessionID attribute prior to energy transfer stopping"
+          },
+          {
+            "name": "State",
+            "type": "StateEnum",
+            "description": "Value of State attribute prior to energy transfer stopping"
+          },
+          {
+            "name": "Reason",
+            "type": "EnergyTransferStoppedReasonEnum",
+            "description": "Reason for energy transfer stopping: EVStopped(0), EVSEStopped(1), Other(2)"
+          },
+          {
+            "name": "EnergyTransferred",
+            "type": "energy-mWh",
+            "description": "Total energy charged during this transfer period"
+          },
+          {
+            "name": "EnergyDischarged",
+            "type": "energy-mWh",
+            "description": "Total energy discharged during this transfer period; V2X conformance",
+            "conformance": "V2X"
+          }
+        ],
+        "description": "Generated whenever EV stops charging or discharging, EXCEPT when switching between charge/discharge modes under PowerAdjustment feature control"
+      },
+      {
+        "id": "0x04",
+        "name": "Fault",
+        "priority": "CRITICAL",
+        "generated_by": ["T020"],
+        "fields": [
+          {
+            "name": "SessionID",
+            "type": "uint32",
+            "description": "Current SessionID when fault occurred (null if no session)"
+          },
+          {
+            "name": "State",
+            "type": "StateEnum",
+            "description": "Current State value (Fault)"
+          },
+          {
+            "name": "FaultStatePreviousState",
+            "type": "FaultStateEnum",
+            "description": "Previous FaultState before this fault event"
+          },
+          {
+            "name": "CurrentFaultState",
+            "type": "FaultStateEnum",
+            "description": "Current FaultState value indicating type of fault detected"
+          }
+        ],
+        "description": "Critical priority event generated when a fault is detected by the EVSE internally or via pilot signal monitoring"
+      },
+      {
+        "id": "0x05",
+        "name": "RFID",
+        "priority": "INFO",
+        "generated_by": [],
+        "fields": [
+          {
+            "name": "UID",
+            "type": "octstr",
+            "description": "RFID card UID read by the EVSE reader"
+          }
+        ],
+        "description": "Generated when user taps RFID card on reader; must be subscribed to by EVSE Management cluster client for authorization; RFID feature conformance only",
+        "conformance": "RFID"
+      }
+    ],
+
+    "timers": [
+      {
+        "name": "timer_ChargingEnabledUntil",
+        "source_attribute": "ChargingEnabledUntil",
+        "trigger": "Set when EnableCharging command is received with non-null ChargingEnabledUntil field",
+        "expiry_transition": "T011 (to Disabled) or T012 (to DischargingEnabled if V2X active)",
+        "resolution": "seconds (epoch-s UTC)"
+      },
+      {
+        "name": "timer_DischargingEnabledUntil",
+        "source_attribute": "DischargingEnabledUntil",
+        "trigger": "Set when EnableDischarging command is received with non-null DischargingEnabledUntil field; V2X feature only",
+        "expiry_transition": "T013 (to Disabled) or T014 (to ChargingEnabled if charging active)",
+        "resolution": "seconds (epoch-s UTC)"
+      },
+      {
+        "name": "timer_RandomizationDelay",
+        "source_attribute": "RandomizationDelayWindow",
+        "trigger": "Computed random delay (0 to RandomizationDelayWindow-1 seconds) applied before scheduled charge start",
+        "expiry_transition": "Automatic charging schedule start after delay expires",
+        "resolution": "seconds"
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "update_NextChargeStartTime",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Recomputes NextChargeStartTime attribute based on current ChargingTargetSchedules, MaximumChargeCurrent, local grid voltage, RandomizationDelayWindow, and current time. Sets to null if no scheduled charging or vehicle not plugged in with charging enabled.",
+        "usage_in_fsm": "T015 (SetTargets), T017 (ClearTargets), T001 (plugin), T022 (unplug)"
+      },
+      {
+        "name": "update_NextChargeTargetTime",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Recomputes NextChargeTargetTime attribute from active ChargingTargetSchedules. Returns null if no scheduled charging or EVSE Mode is Manual.",
+        "usage_in_fsm": "T015, T017"
+      },
+      {
+        "name": "update_NextChargeRequiredEnergy",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Recomputes NextChargeRequiredEnergy from active ChargingTargetSchedule's AddedEnergy target. Returns null if no scheduled charging or if TargetSoC is the active target.",
+        "usage_in_fsm": "T015, T017"
+      },
+      {
+        "name": "update_NextChargeTargetSoC",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Recomputes NextChargeTargetSoC from active ChargingTargetSchedule's TargetSoC. Returns null if no scheduled charging or if AddedEnergy is the active target. If SOC feature not supported, only null and 100% are valid.",
+        "usage_in_fsm": "T015, T017"
+      },
+      {
+        "name": "stop_automatic_charging_if_active",
+        "parameters": [],
+        "return_type": "void",
+        "description": "If EVSE is currently charging based on automatic schedule mode (not manual), stops charging after ClearTargets removes all weekly targets.",
+        "usage_in_fsm": "T017 (ClearTargets)"
+      },
+      {
+        "name": "compute_MaximumChargeCurrent",
+        "parameters": [
+          {"name": "CircuitCapacity", "type": "amperage-mA", "description": "Electrician-configured circuit capacity"},
+          {"name": "CableAssemblyCurrentLimit", "type": "amperage-mA", "description": "Detected from cable assembly at plug-in"},
+          {"name": "command_MaximumChargeCurrent", "type": "amperage-mA", "description": "Value from EnableCharging command field"},
+          {"name": "UserMaximumChargeCurrent", "type": "amperage-mA", "description": "User-set preference attribute"}
+        ],
+        "return_type": "amperage-mA",
+        "description": "Returns the minimum of CircuitCapacity, CableAssemblyCurrentLimit, command MaximumChargeCurrent, and UserMaximumChargeCurrent. This is the actual maximum offered to the EV.",
+        "usage_in_fsm": "T004, T005, T025"
+      },
+      {
+        "name": "compute_MaximumDischargeCurrent",
+        "parameters": [
+          {"name": "CircuitCapacity", "type": "amperage-mA", "description": "Electrician-configured circuit capacity"},
+          {"name": "CableAssemblyCurrentLimit", "type": "amperage-mA", "description": "Detected from cable assembly at plug-in"},
+          {"name": "command_MaximumDischargeCurrent", "type": "amperage-mA", "description": "Value from EnableDischarging command field"}
+        ],
+        "return_type": "amperage-mA",
+        "description": "Returns the minimum of CircuitCapacity, CableAssemblyCurrentLimit, and command MaximumDischargeCurrent. V2X feature only.",
+        "usage_in_fsm": "T006, T007"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": ["Disable", "EnableCharging", "EnableDischarging", "StartDiagnostics", "SetTargets", "GetTargets", "ClearTargets"],
+      "manage_commands": ["UserMaximumChargeCurrent (attribute write)", "RandomizationDelayWindow (attribute write)", "ApproximateEVEfficiency (attribute write)"],
+      "administer_commands": [],
+      "timed_commands": []
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "state",
+        "element_id": "Fault",
+        "safety_concern": "Electrical faults including GroundFault, LiveNeutralSwap, OverCurrent, ContactWetFailure, and EmergencyStop represent direct risk of electrocution, fire, or equipment damage",
+        "mitigation_in_spec": "SupplyState forced to DisabledError; some faults (GFCI/CCID) require physical operator intervention to clear; remote operation locked out until conditions met"
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T004",
+        "safety_concern": "EnableCharging can initiate high-current flow to vehicle; misconfigured MaximumChargeCurrent could exceed circuit or cable limits",
+        "mitigation_in_spec": "MaximumChargeCurrent computed as minimum of CircuitCapacity, CableAssemblyCurrentLimit, command value, and UserMaximumChargeCurrent"
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T006",
+        "safety_concern": "EnableDischarging allows backfeed from EV to home/grid; uncontrolled backfeed is a safety hazard for utility workers and home wiring",
+        "mitigation_in_spec": "V2X feature must be explicitly supported; MaximumDischargeCurrent bounded by CircuitCapacity and CableAssemblyCurrentLimit; requires compatible EV"
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T020",
+        "safety_concern": "Fault detection must be reliable; delayed or missed fault detection (e.g., GFCI, GroundFault) could allow dangerous current to flow",
+        "mitigation_in_spec": "Fault event is CRITICAL priority; SupplyState immediately set to DisabledError on fault detection"
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T021",
+        "safety_concern": "Premature fault clearance (e.g., software reset without physical inspection) could restore charging after a GFCI trip without addressing root cause",
+        "mitigation_in_spec": "Spec requires physical operator intervention for some faults (GFCI/CCID); however no mandatory remote lockout mechanism is defined in the cluster"
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "CircuitCapacity",
+        "safety_concern": "If CircuitCapacity is set too high (e.g., by a remote Manage-level command after installation), it could allow overcurrent beyond the physical circuit breaker rating",
+        "mitigation_in_spec": "Intended to be set by installer; however no mandatory installer-only access restriction is defined in the cluster spec"
+      },
+      {
+        "element_type": "state",
+        "element_id": "SessionEnding",
+        "safety_concern": "Contactors must be safely opened before physical cable disconnection to prevent arcing; the transition period must ensure safe hardware sequencing",
+        "mitigation_in_spec": "SessionEnding is explicitly noted as a transitional state that may take a few seconds; hardware safety sequencing is manufacturer-dependent"
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "RandomizationDelayWindow",
+        "safety_concern": "If RandomizationDelayWindow is set to 0, all EVSEs in a grid region may start simultaneously at cheap rate start time, causing grid demand surge",
+        "mitigation_in_spec": "Default 600s recommended; mandated by some markets (UK); RW VM access requires Manage privilege"
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "location": "Section 9.3.9.4.1",
+        "gap_type": "ambiguous",
+        "description": "StartDiagnostics: Duration of diagnostics is 'at the discretion of the manufacturer'. No timeout or maximum duration is specified. An EVSE could remain in DisabledDiagnostics indefinitely.",
+        "security_impact": "A malicious Operate-level actor could keep the EVSE in diagnostics mode indefinitely, preventing legitimate charging sessions (DoS)"
+      },
+      {
+        "location": "Section 9.3.8.6",
+        "gap_type": "missing_constraint",
+        "description": "CircuitCapacity attribute has no defined maximum constraint and no specification of who can set it post-installation. The spec says 'assumed that the device will allow the setting of such values by an installer' but no access control attribute or installer role is defined in the cluster.",
+        "security_impact": "A Manage-level remote actor could set CircuitCapacity to an arbitrarily high value, potentially enabling overcurrent beyond physical safety limits"
+      },
+      {
+        "location": "Section 9.3",
+        "gap_type": "missing_constraint",
+        "description": "The 'safety mechanism that may lockout remote operation until initial latching conditions have been met' is described in the cluster introduction but is not formally defined as an attribute, state, or command. No mechanism exists to query or verify lockout status remotely.",
+        "security_impact": "Implementers may omit the physical-interlock safety mechanism with no cluster-level way to detect or enforce it"
+      },
+      {
+        "location": "Section 9.3.10.5 (Fault Event fields)",
+        "gap_type": "ambiguous",
+        "description": "The Fault event field structure is described in the events table but the exact field names are not specified in the spec excerpt (unlike other events). FaultStatePreviousState field name is inferred.",
+        "security_impact": "Inconsistent fault event field naming across implementations could prevent proper log analysis for security incident investigation"
+      },
+      {
+        "location": "Section 9.3.9.5.2",
+        "gap_type": "weak_normative",
+        "description": "SetTargets command stores charging targets but the spec uses SHOULD for automatic charging behavior: 'should be able to compute the latest NextChargeStartTime' and 'should automatically begin charging'. This is not a SHALL requirement.",
+        "security_impact": "Inconsistent automatic charging behavior across implementations; schedule-based attacks may not be uniformly mitigable"
+      },
+      {
+        "location": "Section 9.3.4.4 (RFID Feature)",
+        "gap_type": "missing_constraint",
+        "description": "RFID event authorization: 'The lookup and authorization of RFID UID is outside the scope of this cluster.' No mechanism within the cluster prevents unauthorized charging sessions if the RFID authorization system is compromised or unavailable.",
+        "security_impact": "If RFID authorization backend is offline or bypassed, EVSE authorization decision is undefined at the cluster level"
+      },
+      {
+        "location": "Section 9.3.8.20",
+        "gap_type": "missing_constraint",
+        "description": "SessionID is allowed to roll over. No mechanism prevents wrap-around SessionID from being mistaken for a previous session. No uniqueness guarantee beyond 'unlikely in EVSE lifetime unless electrical fault'.",
+        "security_impact": "Rapid session cycling (e.g., due to electrical fault) could cause SessionID rollover, leading to log confusion or session confusion for billing/energy tracking"
+      },
+      {
+        "location": "Section 9.3.8.11",
+        "gap_type": "missing_constraint",
+        "description": "RandomizationDelayWindow can be written by Manage-level access. No restriction prevents setting it to 0 remotely, eliminating grid-mandated demand management randomization.",
+        "security_impact": "Remote attacker with Manage privilege could disable randomization, enabling coordinated grid demand surge attack across a fleet of EVSEs"
+      },
+      {
+        "location": "Section 9.3.9.2.4 / 9.3.9.3.3",
+        "gap_type": "ambiguous",
+        "description": "EnableCharging and EnableDischarging effect on receipt: when SupplyState is already in a partially enabled state (e.g., calling EnableCharging when SupplyState==ChargingEnabled), the spec does not explicitly state whether the command updates existing parameters or is rejected.",
+        "security_impact": "Implicit update behavior could allow an Operate-level actor to reduce minimum current limits or change expiry times on an active session without triggering a new EnergyTransferStarted event"
+      }
+    ],
+
+    "initial_state": "NotPluggedIn",
+
+    "all_states": [
+      "NotPluggedIn",
+      "PluggedInNoDemand",
+      "PluggedInDemand",
+      "PluggedInCharging",
+      "PluggedInDischarging",
+      "SessionEnding",
+      "Fault",
+      "Diagnostics"
+    ],
+
+    "all_triggers": [
+      "EV_Plugin_Detected",
+      "EV_Unplug_Initiated",
+      "EV_Unplug_Complete",
+      "EV_Current_Demand_Signaled",
+      "EV_Current_Demand_Withdrawn",
+      "EV_Stops_Demanding_Charge",
+      "Fault_Detected",
+      "Fault_Cleared",
+      "Diagnostics_Completed",
+      "EnableCharging",
+      "EnableDischarging",
+      "Disable",
+      "StartDiagnostics",
+      "SetTargets",
+      "GetTargets",
+      "ClearTargets",
+      "UserMaximumChargeCurrent_Write",
+      "RandomizationDelayWindow_Write",
+      "timer_ChargingEnabledUntil_expired",
+      "timer_ChargingEnabledUntil_expired_discharging_active",
+      "timer_DischargingEnabledUntil_expired",
+      "timer_DischargingEnabledUntil_expired_charging_active"
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true
+    }
+  }
+}

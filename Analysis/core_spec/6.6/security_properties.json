@@ -1,0 +1,1013 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Default_Deny_Access_Control",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Access to a Node's Targets is denied by default unless the Access Control system explicitly grants the required privilege level to a Subject.",
+      "formal": "∀ subject, target, action: access(subject, target, action) = DENIED unless ∃ acl_entry: grants(acl_entry, subject, target, required_privilege(action))",
+      "violation": "If default access is permitted without explicit grant, attackers can access any Target without authorization, bypassing the entire Access Control system. This fundamentally breaks the security model.",
+      "attack_vector": "Attacker exploits missing or incomplete ACL entries to access restricted Targets. Alternatively, implementation flaws that grant implicit access allow unauthorized operations."
+    },
+    {
+      "id": "PROP_002",
+      "name": "All_Privileges_Granted_By_Access_Control",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "All access privileges from the AccessControlEntryPrivilegeEnum SHALL be granted by the Access Control system; no other mechanism may grant privileges.",
+      "formal": "∀ privilege ∈ {View, Operate, Manage, Administer}: granted(privilege) ⟹ verified_by_access_control(privilege)",
+      "violation": "If privileges can be granted outside the Access Control system, attackers can bypass ACL checks through alternative privilege granting mechanisms, undermining the entire security architecture.",
+      "attack_vector": "Attacker exploits secondary privilege granting mechanisms (e.g., default privileges, implementation-specific backdoors) to gain unauthorized access without proper ACL validation."
+    },
+    {
+      "id": "PROP_003",
+      "name": "Explicit_Privilege_Grant_Required",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Any Interaction Model action SHALL NOT succeed unless the Node's Access Control system explicitly grants the required privilege to the Subject for that particular action.",
+      "formal": "∀ action, subject, target: execute(action, subject, target) = SUCCESS ⟹ explicitly_granted(subject, target, required_privilege(action))",
+      "violation": "If actions can succeed without explicit privilege grants, attackers can execute unauthorized operations, potentially gaining full control over Nodes through privilege escalation.",
+      "attack_vector": "Attacker sends Interaction Model actions without proper authorization, exploiting implementation flaws that fail to verify explicit privilege grants before execution."
+    },
+    {
+      "id": "PROP_004",
+      "name": "ACL_And_ARL_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The Access Control system SHALL grant privileges by checking and verifying all attempted access against rules explicitly codified in both the Access Control List (ACL) and Access Restriction List (ARL).",
+      "formal": "grant_privilege(subject, target) ⟺ (∃ acl_entry: matches(acl_entry, subject, target)) ∧ ¬(∃ arl_entry: restricts(arl_entry, target))",
+      "violation": "If ARL restrictions are not enforced or ACL rules are not properly verified, device-imposed security boundaries can be bypassed, allowing access to restricted functionality even when ACL permits it.",
+      "attack_vector": "Attacker exploits incomplete ARL checking to access device-restricted features, or bypasses ACL verification to gain unauthorized privileges."
+    },
+    {
+      "id": "PROP_005",
+      "name": "Commissioning_Implicit_Admin_Privilege",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Access Control implicitly grants Administer privilege to an Administrative Subject during commissioning over PASE, with exceptions for elements in CommissioningARL.",
+      "formal": "during_commissioning(session) ∧ auth_mode(session) = PASE ∧ is_commissionee(node) ⟹ granted(Administer) ∧ ¬restricted_by(CommissioningARL)",
+      "violation": "If implicit admin privilege is not properly scoped to commissioning or not restricted by CommissioningARL, attackers can gain permanent administrative access or access restricted features during commissioning.",
+      "attack_vector": "Attacker establishes PASE session and exploits implicit admin privilege to persist beyond commissioning, access CommissioningARL-restricted features, or maintain elevated privileges after commissioning completion."
+    },
+    {
+      "id": "PROP_006",
+      "name": "Commissioning_Asymmetric_Privilege",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The implicit Administer privilege during PASE commissioning applies for the Commissionee to administer itself, but NOT for the Commissioner to administer the Commissionee.",
+      "formal": "during_commissioning(session) ∧ auth_mode(session) = PASE: granted(Commissionee, Commissionee, Administer) ∧ ¬granted(Commissioner, Commissionee, Administer)",
+      "violation": "If the Commissioner gains implicit admin privilege over the Commissionee during PASE, the Commissioner could bypass proper ACL setup and maintain persistent unauthorized control.",
+      "attack_vector": "Malicious Commissioner exploits symmetric privilege grant to install backdoor ACL entries or maintain control without proper ACL provisioning via AddNOC."
+    },
+    {
+      "id": "PROP_007",
+      "name": "Subject_Type_Constraint",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "A Subject SHALL be exactly one of: a passcode (PASE), a source node (CASE with Node ID and optional CATs), or a destination group (Group).",
+      "formal": "∀ subject: (type(subject) ∈ {PASE_Passcode, CASE_NodeID, CASE_CAT, Group_ID}) ∧ (|{t | t = type(subject)}| = 1)",
+      "violation": "If subjects can have ambiguous or multiple types, authentication becomes unreliable, enabling attackers to impersonate different subject types or bypass authentication checks.",
+      "attack_vector": "Attacker crafts messages with ambiguous subject encoding to be interpreted as multiple subject types simultaneously, bypassing ACL matching logic."
+    },
+    {
+      "id": "PROP_008",
+      "name": "Reserved_Passcode_IDs",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Any Passcode ID other than 0 (the default commissioning passcode) is reserved for future use and SHALL NOT be used.",
+      "formal": "∀ passcode_id: valid(passcode_id) ⟺ (passcode_id = 0)",
+      "violation": "If non-zero Passcode IDs are accepted, future protocol extensions may conflict, or attackers may exploit undefined behavior in passcode validation.",
+      "attack_vector": "Attacker supplies non-zero Passcode IDs to exploit undefined validation behavior or bypass passcode checks in implementations that don't properly validate reserved values."
+    },
+    {
+      "id": "PROP_009",
+      "name": "PASE_ACL_Entry_Prohibition",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "ACL entries with PASE authentication mode SHALL NOT be explicitly added to the Access Control List, as implicit entry exists during commissioning.",
+      "formal": "∀ acl_entry ∈ ACL: acl_entry.AuthMode ≠ PASE",
+      "violation": "If explicit PASE ACL entries are allowed, long-term PASE-based access could be established, allowing bypass of proper CASE-based operational authentication and enabling persistent commissioning-level access.",
+      "attack_vector": "Attacker adds explicit PASE ACL entry during commissioning to maintain Administer privilege after commissioning completes, bypassing the CASE authentication requirement for operational access."
+    },
+    {
+      "id": "PROP_010",
+      "name": "CAT_Structure_32bit",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Each CAT is 32-bit, equally divided into identifier value (upper 16 bits) and version (lower 16 bits).",
+      "formal": "∀ cat: size(cat) = 32 ∧ cat_id(cat) = cat[31:16] ∧ cat_version(cat) = cat[15:0]",
+      "violation": "If CAT structure is not enforced, CAT matching fails, version comparison becomes unreliable, and subject authentication breaks down.",
+      "attack_vector": "Attacker crafts malformed CATs with incorrect bit allocation to bypass version checks or match unintended CAT identifiers."
+    },
+    {
+      "id": "PROP_011",
+      "name": "CAT_Identifier_Uniqueness",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "The CAT identifier value uniquely identifies a CAT group; no two distinct CAT groups may share the same identifier.",
+      "formal": "∀ cat1, cat2: (cat_id(cat1) = cat_id(cat2)) ⟺ (same_group(cat1, cat2))",
+      "violation": "If CAT identifier collision occurs, access control policies become ambiguous, and unintended subjects may gain privileges intended for other groups.",
+      "attack_vector": "Attacker obtains or forges a certificate with a CAT identifier that collides with a high-privilege group, gaining unauthorized access to restricted resources."
+    },
+    {
+      "id": "PROP_012",
+      "name": "Administrator_CAT_Joint_Fabric",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "The Administrator CAT (0xFFFF) SHALL be used to grant Administer privilege to Administrator Nodes in the Joint Fabric context exclusively.",
+      "formal": "∀ node, fabric: has_cat(node, 0xFFFF) ∧ fabric = Joint_Fabric ⟹ granted(node, fabric, Administer)",
+      "violation": "If Administrator CAT is used outside Joint Fabric or not properly enforced within Joint Fabric, administrative boundaries blur, enabling unauthorized cross-fabric administration.",
+      "attack_vector": "Attacker uses Administrator CAT in non-Joint-Fabric contexts to gain Administer privilege, or exploits missing Joint Fabric context validation to administer arbitrary fabrics."
+    },
+    {
+      "id": "PROP_013",
+      "name": "Administrator_CAT_Initial_Version",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "The version number of the Administrator CAT (0xFFFF) SHALL be initially set to 0x0001.",
+      "formal": "initial_version(Administrator_CAT) = 0x0001",
+      "violation": "If initial version is not 0x0001, version comparison logic fails, causing legitimate administrators to be rejected or enabling replay of revoked administrators.",
+      "attack_vector": "Attacker exploits incorrect initial version to present lower-version Administrator CAT that should be rejected, or forces version rollback."
+    },
+    {
+      "id": "PROP_014",
+      "name": "Anchor_CAT_Validation",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "The Anchor CAT (0xFFFE) SHALL be used to validate a Node as a Joint Fabric Anchor.",
+      "formal": "is_joint_fabric_anchor(node) ⟺ has_cat(node, 0xFFFE) ∧ valid_signature(node.cert)",
+      "violation": "If Anchor CAT validation is not enforced, rogue nodes can impersonate Joint Fabric Anchors, undermining the trust foundation of the Joint Fabric.",
+      "attack_vector": "Attacker obtains certificate without proper Anchor CAT (0xFFFE) but is accepted as Joint Fabric Anchor, or presents forged Anchor CAT to establish rogue anchor."
+    },
+    {
+      "id": "PROP_015",
+      "name": "Anchor_CAT_Initial_Version",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "The version number of the Anchor CAT (0xFFFE) SHALL be initially set to 0x0001.",
+      "formal": "initial_version(Anchor_CAT) = 0x0001",
+      "violation": "If initial version is not 0x0001, version-based revocation fails, allowing revoked anchors to remain trusted.",
+      "attack_vector": "Attacker leverages incorrect initial version to present compromised anchor with lower version that bypasses revocation checks."
+    },
+    {
+      "id": "PROP_016",
+      "name": "CAT_Version_Zero_Invalid",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "A CAT version number of 0 is invalid and SHALL NOT be used.",
+      "formal": "∀ cat: valid(cat) ⟹ cat_version(cat) ≠ 0",
+      "violation": "If version 0 is accepted, version comparison logic breaks, potentially accepting uninitialized or malformed CATs, or allowing bypass of version-based access control.",
+      "attack_vector": "Attacker presents CAT with version 0 to exploit comparison logic errors (e.g., treating 0 as wildcard or minimum value) to bypass version checks."
+    },
+    {
+      "id": "PROP_017",
+      "name": "CAT_Version_Monotonic_No_Wraparound",
+      "category": "ReplayProtection",
+      "importance": "HIGH",
+      "claim": "CAT version is monotonically increasing (1 to 65535) with no wrap-around; the identifier SHOULD be retired at maximum value.",
+      "formal": "∀ cat, cat': (cat_id(cat) = cat_id(cat')) ∧ (issued_after(cat', cat)) ⟹ (cat_version(cat') > cat_version(cat)) ∧ (cat_version(cat') ≤ 65535)",
+      "violation": "If version wrap-around occurs, version-based revocation fails catastrophically, allowing all previously revoked subjects to regain access.",
+      "attack_vector": "Attacker waits for version to wrap around to 1, then replays old certificates with low versions that are now considered 'newer' than high versions, regaining revoked access."
+    },
+    {
+      "id": "PROP_018",
+      "name": "CAT_Encoding_In_ACL",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "When a CAT appears in an ACL entry's Subjects list, it SHALL be encoded with upper 32 bits set to 0xFFFF_FFFD and lower 32 bits containing the CAT value.",
+      "formal": "∀ cat_subject ∈ ACL_subjects: is_cat(cat_subject) ⟹ (cat_subject[63:32] = 0xFFFF_FFFD) ∧ (cat_subject[31:0] = cat_value)",
+      "violation": "If CAT encoding is incorrect, ACL matching fails, preventing legitimate CAT-based subjects from gaining access or allowing non-CAT subjects to match CAT entries.",
+      "attack_vector": "Attacker crafts ACL entries with incorrect CAT encoding to create non-functional ACL entries (DoS) or entries that match unintended subjects."
+    },
+    {
+      "id": "PROP_019",
+      "name": "Empty_Subjects_Wildcard_Semantic",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "An empty Subjects list in an ACL entry SHALL mean that every possible Subject employing the stated Authentication Mode is granted the entry's privilege.",
+      "formal": "∀ acl_entry: (acl_entry.Subjects = ∅) ⟹ ∀ subject: (auth_mode(subject) = acl_entry.AuthMode) ⟹ matches(subject, acl_entry)",
+      "violation": "If empty Subjects list is not treated as wildcard, intended broad access grants fail. Conversely, if empty list is incorrectly created (e.g., via incremental deletion), unintended wildcard access emerges.",
+      "attack_vector": "Attacker manipulates ACL update sequence to temporarily create empty Subjects list, granting unintended wildcard access. Alternatively, attacker exploits misconfigured wildcard entries to gain excessive privileges."
+    },
+    {
+      "id": "PROP_020",
+      "name": "Empty_Targets_Wildcard_Semantic",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "An empty Targets list in an ACL entry SHALL mean that every Cluster on every Endpoint is accessible using the granted privilege.",
+      "formal": "∀ acl_entry: (acl_entry.Targets = ∅) ⟹ ∀ endpoint, cluster: matches(endpoint, cluster, acl_entry)",
+      "violation": "If empty Targets list is not treated as wildcard, intended broad target grants fail. If accidentally created (e.g., via incremental deletion), unintended full-node access emerges.",
+      "attack_vector": "Attacker manipulates ACL update sequence to temporarily create empty Targets list, gaining access to all clusters and endpoints including administrative and sensitive resources."
+    },
+    {
+      "id": "PROP_021",
+      "name": "Atomic_ACL_Entry_Update",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "Entire Targets/Subjects lists SHOULD be written atomically in a single action to avoid temporary wildcard states or inconsistent partial updates.",
+      "formal": "update(acl_entry) ⟹ atomic(update(acl_entry.Subjects)) ∧ atomic(update(acl_entry.Targets))",
+      "violation": "If ACL updates are not atomic, intermediate states with empty Subjects/Targets lists create temporary wildcard access, or partial updates create inconsistent security states.",
+      "attack_vector": "Attacker times requests to exploit temporary wildcard access during non-atomic multi-step ACL updates, gaining unauthorized privileges in the window between partial updates."
+    },
+    {
+      "id": "PROP_022",
+      "name": "Avoid_Incremental_Deletion",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "It is RECOMMENDED to avoid updating ACL entries by removing Subjects or Targets one by one, as this may result in accidental wildcard entries.",
+      "formal": "¬recommended(∀ i: sequential_delete(acl_entry.Subjects[i]) ∨ sequential_delete(acl_entry.Targets[i]))",
+      "violation": "If Subjects or Targets are deleted incrementally, the final deletion creates an empty list (wildcard), potentially granting unintended broad access.",
+      "attack_vector": "Attacker triggers or exploits incremental deletion process, causing temporary or permanent wildcard access when the last Subject/Target is removed."
+    },
+    {
+      "id": "PROP_023",
+      "name": "Wildcard_With_Group_AuthMode_Caution",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "ACL entries with wildcard subjects should be deployed with care, especially when Group Authentication Mode is specified, as they grant privilege to potentially many senders.",
+      "formal": "∀ acl_entry: (acl_entry.Subjects = ∅) ∧ (acl_entry.AuthMode = Group) ⟹ high_risk(acl_entry)",
+      "violation": "If wildcard Group-authenticated ACL entries are carelessly deployed, any node possessing the group key gains the privilege, dramatically expanding the attack surface.",
+      "attack_vector": "Attacker compromises any single node in the group to obtain group key, then exploits wildcard Group ACL entry to gain privileges across all nodes with that entry."
+    },
+    {
+      "id": "PROP_024",
+      "name": "Message_Layer_Security_Metadata",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The Message Layer SHALL provide sufficient metadata (AuthMode, source identity) about incoming messages to the Interaction Model for proper Access Control enforcement.",
+      "formal": "∀ message: process(message) ⟹ ∃ metadata: provides(message_layer, metadata) ∧ contains(metadata, AuthMode, source_identity)",
+      "violation": "If Message Layer fails to provide complete security metadata, the Interaction Model cannot construct accurate ISD, causing incorrect access control decisions.",
+      "attack_vector": "Attacker exploits missing or incorrect metadata (e.g., omitted CATs, wrong AuthMode) to bypass access control checks or impersonate different subject types."
+    },
+    {
+      "id": "PROP_025",
+      "name": "ACL_Extension_Preservation",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "A Node SHALL preserve every field of the installed Access Control Cluster, including extensions, without internally-initiated modifications, so they may be read-back verbatim.",
+      "formal": "∀ acl_entry, extension: written(acl_entry, extension, t0) ⟹ read(acl_entry, extension, t1) = written_value ∧ (t1 > t0) ∧ ¬exists internal_modification",
+      "violation": "If Node modifies ACL entries or extensions internally, Administrators lose visibility into actual security policy, and auditing becomes impossible.",
+      "attack_vector": "Attacker exploits internal modifications to hide malicious ACL entries, or Node implementation silently corrupts ACL entries, creating security vulnerabilities undetectable by auditing."
+    },
+    {
+      "id": "PROP_026",
+      "name": "No_Application_Level_Security_In_ACL",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "The Access Control Cluster SHALL NOT be used to encode application-level permissions such as smart lock PIN codes or similar user-facing security functionality.",
+      "formal": "∀ acl_entry: ¬contains(acl_entry, application_security_data)",
+      "violation": "If application-level security is encoded in ACL, abstraction boundaries are violated, complicating both application and infrastructure security, and mixing trust domains.",
+      "attack_vector": "Attacker exploits confusion between infrastructure and application security to gain fabric-wide access via compromised application credentials, or bypasses application security via ACL manipulation."
+    },
+    {
+      "id": "PROP_027",
+      "name": "ARL_Overrides_ACL",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Access Restriction List (ARL) restrictions override permissions granted in the Access Control List (ACL).",
+      "formal": "∀ subject, target, privilege: granted_by_ACL(subject, target, privilege) ∧ restricted_by_ARL(target) ⟹ access_denied(subject, target)",
+      "violation": "If ARL does not override ACL, device-imposed security boundaries can be bypassed by ACL manipulation, allowing access to manufacturer-restricted features.",
+      "attack_vector": "Attacker adds permissive ACL entries to bypass ARL restrictions, gaining access to device-restricted functionality that should be inaccessible on the fabric."
+    },
+    {
+      "id": "PROP_028",
+      "name": "ACL_Update_Same_Access_Control",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Updates to the Access Control List through Access Control Cluster attributes and commands SHALL be restricted by the same Access Control mechanisms as all other clusters.",
+      "formal": "∀ update_request: targets(update_request, AccessControlCluster) ⟹ enforces_access_control(update_request)",
+      "violation": "If ACL updates bypass access control, attackers can modify ACL without proper authorization, gaining permanent elevated privileges.",
+      "attack_vector": "Attacker exploits ACL update path that doesn't enforce access control to grant themselves Administer privilege, establishing persistent backdoor."
+    },
+    {
+      "id": "PROP_029",
+      "name": "Administer_Privilege_Required_For_ACL_Update",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Updates to ACL require Administer privilege, ensuring only authorized administrators can modify access control policy.",
+      "formal": "∀ update_request: targets(update_request, ACL) ⟹ required_privilege(update_request) = Administer",
+      "violation": "If lower privileges can update ACL, privilege escalation attacks become trivial, as any user with Operate or Manage privilege can grant themselves Administer.",
+      "attack_vector": "Attacker with Operate privilege modifies ACL to grant themselves Administer privilege, then takes full control of the node."
+    },
+    {
+      "id": "PROP_030",
+      "name": "Attribution_Against_ISD_Not_ACL_Entry",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Action Attribution SHALL be recorded against the Incoming Subject Descriptor (ISD), not against the matched ACL entry's contents.",
+      "formal": "∀ action: attribution(action) = ISD(action) ∧ attribution(action) ≠ matched_ACL_entry(action)",
+      "violation": "If attribution is against ACL entry rather than ISD, audit trails lose precision, as multiple subjects matching the same entry become indistinguishable.",
+      "attack_vector": "Attacker exploits shared ACL entry to hide within group of legitimate users, making forensic analysis and attribution impossible after security incident."
+    },
+    {
+      "id": "PROP_031",
+      "name": "Administer_Privilege_Requires_CASE",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "It SHALL NOT be valid to have Administer privilege set on an ACL entry unless AuthMode is CASE.",
+      "formal": "∀ acl_entry: (acl_entry.Privilege = Administer) ⟹ (acl_entry.AuthMode = CASE)",
+      "violation": "If Administer privilege is granted via non-CASE authentication (e.g., Group), attribution is lost and any node with the group key gains full administrative control.",
+      "attack_vector": "Attacker compromises group key or PASE session to gain Administer privilege, then maintains persistent control without individual node authentication."
+    },
+    {
+      "id": "PROP_032",
+      "name": "Group_AuthMode_Forbidden_For_Administer",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "An AuthMode of Group SHALL NOT be used to grant Administer privilege due to lack of source node authentication and reduced attribution.",
+      "formal": "∀ acl_entry: (acl_entry.AuthMode = Group) ⟹ (acl_entry.Privilege ≠ Administer)",
+      "violation": "If Group AuthMode grants Administer privilege, any member of the group gains full control, and attribution becomes impossible, violating security and accountability requirements.",
+      "attack_vector": "Attacker obtains group key, then uses Group-based Administer privilege to take full control of all nodes in the fabric without individual authentication."
+    },
+    {
+      "id": "PROP_033",
+      "name": "Immediate_ACL_Update_Effect",
+      "category": "Timing",
+      "importance": "CRITICAL",
+      "claim": "Updates to the Access Control Cluster SHALL take immediate effect in the Access Control system.",
+      "formal": "∀ update: applied(update, ACL, t) ⟹ ∀ t' > t: enforced(update, t')",
+      "violation": "If ACL updates are delayed, race condition windows emerge where old security policy remains active, allowing unauthorized access or preventing authorized access.",
+      "attack_vector": "Attacker times requests to exploit delay between ACL update and enforcement, gaining unauthorized access using credentials that should be immediately revoked."
+    },
+    {
+      "id": "PROP_034",
+      "name": "Intra_Message_ACL_Update_Effect",
+      "category": "Timing",
+      "importance": "CRITICAL",
+      "claim": "Within a single Interaction Model message with multiple actions, ACL updates in earlier actions take effect before subsequent actions are evaluated.",
+      "formal": "∀ message, action_i, action_j ∈ message: (i < j) ∧ updates_ACL(action_i) ⟹ evaluates_with_updated_ACL(action_j)",
+      "violation": "If intra-message ACL updates don't take immediate effect, administrators can accidentally lock themselves out when restricting their own access within a multi-action message.",
+      "attack_vector": "Attacker crafts multi-action message that first grants themselves temporary access, then performs unauthorized operations, exploiting delayed ACL enforcement within message."
+    },
+    {
+      "id": "PROP_035",
+      "name": "Self_Lockout_Risk",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Immediate intra-message ACL updates create risk of self-lockout if administrator restricts their own access in earlier action within multi-action message.",
+      "formal": "∀ message, admin, action_i, action_j: (i < j) ∧ restricts_access(action_i, admin) ⟹ denied(admin, action_j)",
+      "violation": "This is the intended behavior per spec, but if not understood by administrators, can result in accidental denial-of-service through self-lockout.",
+      "attack_vector": "Attacker socially engineers administrator to send multi-action message that first restricts admin's access, then attempts additional operations, causing permanent lockout if no other admin exists."
+    },
+    {
+      "id": "PROP_036",
+      "name": "CommissioningARL_No_Commissioning_Prevention",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The CommissioningARL and ARL attributes SHALL NOT include limitations that would prevent commissioning.",
+      "formal": "∀ arl_entry ∈ (CommissioningARL ∪ ARL): ¬prevents(arl_entry, commissioning_operations)",
+      "violation": "If ARL prevents commissioning operations, nodes become unmanageable, creating permanent denial-of-service and bricking devices.",
+      "attack_vector": "Attacker with ARL write access (or malicious manufacturer) adds ARL restrictions that prevent commissioning, rendering device permanently inaccessible to legitimate administrators."
+    },
+    {
+      "id": "PROP_037",
+      "name": "ARL_Wildcard_Commissioning_Exception",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "If a wildcard restriction in ARL would restrict commissioning access, the wildcard MAY appear but the restriction SHALL NOT take effect for commissioning operations.",
+      "formal": "∀ arl_entry: (is_wildcard(arl_entry) ∧ would_prevent(arl_entry, commissioning)) ⟹ ¬enforced(arl_entry, commissioning_context)",
+      "violation": "If wildcard ARL restrictions prevent commissioning, device becomes unmanageable. If exception is not properly enforced, commissioning fails despite allowed wildcards.",
+      "attack_vector": "Attacker exploits inconsistent wildcard exception handling to either brick device via wildcard restriction, or bypass ARL restrictions by exploiting commissioning context exception."
+    },
+    {
+      "id": "PROP_038",
+      "name": "ISD_Derivation_Deterministic",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Derivation of Incoming Subject Descriptor (ISD) from incoming messages SHALL be deterministic based on message fields and session metadata.",
+      "formal": "∀ message, session: ISD(message, session) is deterministic function of (message, session_metadata(session))",
+      "violation": "If ISD derivation is non-deterministic or inconsistent, access control becomes unpredictable, potentially allowing unauthorized access or denying legitimate access randomly.",
+      "attack_vector": "Attacker exploits non-deterministic ISD derivation by sending crafted messages that are interpreted differently across invocations, bypassing access control checks."
+    },
+    {
+      "id": "PROP_039",
+      "name": "PASE_ISD_Commissioning_Flag",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "For PASE sessions, the ISD IsCommissioning flag SHALL be set to True, indicating commissioning context.",
+      "formal": "∀ session: auth_mode(session) = PASE ⟹ ISD(session).IsCommissioning = True",
+      "violation": "If PASE sessions don't set IsCommissioning flag, implicit admin privilege is not properly scoped to commissioning, potentially extending beyond commissioning phase.",
+      "attack_vector": "Attacker maintains PASE session after commissioning to retain implicit Administer privilege in operational phase, bypassing CASE authentication requirement."
+    },
+    {
+      "id": "PROP_040",
+      "name": "CASE_ISD_CommissioningFlag_Pending_Fabric",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "For CASE sessions, ISD IsCommissioning flag SHALL be True if and only if the fabric index equals the pending fabric index (during AddNOC operation).",
+      "formal": "∀ session: auth_mode(session) = CASE ⟹ (ISD(session).IsCommissioning ⟺ (fabric_index(session) = pending_fabric_index))",
+      "violation": "If IsCommissioning flag is incorrectly set for CASE sessions, CommissioningARL may be incorrectly applied or bypassed, affecting access control during multi-admin scenarios.",
+      "attack_vector": "Attacker exploits incorrect IsCommissioning flag to bypass CommissioningARL restrictions during operational phase or improperly apply them during legitimate commissioning."
+    },
+    {
+      "id": "PROP_041",
+      "name": "CASE_ISD_NodeID_Subject",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "For CASE sessions, the ISD SHALL include the source Node ID as the primary subject.",
+      "formal": "∀ session: auth_mode(session) = CASE ⟹ src_node_id(session) ∈ ISD(session).Subjects",
+      "violation": "If source Node ID is not included in ISD, node-specific access control fails, and attribution becomes impossible.",
+      "attack_vector": "Attacker exploits missing Node ID in ISD to bypass node-specific ACL entries or to conduct operations without attribution."
+    },
+    {
+      "id": "PROP_042",
+      "name": "CASE_ISD_CAT_Subjects",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "For CASE sessions, the ISD SHALL include all CASE Authenticated Tags (CATs) from the source's Operational Certificate as additional subjects (up to 3).",
+      "formal": "∀ session: auth_mode(session) = CASE ∧ has_CATs(session) ⟹ ∀ cat ∈ CATs(session): cat ∈ ISD(session).Subjects",
+      "violation": "If CATs are not included in ISD, CAT-based access control fails, preventing group-based privilege management and causing denial of service for CAT-authorized subjects.",
+      "attack_vector": "Implementation omits CATs from ISD, causing legitimate CAT-based subjects to be denied access, or attacker exploits incomplete CAT extraction to bypass CAT-specific restrictions."
+    },
+    {
+      "id": "PROP_043",
+      "name": "Group_ISD_Group_ID_Subject",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "For Group authenticated messages, the ISD SHALL include the destination Group ID as the subject.",
+      "formal": "∀ message: auth_mode(message) = Group ⟹ dst_group_id(message) ∈ ISD(message).Subjects",
+      "violation": "If Group ID is not included in ISD, group-based access control fails entirely, denying all group communication.",
+      "attack_vector": "Implementation omits Group ID from ISD, causing all group-based operations to fail, creating denial-of-service for group communications."
+    },
+    {
+      "id": "PROP_044",
+      "name": "Group_Membership_Verification",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "For Group authenticated messages, the Group ID and Group Key ID SHALL be verified against the Group Key Management Cluster before granting access.",
+      "formal": "∀ message: auth_mode(message) = Group ⟹ verified_membership(group_id(message), group_key_id(message), GroupKeyManagementCluster)",
+      "violation": "If group membership is not verified, attackers can forge group messages with arbitrary Group IDs, bypassing group-based access control.",
+      "attack_vector": "Attacker sends group message with valid Group ID but without valid group key, exploiting missing membership verification to gain unauthorized access."
+    },
+    {
+      "id": "PROP_045",
+      "name": "ISD_FabricIndex_NonZero_For_CASE_Group",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "For CASE and Group authentication modes, the ISD FabricIndex SHALL NOT be zero.",
+      "formal": "∀ message: (auth_mode(message) ∈ {CASE, Group}) ⟹ ISD(message).FabricIndex ≠ 0",
+      "violation": "If FabricIndex is zero for operational sessions, fabric isolation breaks, allowing cross-fabric access violations.",
+      "attack_vector": "Attacker crafts session with FabricIndex zero to bypass fabric isolation checks, accessing resources across multiple fabrics."
+    },
+    {
+      "id": "PROP_046",
+      "name": "ISD_FabricIndex_May_Be_Zero_For_PASE",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "For PASE authentication mode, the ISD FabricIndex may be zero (before fabric is assigned).",
+      "formal": "∀ message: auth_mode(message) = PASE ⟹ (ISD(message).FabricIndex = 0 ∨ ISD(message).FabricIndex ≠ 0)",
+      "violation": "If PASE sessions require non-zero FabricIndex before fabric assignment, commissioning fails at initial stages.",
+      "attack_vector": "Implementation incorrectly requires non-zero FabricIndex for PASE before AddNOC, causing commissioning failure."
+    },
+    {
+      "id": "PROP_047",
+      "name": "Failed_ISD_Derivation_Safe_Default",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If ISD derivation fails for any reason, the ISD SHALL remain in safe default state (IsCommissioning=False, AuthMode=None, empty Subjects, FabricIndex=0), causing access denial.",
+      "formal": "∀ message: derivation_failed(ISD(message)) ⟹ (ISD(message) = {IsCommissioning: False, AuthMode: None, Subjects: [], FabricIndex: 0}) ⟹ access_denied",
+      "violation": "If failed ISD derivation grants access or uses stale ISD values, security failures cascade, potentially granting unauthorized access.",
+      "attack_vector": "Attacker crafts malformed messages that cause ISD derivation failure, exploiting unsafe fallback behavior to gain access with incorrect subject/fabric context."
+    },
+    {
+      "id": "PROP_048",
+      "name": "Subject_Matching_Exact_Or_CAT_Version",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "ACL subject matching SHALL succeed if subjects match exactly, or both are CATs with matching CAT ID and ISD CAT version >= ACL CAT version.",
+      "formal": "matches(acl_subject, isd_subject) ⟺ (acl_subject = isd_subject) ∨ (is_cat(acl_subject) ∧ is_cat(isd_subject) ∧ cat_id(acl_subject) = cat_id(isd_subject) ∧ cat_version(isd_subject) >= cat_version(acl_subject))",
+      "violation": "If version comparison is incorrect (e.g., using equality instead of >=), revocation fails and subjects with newer CAT versions are denied access. If version comparison is reversed, revoked subjects regain access.",
+      "attack_vector": "Attacker with old CAT version gains access if version check is reversed, or legitimate users with new CAT versions are denied if equality check is used instead of >=."
+    },
+    {
+      "id": "PROP_049",
+      "name": "Privilege_Subsumption",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Higher privileges subsume lower privileges: Administer includes Manage, Operate, View; Manage includes Operate, View; Operate includes View.",
+      "formal": "granted(Administer) ⟹ granted(Manage, Operate, View); granted(Manage) ⟹ granted(Operate, View); granted(Operate) ⟹ granted(View)",
+      "violation": "If privilege subsumption is not enforced, access control becomes inconsistent, requiring redundant ACL entries and causing operational failures when high-privilege users are denied low-privilege operations.",
+      "attack_vector": "Implementation fails to subsume privileges, causing administrators to be denied View operations, creating operational failures and potential lockout scenarios."
+    },
+    {
+      "id": "PROP_050",
+      "name": "ACL_FabricIndex_Nonzero",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "All explicit ACL entries SHALL have FabricIndex nonzero (FabricIndex 0 is only valid for implicit PASE entry which never appears explicitly in ACL).",
+      "formal": "∀ acl_entry ∈ explicit_ACL: acl_entry.FabricIndex ≠ 0",
+      "violation": "If explicit ACL entries have FabricIndex 0, fabric isolation breaks, allowing cross-fabric access violations.",
+      "attack_vector": "Attacker adds ACL entry with FabricIndex 0 to grant privileges across all fabrics, bypassing fabric isolation."
+    },
+    {
+      "id": "PROP_051",
+      "name": "ACL_AuthMode_Match_Required",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "For an ACL entry to match, the AuthMode in the ACL entry SHALL match the AuthMode in the ISD.",
+      "formal": "∀ acl_entry, isd: matches(acl_entry, isd) ⟹ acl_entry.AuthMode = isd.AuthMode",
+      "violation": "If AuthMode mismatch is allowed, authentication boundaries blur, enabling authMode downgrade attacks or cross-mode access violations.",
+      "attack_vector": "Attacker uses CASE session to match Group-AuthMode ACL entries, or vice versa, gaining unintended privileges through authentication mode confusion."
+    },
+    {
+      "id": "PROP_052",
+      "name": "ACL_Empty_Subjects_Only_CASE_Group",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Empty Subjects list (wildcard) SHALL only be valid for CASE and Group authentication modes.",
+      "formal": "∀ acl_entry: (acl_entry.Subjects = ∅) ⟹ acl_entry.AuthMode ∈ {CASE, Group}",
+      "violation": "If empty Subjects is allowed for PASE, all commissioning sessions gain wildcard access, violating the intended single-passcode restriction.",
+      "attack_vector": "Attacker adds ACL entry with empty Subjects and PASE AuthMode, granting all PASE sessions (potentially multiple with different passcodes in future) full access."
+    },
+    {
+      "id": "PROP_053",
+      "name": "ACL_Target_Not_Empty",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Each Target in an ACL entry's Targets list SHALL specify at least one of: Cluster, Endpoint, or DeviceType (cannot be completely empty).",
+      "formal": "∀ acl_entry, target ∈ acl_entry.Targets: (target.Cluster ≠ null) ∨ (target.Endpoint ≠ null) ∨ (target.DeviceType ≠ null)",
+      "violation": "If individual targets can be completely empty, target matching becomes ambiguous, potentially causing unintended access grants or denials.",
+      "attack_vector": "Attacker adds target entry with all fields null, exploiting undefined matching behavior to gain unintended access."
+    },
+    {
+      "id": "PROP_054",
+      "name": "ACL_Target_Endpoint_DeviceType_Mutual_Exclusion",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "A Target SHALL NOT specify both Endpoint and DeviceType simultaneously (mutual exclusion).",
+      "formal": "∀ acl_entry, target ∈ acl_entry.Targets: ¬(target.Endpoint ≠ null ∧ target.DeviceType ≠ null)",
+      "violation": "If both Endpoint and DeviceType are specified, matching semantics become ambiguous (AND vs OR), causing inconsistent access control.",
+      "attack_vector": "Attacker crafts Target with both Endpoint and DeviceType, exploiting ambiguous matching logic to gain unintended access or cause operational failures."
+    },
+    {
+      "id": "PROP_055",
+      "name": "ACL_Target_Cluster_Wildcard_Or_Match",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "For Target matching, if Target.Cluster is not null, it SHALL match the request cluster_id exactly; if null, it acts as wildcard (matches all clusters).",
+      "formal": "∀ target, request: matches(target, request) ⟹ (target.Cluster = null ∨ target.Cluster = request.cluster_id)",
+      "violation": "If cluster matching is incorrect, access control becomes permissive (wrong clusters granted access) or restrictive (right clusters denied access).",
+      "attack_vector": "Implementation uses incorrect cluster matching logic, allowing attacker to access clusters not explicitly permitted in ACL entry."
+    },
+    {
+      "id": "PROP_056",
+      "name": "ACL_Target_Endpoint_Wildcard_Or_Match",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "For Target matching, if Target.Endpoint is not null, it SHALL match the request endpoint_id exactly; if null, it acts as wildcard (matches all endpoints).",
+      "formal": "∀ target, request: matches(target, request) ⟹ (target.Endpoint = null ∨ target.Endpoint = request.endpoint_id)",
+      "violation": "If endpoint matching is incorrect, access control becomes permissive (wrong endpoints granted access) or restrictive (right endpoints denied access).",
+      "attack_vector": "Implementation uses incorrect endpoint matching logic, allowing attacker to access endpoints not explicitly permitted in ACL entry."
+    },
+    {
+      "id": "PROP_057",
+      "name": "ACL_Target_DeviceType_Indirect_Match",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "For Target matching, if Target.DeviceType is not null, it SHALL match if the request endpoint contains the specified DeviceType.",
+      "formal": "∀ target, request: matches(target, request) ⟹ (target.DeviceType = null ∨ contains_device_type(request.endpoint_id, target.DeviceType))",
+      "violation": "If DeviceType matching is incorrect, device-type-based access control fails, causing either over-permissive or over-restrictive access.",
+      "attack_vector": "Attacker targets endpoints with specific device types, exploiting incorrect DeviceType matching to gain unintended access."
+    },
+    {
+      "id": "PROP_058",
+      "name": "ACL_Extension_Validation_Required",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Extensions processing during ACL matching SHALL NOT fail; if extension validation fails, the ACL entry SHALL NOT match.",
+      "formal": "∀ acl_entry, isd: ¬valid(extensions(acl_entry, isd)) ⟹ ¬matches(acl_entry, isd)",
+      "violation": "If extension validation is skipped or failed validation is ignored, malicious or malformed extensions could grant unintended access.",
+      "attack_vector": "Attacker adds ACL entry with malicious extension that exploits parser vulnerability, or invalid extension that is incorrectly accepted, gaining unintended privileges."
+    },
+    {
+      "id": "PROP_059",
+      "name": "No_Administer_For_Group_In_Granted_Privileges",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "After privilege granting completes, if ISD AuthMode is Group, the granted privileges set SHALL NOT contain Administer.",
+      "formal": "∀ isd: (isd.AuthMode = Group) ⟹ (Administer ∉ granted_privileges(isd))",
+      "violation": "If Group AuthMode grants Administer despite prohibition, any group member gains full administrative control without individual authentication.",
+      "attack_vector": "Attacker adds ACL entry with Group AuthMode and Administer privilege (bypassing validation), then uses group key to gain full administrative control."
+    },
+    {
+      "id": "PROP_060",
+      "name": "Restriction_Type_Match_Request_Type",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "ARL restriction matching SHALL match restriction type to request type: AttributeAccessForbidden for Read/Write, AttributeWriteForbidden for Write only, CommandForbidden for Invoke, EventAccessForbidden for Event Read.",
+      "formal": "restricted(arl_entry, request) ⟺ (matches(arl_entry.Endpoint, request.endpoint) ∧ matches(arl_entry.Cluster, request.cluster) ∧ matches_type(arl_entry.Restriction, request))",
+      "violation": "If restriction type matching is incorrect, ARL restrictions either fail to apply (bypassed) or apply incorrectly (over-restrictive).",
+      "attack_vector": "Attacker targets AttributeAccessForbidden attributes with read-only operations if implementation only blocks writes, or invokes CommandForbidden commands if restriction type is not checked."
+    },
+    {
+      "id": "PROP_061",
+      "name": "ARL_Restriction_ID_Wildcard_Or_Match",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "ARL restriction matching SHALL match if restriction ID is NULL (wildcard, matches all) or equals the cluster element (attribute/command/event ID).",
+      "formal": "∀ arl_restriction, request: matches(arl_restriction, request) ⟹ (arl_restriction.ID = NULL ∨ arl_restriction.ID = request.cluster_element)",
+      "violation": "If wildcard NULL is not supported or ID matching is incorrect, ARL restrictions either fail to apply or apply too broadly.",
+      "attack_vector": "Attacker targets specific restricted attributes/commands, exploiting incorrect wildcard handling or ID matching to bypass restrictions."
+    },
+    {
+      "id": "PROP_062",
+      "name": "ARL_Restriction_Commissioning_Context",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "During commissioning (ISD.IsCommissioning = True), commissioningARL SHALL be used; otherwise, ARL SHALL be used.",
+      "formal": "∀ request, isd: (isd.IsCommissioning = True) ⟹ uses(commissioningARL) ∧ (isd.IsCommissioning = False) ⟹ uses(ARL)",
+      "violation": "If wrong ARL source is used, commissioning restrictions may not apply during commissioning, or operational restrictions may incorrectly apply during commissioning.",
+      "attack_vector": "Attacker exploits incorrect ARL source selection to bypass commissioning restrictions during PASE session, or causes operational failure by applying commissioning restrictions during CASE session."
+    },
+    {
+      "id": "PROP_063",
+      "name": "ARL_FabricIndex_Match_For_Non_Commissioning",
+      "category": "ScopeIsolation",
+      "importance": "CRITICAL",
+      "claim": "For non-commissioning context, ARL entries SHALL only apply if ARL entry FabricIndex matches ISD FabricIndex.",
+      "formal": "∀ arl_entry, isd: ¬isd.IsCommissioning ⟹ (applies(arl_entry, isd) ⟹ arl_entry.FabricIndex = isd.FabricIndex)",
+      "violation": "If FabricIndex matching is not enforced for ARL, cross-fabric restrictions apply, violating fabric isolation.",
+      "attack_vector": "Attacker from fabric A is incorrectly blocked by ARL restrictions from fabric B, or restrictions intended for fabric A fail to apply on fabric A."
+    },
+    {
+      "id": "PROP_064",
+      "name": "ARL_No_FabricIndex_For_Commissioning",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "For commissioning context (CommissioningARL), ARL entries do not include FabricIndex as they apply during pre-fabric commissioning phase.",
+      "formal": "∀ arl_entry ∈ CommissioningARL: ¬has_field(arl_entry, FabricIndex)",
+      "violation": "If CommissioningARL entries include FabricIndex, matching logic becomes inconsistent, potentially applying or failing to apply restrictions incorrectly.",
+      "attack_vector": "Implementation expects FabricIndex in CommissioningARL, causing matching failures and bypassing commissioning restrictions."
+    },
+    {
+      "id": "PROP_065",
+      "name": "Managed_Device_Feature_Restriction_Scope",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Only mandatory clusters on endpoints with device types allowing Managed Device ACL cluster feature can be restricted by ARL.",
+      "formal": "∀ arl_entry: applies(arl_entry) ⟹ is_mandatory(arl_entry.Cluster) ∧ supports_managed_device_feature(arl_entry.Endpoint)",
+      "violation": "If restrictions apply beyond allowed scope, over-restriction causes operational failures; if restrictions don't apply within scope, device security boundaries are not enforced.",
+      "attack_vector": "Attacker exploits incorrect restriction scope to either bypass intended device restrictions or cause denial-of-service by blocking non-restrictable operations."
+    },
+    {
+      "id": "PROP_066",
+      "name": "Certain_Clusters_Elements_Never_Restrictable",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Specific clusters and elements critical for commissioning and management SHALL NEVER be restricted by ARL to prevent bricking devices.",
+      "formal": "∀ arl_entry: ¬(restricts(arl_entry, critical_commissioning_cluster) ∨ restricts(arl_entry, critical_management_element))",
+      "violation": "If critical clusters/elements are restricted, devices become unmanageable, causing permanent denial-of-service and bricking.",
+      "attack_vector": "Attacker with ARL write access or malicious manufacturer adds restrictions to critical commissioning/management clusters, rendering device permanently inaccessible."
+    },
+    {
+      "id": "PROP_067",
+      "name": "Access_Granted_Requires_Privilege_And_No_Restriction",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Access is granted (AccessGranted status) if and only if required privilege is in granted privileges set AND request is not restricted by ARL.",
+      "formal": "access_status = AccessGranted ⟺ (required_privilege ∈ granted_privileges) ∧ ¬is_restricted(ARL, request)",
+      "violation": "If both conditions are not checked, access control breaks: either ARL restrictions are bypassed, or privilege grants are ignored.",
+      "attack_vector": "Attacker bypasses ARL restrictions if only privilege check is performed, or bypasses privilege check if only ARL is checked."
+    },
+    {
+      "id": "PROP_068",
+      "name": "Access_Restricted_Status",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Access status is AccessRestricted if required privilege is granted by ACL but request is restricted by ARL.",
+      "formal": "access_status = AccessRestricted ⟺ (required_privilege ∈ granted_privileges) ∧ is_restricted(ARL, request)",
+      "violation": "If AccessRestricted status is not properly returned, clients cannot distinguish between privilege denial and device restriction, causing incorrect error handling.",
+      "attack_vector": "Attacker exploits ambiguous error responses to infer device restriction boundaries by comparing ACL grants with actual access results."
+    },
+    {
+      "id": "PROP_069",
+      "name": "Access_Denied_Default",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Access status is AccessDenied if required privilege is not in granted privileges set (regardless of ARL).",
+      "formal": "access_status = AccessDenied ⟺ required_privilege ∉ granted_privileges",
+      "violation": "If AccessDenied is not default when privilege is not granted, fail-open logic emerges, potentially granting access without proper authorization.",
+      "attack_vector": "Implementation defaults to permit on missing privilege checks, allowing unauthorized access when ACL matching fails."
+    },
+    {
+      "id": "PROP_070",
+      "name": "Early_Termination_On_Administer_Granted",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "ACL matching MAY terminate early once Administer privilege is granted, as it subsumes all other privileges.",
+      "formal": "∀ acl_matching: (Administer ∈ granted_privileges) ⟹ may_terminate(acl_matching)",
+      "violation": "Early termination is an optimization, not a security property. If not done, extra computation occurs but security is unchanged.",
+      "attack_vector": "No direct attack vector; this is performance optimization. Failure to optimize causes performance degradation but maintains security."
+    },
+    {
+      "id": "PROP_071",
+      "name": "CAT_Version_Comparison_Greater_Equal",
+      "category": "ReplayProtection",
+      "importance": "CRITICAL",
+      "claim": "For CAT matching, ISD CAT version SHALL be greater than or equal to ACL entry CAT version to match (supporting revocation by version increment).",
+      "formal": "∀ cat_acl, cat_isd: matches(cat_acl, cat_isd) ⟹ cat_version(cat_isd) >= cat_version(cat_acl)",
+      "violation": "If version comparison is incorrect (e.g., equality or reversed), revocation fails: either higher versions are rejected (DoS), or lower versions are accepted (security breach).",
+      "attack_vector": "Attacker with old CAT version (e.g., v1) gains access to resources requiring newer version (e.g., v2) if comparison is reversed, bypassing revocation."
+    },
+    {
+      "id": "PROP_072",
+      "name": "CAT_Revocation_By_Version_Increment",
+      "category": "Revocation",
+      "importance": "CRITICAL",
+      "claim": "CAT-based subject revocation is achieved by incrementing the required version in ACL entries and issuing new NOCs with higher CAT versions to remaining authorized subjects.",
+      "formal": "revoke(subject_with_cat_v1) ⟺ (update_ACL(cat_version := v2) ∧ ∀ authorized_subject: issue_NOC(authorized_subject, cat_version = v2) ∧ ¬issue_NOC(subject_with_cat_v1, cat_version = v2))",
+      "violation": "If revocation process is incomplete (ACL updated but NOCs not reissued, or vice versa), either legitimate users lose access (DoS) or revoked users retain access (security breach).",
+      "attack_vector": "Administrator only updates ACL version without reissuing NOCs, causing all CAT subjects to lose access. Or administrator only reissues NOCs without updating ACL, allowing revoked subject to retain access."
+    },
+    {
+      "id": "PROP_073",
+      "name": "Eventually_Consistent_CAT_Updates",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "CAT-based revocation and updates SHOULD aim for best-effort eventual consistency, as some nodes may be temporarily unreachable.",
+      "formal": "∀ node_set, update: eventually(∀ node ∈ node_set: applied(node, update)) ∧ temporarily(∃ node: ¬reachable(node))",
+      "violation": "If eventual consistency is not achieved, security policy divergence occurs, with some nodes enforcing old policy and others enforcing new policy indefinitely.",
+      "attack_vector": "Attacker deliberately makes nodes unreachable during CAT update, causing permanent policy divergence where unreachable nodes maintain old ACL entries granting access to revoked subjects."
+    },
+    {
+      "id": "PROP_074",
+      "name": "CAT_Update_Multi_Step_Coordination",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "CAT-based group updates require coordinated multi-step process: prevent new NOCs for removed subjects, issue new NOCs with incremented version to remaining subjects, update ACL entries with new version across all target nodes.",
+      "formal": "update_CAT_group(add_subjects, remove_subjects) ⟹ (prevent_NOC(remove_subjects) → issue_NOC(add_subjects ∪ existing_subjects, v_new) → update_ACL_all_nodes(v_new))",
+      "violation": "If steps are executed out of order or incompletely, transient security vulnerabilities emerge: revoked subjects retain temporary access, or authorized subjects lose temporary access.",
+      "attack_vector": "Attacker exploits timing window between NOC reissuance and ACL update to either maintain access (if revoked) or gain access (if ACL updated but NOCs not yet distributed)."
+    },
+    {
+      "id": "PROP_075",
+      "name": "AddNOC_Automatic_ACL_Entry_Creation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "During commissioning, the AddNOC command automatically creates an ACL entry granting Administer privilege for the CaseAdminSubject.",
+      "formal": "execute(AddNOC, admin_subject) ⟹ creates(ACL_entry, Privilege=Administer, Subject=admin_subject, AuthMode=CASE)",
+      "violation": "If AddNOC does not create ACL entry, commissioning completes but the new fabric administrator has no access, causing lockout and requiring factory reset.",
+      "attack_vector": "Implementation fails to create ACL entry during AddNOC, causing permanent lockout of the newly commissioned fabric, requiring factory reset (DoS)."
+    },
+    {
+      "id": "PROP_076",
+      "name": "Joint_Fabric_Uses_Administrator_CAT",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "When commissioning onto Joint Fabric, the initial ACL entry SHALL grant Administer privilege to all Nodes with the Administrator CAT (0xFFFF_FFFD_FFFF_0001) as CaseAdminSubject.",
+      "formal": "commission_to_joint_fabric ⟹ creates(ACL_entry, Subject=0xFFFF_FFFD_FFFF_0001, Privilege=Administer)",
+      "violation": "If Joint Fabric commissioning does not use Administrator CAT, either individual node IDs are used (defeating the purpose of Joint Fabric shared administration), or access control fails entirely.",
+      "attack_vector": "Commissioner adds explicit Node ID instead of Administrator CAT, preventing other Joint Fabric administrators from accessing the node, fragmenting Joint Fabric administration."
+    },
+    {
+      "id": "PROP_077",
+      "name": "CASE_Session_Optional_Rejection_By_ACL",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "A Node MAY deny CASE session establishment from an initiator whose identity doesn't match any Access Control Entry (implementation-specific optimization).",
+      "formal": "∀ case_session_request: may(reject(case_session_request)) if ∀ acl_entry: ¬matches(acl_entry.Subjects, case_session_request.source_identity)",
+      "violation": "If CASE session rejection logic is incorrect, legitimate nodes are denied sessions (DoS), or security assumption that session establishment implies some ACL entry match is violated.",
+      "attack_vector": "Implementation incorrectly rejects CASE sessions based on incomplete ACL analysis (e.g., missing CAT extraction, wildcard handling), causing legitimate peers to be denied connectivity."
+    },
+    {
+      "id": "PROP_078",
+      "name": "CASE_Rejection_Risk_Of_Unreachability",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "If CASE session rejection based on ACL is used, significant care must be taken to avoid incorrectly rejecting valid connections, which could cause a Node to become unreachable.",
+      "formal": "implements(CASE_session_ACL_filtering) ⟹ requires_careful_validation(ACL_match_logic)",
+      "violation": "If CASE rejection logic is too aggressive or has bugs, legitimate administrators are locked out, requiring factory reset.",
+      "attack_vector": "Implementation bug in CASE rejection logic incorrectly rejects administrator connections after ACL update, causing permanent lockout (self-DoS)."
+    },
+    {
+      "id": "PROP_079",
+      "name": "Transport_Network_Constraints_Out_Of_Scope",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "Any constraints on transport-level and network-level functionality are out of Access Control scope and SHALL NOT be enforced by the Access Control system.",
+      "formal": "∀ constraint: applies_to(constraint, transport_or_network_layer) ⟹ ¬enforced_by(access_control_system, constraint)",
+      "violation": "If Access Control attempts to enforce transport/network constraints, layering violations occur, causing either over-restriction (DoS) or security gaps (if lower layers bypass AC checks).",
+      "attack_vector": "Access Control enforcement at wrong layer causes operational failures or security vulnerabilities due to layer mismatch."
+    },
+    {
+      "id": "PROP_080",
+      "name": "Commissioning_Mode_Connectivity_Independent",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "The availability of commissioning-mode connectivity is out of Access Control scope and is not restricted by ACL/ARL.",
+      "formal": "∀ commissioning_connectivity: ¬restricted_by(access_control_system, commissioning_connectivity)",
+      "violation": "If Access Control restricts commissioning connectivity, devices become unmanageable, causing permanent DoS.",
+      "attack_vector": "ARL or ACL incorrectly restricts commissioning connectivity, rendering device unable to be commissioned or re-commissioned after factory reset."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "The Message Layer correctly authenticates all messages and accurately provides authentication metadata (AuthMode, source identity, CATs, etc.) to the Interaction Model.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_024, PROP_038, PROP_041, PROP_042, PROP_043, PROP_044 fail. If authentication is spoofed or metadata is incorrect, the entire Access Control system is bypassed."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "CASE sessions properly validate Operational Certificates, including signature chains back to the trusted root and extraction of all CATs from the subject.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_041, PROP_042, PROP_011, PROP_014, PROP_048, PROP_071 fail. If certificate validation is incomplete, attackers can forge identities and CATs."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "Group Key Management Cluster correctly manages group membership and validates group key possession before decrypting group messages.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_043, PROP_044 fail. If group membership is not validated, any attacker can send group messages with arbitrary Group IDs."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "The cryptographic mechanisms underlying PASE, CASE, and Group authentication are not compromised (no key extraction, no cryptographic breaks).",
+      "type": "Implicit",
+      "impact_if_violated": "All authentication-based properties fail. If crypto is broken, attackers can impersonate any subject."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Administrators act in good faith and do not intentionally create insecure ACL configurations (e.g., wildcard Administer grants to Group AuthMode).",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_032, PROP_023 are policy constraints, not technical enforcement. Malicious administrators can deliberately create insecure configurations."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "ACL and ARL updates are properly authenticated and authorized, requiring Administer privilege from legitimate administrators.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_028, PROP_029 fail. If ACL/ARL can be modified without authorization, attackers gain full control."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "The Node's data model accurately represents endpoints, clusters, device types, and their relationships for Target matching.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_055, PROP_056, PROP_057 fail. If data model is inconsistent, Target matching becomes unreliable."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "The commissioning passcode (Passcode ID 0) is only known to legitimate commissioners and is securely transmitted during PASE session establishment.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_005 fails. If commissioning passcode is compromised, attackers gain Administer privilege during commissioning."
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "Fabric isolation is enforced at lower layers, ensuring that FabricIndex in messages and sessions accurately represents the fabric context.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_045, PROP_050, PROP_063 fail. If FabricIndex can be spoofed, fabric isolation breaks entirely."
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "The Interaction Model correctly determines the required privilege for each operation based on the Data Model's access qualities.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_003 fails. If required privilege is incorrectly determined, access control decisions become inconsistent."
+    },
+    {
+      "id": "ASSUM_011",
+      "statement": "Time synchronization and clock reliability are sufficient for any time-based access control mechanisms (if any are added via extensions).",
+      "type": "Implicit",
+      "impact_if_violated": "If time-based access control is used via extensions, clock skew could allow expired credentials to remain valid or future credentials to be rejected."
+    },
+    {
+      "id": "ASSUM_012",
+      "statement": "The AddNOC command is only invocable during commissioning with proper authorization, and cannot be called in operational phase to add new fabrics without re-commissioning.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_075, PROP_076 fail. If AddNOC can be called operationally, attackers can add new fabrics and administrators without proper authorization."
+    },
+    {
+      "id": "ASSUM_013",
+      "statement": "CAT identifiers are properly allocated according to the specification's allocation table, with 0xFFFF and 0xFFFE reserved for Administrator and Anchor CATs in Joint Fabric.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_012, PROP_014 fail. If CAT identifiers collide or are misallocated, privilege boundaries in Joint Fabric become ambiguous."
+    },
+    {
+      "id": "ASSUM_014",
+      "statement": "NOC issuance is controlled by a trusted Certificate Authority that validates subject identity and only issues CATs to authorized subjects.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_011, PROP_012, PROP_014, PROP_048, PROP_071, PROP_072 fail. If CA is compromised, attackers can obtain arbitrary CATs and impersonate any group."
+    },
+    {
+      "id": "ASSUM_015",
+      "statement": "Eventual consistency for CAT-based revocation is acceptable, with temporary windows where revoked subjects may retain access to unreachable nodes.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_073 acknowledges this. If instant consistency is required, the CAT revocation mechanism is insufficient."
+    },
+    {
+      "id": "ASSUM_016",
+      "statement": "Device manufacturers properly configure CommissioningARL and ARL to enforce device-specific security boundaries without preventing commissioning.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_036, PROP_037, PROP_066 fail. If manufacturers misconfigure ARL, devices become unmanageable (DoS) or security boundaries are not enforced."
+    },
+    {
+      "id": "ASSUM_017",
+      "statement": "The Managed Device feature flag accurately indicates which endpoints and clusters are subject to ARL restrictions.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_065 fails. If feature flag is incorrect, ARL restrictions apply to wrong scope, causing operational failures or security gaps."
+    },
+    {
+      "id": "ASSUM_018",
+      "statement": "ACL extension processing is secure and does not introduce vulnerabilities through malformed or malicious extension data.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_058 fails. If extensions have vulnerabilities, attackers can exploit them to bypass access control or cause crashes."
+    },
+    {
+      "id": "ASSUM_019",
+      "statement": "When multiple actions are batched in a single Interaction Model message, they are processed sequentially in order, and state updates from earlier actions are visible to later actions.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_034, PROP_035 fail. If actions are reordered or processed in parallel, ACL update side-effects become unpredictable."
+    },
+    {
+      "id": "ASSUM_020",
+      "statement": "The pending fabric index mechanism correctly identifies when a CASE session is being used for commissioning (during AddNOC) vs operational use.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_040 fails. If IsCommissioning flag is incorrect for CASE, CommissioningARL is incorrectly applied or bypassed."
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "Factory_Reset",
+      "properties_enforcing_transitions": ["PROP_005", "PROP_009"],
+      "critical_property": "PROP_005: Node in factory reset state has implicit PASE admin privilege for commissioning, with no explicit ACL entries except implicit PASE entry."
+    },
+    {
+      "state_name": "Commissioning_PASE_Active",
+      "properties_enforcing_transitions": ["PROP_005", "PROP_006", "PROP_039", "PROP_062"],
+      "critical_property": "PROP_006: Asymmetric privilege - Commissionee has implicit Administer over itself, Commissioner does not have Administer over Commissionee during PASE. CommissioningARL applies."
+    },
+    {
+      "state_name": "AddNOC_Execution",
+      "properties_enforcing_transitions": ["PROP_075", "PROP_076"],
+      "critical_property": "PROP_075: Transition creates first explicit ACL entry granting Administer to CaseAdminSubject (Node ID or Administrator CAT for Joint Fabric)."
+    },
+    {
+      "state_name": "Commissioned_Operational",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_002", "PROP_003", "PROP_033"],
+      "critical_property": "PROP_003: All access requires explicit ACL grant; PASE implicit privilege no longer applies. ARL (not CommissioningARL) applies."
+    },
+    {
+      "state_name": "ACL_Entry_Update",
+      "properties_enforcing_transitions": ["PROP_021", "PROP_033", "PROP_034"],
+      "critical_property": "PROP_033: ACL updates take immediate effect, including within the same Interaction Model message for subsequent actions."
+    },
+    {
+      "state_name": "CAT_Version_Update",
+      "properties_enforcing_transitions": ["PROP_072", "PROP_073", "PROP_074"],
+      "critical_property": "PROP_072: Revocation requires coordinated NOC reissuance and ACL version update across all nodes, with eventual consistency."
+    },
+    {
+      "state_name": "ARL_Update",
+      "properties_enforcing_transitions": ["PROP_027", "PROP_036", "PROP_062"],
+      "critical_property": "PROP_027: ARL restrictions override ACL grants immediately upon update, but must not prevent commissioning operations."
+    },
+    {
+      "state_name": "CASE_Session_Established",
+      "properties_enforcing_transitions": ["PROP_040", "PROP_041", "PROP_042", "PROP_051"],
+      "critical_property": "PROP_041: CASE session ISD includes source Node ID and all CATs from certificate, enabling node-specific and group-based access control."
+    },
+    {
+      "state_name": "Group_Message_Received",
+      "properties_enforcing_transitions": ["PROP_043", "PROP_044", "PROP_032"],
+      "critical_property": "PROP_044: Group membership must be verified against Group Key Management Cluster before granting any access, with prohibition on Administer privilege."
+    },
+    {
+      "state_name": "Privilege_Evaluation",
+      "properties_enforcing_transitions": ["PROP_048", "PROP_049", "PROP_067"],
+      "critical_property": "PROP_067: Access granted if and only if required privilege is granted by ACL AND not restricted by ARL."
+    },
+    {
+      "state_name": "Self_Lockout",
+      "properties_enforcing_transitions": ["PROP_034", "PROP_035"],
+      "critical_property": "PROP_035: Administrator can accidentally lock themselves out via intra-message ACL update that restricts their own access before subsequent actions."
+    },
+    {
+      "state_name": "Revocation_Window",
+      "properties_enforcing_transitions": ["PROP_071", "PROP_072", "PROP_073"],
+      "critical_property": "PROP_073: Temporary window exists where revoked CAT subjects retain access to unreachable nodes not yet updated with new CAT version."
+    }
+  ],
+  "additionalInsights": "1. **Temporal Security Risk**: The specification's requirement for immediate ACL update effect (PROP_033, PROP_034) creates a subtle but critical self-lockout vulnerability. Administrators performing multi-step ACL updates within a single message can inadvertently restrict their own access in earlier actions, causing subsequent actions to fail and potentially locking themselves out permanently if no other administrator exists. This is a design choice that prioritizes consistency but increases operational risk.\n\n2. **CAT Revocation Complexity**: The CAT version-based revocation mechanism (PROP_072, PROP_073, PROP_074) is complex and error-prone, requiring carefully coordinated multi-step updates across potentially unreachable nodes. The specification acknowledges eventual consistency is acceptable, creating temporary security windows where revoked subjects retain access. This is a fundamental tension between security (instant revocation) and availability (tolerating network partitions).\n\n3. **Wildcard Accidental Creation Risk**: The specification's wildcard semantics for empty Subjects/Targets lists (PROP_019, PROP_020) combined with the recommendation against incremental deletion (PROP_021, PROP_022) highlights a significant operational risk. Incremental deletion (e.g., removing subjects one by one) can inadvertently create wildcard entries when the last element is removed, dramatically expanding access. However, atomic list updates are only RECOMMENDED (SHOULD), not REQUIRED (SHALL), leaving room for dangerous implementation practices.\n\n4. **Group AuthMode Security Boundary**: The prohibition on granting Administer privilege via Group AuthMode (PROP_031, PROP_032, PROP_059) is a critical security boundary that prevents administrative control from being shared via symmetric keys. However, this is enforced via assertion in the algorithm rather than validation during ACL entry creation, potentially allowing malicious or buggy administrators to create prohibited entries that are only caught during privilege evaluation (if at all).\n\n5. **ARL Override Semantics**: The ARL override of ACL (PROP_027, PROP_004) creates a two-stage access control system where device manufacturers can impose restrictions that fabric administrators cannot bypass. This is powerful for device security but creates potential for misuse: manufacturers could use ARL to restrict legitimate device management, and there's no specification mechanism for administrators to challenge or override manufacturer-imposed restrictions (by design).\n\n6. **Commissioning vs Operational Asymmetry**: The specification creates distinct security models for commissioning (implicit PASE admin privilege, CommissioningARL) vs operational (explicit ACL grants, ARL) phases. The transition between these phases (triggered by AddNOC and CommissioningComplete) is a critical security boundary where privileges and restrictions change dramatically. The asymmetric PASE privilege (PROP_006: Commissionee can admin itself, Commissioner cannot admin Commissionee) is particularly subtle and easy to implement incorrectly.\n\n7. **ISD Derivation Criticality**: The entire Access Control system depends on correct ISD derivation (PROP_038, PROP_047). A single bug in ISD construction (e.g., missing CAT extraction, incorrect AuthMode determination, wrong FabricIndex) cascades through all subsequent access control decisions. The specification mandates fail-safe default (PROP_047) but implementations may not properly detect all derivation failure modes.\n\n8. **Extension Security Gap**: The specification allows Access Control Extensions (PROP_025, PROP_058) but provides minimal guidance on extension security. Extensions can theoretically modify access control behavior in arbitrary ways, creating vendor-specific security boundaries that are not portable across implementations and may introduce vulnerabilities. The requirement that extensions 'must not fail' (PROP_058) may cause implementations to skip extension validation rather than risk breaking access control.\n\n9. **CASE Session Rejection Dilemma**: The specification allows (but does not require) nodes to reject CASE session establishment based on ACL analysis (PROP_077, PROP_078). This optimization can improve security (deny connections from unauthorized nodes) but is fraught with danger: incorrect rejection logic can cause permanent lockout. The specification warns against this but provides no concrete guidance on safe implementation, leaving implementations to navigate the tradeoff between security optimization and availability risk.\n\n10. **Cross-Layer Enforcement Boundary**: The specification explicitly places Access Control at the Interaction Model layer, excluding transport and network layers (PROP_079, PROP_080). This creates potential for bypass attacks if lower layers make security decisions inconsistent with Access Control policy, or if Access Control assumptions (e.g., authenticated source identity) are violated by lower layer failures. The layering is clean but assumes perfect lower-layer security.\n\n11. **Privilege Subsumption Complexity**: The privilege subsumption model (PROP_049) where higher privileges include lower privileges is elegant but creates implementation complexity: every access control check must either recursively check all subsumed privileges or expand privileges during grant evaluation. Failure to properly implement subsumption causes administrators to be denied low-privilege operations, appearing as mysterious operational failures.\n\n12. **No Explicit Concurrency Control**: The specification does not address concurrent ACL updates from multiple administrators or distributed ACL synchronization, assuming a simple last-write-wins model. This creates race conditions in multi-administrator scenarios where concurrent ACL updates can interleave, causing unexpected final states or lost updates.\n\n13. **Device Type Indirection Attack Surface**: The Target matching via DeviceType (PROP_057) adds indirection complexity: access control depends on the data model's endpoint-to-device-type mapping, which may be dynamic or implementation-specific. If this mapping is manipulated or inconsistent, Target matching becomes unreliable, potentially granting or denying access incorrectly.\n\n14. **Attribution Granularity Tradeoff**: Recording attribution against ISD rather than ACL entry (PROP_030) provides precise attribution when subjects are individual Node IDs but reduces precision for CAT-based or wildcard entries where multiple nodes match the same ACL entry. This is a fundamental tradeoff between broad policy expression and fine-grained auditing.\n\n15. **Mandatory Device Feature Restriction Scope**: The ARL restriction scope limited to mandatory clusters on Managed Device feature endpoints (PROP_065) creates complexity: implementations must track which clusters are mandatory per device type, and which endpoints support Managed Device feature. Incorrect scope determination causes either over-restriction (DoS) or under-restriction (security gap). The specification references this requirement but does not fully specify it within this section, creating implementation ambiguity.",
+  "summary": {
+    "total_properties": 80,
+    "by_importance": {
+      "CRITICAL": 63,
+      "HIGH": 13,
+      "MEDIUM": 4
+    },
+    "by_category": {
+      "Security": 29,
+      "AccessControl": 15,
+      "Correctness": 9,
+      "IdentityBinding": 6,
+      "ReplayProtection": 3,
+      "Timing": 3,
+      "Atomicity": 2,
+      "Consistency": 2,
+      "Revocation": 2,
+      "ScopeIsolation": 2,
+      "StateLifecycle": 0,
+      "Cryptography": 0
+    },
+    "total_assumptions": 20,
+    "coverage_notes": "Complete extraction of all normative requirements, implicit invariants, and security-relevant properties from the Access Control specification. All SHALL/MUST requirements extracted; security-relevant SHOULD requirements included; implicit properties derived from combined rules and state transitions; attack vectors identified for each violation. FSM-relevant properties mapped to state transitions. No normative statement skipped."
+  }
+}

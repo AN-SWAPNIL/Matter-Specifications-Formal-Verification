@@ -1,0 +1,2026 @@
+{
+  "fsm_model": {
+    "section_name": "6.2 Device Attestation",
+    "section_ref": "Matter Core Specification 1.4, Section 6.2",
+    "description": "FSM modeling the Device Attestation procedure, including certificate validation, cryptographic verification, revocation checking, and policy validation",
+    "states": [
+      {
+        "name": "Unattested",
+        "description": "Initial state before attestation procedure begins. Commissionee has DAC and private key, but Commissioner has not yet initiated attestation.",
+        "is_initial": true,
+        "invariants": [
+          "commissionee_has_dac == true",
+          "commissionee_has_private_key == true",
+          "attestation_started == false"
+        ],
+        "state_variables": {
+          "commissioning_session": "CASE_or_PASE_session",
+          "attestation_started": "boolean",
+          "commissionee_dac": "X509v3_certificate",
+          "commissionee_private_key": "ECC_private_key_prime256v1"
+        }
+      },
+      {
+        "name": "NonceGenerated",
+        "description": "Commissioner has generated a fresh 32-byte random attestation nonce using Crypto_DRBG.",
+        "is_initial": false,
+        "invariants": [
+          "attestation_nonce != null",
+          "length(attestation_nonce) == 32",
+          "nonce_freshness == true"
+        ],
+        "state_variables": {
+          "attestation_nonce": "32_byte_random",
+          "nonce_generation_time": "timestamp"
+        }
+      },
+      {
+        "name": "AttestationRequested",
+        "description": "Commissioner has sent AttestationRequest with nonce to Commissionee, awaiting AttestationResponse.",
+        "is_initial": false,
+        "invariants": [
+          "request_sent == true",
+          "response_received == false",
+          "awaiting_response == true"
+        ],
+        "state_variables": {
+          "request_timestamp": "timestamp",
+          "timeout_active": "boolean"
+        }
+      },
+      {
+        "name": "ResponseReceived",
+        "description": "Commissionee returned AttestationResponse with signed Attestation Information. Ready for validation.",
+        "is_initial": false,
+        "invariants": [
+          "response_received == true",
+          "attestation_response != null",
+          "validation_started == false"
+        ],
+        "state_variables": {
+          "attestation_response": "AttestationResponse_message",
+          "attestation_elements": "AttestationElements_structure",
+          "attestation_signature": "ECDSA_signature",
+          "attestation_tbs": "to_be_signed_data",
+          "certification_declaration": "CD_structure"
+        }
+      },
+      {
+        "name": "CertificateChainObtained",
+        "description": "Commissioner has obtained DAC chain (DAC, PAI, PAA) either before or after receiving AttestationResponse.",
+        "is_initial": false,
+        "invariants": [
+          "dac_obtained == true",
+          "pai_obtained == true",
+          "paa_obtained == true",
+          "chain_length == 3"
+        ],
+        "state_variables": {
+          "dac_certificate": "X509v3_certificate",
+          "pai_certificate": "X509v3_certificate",
+          "paa_certificate": "X509v3_certificate",
+          "chain_obtained_method": "CertificateChainRequest_or_cached"
+        }
+      },
+      {
+        "name": "NonceValidated",
+        "description": "AttestationNonce in response matches the Commissioner's provided nonce.",
+        "is_initial": false,
+        "invariants": [
+          "nonce_match == true",
+          "response_nonce == request_nonce"
+        ],
+        "state_variables": {
+          "nonce_validated": "boolean"
+        }
+      },
+      {
+        "name": "SignatureValidated",
+        "description": "Device Attestation Signature has been cryptographically verified using DAC public key.",
+        "is_initial": false,
+        "invariants": [
+          "signature_valid == true",
+          "crypto_verify_success == true"
+        ],
+        "state_variables": {
+          "signature_verification_result": "boolean",
+          "dac_public_key": "ECC_public_key_prime256v1"
+        }
+      },
+      {
+        "name": "CertificateFormatValidated",
+        "description": "DAC, PAI, PAA certificates conform to all format constraints (version, encoding, extensions, key usage, basic constraints, etc.)",
+        "is_initial": false,
+        "invariants": [
+          "dac_format_valid == true",
+          "pai_format_valid == true",
+          "paa_format_valid == true",
+          "all_v3_certificates == true",
+          "all_der_encoded == true",
+          "signature_algorithm_all_ecdsa_sha256 == true",
+          "all_curves_prime256v1 == true"
+        ],
+        "state_variables": {
+          "format_validation_details": "validation_result_structure"
+        }
+      },
+      {
+        "name": "ChainCryptographicallyValidated",
+        "description": "Certificate chain (DAC→PAI→PAA) has been validated using Crypto_VerifyChainDER with respect to DAC notBefore timestamp.",
+        "is_initial": false,
+        "invariants": [
+          "chain_signatures_valid == true",
+          "issuer_subject_matches == true",
+          "validation_time == dac_notBefore",
+          "path_length == 2"
+        ],
+        "state_variables": {
+          "chain_validation_result": "boolean",
+          "validation_timestamp": "dac_notBefore_value"
+        }
+      },
+      {
+        "name": "PAAValidated",
+        "description": "PAA certificate is present in Commissioner's trusted root store and was in DCL at DAC issuance time.",
+        "is_initial": false,
+        "invariants": [
+          "paa_in_trusted_store == true",
+          "paa_in_dcl_at_issuance == true"
+        ],
+        "state_variables": {
+          "trusted_paa_list": "list_of_paa_certificates",
+          "dcl_paa_list_at_issuance": "list_from_dcl"
+        }
+      },
+      {
+        "name": "RevocationChecked",
+        "description": "DAC and PAI revocation status has been checked against DCL-based revocation data. Neither certificate is revoked.",
+        "is_initial": false,
+        "invariants": [
+          "dac_revoked == false",
+          "pai_revoked == false",
+          "revocation_check_performed == true"
+        ],
+        "state_variables": {
+          "revocation_data_available": "boolean",
+          "revocation_set": "CRL_based_revocation_data",
+          "dac_serial_number": "certificate_serial",
+          "pai_serial_number": "certificate_serial"
+        }
+      },
+      {
+        "name": "VendorIDPolicyValidated",
+        "description": "VendorID consistency validated across entire chain (DAC, PAI, PAA if present) and matches Certification Declaration.",
+        "is_initial": false,
+        "invariants": [
+          "dac_vid == pai_vid",
+          "pai_vid == paa_vid (if paa has vid)",
+          "vid_encoding_consistent == true",
+          "vid_matches_certification_declaration == true"
+        ],
+        "state_variables": {
+          "dac_vendor_id": "16bit_vendor_id",
+          "pai_vendor_id": "16bit_vendor_id",
+          "paa_vendor_id": "16bit_vendor_id_or_null",
+          "cd_vendor_id": "16bit_vendor_id",
+          "encoding_method_used": "preferred_or_fallback"
+        }
+      },
+      {
+        "name": "ProductIDPolicyValidated",
+        "description": "ProductID consistency validated across chain and matches Certification Declaration product_id_array or dac_origin_product_id.",
+        "is_initial": false,
+        "invariants": [
+          "dac_pid_consistent_with_pai == true",
+          "pid_in_certification_declaration == true",
+          "dac_origin_fields_valid (if present)"
+        ],
+        "state_variables": {
+          "dac_product_id": "16bit_product_id",
+          "pai_product_id": "16bit_product_id_or_null",
+          "cd_product_id_array": "list_of_16bit_product_ids",
+          "cd_dac_origin_product_id": "16bit_product_id_or_null"
+        }
+      },
+      {
+        "name": "CertificationDeclarationValidated",
+        "description": "Certification Declaration fully validated: VID/PID match Basic Info cluster, dac_origin fields consistent, authorized_paa_list checked, certificate_id matched (SHOULD).",
+        "is_initial": false,
+        "invariants": [
+          "cd_vid_matches_basic_info == true",
+          "cd_pid_in_product_array == true",
+          "dac_origin_consistency == true",
+          "authorized_paa_check_passed == true (if field present)"
+        ],
+        "state_variables": {
+          "basic_info_vendor_id": "16bit_vendor_id",
+          "basic_info_product_id": "16bit_product_id",
+          "basic_info_software_version": "32bit_version",
+          "cd_certificate_id": "string",
+          "cd_authorized_paa_list": "list_of_ski_or_null",
+          "paa_ski": "subject_key_identifier"
+        }
+      },
+      {
+        "name": "AttestationChallengeValidated",
+        "description": "AttestationChallenge from secure session (CASE/PASE) context matched in Attestation Information.",
+        "is_initial": false,
+        "invariants": [
+          "attestation_challenge_valid == true",
+          "challenge_from_secure_session == true"
+        ],
+        "state_variables": {
+          "session_type": "CASE_or_PASE_or_resumed_CASE",
+          "attestation_challenge": "challenge_from_session_context"
+        }
+      },
+      {
+        "name": "FirmwareInfoValidated",
+        "description": "firmware_information field (if present) matched against DCL DeviceSoftwareCompliance entry. Optional validation.",
+        "is_initial": false,
+        "invariants": [
+          "firmware_info_matched == true (if supported)",
+          "firmware_info_validation_skipped (if not supported)"
+        ],
+        "state_variables": {
+          "firmware_information": "firmware_info_structure_or_null",
+          "dcl_firmware_info": "firmware_info_from_dcl_or_null",
+          "commissioner_supports_firmware_validation": "boolean"
+        }
+      },
+      {
+        "name": "FullyAttested",
+        "description": "Device successfully attested. All validations passed. Commissioner can proceed with commissioning.",
+        "is_initial": false,
+        "invariants": [
+          "all_validations_passed == true",
+          "device_authenticated == true",
+          "device_certified == true"
+        ],
+        "state_variables": {
+          "attestation_complete": "boolean",
+          "attestation_result": "success",
+          "commissioning_can_proceed": "true"
+        }
+      },
+      {
+        "name": "RequestTimeout",
+        "description": "AttestationResponse not received within timeout period.",
+        "is_initial": false,
+        "invariants": [
+          "timeout_expired == true",
+          "response_received == false"
+        ],
+        "state_variables": {
+          "timeout_reason": "no_response",
+          "error_type": "timeout"
+        }
+      },
+      {
+        "name": "NonceValidationFailed",
+        "description": "AttestationNonce in response does not match Commissioner's nonce. Possible replay attack.",
+        "is_initial": false,
+        "invariants": [
+          "nonce_match == false",
+          "response_nonce != request_nonce"
+        ],
+        "state_variables": {
+          "expected_nonce": "32_byte_value",
+          "received_nonce": "32_byte_value",
+          "error_type": "nonce_mismatch"
+        }
+      },
+      {
+        "name": "SignatureVerificationFailed",
+        "description": "Device Attestation Signature verification failed. Device does not possess private key or signature is invalid.",
+        "is_initial": false,
+        "invariants": [
+          "signature_valid == false",
+          "crypto_verify_failed == true"
+        ],
+        "state_variables": {
+          "verification_result": "failure",
+          "error_type": "invalid_signature"
+        }
+      },
+      {
+        "name": "CertificateFormatInvalid",
+        "description": "One or more certificates in chain do not conform to format requirements (wrong version, encoding, extensions, key usage, etc.).",
+        "is_initial": false,
+        "invariants": [
+          "format_validation_failed == true"
+        ],
+        "state_variables": {
+          "invalid_certificate": "dac_or_pai_or_paa",
+          "format_violation": "specific_constraint_violated",
+          "error_type": "certificate_format_error"
+        }
+      },
+      {
+        "name": "ChainValidationFailed",
+        "description": "Cryptographic chain validation failed (invalid signatures, issuer-subject mismatch, wrong path length, etc.).",
+        "is_initial": false,
+        "invariants": [
+          "chain_valid == false",
+          "crypto_verify_chain_failed == true"
+        ],
+        "state_variables": {
+          "chain_error": "signature_invalid_or_path_mismatch_or_wrong_length",
+          "error_type": "chain_validation_error"
+        }
+      },
+      {
+        "name": "PAANotTrusted",
+        "description": "PAA certificate not found in Commissioner's trusted root store or not in DCL at DAC issuance time.",
+        "is_initial": false,
+        "invariants": [
+          "paa_in_trusted_store == false"
+        ],
+        "state_variables": {
+          "paa_subject": "X500_distinguished_name",
+          "paa_ski": "subject_key_identifier",
+          "error_type": "untrusted_paa"
+        }
+      },
+      {
+        "name": "CertificateRevoked",
+        "description": "DAC or PAI certificate found in revocation list. Device credentials compromised or recalled.",
+        "is_initial": false,
+        "invariants": [
+          "dac_revoked == true || pai_revoked == true"
+        ],
+        "state_variables": {
+          "revoked_certificate": "dac_or_pai",
+          "revocation_reason": "reason_from_crl",
+          "error_type": "certificate_revoked"
+        }
+      },
+      {
+        "name": "RevocationCheckSkipped",
+        "description": "Revocation data unavailable. Commissioner may proceed with warning to user about potential risk.",
+        "is_initial": false,
+        "invariants": [
+          "revocation_data_available == false",
+          "user_notified == true (should)"
+        ],
+        "state_variables": {
+          "skip_reason": "dcl_unavailable_or_crl_stale",
+          "user_notification_issued": "boolean",
+          "warning_type": "revocation_check_bypassed"
+        }
+      },
+      {
+        "name": "CRLStaleWarning",
+        "description": "CRL data available but no update beyond nextUpdate timestamp. Commissioner proceeds with user warning.",
+        "is_initial": false,
+        "invariants": [
+          "crl_available == true",
+          "crl_stale == true",
+          "user_notified_crl_stale == true"
+        ],
+        "state_variables": {
+          "crl_next_update": "timestamp",
+          "current_time": "timestamp",
+          "warning_type": "crl_stale"
+        }
+      },
+      {
+        "name": "CertificateIDMismatched",
+        "description": "certificate_id field does not match DCL CDCertificateID (non-fatal SHOULD validation). Commissioner proceeds with additional DCL check.",
+        "is_initial": false,
+        "invariants": [
+          "certificate_id_match == false",
+          "software_version_certified_check_pending == true"
+        ],
+        "state_variables": {
+          "cd_certificate_id": "string",
+          "dcl_certificate_id": "string",
+          "software_version_certification_checked": "boolean"
+        }
+      },
+      {
+        "name": "VendorIDPolicyViolation",
+        "description": "VendorID mismatch across chain or with Certification Declaration. Cross-vendor attack detected.",
+        "is_initial": false,
+        "invariants": [
+          "vid_policy_valid == false"
+        ],
+        "state_variables": {
+          "mismatch_location": "dac_pai_or_paa_or_cd",
+          "error_type": "vendor_id_policy_violation"
+        }
+      },
+      {
+        "name": "ProductIDPolicyViolation",
+        "description": "ProductID mismatch in chain or not in Certification Declaration product_id_array.",
+        "is_initial": false,
+        "invariants": [
+          "pid_policy_valid == false"
+        ],
+        "state_variables": {
+          "mismatch_location": "dac_pai_or_cd",
+          "error_type": "product_id_policy_violation"
+        }
+      },
+      {
+        "name": "CertificationDeclarationInvalid",
+        "description": "Certification Declaration validation failed (VID/PID mismatch with Basic Info, dac_origin inconsistency, unauthorized PAA, etc.).",
+        "is_initial": false,
+        "invariants": [
+          "cd_valid == false"
+        ],
+        "state_variables": {
+          "cd_error": "specific_validation_failure",
+          "error_type": "certification_declaration_invalid"
+        }
+      },
+      {
+        "name": "EncodingAmbiguityDetected",
+        "description": "VendorID/ProductID encoding methods mixed within same field or malformed fallback encoding detected.",
+        "is_initial": false,
+        "invariants": [
+          "encoding_valid == false"
+        ],
+        "state_variables": {
+          "encoding_error": "mixed_methods_or_malformed_fallback",
+          "problematic_certificate": "dac_or_pai_or_paa",
+          "error_type": "encoding_error"
+        }
+      },
+      {
+        "name": "OfflineCommissioning",
+        "description": "Commissioning proceeds without DCL access. Commissioner validates CD against runtime attributes but cannot verify certificate_id or firmware info.",
+        "is_initial": false,
+        "invariants": [
+          "dcl_available == false",
+          "cd_present == true",
+          "deferred_dcl_check_needed == true"
+        ],
+        "state_variables": {
+          "offline_mode": "true",
+          "deferred_checks": "list_of_pending_validations"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "Unattested",
+        "to_state": "NonceGenerated",
+        "trigger": "begin_attestation",
+        "guard_condition": "commissioning_session_established == true",
+        "actions": [
+          "attestation_nonce := generate_random_nonce()",
+          "nonce_generation_time := current_timestamp()",
+          "attestation_started := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NonceGenerated",
+        "to_state": "AttestationRequested",
+        "trigger": "send_attestation_request",
+        "guard_condition": "attestation_nonce != null && length(attestation_nonce) == 32",
+        "actions": [
+          "send_message(AttestationRequest, attestation_nonce)",
+          "request_timestamp := current_timestamp()",
+          "timeout_active := true",
+          "request_sent := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AttestationRequested",
+        "to_state": "ResponseReceived",
+        "trigger": "receive_attestation_response",
+        "guard_condition": "response_received_before_timeout == true && attestation_response_valid_format == true",
+        "actions": [
+          "attestation_response := received_message",
+          "attestation_elements := extract_attestation_elements(attestation_response)",
+          "attestation_signature := extract_signature(attestation_response)",
+          "attestation_tbs := extract_tbs(attestation_response)",
+          "certification_declaration := extract_cd(attestation_response)",
+          "timeout_active := false"
+        ],
+        "timing_requirement": "before timeout expires"
+      },
+      {
+        "from_state": "AttestationRequested",
+        "to_state": "RequestTimeout",
+        "trigger": "timeout_expired",
+        "guard_condition": "response_received == false && timeout_elapsed == true",
+        "actions": [
+          "timeout_expired := true",
+          "timeout_reason := 'no_response'",
+          "generate_event(attestation_timeout_error)"
+        ],
+        "timing_requirement": "after timeout period"
+      },
+      {
+        "from_state": "ResponseReceived",
+        "to_state": "CertificateChainObtained",
+        "trigger": "obtain_certificate_chain",
+        "guard_condition": "chain_not_already_cached == true",
+        "actions": [
+          "dac_certificate := request_certificate(DAC)",
+          "pai_certificate := request_certificate(PAI)",
+          "paa_certificate := request_certificate(PAA)",
+          "chain_obtained_method := 'CertificateChainRequest'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ResponseReceived",
+        "to_state": "CertificateChainObtained",
+        "trigger": "use_cached_chain",
+        "guard_condition": "chain_already_cached == true && cache_valid == true",
+        "actions": [
+          "dac_certificate := cached_dac",
+          "pai_certificate := cached_pai",
+          "paa_certificate := cached_paa",
+          "chain_obtained_method := 'cached'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateChainObtained",
+        "to_state": "NonceValidated",
+        "trigger": "validate_nonce",
+        "guard_condition": "extract_nonce(attestation_elements) == attestation_nonce",
+        "actions": [
+          "nonce_validated := true",
+          "nonce_match := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateChainObtained",
+        "to_state": "NonceValidationFailed",
+        "trigger": "validate_nonce",
+        "guard_condition": "extract_nonce(attestation_elements) != attestation_nonce",
+        "actions": [
+          "nonce_match := false",
+          "expected_nonce := attestation_nonce",
+          "received_nonce := extract_nonce(attestation_elements)",
+          "generate_event(nonce_mismatch_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NonceValidated",
+        "to_state": "SignatureValidated",
+        "trigger": "verify_attestation_signature",
+        "guard_condition": "crypto_verify(dac_public_key, attestation_tbs, attestation_signature) == SUCCESS",
+        "actions": [
+          "signature_valid := true",
+          "crypto_verify_success := true",
+          "signature_verification_result := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "NonceValidated",
+        "to_state": "SignatureVerificationFailed",
+        "trigger": "verify_attestation_signature",
+        "guard_condition": "crypto_verify(dac_public_key, attestation_tbs, attestation_signature) == FAILURE",
+        "actions": [
+          "signature_valid := false",
+          "crypto_verify_failed := true",
+          "verification_result := 'failure'",
+          "generate_event(signature_verification_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SignatureValidated",
+        "to_state": "CertificateFormatValidated",
+        "trigger": "validate_certificate_formats",
+        "guard_condition": "validate_dac_format() == true && validate_pai_format() == true && validate_paa_format() == true",
+        "actions": [
+          "dac_format_valid := true",
+          "pai_format_valid := true",
+          "paa_format_valid := true",
+          "format_validation_details := generate_format_report()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "SignatureValidated",
+        "to_state": "CertificateFormatInvalid",
+        "trigger": "validate_certificate_formats",
+        "guard_condition": "validate_dac_format() == false || validate_pai_format() == false || validate_paa_format() == false",
+        "actions": [
+          "format_validation_failed := true",
+          "invalid_certificate := identify_invalid_cert()",
+          "format_violation := identify_violation()",
+          "generate_event(certificate_format_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateFormatValidated",
+        "to_state": "ChainCryptographicallyValidated",
+        "trigger": "validate_certificate_chain",
+        "guard_condition": "crypto_verify_chain_der(dac_certificate, pai_certificate, paa_certificate, dac_notBefore) == SUCCESS && verify_issuer_subject_matches() == true && path_length == 2",
+        "actions": [
+          "chain_signatures_valid := true",
+          "issuer_subject_matches := true",
+          "validation_time := extract_notBefore(dac_certificate)",
+          "chain_validation_result := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateFormatValidated",
+        "to_state": "ChainValidationFailed",
+        "trigger": "validate_certificate_chain",
+        "guard_condition": "crypto_verify_chain_der(dac_certificate, pai_certificate, paa_certificate, dac_notBefore) == FAILURE || verify_issuer_subject_matches() == false || path_length != 2",
+        "actions": [
+          "chain_valid := false",
+          "chain_error := identify_chain_error()",
+          "generate_event(chain_validation_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ChainCryptographicallyValidated",
+        "to_state": "PAAValidated",
+        "trigger": "validate_paa_trust",
+        "guard_condition": "paa_in_trusted_store(paa_certificate) == true && paa_in_dcl_at_time(paa_certificate, dac_notBefore) == true",
+        "actions": [
+          "paa_in_trusted_store := true",
+          "paa_in_dcl_at_issuance := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ChainCryptographicallyValidated",
+        "to_state": "PAANotTrusted",
+        "trigger": "validate_paa_trust",
+        "guard_condition": "paa_in_trusted_store(paa_certificate) == false || paa_in_dcl_at_time(paa_certificate, dac_notBefore) == false",
+        "actions": [
+          "paa_in_trusted_store := false",
+          "paa_subject := extract_subject(paa_certificate)",
+          "paa_ski := extract_ski(paa_certificate)",
+          "generate_event(untrusted_paa_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PAAValidated",
+        "to_state": "RevocationChecked",
+        "trigger": "check_revocation",
+        "guard_condition": "revocation_data_available == true && is_revoked(dac_certificate, revocation_set) == false && is_revoked(pai_certificate, revocation_set) == false",
+        "actions": [
+          "dac_revoked := false",
+          "pai_revoked := false",
+          "revocation_check_performed := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PAAValidated",
+        "to_state": "CertificateRevoked",
+        "trigger": "check_revocation",
+        "guard_condition": "revocation_data_available == true && (is_revoked(dac_certificate, revocation_set) == true || is_revoked(pai_certificate, revocation_set) == true)",
+        "actions": [
+          "revoked_certificate := identify_revoked_cert()",
+          "revocation_reason := extract_revocation_reason()",
+          "generate_event(certificate_revoked_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PAAValidated",
+        "to_state": "RevocationCheckSkipped",
+        "trigger": "check_revocation",
+        "guard_condition": "revocation_data_available == false",
+        "actions": [
+          "skip_reason := identify_skip_reason()",
+          "notify_user('revocation_check_bypassed')",
+          "user_notification_issued := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "PAAValidated",
+        "to_state": "CRLStaleWarning",
+        "trigger": "check_revocation",
+        "guard_condition": "revocation_data_available == true && crl_is_stale() == true && no_revocations_found() == true",
+        "actions": [
+          "crl_stale := true",
+          "crl_next_update := extract_crl_next_update()",
+          "current_time := current_timestamp()",
+          "notify_user('crl_stale_warning')",
+          "user_notified_crl_stale := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CRLStaleWarning",
+        "to_state": "VendorIDPolicyValidated",
+        "trigger": "validate_vendor_id_policy",
+        "guard_condition": "extract_vid(dac_certificate) == extract_vid(pai_certificate) && (has_vid(paa_certificate) == false || extract_vid(paa_certificate) == extract_vid(pai_certificate)) && encoding_method_consistent() == true",
+        "actions": [
+          "dac_vendor_id := extract_vid(dac_certificate)",
+          "pai_vendor_id := extract_vid(pai_certificate)",
+          "paa_vendor_id := extract_vid_if_present(paa_certificate)",
+          "vid_encoding_consistent := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CRLStaleWarning",
+        "to_state": "VendorIDPolicyViolation",
+        "trigger": "validate_vendor_id_policy",
+        "guard_condition": "extract_vid(dac_certificate) != extract_vid(pai_certificate) || (has_vid(paa_certificate) == true && extract_vid(paa_certificate) != extract_vid(pai_certificate)) || encoding_method_consistent() == false",
+        "actions": [
+          "vid_policy_valid := false",
+          "mismatch_location := identify_vid_mismatch()",
+          "generate_event(vendor_id_policy_violation_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RevocationChecked",
+        "to_state": "VendorIDPolicyValidated",
+        "trigger": "validate_vendor_id_policy",
+        "guard_condition": "extract_vid(dac_certificate) == extract_vid(pai_certificate) && (has_vid(paa_certificate) == false || extract_vid(paa_certificate) == extract_vid(pai_certificate)) && encoding_method_consistent() == true",
+        "actions": [
+          "dac_vendor_id := extract_vid(dac_certificate)",
+          "pai_vendor_id := extract_vid(pai_certificate)",
+          "paa_vendor_id := extract_vid_if_present(paa_certificate)",
+          "vid_encoding_consistent := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RevocationChecked",
+        "to_state": "VendorIDPolicyViolation",
+        "trigger": "validate_vendor_id_policy",
+        "guard_condition": "extract_vid(dac_certificate) != extract_vid(pai_certificate) || (has_vid(paa_certificate) == true && extract_vid(paa_certificate) != extract_vid(pai_certificate)) || encoding_method_consistent() == false",
+        "actions": [
+          "vid_policy_valid := false",
+          "mismatch_location := identify_vid_mismatch()",
+          "generate_event(vendor_id_policy_violation_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RevocationCheckSkipped",
+        "to_state": "VendorIDPolicyValidated",
+        "trigger": "validate_vendor_id_policy",
+        "guard_condition": "extract_vid(dac_certificate) == extract_vid(pai_certificate) && (has_vid(paa_certificate) == false || extract_vid(paa_certificate) == extract_vid(pai_certificate)) && encoding_method_consistent() == true",
+        "actions": [
+          "dac_vendor_id := extract_vid(dac_certificate)",
+          "pai_vendor_id := extract_vid(pai_certificate)",
+          "paa_vendor_id := extract_vid_if_present(paa_certificate)",
+          "vid_encoding_consistent := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "RevocationCheckSkipped",
+        "to_state": "VendorIDPolicyViolation",
+        "trigger": "validate_vendor_id_policy",
+        "guard_condition": "extract_vid(dac_certificate) != extract_vid(pai_certificate) || (has_vid(paa_certificate) == true && extract_vid(paa_certificate) != extract_vid(pai_certificate)) || encoding_method_consistent() == false",
+        "actions": [
+          "vid_policy_valid := false",
+          "mismatch_location := identify_vid_mismatch()",
+          "generate_event(vendor_id_policy_violation_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "VendorIDPolicyValidated",
+        "to_state": "ProductIDPolicyValidated",
+        "trigger": "validate_product_id_policy",
+        "guard_condition": "(has_pid(pai_certificate) == false || extract_pid(dac_certificate) == extract_pid(pai_certificate)) && pid_encoding_consistent() == true",
+        "actions": [
+          "dac_product_id := extract_pid(dac_certificate)",
+          "pai_product_id := extract_pid_if_present(pai_certificate)",
+          "pid_policy_valid := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "VendorIDPolicyValidated",
+        "to_state": "ProductIDPolicyViolation",
+        "trigger": "validate_product_id_policy",
+        "guard_condition": "(has_pid(pai_certificate) == true && extract_pid(dac_certificate) != extract_pid(pai_certificate)) || pid_encoding_consistent() == false",
+        "actions": [
+          "pid_policy_valid := false",
+          "mismatch_location := identify_pid_mismatch()",
+          "generate_event(product_id_policy_violation_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ProductIDPolicyValidated",
+        "to_state": "CertificationDeclarationValidated",
+        "trigger": "validate_certification_declaration",
+        "guard_condition": "cd_vid_matches_basic_info() == true && cd_pid_in_array() == true && validate_dac_origin_fields() == true && validate_authorized_paa_list() == true",
+        "actions": [
+          "cd_vid_matches_basic_info := true",
+          "cd_pid_in_product_array := true",
+          "dac_origin_consistency := true",
+          "authorized_paa_check_passed := true",
+          "basic_info_vendor_id := get_basic_info_attribute('VendorID')",
+          "basic_info_product_id := get_basic_info_attribute('ProductID')",
+          "basic_info_software_version := get_basic_info_attribute('SoftwareVersion')"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "ProductIDPolicyValidated",
+        "to_state": "CertificationDeclarationInvalid",
+        "trigger": "validate_certification_declaration",
+        "guard_condition": "cd_vid_matches_basic_info() == false || cd_pid_in_array() == false || validate_dac_origin_fields() == false || validate_authorized_paa_list() == false",
+        "actions": [
+          "cd_valid := false",
+          "cd_error := identify_cd_error()",
+          "generate_event(certification_declaration_invalid_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificationDeclarationValidated",
+        "to_state": "AttestationChallengeValidated",
+        "trigger": "validate_attestation_challenge",
+        "guard_condition": "extract_challenge(attestation_elements) == get_session_challenge(commissioning_session)",
+        "actions": [
+          "attestation_challenge_valid := true",
+          "challenge_from_secure_session := true",
+          "session_type := get_session_type(commissioning_session)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificationDeclarationValidated",
+        "to_state": "CertificateIDMismatched",
+        "trigger": "validate_certificate_id",
+        "guard_condition": "dcl_available == true && certificate_id_matches_dcl() == false",
+        "actions": [
+          "certificate_id_match := false",
+          "cd_certificate_id := extract_certificate_id(certification_declaration)",
+          "dcl_certificate_id := query_dcl_certificate_id(basic_info_vendor_id, basic_info_product_id, basic_info_software_version)",
+          "software_version_certification_checked := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificationDeclarationValidated",
+        "to_state": "OfflineCommissioning",
+        "trigger": "validate_certificate_id",
+        "guard_condition": "dcl_available == false",
+        "actions": [
+          "offline_mode := true",
+          "deferred_checks := ['certificate_id', 'software_version_certification']",
+          "notify_user('offline_commissioning_dcl_unavailable')"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateIDMismatched",
+        "to_state": "AttestationChallengeValidated",
+        "trigger": "validate_software_version_certification",
+        "guard_condition": "software_version_is_certified_in_dcl() == true",
+        "actions": [
+          "software_version_certification_checked := true",
+          "attestation_challenge_valid := extract_challenge(attestation_elements) == get_session_challenge(commissioning_session)",
+          "challenge_from_secure_session := true",
+          "session_type := get_session_type(commissioning_session)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "CertificateIDMismatched",
+        "to_state": "CertificationDeclarationInvalid",
+        "trigger": "validate_software_version_certification",
+        "guard_condition": "software_version_is_certified_in_dcl() == false",
+        "actions": [
+          "cd_valid := false",
+          "cd_error := 'software_version_not_certified'",
+          "generate_event(software_version_not_certified_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "OfflineCommissioning",
+        "to_state": "AttestationChallengeValidated",
+        "trigger": "proceed_with_offline_validation",
+        "guard_condition": "cd_present == true && cd_vid_matches_basic_info() == true && cd_pid_in_array() == true",
+        "actions": [
+          "attestation_challenge_valid := extract_challenge(attestation_elements) == get_session_challenge(commissioning_session)",
+          "challenge_from_secure_session := true",
+          "session_type := get_session_type(commissioning_session)",
+          "deferred_dcl_check_needed := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AttestationChallengeValidated",
+        "to_state": "FirmwareInfoValidated",
+        "trigger": "validate_firmware_information",
+        "guard_condition": "(has_firmware_info(attestation_elements) == false) || (commissioner_supports_firmware_validation == false) || (firmware_info_matches_dcl() == true)",
+        "actions": [
+          "firmware_information := extract_firmware_info_if_present(attestation_elements)",
+          "dcl_firmware_info := query_dcl_firmware_info(basic_info_vendor_id, basic_info_product_id, basic_info_software_version)",
+          "firmware_info_matched := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "FirmwareInfoValidated",
+        "to_state": "FullyAttested",
+        "trigger": "complete_attestation",
+        "guard_condition": "all_validations_passed == true",
+        "actions": [
+          "device_authenticated := true",
+          "device_certified := true",
+          "attestation_complete := true",
+          "attestation_result := 'success'",
+          "commissioning_can_proceed := true",
+          "generate_event(attestation_success)"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "generate_random_nonce",
+        "parameters": [],
+        "return_type": "32_byte_random_value",
+        "description": "Generates a cryptographically secure random 32-byte attestation nonce",
+        "algorithm_detail": "Crypto_DRBG(): Uses deterministic random bit generator compliant with cryptographic standards. Output is 32 bytes (256 bits) of high-entropy random data suitable for nonce/challenge generation. Must be unpredictable and have sufficient entropy to prevent replay attacks.",
+        "usage_in_fsm": "Called in Unattested→NonceGenerated transition to create fresh attestation nonce for each attestation attempt"
+      },
+      {
+        "name": "send_message",
+        "parameters": [
+          {"name": "message_type", "type": "AttestationRequest", "description": "Type of message to send"},
+          {"name": "nonce", "type": "32_byte_value", "description": "Attestation nonce to include in request"}
+        ],
+        "return_type": "void",
+        "description": "Sends AttestationRequest message to Commissionee over secure session containing the attestation nonce",
+        "algorithm_detail": "Protocol message transmission over established CASE/PASE secure session. Message includes attestation_nonce field set to generated nonce value.",
+        "usage_in_fsm": "Called in NonceGenerated→AttestationRequested transition to send attestation request to device"
+      },
+      {
+        "name": "extract_attestation_elements",
+        "parameters": [
+          {"name": "response", "type": "AttestationResponse_message", "description": "Received attestation response"}
+        ],
+        "return_type": "AttestationElements_structure",
+        "description": "Extracts and parses the attestation elements structure from AttestationResponse message",
+        "algorithm_detail": "Parse TLV/protocol-encoded message structure to extract attestation_elements field containing certification_declaration, attestation_nonce, firmware_information (optional), etc.",
+        "usage_in_fsm": "Called when receiving AttestationResponse to extract elements for validation"
+      },
+      {
+        "name": "extract_signature",
+        "parameters": [
+          {"name": "response", "type": "AttestationResponse_message", "description": "Received attestation response"}
+        ],
+        "return_type": "ECDSA_signature",
+        "description": "Extracts the Device Attestation Signature from AttestationResponse",
+        "algorithm_detail": "Parse message to extract attestation_signature field. Signature is ECDSA signature over attestation TBS using device's DAC private key.",
+        "usage_in_fsm": "Called when receiving AttestationResponse to extract signature for cryptographic verification"
+      },
+      {
+        "name": "extract_tbs",
+        "parameters": [
+          {"name": "response", "type": "AttestationResponse_message", "description": "Received attestation response"}
+        ],
+        "return_type": "to_be_signed_data",
+        "description": "Extracts or reconstructs the attestation to-be-signed (TBS) data that was signed by device",
+        "algorithm_detail": "Extract or reconstruct the exact byte sequence that was signed by device: attestation_elements structure as specified in Section 11.18.4.7. Must match byte-for-byte what device signed.",
+        "usage_in_fsm": "Called when receiving AttestationResponse to obtain TBS data for signature verification"
+      },
+      {
+        "name": "extract_cd",
+        "parameters": [
+          {"name": "response", "type": "AttestationResponse_message", "description": "Received attestation response"}
+        ],
+        "return_type": "CD_structure",
+        "description": "Extracts Certification Declaration from attestation elements",
+        "algorithm_detail": "Parse attestation_elements to extract certification_declaration field containing vendor_id, product_id_array, dac_origin fields (optional), authorized_paa_list (optional), certificate_id, etc.",
+        "usage_in_fsm": "Called when receiving AttestationResponse to extract CD for policy validation"
+      },
+      {
+        "name": "request_certificate",
+        "parameters": [
+          {"name": "cert_type", "type": "DAC_or_PAI_or_PAA", "description": "Type of certificate to request"}
+        ],
+        "return_type": "X509v3_certificate",
+        "description": "Requests certificate from Commissionee using CertificateChainRequest or retrieves from cache",
+        "algorithm_detail": "Send CertificateChainRequest message specifying certificate type (1=DAC, 2=PAI). PAA obtained from Commissioner's trust store or DCL. Returns DER-encoded X.509v3 certificate.",
+        "usage_in_fsm": "Called in ResponseReceived→CertificateChainObtained transition to obtain certificate chain for validation"
+      },
+      {
+        "name": "extract_nonce",
+        "parameters": [
+          {"name": "elements", "type": "AttestationElements_structure", "description": "Attestation elements from response"}
+        ],
+        "return_type": "32_byte_value",
+        "description": "Extracts attestation nonce from attestation elements structure",
+        "algorithm_detail": "Parse attestation_elements structure to extract attestation_nonce field value (32 bytes).",
+        "usage_in_fsm": "Called in CertificateChainObtained→NonceValidated transition to check nonce match"
+      },
+      {
+        "name": "crypto_verify",
+        "parameters": [
+          {"name": "public_key", "type": "ECC_public_key_prime256v1", "description": "Public key from DAC certificate"},
+          {"name": "message", "type": "byte_array", "description": "Attestation TBS data"},
+          {"name": "signature", "type": "ECDSA_signature", "description": "Device attestation signature"}
+        ],
+        "return_type": "SUCCESS_or_FAILURE",
+        "description": "Cryptographically verifies ECDSA signature using public key from DAC",
+        "algorithm_detail": "Crypto_Verify(): ECDSA signature verification using curve prime256v1 (secp256r1, NIST P-256) with SHA256 hash. Verify that signature was created by private key corresponding to public_key over message. Returns SUCCESS if signature valid, FAILURE otherwise. Algorithm per RFC 5280 and ECDSA specifications.",
+        "usage_in_fsm": "Called in NonceValidated→SignatureValidated transition to prove device possesses DAC private key"
+      },
+      {
+        "name": "validate_dac_format",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates DAC certificate conforms to all format constraints",
+        "algorithm_detail": "Check DAC constraints per Section 6.2.2.3: version=v3(2), DER-encoded, signature=ecdsa-with-SHA256, issuer sequence with exactly one VID and zero-or-one PID, issuer byte-for-byte matches PAI subject, subject sequence with exactly one VID and one PID, VID in subject matches VID in issuer, PID in subject matches PID in issuer (if present), algorithm=prime256v1, BasicConstraints critical with cA=FALSE, KeyUsage critical with only digitalSignature, required extensions present. Returns true if all constraints satisfied.",
+        "usage_in_fsm": "Called in SignatureValidated→CertificateFormatValidated transition to validate DAC format"
+      },
+      {
+        "name": "validate_pai_format",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates PAI certificate conforms to all format constraints",
+        "algorithm_detail": "Check PAI constraints per Section 6.2.2.4: version=v3(2), signature=ecdsa-with-SHA256, issuer sequence with zero-or-one VID, issuer byte-for-byte matches PAA subject, subject sequence with exactly one VID, VID in subject matches VID in issuer (if issuer has VID), zero-or-one PID in subject, algorithm=prime256v1, BasicConstraints critical with cA=TRUE and pathLen=0, KeyUsage critical with keyCertSign and cRLSign set (digitalSignature MAY be set, others NOT set), required extensions present. Returns true if all constraints satisfied.",
+        "usage_in_fsm": "Called in SignatureValidated→CertificateFormatValidated transition to validate PAI format"
+      },
+      {
+        "name": "validate_paa_format",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates PAA certificate conforms to all format constraints",
+        "algorithm_detail": "Check PAA constraints per Section 6.2.2.5: version=v3(2), signature=ecdsa-with-SHA256, issuer and subject match exactly (self-signed), issuer and subject have zero-or-one VID, no PID in issuer or subject, algorithm=prime256v1, BasicConstraints critical with cA=TRUE and pathLen=1 (if present), KeyUsage critical with keyCertSign and cRLSign set (digitalSignature MAY be set, others NOT set), required extensions present. Returns true if all constraints satisfied.",
+        "usage_in_fsm": "Called in SignatureValidated→CertificateFormatValidated transition to validate PAA format"
+      },
+      {
+        "name": "crypto_verify_chain_der",
+        "parameters": [
+          {"name": "dac", "type": "X509v3_certificate", "description": "Device Attestation Certificate"},
+          {"name": "pai", "type": "X509v3_certificate", "description": "Product Attestation Intermediate certificate"},
+          {"name": "paa", "type": "X509v3_certificate", "description": "Product Attestation Authority certificate"},
+          {"name": "validation_time", "type": "timestamp", "description": "Time for validity check (DAC notBefore)"}
+        ],
+        "return_type": "SUCCESS_or_FAILURE",
+        "description": "Validates certificate chain cryptographically using RFC 5280 path validation",
+        "algorithm_detail": "Crypto_VerifyChainDER(): Perform RFC 5280 certificate path validation. Verify: (1) PAA signature on PAI using PAA public key, (2) PAI signature on DAC using PAI public key, (3) certificate validity periods at validation_time (DAC notBefore), (4) path length exactly 2 (3 certificates: PAA, PAI, DAC), (5) issuer-subject byte-for-byte matches between certificates. Returns SUCCESS if chain valid, FAILURE otherwise.",
+        "usage_in_fsm": "Called in CertificateFormatValidated→ChainCryptographicallyValidated transition to validate certificate chain signatures"
+      },
+      {
+        "name": "verify_issuer_subject_matches",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Verifies issuer field of each certificate matches subject field of issuing certificate byte-for-byte",
+        "algorithm_detail": "Check: DAC.issuer == PAI.subject (byte-for-byte) AND PAI.issuer == PAA.subject (byte-for-byte). Must match exactly including encoding, attribute order, whitespace. Per RFC 5280 name matching requirements.",
+        "usage_in_fsm": "Called in CertificateFormatValidated→ChainCryptographicallyValidated transition to validate chain structure"
+      },
+      {
+        "name": "paa_in_trusted_store",
+        "parameters": [
+          {"name": "paa_cert", "type": "X509v3_certificate", "description": "PAA certificate to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if PAA certificate is present in Commissioner's trusted root certificate store",
+        "algorithm_detail": "Compare PAA certificate (by subject and SKI) against Commissioner's list of trusted PAA root certificates. Trusted store SHOULD include PAAs from Distributed Compliance Ledger. Returns true if found.",
+        "usage_in_fsm": "Called in ChainCryptographicallyValidated→PAAValidated transition to validate trust anchor"
+      },
+      {
+        "name": "paa_in_dcl_at_time",
+        "parameters": [
+          {"name": "paa_cert", "type": "X509v3_certificate", "description": "PAA certificate to check"},
+          {"name": "timestamp", "type": "GeneralizedTime", "description": "Historical timestamp (DAC notBefore)"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if PAA was present in Distributed Compliance Ledger at specified historical timestamp",
+        "algorithm_detail": "Query DCL for PAA certificates that were valid/approved at the given timestamp. Compare PAA certificate against historical DCL state at DAC issuance time (notBefore). Returns true if PAA was in approved list at that time.",
+        "usage_in_fsm": "Called in ChainCryptographicallyValidated→PAAValidated transition to validate PAA was trusted at issuance"
+      },
+      {
+        "name": "is_revoked",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate to check (DAC or PAI)"},
+          {"name": "revocation_set", "type": "CRL_based_revocation_data", "description": "Revocation data from DCL"}
+        ],
+        "return_type": "boolean",
+        "description": "Determines if certificate is revoked using DCL-based revocation data",
+        "algorithm_detail": "Per Section 6.2.4.2: Extract certificate's issuer AKI and serial number. Query revocation_set indexed by (CertificateAuthorityKeyIdentifier, CertificateAuthorityName). Check if serial number is in revoked set. Handle CRL delegation: for DAC, issuer must match CRLSignerCertificate or CRLSignerDelegator; for PAI, issuer must match PAA that signed CRLSignerCertificate. Returns true if revoked.",
+        "usage_in_fsm": "Called in PAAValidated→RevocationChecked transition to check if DAC or PAI is revoked"
+      },
+      {
+        "name": "extract_vid",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate to extract VID from"}
+        ],
+        "return_type": "16bit_vendor_id",
+        "description": "Extracts VendorID from certificate subject using preferred or fallback method",
+        "algorithm_detail": "Per Section 6.2.2.2: First check if Matter OID 1.3.6.1.4.1.37244.2.1 present in any RDN - if yes, use that value (preferred method). If OID not present, parse commonName for 'Mvid:XXXX' pattern (fallback method): find leftmost match of 'Mvid:' followed by exactly 4 uppercase hex digits, convert to 16-bit integer. If prefix found but no valid match, field is invalid. Returns VendorID value.",
+        "usage_in_fsm": "Called in RevocationChecked→VendorIDPolicyValidated transition to extract and compare VIDs"
+      },
+      {
+        "name": "extract_pid",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate to extract PID from"}
+        ],
+        "return_type": "16bit_product_id",
+        "description": "Extracts ProductID from certificate subject using preferred or fallback method",
+        "algorithm_detail": "Per Section 6.2.2.2: First check if Matter OID 1.3.6.1.4.1.37244.2.2 present in any RDN - if yes, use that value (preferred method). If OID not present, parse commonName for 'Mpid:XXXX' pattern (fallback method): find leftmost match of 'Mpid:' followed by exactly 4 uppercase hex digits, convert to 16-bit integer. If prefix found but no valid match, field is invalid. Returns ProductID value.",
+        "usage_in_fsm": "Called in VendorIDPolicyValidated→ProductIDPolicyValidated transition to extract and compare PIDs"
+      },
+      {
+        "name": "has_vid",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if certificate subject contains a VendorID value",
+        "algorithm_detail": "Check if Matter VID OID present or valid 'Mvid:XXXX' pattern found in commonName. Returns true if VID present.",
+        "usage_in_fsm": "Called to determine if PAA has optional VID for validation logic branching"
+      },
+      {
+        "name": "has_pid",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if certificate subject contains a ProductID value",
+        "algorithm_detail": "Check if Matter PID OID present or valid 'Mpid:XXXX' pattern found in commonName. Returns true if PID present.",
+        "usage_in_fsm": "Called to determine if PAI has optional PID for validation logic branching"
+      },
+      {
+        "name": "encoding_method_consistent",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates VID/PID encoding methods are not mixed within same field and fallback method is correctly formatted",
+        "algorithm_detail": "Per Section 6.2.2.2: For each subject/issuer field, check: (1) If Matter OID present, fallback method SHALL NOT be used for that field, (2) No mixing of preferred and fallback within same field, (3) If fallback used: exactly 4 uppercase hex digits, leftmost valid match used, if prefix present without valid match then invalid. Returns true if encoding valid.",
+        "usage_in_fsm": "Called in VendorIDPolicyValidated transition to detect encoding ambiguity attacks"
+      },
+      {
+        "name": "cd_vid_matches_basic_info",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates vendor_id field in Certification Declaration matches VendorID attribute from Basic Information cluster",
+        "algorithm_detail": "Per Section 6.2.3.1: Read VendorID attribute from Basic Information cluster. Compare to certification_declaration.vendor_id field. Must match exactly. Returns true if match.",
+        "usage_in_fsm": "Called in ProductIDPolicyValidated→CertificationDeclarationValidated transition for CD validation"
+      },
+      {
+        "name": "cd_pid_in_array",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates ProductID attribute from Basic Information cluster is in product_id_array field of Certification Declaration",
+        "algorithm_detail": "Per Section 6.2.3.1: Read ProductID attribute from Basic Information cluster. Check if value is present in certification_declaration.product_id_array list. Returns true if found.",
+        "usage_in_fsm": "Called in ProductIDPolicyValidated→CertificationDeclarationValidated transition for CD validation"
+      },
+      {
+        "name": "validate_dac_origin_fields",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates dac_origin_vendor_id and dac_origin_product_id fields consistency in Certification Declaration",
+        "algorithm_detail": "Per Section 6.2.3.1: Check CD has both or neither dac_origin fields. If both present: DAC VID must match dac_origin_vendor_id, PAI VID must match dac_origin_vendor_id, DAC PID must match dac_origin_product_id, PAI PID (if present) must match dac_origin_product_id. If neither present: DAC VID must match vendor_id, PAI VID must match vendor_id, DAC PID must be in product_id_array, PAI PID (if present) must be in product_id_array. Returns true if valid.",
+        "usage_in_fsm": "Called in ProductIDPolicyValidated→CertificationDeclarationValidated transition for ODM scenario validation"
+      },
+      {
+        "name": "validate_authorized_paa_list",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates PAA SKI is in authorized_paa_list field if field is present in Certification Declaration",
+        "algorithm_detail": "Per Section 6.2.3.1: If certification_declaration.authorized_paa_list field present, extract PAA certificate's Subject Key Identifier extension value. Check if SKI is present in authorized_paa_list array. If field not present, validation passes. Returns true if valid or field absent.",
+        "usage_in_fsm": "Called in ProductIDPolicyValidated→CertificationDeclarationValidated transition for authorized PAA checking"
+      },
+      {
+        "name": "get_basic_info_attribute",
+        "parameters": [
+          {"name": "attribute_name", "type": "string", "description": "Name of attribute (VendorID, ProductID, SoftwareVersion)"}
+        ],
+        "return_type": "attribute_value",
+        "description": "Reads specified attribute from device's Basic Information cluster",
+        "algorithm_detail": "Query Matter cluster data model: read attribute from Basic Information cluster (cluster ID 0x0028). Attributes: VendorID (0x0002, 16-bit), ProductID (0x0004, 16-bit), SoftwareVersion (0x000A, 32-bit). Returns attribute value.",
+        "usage_in_fsm": "Called in CertificationDeclarationValidated transition to get device runtime attributes for CD comparison"
+      },
+      {
+        "name": "extract_challenge",
+        "parameters": [
+          {"name": "elements", "type": "AttestationElements_structure", "description": "Attestation elements from response"}
+        ],
+        "return_type": "challenge_value",
+        "description": "Extracts AttestationChallenge from attestation elements structure",
+        "algorithm_detail": "Parse attestation_elements to extract attestation_challenge field. Value depends on session context.",
+        "usage_in_fsm": "Called in CertificationDeclarationValidated→AttestationChallengeValidated transition"
+      },
+      {
+        "name": "get_session_challenge",
+        "parameters": [
+          {"name": "session", "type": "secure_session", "description": "CASE/PASE/resumed CASE session"}
+        ],
+        "return_type": "challenge_value",
+        "description": "Obtains AttestationChallenge from secure session context",
+        "algorithm_detail": "Per Section 6.2.3.1: AttestationChallenge SHALL be obtained from CASE session, resumed CASE session, or PASE session depending on commissioning method. Extract challenge value from session security context.",
+        "usage_in_fsm": "Called in CertificationDeclarationValidated→AttestationChallengeValidated transition to get expected challenge"
+      },
+      {
+        "name": "has_firmware_info",
+        "parameters": [
+          {"name": "elements", "type": "AttestationElements_structure", "description": "Attestation elements"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if firmware_information field is present in attestation elements",
+        "algorithm_detail": "Check if optional firmware_information field present in attestation_elements structure. Returns true if present.",
+        "usage_in_fsm": "Called in AttestationChallengeValidated→FirmwareInfoValidated transition for conditional validation"
+      },
+      {
+        "name": "firmware_info_matches_dcl",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates firmware_information field matches DCL DeviceSoftwareCompliance entry",
+        "algorithm_detail": "Per Section 6.2.3.1: If firmware_information present, compare against DCL entry for device (matched by VendorID, ProductID, SoftwareVersion from Basic Info). Returns true if match or if Commissioner does not support firmware validation.",
+        "usage_in_fsm": "Called in AttestationChallengeValidated→FirmwareInfoValidated transition for firmware validation"
+      },
+      {
+        "name": "query_dcl_firmware_info",
+        "parameters": [
+          {"name": "vendor_id", "type": "16bit_integer", "description": "Vendor ID"},
+          {"name": "product_id", "type": "16bit_integer", "description": "Product ID"},
+          {"name": "software_version", "type": "32bit_integer", "description": "Software version"}
+        ],
+        "return_type": "firmware_info_or_null",
+        "description": "Queries Distributed Compliance Ledger for firmware information matching device identity",
+        "algorithm_detail": "Query DCL DeviceSoftwareCompliance schema with (VendorID, ProductID, SoftwareVersion) tuple. Returns firmware_information field from matching entry, or null if not found or DCL unavailable.",
+        "usage_in_fsm": "Called in AttestationChallengeValidated→FirmwareInfoValidated transition to get expected firmware info"
+      },
+      {
+        "name": "extract_firmware_info_if_present",
+        "parameters": [
+          {"name": "elements", "type": "AttestationElements_structure", "description": "Attestation elements"}
+        ],
+        "return_type": "firmware_info_or_null",
+        "description": "Extracts firmware_information field if present, returns null if absent",
+        "algorithm_detail": "Parse attestation_elements for optional firmware_information field. Return field value or null.",
+        "usage_in_fsm": "Called in AttestationChallengeValidated→FirmwareInfoValidated transition"
+      },
+      {
+        "name": "current_timestamp",
+        "parameters": [],
+        "return_type": "timestamp",
+        "description": "Returns current system timestamp",
+        "algorithm_detail": "Get current time from system clock. Used for timeout tracking and logging.",
+        "usage_in_fsm": "Called for timestamping attestation events"
+      },
+      {
+        "name": "extract_subject",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate"}
+        ],
+        "return_type": "X500_distinguished_name",
+        "description": "Extracts subject field from X.509 certificate",
+        "algorithm_detail": "Parse DER-encoded certificate to extract subject field (X.500 Distinguished Name).",
+        "usage_in_fsm": "Called for error reporting when PAA not trusted"
+      },
+      {
+        "name": "extract_ski",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate"}
+        ],
+        "return_type": "subject_key_identifier",
+        "description": "Extracts Subject Key Identifier extension from certificate",
+        "algorithm_detail": "Parse certificate extensions to extract SKI extension value (octet string).",
+        "usage_in_fsm": "Called for PAA identification and authorized PAA list checking"
+      },
+      {
+        "name": "extract_notBefore",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate"}
+        ],
+        "return_type": "GeneralizedTime",
+        "description": "Extracts notBefore timestamp from certificate validity period",
+        "algorithm_detail": "Parse certificate validity field to extract notBefore value (start of validity period).",
+        "usage_in_fsm": "Called to get DAC issuance time for temporal validation"
+      },
+      {
+        "name": "identify_invalid_cert",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Identifies which certificate (DAC, PAI, PAA) failed format validation",
+        "algorithm_detail": "Determine which certificate validation function returned false. Returns 'DAC', 'PAI', or 'PAA'.",
+        "usage_in_fsm": "Called for error reporting in format validation failures"
+      },
+      {
+        "name": "identify_violation",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Identifies specific format constraint that was violated",
+        "algorithm_detail": "Return description of which format constraint failed (e.g., 'wrong version', 'cA field incorrect', 'missing extension', 'wrong key usage').",
+        "usage_in_fsm": "Called for detailed error reporting in format validation failures"
+      },
+      {
+        "name": "identify_chain_error",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Identifies specific chain validation error",
+        "algorithm_detail": "Return description of chain validation failure (e.g., 'signature invalid', 'issuer-subject mismatch', 'wrong path length', 'validity period expired').",
+        "usage_in_fsm": "Called for error reporting in chain validation failures"
+      },
+      {
+        "name": "identify_revoked_cert",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Identifies which certificate (DAC or PAI) was found revoked",
+        "algorithm_detail": "Determine which certificate is in revocation list. Returns 'DAC' or 'PAI'.",
+        "usage_in_fsm": "Called for error reporting when revocation detected"
+      },
+      {
+        "name": "extract_revocation_reason",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Extracts revocation reason from CRL entry if available",
+        "algorithm_detail": "Parse CRL entry extensions to extract revocation reason code if present (per RFC 5280 section 5.3.1). Returns reason string or 'unspecified'.",
+        "usage_in_fsm": "Called for detailed error reporting when certificate revoked"
+      },
+      {
+        "name": "identify_skip_reason",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Identifies reason why revocation check was skipped",
+        "algorithm_detail": "Determine why revocation data unavailable: 'dcl_unavailable', 'crl_stale', 'network_error', etc.",
+        "usage_in_fsm": "Called when revocation check skipped to report reason"
+      },
+      {
+        "name": "notify_user",
+        "parameters": [
+          {"name": "warning_type", "type": "string", "description": "Type of warning to display"}
+        ],
+        "return_type": "void",
+        "description": "Notifies user of security warning or bypass condition",
+        "algorithm_detail": "Display warning message to user interface. Per spec SHOULD notify when revocation check skipped or CRL stale.",
+        "usage_in_fsm": "Called when security checks are bypassed to inform user of potential risks"
+      },
+      {
+        "name": "identify_vid_mismatch",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Identifies where VendorID mismatch occurred in chain",
+        "algorithm_detail": "Determine which VID comparison failed: 'dac_pai_mismatch', 'pai_paa_mismatch', 'mixed_encoding', 'cd_mismatch'.",
+        "usage_in_fsm": "Called for error reporting in VID policy violations"
+      },
+      {
+        "name": "identify_pid_mismatch",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Identifies where ProductID mismatch occurred",
+        "algorithm_detail": "Determine which PID comparison failed: 'dac_pai_mismatch', 'cd_mismatch', 'mixed_encoding'.",
+        "usage_in_fsm": "Called for error reporting in PID policy violations"
+      },
+      {
+        "name": "identify_cd_error",
+        "parameters": [],
+        "return_type": "string",
+        "description": "Identifies specific Certification Declaration validation error",
+        "algorithm_detail": "Determine which CD validation failed: 'vid_mismatch', 'pid_not_in_array', 'dac_origin_inconsistent', 'unauthorized_paa', 'certificate_id_mismatch'.",
+        "usage_in_fsm": "Called for error reporting in CD validation failures"
+      },
+      {
+        "name": "generate_event",
+        "parameters": [
+          {"name": "event_name", "type": "string", "description": "Event identifier"}
+        ],
+        "return_type": "void",
+        "description": "Generates system event for logging or notification",
+        "algorithm_detail": "Create event record with timestamp and event type for system logging, audit trail, or triggering callbacks.",
+        "usage_in_fsm": "Called throughout FSM to record significant events and errors"
+      },
+      {
+        "name": "get_session_type",
+        "parameters": [
+          {"name": "session", "type": "secure_session", "description": "Current commissioning session"}
+        ],
+        "return_type": "string",
+        "description": "Determines type of secure session (CASE, PASE, resumed CASE)",
+        "algorithm_detail": "Query session context to determine session establishment method. Returns 'CASE', 'PASE', or 'resumed_CASE'.",
+        "usage_in_fsm": "Called for session type reporting and validation context"
+      },
+      {
+        "name": "generate_format_report",
+        "parameters": [],
+        "return_type": "validation_result_structure",
+        "description": "Generates detailed format validation result report",
+        "algorithm_detail": "Compile results of all format checks into structured report for logging or diagnostics.",
+        "usage_in_fsm": "Called when format validation succeeds to record validation details"
+      },
+      {
+        "name": "extract_vid_if_present",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate"}
+        ],
+        "return_type": "16bit_vendor_id_or_null",
+        "description": "Extracts VendorID if present, returns null if not present",
+        "algorithm_detail": "Call extract_vid() if has_vid() returns true, otherwise return null.",
+        "usage_in_fsm": "Called for PAA VID extraction which is optional"
+      },
+      {
+        "name": "extract_pid_if_present",
+        "parameters": [
+          {"name": "certificate", "type": "X509v3_certificate", "description": "Certificate"}
+        ],
+        "return_type": "16bit_product_id_or_null",
+        "description": "Extracts ProductID if present, returns null if not present",
+        "algorithm_detail": "Call extract_pid() if has_pid() returns true, otherwise return null.",
+        "usage_in_fsm": "Called for PAI PID extraction which is optional"
+      },
+      {
+        "name": "pid_encoding_consistent",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates ProductID encoding methods are not mixed within same field",
+        "algorithm_detail": "Similar to encoding_method_consistent() but specifically for ProductID. Check no mixing of preferred and fallback methods within same field.",
+        "usage_in_fsm": "Called in ProductID policy validation to detect encoding ambiguity"
+      },
+      {
+        "name": "crl_is_stale",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Determines if CRL data is stale (beyond nextUpdate timestamp without newer version available)",
+        "algorithm_detail": "Per Section 6.2.4.2: Check if current time is beyond nextUpdate field in CRL and no updated CRL is available. Returns true if CRL is stale.",
+        "usage_in_fsm": "Called in revocation checking to detect stale CRL data requiring user notification"
+      },
+      {
+        "name": "no_revocations_found",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if revocation check found no revoked certificates despite CRL being stale",
+        "algorithm_detail": "Returns true if neither DAC nor PAI found in revocation set. Used to determine whether Commissioner can proceed with stale CRL warning vs hard failure.",
+        "usage_in_fsm": "Called with crl_is_stale() to determine appropriate path when CRL data is outdated"
+      },
+      {
+        "name": "extract_crl_next_update",
+        "parameters": [],
+        "return_type": "timestamp",
+        "description": "Extracts nextUpdate timestamp from CRL data",
+        "algorithm_detail": "Parse CRL structure to extract nextUpdate field value (GeneralizedTime). Indicates when CA expects to publish next CRL update.",
+        "usage_in_fsm": "Called when CRL is stale to record expected update time for user notification"
+      },
+      {
+        "name": "certificate_id_matches_dcl",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Validates certificate_id field in Certification Declaration matches CDCertificateID in DCL DeviceSoftwareCompliance entry",
+        "algorithm_detail": "Per Section 6.2.3.1: Query DCL DeviceSoftwareCompliance schema with (VendorID, ProductID, SoftwareVersion) from Basic Info. Compare CD certificate_id with CDCertificateID field from matching entry. SHOULD validation (non-fatal). Returns true if match or DCL entry not found.",
+        "usage_in_fsm": "Called after CD validation to perform SHOULD-level certificate_id consistency check"
+      },
+      {
+        "name": "query_dcl_certificate_id",
+        "parameters": [
+          {"name": "vendor_id", "type": "16bit_integer", "description": "Vendor ID"},
+          {"name": "product_id", "type": "16bit_integer", "description": "Product ID"},
+          {"name": "software_version", "type": "32bit_integer", "description": "Software version"}
+        ],
+        "return_type": "string_or_null",
+        "description": "Queries DCL for CDCertificateID matching device identity",
+        "algorithm_detail": "Query DCL DeviceSoftwareCompliance schema with (VendorID, ProductID, SoftwareVersion) tuple. Returns CDCertificateID field from matching entry, or null if not found or DCL unavailable.",
+        "usage_in_fsm": "Called when certificate_id mismatch detected to retrieve expected value"
+      },
+      {
+        "name": "extract_certificate_id",
+        "parameters": [
+          {"name": "cd", "type": "CD_structure", "description": "Certification Declaration"}
+        ],
+        "return_type": "string",
+        "description": "Extracts certificate_id field from Certification Declaration",
+        "algorithm_detail": "Parse CD structure to extract certificate_id field value (string identifier).",
+        "usage_in_fsm": "Called when validating certificate_id to extract CD value for comparison"
+      },
+      {
+        "name": "software_version_is_certified_in_dcl",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if device's current software version has entry in DCL DeviceSoftwareCompliance schema",
+        "algorithm_detail": "Per Section 6.2.3.1: When certificate_id doesn't match (e.g., firmware updated but CD not updated), Commissioner SHOULD check DCL for entry with matching (VendorID, ProductID, SoftwareVersion) to validate current version is certified. Returns true if certified entry found.",
+        "usage_in_fsm": "Called from CertificateIDMismatched state to determine if software version is certified despite CD mismatch"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "DAC (Device Attestation Certificate)",
+        "definition": "X.509v3 certificate unique to each Matter device that proves the device was legitimately manufactured by a certified vendor. Contains device's public key and VendorID/ProductID information.",
+        "security_relevance": "Foundation of device authentication. Compromise of DAC private key enables device impersonation."
+      },
+      {
+        "term": "PAI (Product Attestation Intermediate)",
+        "definition": "X.509v3 intermediate CA certificate assigned to a vendor (and optionally a specific product) that signs DACs for that vendor's devices.",
+        "security_relevance": "Compromise of PAI private key enables creation of fraudulent devices for entire product line or vendor."
+      },
+      {
+        "term": "PAA (Product Attestation Authority)",
+        "definition": "Self-signed X.509v3 root CA certificate that forms the trust anchor for device attestation. Signs PAI certificates.",
+        "security_relevance": "Trust anchor for entire attestation PKI. PAAs must be carefully managed and their private keys highly protected."
+      },
+      {
+        "term": "Attestation Nonce",
+        "definition": "32-byte cryptographically secure random value generated by Commissioner for each attestation attempt to prevent replay attacks.",
+        "security_relevance": "Ensures attestation response freshness. Non-random or reused nonces enable replay attacks."
+      },
+      {
+        "term": "Certification Declaration",
+        "definition": "Data structure containing certified product information including vendor_id, product_id_array, optional dac_origin fields, authorized_paa_list, and certificate_id.",
+        "security_relevance": "Binds device attestation to certification process. Validates device is certified product running certified firmware."
+      },
+      {
+        "term": "Distributed Compliance Ledger (DCL)",
+        "definition": "Decentralized ledger containing trusted PAA certificates, revocation information, and device compliance data.",
+        "security_relevance": "Source of trust anchors and revocation data. DCL compromise or unavailability impacts attestation security."
+      },
+      {
+        "term": "Attestation Challenge",
+        "definition": "Challenge value from secure session context (CASE/PASE) that binds attestation to specific commissioning session.",
+        "security_relevance": "Prevents attestation response replay across different sessions or contexts."
+      },
+      {
+        "term": "VendorID Encoding - Preferred Method",
+        "definition": "Encoding VendorID using Matter-specific OID 1.3.6.1.4.1.37244.2.1 as AttributeTypeAndValue entry in certificate subject/issuer.",
+        "security_relevance": "Unambiguous identification method. Reduces parsing complexity and encoding attack surface."
+      },
+      {
+        "term": "VendorID Encoding - Fallback Method",
+        "definition": "Encoding VendorID as 'Mvid:' followed by exactly 4 uppercase hexadecimal digits anywhere within commonName attribute.",
+        "security_relevance": "Backward compatibility method. More complex parsing creates potential for ambiguity attacks if not strictly validated."
+      },
+      {
+        "term": "ProductID Encoding",
+        "definition": "Similar to VendorID: preferred method uses OID 1.3.6.1.4.1.37244.2.2, fallback uses 'Mpid:XXXX' pattern in commonName.",
+        "security_relevance": "Product identity binding. Encoding ambiguity could enable cross-product attacks."
+      },
+      {
+        "term": "dac_origin Fields",
+        "definition": "Optional fields in Certification Declaration (dac_origin_vendor_id, dac_origin_product_id) used when DAC issuer differs from certified vendor (ODM manufacturing scenario).",
+        "security_relevance": "Enables ODM manufacturing model while maintaining vendor accountability. Must be validated consistently."
+      },
+      {
+        "term": "authorized_paa_list",
+        "definition": "Optional field in Certification Declaration restricting which PAAs are authorized to certify the product. Contains list of PAA Subject Key Identifiers.",
+        "security_relevance": "Additional access control layer. Prevents certification from compromised or untrusted PAAs."
+      },
+      {
+        "term": "Revocation Set",
+        "definition": "Data structure built from DCL containing CRL-based revocation information indexed by certificate authority identity and serial numbers of revoked certificates.",
+        "security_relevance": "Enables detection of compromised or recalled certificates. Unavailability creates security gap."
+      },
+      {
+        "term": "CRL Delegation (Indirect CRLs)",
+        "definition": "Mechanism allowing PAI/PAA to delegate CRL signing to other entities. CRL signer certificate validated through delegation chain.",
+        "security_relevance": "Operational flexibility but adds validation complexity. Delegation chain must be validated to prevent fraudulent revocation data."
+      },
+      {
+        "term": "Crypto_DRBG",
+        "definition": "Cryptographically secure deterministic random bit generator function used for nonce generation.",
+        "security_relevance": "Source of randomness for challenge-response. Weak DRBG enables nonce prediction and replay attacks."
+      },
+      {
+        "term": "Crypto_Verify",
+        "definition": "ECDSA signature verification function using prime256v1 curve and SHA256 hash.",
+        "security_relevance": "Core cryptographic primitive for attestation. Implementation bugs enable signature forgery."
+      },
+      {
+        "term": "Crypto_VerifyChainDER",
+        "definition": "RFC 5280 certificate chain validation function verifying chain structure, signatures, and validity periods.",
+        "security_relevance": "Validates entire trust chain. Incorrect implementation enables fraudulent certificate acceptance."
+      },
+      {
+        "term": "Basic Information Cluster",
+        "definition": "Matter data model cluster (0x0028) containing device metadata including VendorID, ProductID, and SoftwareVersion attributes.",
+        "security_relevance": "Runtime device identity. Must match Certification Declaration. Manipulation could enable false certification claims."
+      },
+      {
+        "term": "Commissioning Session",
+        "definition": "Secure session (CASE or PASE) established between Commissioner and Commissionee for device commissioning including attestation.",
+        "security_relevance": "Provides confidentiality and integrity for attestation exchange. Session security protects against MITM attacks."
+      },
+      {
+        "term": "certificate_id",
+        "definition": "Field in Certification Declaration that SHOULD match CDCertificateID from DCL DeviceSoftwareCompliance entry. Used to bind CD to specific certified firmware version.",
+        "security_relevance": "Enables detection of outdated CDs after firmware updates. Mismatch triggers additional software version certification check. Non-fatal SHOULD validation."
+      },
+      {
+        "term": "CRLDistributionPoints Extension",
+        "definition": "RFC 5280 certificate extension pointing to CRL locations. Present in Device Attestation certificates but SHALL be ignored by Matter Commissioners.",
+        "security_relevance": "Ignored to enforce DCL as single source of revocation data. Ensures consistent, interoperable revocation handling across Matter ecosystem."
+      },
+      {
+        "term": "CRL Staleness",
+        "definition": "Condition when current time exceeds CRL nextUpdate field without newer CRL available. Commissioner MAY proceed with user warning.",
+        "security_relevance": "Trade-off between availability and security. Stale CRL may miss recent revocations but blocking commissioning affects usability. User notification required."
+      },
+      {
+        "term": "Offline Commissioning",
+        "definition": "Commissioning scenario when DCL is unavailable. Commissioner validates CD against runtime attributes but defers certificate_id and software version certification checks.",
+        "security_relevance": "Enables commissioning without internet access but reduces validation completeness. Valid CD ensures device was previously certified. Deferred DCL check SHOULD occur later."
+      },
+      {
+        "term": "Issuing Distribution Point Extension",
+        "definition": "Critical CRL extension required when multiple CRL entries exist for same CA in DCL. Contains uniformResourceIdentifier matching DCL DataUrl field.",
+        "security_relevance": "Prevents CRL confusion attacks when CA has multiple distribution points. Binds specific CRL to specific DCL entry through URI matching."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "DEVICE_AUTHENTICATION",
+        "type": "authenticity",
+        "description": "Device proves possession of DAC private key through cryptographic signature verification, ensuring device is authentic and possesses claimed identity",
+        "fsm_states_involved": ["NonceValidated", "SignatureValidated", "FullyAttested"],
+        "critical_transitions": ["NonceValidated->SignatureValidated", "FirmwareInfoValidated->FullyAttested"]
+      },
+      {
+        "property_name": "REPLAY_PROTECTION",
+        "type": "freshness",
+        "description": "Fresh random nonce prevents replay of captured attestation responses. Each attestation attempt uses unique nonce.",
+        "fsm_states_involved": ["NonceGenerated", "NonceValidated"],
+        "critical_transitions": ["Unattested->NonceGenerated", "CertificateChainObtained->NonceValidated"]
+      },
+      {
+        "property_name": "TRUST_CHAIN_VALIDATION",
+        "type": "authenticity",
+        "description": "Complete cryptographic chain validation from DAC through PAI to trusted PAA root ensures device credentials issued by legitimate authority",
+        "fsm_states_involved": ["ChainCryptographicallyValidated", "PAAValidated"],
+        "critical_transitions": ["CertificateFormatValidated->ChainCryptographicallyValidated", "ChainCryptographicallyValidated->PAAValidated"]
+      },
+      {
+        "property_name": "REVOCATION_ENFORCEMENT",
+        "type": "revocation",
+        "description": "Revoked certificates detected and rejected using DCL-based revocation data, preventing use of compromised credentials",
+        "fsm_states_involved": ["RevocationChecked", "CertificateRevoked"],
+        "critical_transitions": ["PAAValidated->RevocationChecked", "PAAValidated->CertificateRevoked"]
+      },
+      {
+        "property_name": "VENDOR_ISOLATION",
+        "type": "access_control",
+        "description": "VendorID consistency enforced across certificate chain prevents cross-vendor certificate misuse and maintains vendor accountability",
+        "fsm_states_involved": ["VendorIDPolicyValidated", "VendorIDPolicyViolation"],
+        "critical_transitions": ["RevocationChecked->VendorIDPolicyValidated"]
+      },
+      {
+        "property_name": "PRODUCT_CERTIFICATION_BINDING",
+        "type": "access_control",
+        "description": "Device identity (VID/PID from certificates) bound to Certification Declaration and Basic Info cluster ensures only certified products commission",
+        "fsm_states_involved": ["CertificationDeclarationValidated"],
+        "critical_transitions": ["ProductIDPolicyValidated->CertificationDeclarationValidated"]
+      },
+      {
+        "property_name": "SESSION_BINDING",
+        "type": "authenticity",
+        "description": "Attestation bound to specific secure session through AttestationChallenge prevents cross-session replay",
+        "fsm_states_involved": ["AttestationChallengeValidated"],
+        "critical_transitions": ["CertificationDeclarationValidated->AttestationChallengeValidated"]
+      },
+      {
+        "property_name": "FORMAT_CONSTRAINT_ENFORCEMENT",
+        "type": "correctness",
+        "description": "Strict certificate format validation prevents bypass through malformed certificates or policy-violating constraints",
+        "fsm_states_involved": ["CertificateFormatValidated", "CertificateFormatInvalid"],
+        "critical_transitions": ["SignatureValidated->CertificateFormatValidated"]
+      },
+      {
+        "property_name": "TEMPORAL_VALIDITY",
+        "type": "timing",
+        "description": "Certificate validity periods checked at DAC issuance time ensures certificates were valid when issued",
+        "fsm_states_involved": ["ChainCryptographicallyValidated"],
+        "critical_transitions": ["CertificateFormatValidated->ChainCryptographicallyValidated"]
+      },
+      {
+        "property_name": "ENCODING_CONSISTENCY",
+        "type": "consistency",
+        "description": "VID/PID encoding method consistency enforced prevents encoding ambiguity attacks through mixed or malformed encodings",
+        "fsm_states_involved": ["VendorIDPolicyValidated", "EncodingAmbiguityDetected"],
+        "critical_transitions": ["RevocationChecked->VendorIDPolicyValidated"]
+      },
+      {
+        "property_name": "ODM_ACCOUNTABILITY",
+        "type": "access_control",
+        "description": "dac_origin fields enable ODM manufacturing while maintaining vendor accountability through explicit origin declaration",
+        "fsm_states_involved": ["CertificationDeclarationValidated"],
+        "critical_transitions": ["ProductIDPolicyValidated->CertificationDeclarationValidated"]
+      },
+      {
+        "property_name": "PAA_AUTHORIZATION",
+        "type": "access_control",
+        "description": "authorized_paa_list restricts which PAAs can certify product, preventing certification from compromised or untrusted roots",
+        "fsm_states_involved": ["CertificationDeclarationValidated"],
+        "critical_transitions": ["ProductIDPolicyValidated->CertificationDeclarationValidated"]
+      },
+      {
+        "property_name": "FIRMWARE_CERTIFICATION",
+        "type": "consistency",
+        "description": "Optional firmware_information validation ensures device runs certified firmware version",
+        "fsm_states_involved": ["FirmwareInfoValidated"],
+        "critical_transitions": ["AttestationChallengeValidated->FirmwareInfoValidated"]
+      },
+      {
+        "property_name": "CERTIFICATE_ID_CONSISTENCY",
+        "type": "consistency",
+        "description": "certificate_id SHOULD match DCL CDCertificateID. Mismatch triggers software version certification check to handle firmware update scenarios.",
+        "fsm_states_involved": ["CertificateIDMismatched", "AttestationChallengeValidated"],
+        "critical_transitions": ["CertificationDeclarationValidated->CertificateIDMismatched", "CertificateIDMismatched->AttestationChallengeValidated"]
+      },
+      {
+        "property_name": "REVOCATION_STALENESS_HANDLING",
+        "type": "availability",
+        "description": "Commissioner handles stale CRL data gracefully by proceeding with user notification, balancing security and availability",
+        "fsm_states_involved": ["CRLStaleWarning"],
+        "critical_transitions": ["PAAValidated->CRLStaleWarning", "CRLStaleWarning->VendorIDPolicyValidated"]
+      },
+      {
+        "property_name": "OFFLINE_COMMISSIONING_SUPPORT",
+        "type": "availability",
+        "description": "Enables commissioning without DCL access when valid CD present. Defers non-critical checks while ensuring basic certification validation.",
+        "fsm_states_involved": ["OfflineCommissioning"],
+        "critical_transitions": ["CertificationDeclarationValidated->OfflineCommissioning", "OfflineCommissioning->AttestationChallengeValidated"]
+      },
+      {
+        "property_name": "USER_NOTIFICATION_TRANSPARENCY",
+        "type": "transparency",
+        "description": "Commissioner SHOULD notify user when security validations bypassed or degraded (revocation unavailable, CRL stale, offline mode)",
+        "fsm_states_involved": ["RevocationCheckSkipped", "CRLStaleWarning", "OfflineCommissioning"],
+        "critical_transitions": ["PAAValidated->RevocationCheckSkipped", "PAAValidated->CRLStaleWarning", "CertificationDeclarationValidated->OfflineCommissioning"]
+      }
+    ],
+    "initial_state": "Unattested",
+    "all_states": [
+      "Unattested",
+      "NonceGenerated",
+      "AttestationRequested",
+      "ResponseReceived",
+      "CertificateChainObtained",
+      "NonceValidated",
+      "SignatureValidated",
+      "CertificateFormatValidated",
+      "ChainCryptographicallyValidated",
+      "PAAValidated",
+      "RevocationChecked",
+      "VendorIDPolicyValidated",
+      "ProductIDPolicyValidated",
+      "CertificationDeclarationValidated",
+      "AttestationChallengeValidated",
+      "FirmwareInfoValidated",
+      "FullyAttested",
+      "RequestTimeout",
+      "NonceValidationFailed",
+      "SignatureVerificationFailed",
+      "CertificateFormatInvalid",
+      "ChainValidationFailed",
+      "PAANotTrusted",
+      "CertificateRevoked",
+      "RevocationCheckSkipped",
+      "CRLStaleWarning",
+      "CertificateIDMismatched",
+      "VendorIDPolicyViolation",
+      "ProductIDPolicyViolation",
+      "CertificationDeclarationInvalid",
+      "EncodingAmbiguityDetected",
+      "OfflineCommissioning"
+    ],
+    "all_triggers": [
+      "begin_attestation",
+      "send_attestation_request",
+      "receive_attestation_response",
+      "timeout_expired",
+      "obtain_certificate_chain",
+      "use_cached_chain",
+      "validate_nonce",
+      "verify_attestation_signature",
+      "validate_certificate_formats",
+      "validate_certificate_chain",
+      "validate_paa_trust",
+      "check_revocation",
+      "validate_vendor_id_policy",
+      "validate_product_id_policy",
+      "validate_certification_declaration",
+      "validate_attestation_challenge",
+      "validate_certificate_id",
+      "validate_software_version_certification",
+      "proceed_with_offline_validation",
+      "validate_firmware_information",
+      "complete_attestation"
+    ],
+    "all_functions_used": [
+      "generate_random_nonce",
+      "send_message",
+      "extract_attestation_elements",
+      "extract_signature",
+      "extract_tbs",
+      "extract_cd",
+      "request_certificate",
+      "extract_nonce",
+      "crypto_verify",
+      "validate_dac_format",
+      "validate_pai_format",
+      "validate_paa_format",
+      "crypto_verify_chain_der",
+      "verify_issuer_subject_matches",
+      "paa_in_trusted_store",
+      "paa_in_dcl_at_time",
+      "is_revoked",
+      "extract_vid",
+      "extract_pid",
+      "has_vid",
+      "has_pid",
+      "encoding_method_consistent",
+      "cd_vid_matches_basic_info",
+      "cd_pid_in_array",
+      "validate_dac_origin_fields",
+      "validate_authorized_paa_list",
+      "get_basic_info_attribute",
+      "extract_challenge",
+      "get_session_challenge",
+      "has_firmware_info",
+      "firmware_info_matches_dcl",
+      "query_dcl_firmware_info",
+      "extract_firmware_info_if_present",
+      "current_timestamp",
+      "extract_subject",
+      "extract_ski",
+      "extract_notBefore",
+      "identify_invalid_cert",
+      "identify_violation",
+      "identify_chain_error",
+      "identify_revoked_cert",
+      "extract_revocation_reason",
+      "identify_skip_reason",
+      "notify_user",
+      "identify_vid_mismatch",
+      "identify_pid_mismatch",
+      "identify_cd_error",
+      "generate_event",
+      "get_session_type",
+      "generate_format_report",
+      "extract_vid_if_present",
+      "extract_pid_if_present",
+      "pid_encoding_consistent",
+      "crl_is_stale",
+      "no_revocations_found",
+      "extract_crl_next_update",
+      "certificate_id_matches_dcl",
+      "query_dcl_certificate_id",
+      "extract_certificate_id",
+      "software_version_is_certified_in_dcl"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "nonce_generation",
+        "algorithm": "Crypto_DRBG",
+        "inputs": ["system_entropy"],
+        "output": "32_byte_random_nonce",
+        "assumptions": [
+          "DRBG is cryptographically secure and properly seeded",
+          "System entropy source provides sufficient randomness",
+          "Nonce generation is not predictable or repeatable"
+        ]
+      },
+      {
+        "operation": "signature_verification",
+        "algorithm": "ECDSA with SHA256",
+        "inputs": ["dac_public_key (prime256v1)", "attestation_tbs", "attestation_signature"],
+        "output": "boolean (valid/invalid)",
+        "assumptions": [
+          "ECDSA implementation is correct and timing-attack resistant",
+          "SHA256 is collision-resistant",
+          "prime256v1 curve is cryptographically secure",
+          "Device private key is secure and not compromised"
+        ]
+      },
+      {
+        "operation": "certificate_chain_validation",
+        "algorithm": "RFC 5280 Path Validation with ECDSA-SHA256",
+        "inputs": ["dac_certificate", "pai_certificate", "paa_certificate", "validation_timestamp"],
+        "output": "boolean (valid_chain/invalid_chain)",
+        "assumptions": [
+          "Certificate parsing is secure and handles malformed input",
+          "RSA 5280 validation algorithm correctly implemented",
+          "No exploitable parsing vulnerabilities in DER decoder",
+          "Validation timestamp is accurate and not manipulated"
+        ]
+      },
+      {
+        "operation": "vid_pid_extraction",
+        "algorithm": "OID parsing or regex pattern matching",
+        "inputs": ["certificate_subject_or_issuer_field"],
+        "output": "16bit_vendor_id, 16bit_product_id",
+        "assumptions": [
+          "Preferred method OID parsing is unambiguous",
+          "Fallback method regex strictly enforces format (4 uppercase hex)",
+          "Leftmost match rule consistently applied",
+          "No encoding method mixing within same field"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "Device private key for DAC is securely stored and cannot be extracted",
+        "type": "implicit",
+        "if_violated": "Device impersonation attacks become possible through key cloning"
+      },
+      {
+        "assumption": "Commissioner has access to Distributed Compliance Ledger for PAA trust anchors and revocation data",
+        "type": "explicit",
+        "if_violated": "Cannot validate PAA trust or check revocation, enabling compromised certificate acceptance"
+      },
+      {
+        "assumption": "Distributed Compliance Ledger is trustworthy and not compromised",
+        "type": "implicit",
+        "if_violated": "Fraudulent PAAs could be trusted, revocation data could be manipulated"
+      },
+      {
+        "assumption": "ECDSA with SHA256 and prime256v1 curve remain cryptographically secure",
+        "type": "implicit",
+        "if_violated": "Signature forgery becomes possible, breaking device authentication"
+      },
+      {
+        "assumption": "Crypto_DRBG provides cryptographically secure randomness",
+        "type": "explicit",
+        "if_violated": "Nonce prediction enables replay attacks"
+      },
+      {
+        "assumption": "Secure session (CASE/PASE) provides confidentiality and integrity for attestation exchange",
+        "type": "explicit",
+        "if_violated": "Man-in-the-middle attacks on attestation become possible"
+      },
+      {
+        "assumption": "Certificate Authorities (PAA, PAI) follow proper issuance procedures and protect private keys",
+        "type": "implicit",
+        "if_violated": "Fraudulent certificates could be issued, compromising entire trust model"
+      },
+      {
+        "assumption": "Basic Information cluster accurately reports device VendorID, ProductID, and SoftwareVersion",
+        "type": "implicit",
+        "if_violated": "Certification Declaration matching fails, device could claim false certification"
+      },
+      {
+        "assumption": "System time is accurate enough for certificate validity period checks",
+        "type": "implicit",
+        "if_violated": "Expired or not-yet-valid certificates could be accepted"
+      },
+      {
+        "assumption": "Revocation information in DCL is updated in timely manner when certificates compromised",
+        "type": "implicit",
+        "if_violated": "Compromised certificates continue to be accepted until revocation data updated"
+      },
+      {
+        "assumption": "Commissioner correctly implements all validation steps without implementation bugs",
+        "type": "implicit",
+        "if_violated": "Validation bypasses possible through buggy implementations"
+      },
+      {
+        "assumption": "VendorID/ProductID encoding is not ambiguous and consistently parsed",
+        "type": "explicit",
+        "if_violated": "Encoding confusion attacks enable cross-vendor or cross-product attacks"
+      },
+      {
+        "assumption": "Certification Declarations are issued only for genuinely certified products",
+        "type": "implicit",
+        "if_violated": "False certification claims possible through fraudulent CDs"
+      },
+      {
+        "assumption": "Device attestation occurs before any security-sensitive operations during commissioning",
+        "type": "implicit",
+        "if_violated": "Unauthenticated devices could perform privileged operations"
+      },
+      {
+        "assumption": "CAs publish CRL updates before nextUpdate timestamp expires or Commissioner understands stale CRL risks",
+        "type": "implicit",
+        "if_violated": "Recent revocations may be missed if CRL stale and Commissioner proceeds with warning"
+      },
+      {
+        "assumption": "Users understand security implications when notified about revocation check bypass or CRL staleness",
+        "type": "implicit",
+        "if_violated": "Users may proceed with commissioning compromised devices without understanding risks"
+      },
+      {
+        "assumption": "Firmware updates are properly certified and reflected in DCL DeviceSoftwareCompliance entries",
+        "type": "implicit",
+        "if_violated": "certificate_id mismatch validation may incorrectly reject legitimate firmware updates or accept uncertified firmware"
+      },
+      {
+        "assumption": "CRLDistributionPoints extension in certificates, if present, is not relied upon by Commissioner",
+        "type": "explicit",
+        "if_violated": "Inconsistent revocation checking if Commissioner uses cert extensions instead of DCL as single source"
+      },
+      {
+        "assumption": "Offline commissioning is only used when DCL truly unavailable, not to bypass revocation checks",
+        "type": "implicit",
+        "if_violated": "Attacker could force offline mode to commission revoked devices"
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": false,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true,
+      "comment": "Timer modeling: Timeout is modeled as single transition (AttestationRequested->RequestTimeout) triggered by timeout_expired event. No complex timer state machine needed for this procedure."
+    }
+  }
+}

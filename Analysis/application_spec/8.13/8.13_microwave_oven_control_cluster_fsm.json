@@ -1,0 +1,790 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Microwave Oven Control",
+    "cluster_id": "0x005F",
+    "pics_code": "MWOCTRL",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 8.13, Pages 669-676",
+    "revision": 1,
+
+    "features": [
+      {
+        "bit": 0,
+        "code": "PWRNUM",
+        "name": "PowerAsNumber",
+        "conformance": "O.a",
+        "description": "Power is specified as a unitless number or percentage. Mutually exclusive with WATTS (O.a conformance). When active, the PowerSetting attribute is present. Without PWRLMTS, PowerSetting is constrained to even multiples of 10 in [10, 100]. With PWRLMTS, PowerSetting is in [MinPower, MaxPower] with step granularity.",
+        "affects_states": [],
+        "affects_transitions": ["T006", "T009", "T010"]
+      },
+      {
+        "bit": 1,
+        "code": "WATTS",
+        "name": "PowerInWatts",
+        "conformance": "P, O.a",
+        "description": "Power is specified in Watts via the SupportedWatts list and SelectedWattIndex attributes. Provisional (P) and mutually exclusive with PWRNUM (O.a). When active, SupportedWatts and SelectedWattIndex attributes are present.",
+        "affects_states": [],
+        "affects_transitions": ["T007", "T009", "T010"]
+      },
+      {
+        "bit": 2,
+        "code": "PWRLMTS",
+        "name": "PowerNumberLimits",
+        "conformance": "[PWRNUM]",
+        "description": "Enables the MinPower, MaxPower, and PowerStep attributes. Requires PWRNUM feature. When active, PowerSetting constraints are defined by MinPower, MaxPower, and PowerStep rather than the default 10-100 / multiple-of-10 rule.",
+        "affects_states": [],
+        "affects_transitions": ["T006"]
+      }
+    ],
+
+    "dependencies": [
+      {
+        "cluster": "Operational State",
+        "relationship": "SHALL_COEXIST",
+        "description": "The Operational State cluster (or a cluster derived from it) SHALL appear on the same endpoint. It governs the device lifecycle states (Stopped, Running, Paused, Error). SetCookingParameters and AddMoreTime MAY be rejected with INVALID_IN_STATE based on the current operational state. AddMoreTime on success increments CountdownTime in this cluster by the same TimeToAdd value."
+      },
+      {
+        "cluster": "Microwave Oven Mode",
+        "relationship": "SHALL_COEXIST",
+        "description": "The Microwave Oven Mode cluster (or a cluster derived from it) SHALL appear on the same endpoint. The CookMode field of SetCookingParameters sets CurrentMode in this cluster. The valid values for CookMode are drawn from MicrowaveOvenMode.SupportedModes. The default CookMode (when field is absent) is the mode bearing the Normal mode tag from SupportedModes."
+      }
+    ],
+
+    "states": [
+      {
+        "name": "Stopped",
+        "description": "Device is not cooking. Cooking parameters can be configured via SetCookingParameters. CookTime, power settings, and mode may be updated. The device awaits a Start command (either from Operational State or via SetCookingParameters with StartAfterSetting=true) to begin cooking.",
+        "is_initial": true,
+        "invariants": [
+          "OperationalState.OperationalState == Stopped",
+          "CookTime >= 1",
+          "CookTime <= MaxCookTime",
+          "Feature_WATTS == true => SelectedWattIndex < len(SupportedWatts)",
+          "Feature_PWRNUM == true && Feature_PWRLMTS == false => PowerSetting IN {10, 20, 30, 40, 50, 60, 70, 80, 90, 100}",
+          "Feature_PWRNUM == true && Feature_PWRLMTS == true => (PowerSetting >= MinPower && PowerSetting <= MaxPower && (PowerSetting - MinPower) % PowerStep == 0)"
+        ],
+        "state_attributes": {
+          "OperationalState.OperationalState": "Stopped"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Microwave is idle; no radiation emitted. Safe for configuration. Parameter changes persist for next cook cycle."
+      },
+      {
+        "name": "Running",
+        "description": "Device is actively cooking. Microwave radiation is active. CookTime is mirrored as CountdownTime in the Operational State cluster and counts down. AddMoreTime can extend the remaining cook duration. SetCookingParameters is rejected with INVALID_IN_STATE.",
+        "is_initial": false,
+        "invariants": [
+          "OperationalState.OperationalState == Running",
+          "CookTime >= 1",
+          "CookTime <= MaxCookTime",
+          "OperationalState.CountdownTime >= 0",
+          "Feature_WATTS == true => SelectedWattIndex < len(SupportedWatts)",
+          "Feature_PWRNUM == true && Feature_PWRLMTS == false => PowerSetting IN {10, 20, 30, 40, 50, 60, 70, 80, 90, 100}",
+          "Feature_PWRNUM == true && Feature_PWRLMTS == true => (PowerSetting >= MinPower && PowerSetting <= MaxPower && (PowerSetting - MinPower) % PowerStep == 0)"
+        ],
+        "state_attributes": {
+          "OperationalState.OperationalState": "Running"
+        },
+        "feature_requirements": [],
+        "safety_implications": "CRITICAL: Microwave radiation is active. Physical harm risk if enclosure is compromised. Unauthorized extension of CookTime (AddMoreTime) could overheat food or cause fire. No normative constraint limits total accumulated cook time across multiple AddMoreTime calls within a single cycle beyond MaxCookTime."
+      },
+      {
+        "name": "Paused",
+        "description": "Cooking has been paused by the Operational State cluster Pause command. Microwave radiation is not active. CookTime is preserved at its last value. The oven awaits a Resume or Stop command from the Operational State cluster. AddMoreTime is rejected with INVALID_IN_STATE in this state.",
+        "is_initial": false,
+        "invariants": [
+          "OperationalState.OperationalState == Paused",
+          "CookTime >= 1",
+          "CookTime <= MaxCookTime"
+        ],
+        "state_attributes": {
+          "OperationalState.OperationalState": "Paused"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Radiation is not active; low immediate safety risk. CookTime is preserved; resuming will continue cooking with potentially stale power/mode settings that were configured before pausing."
+      },
+      {
+        "name": "Error",
+        "description": "Device is in a fault or error state as reported by the Operational State cluster (e.g., OperationalError event). Both SetCookingParameters and AddMoreTime are rejected with INVALID_IN_STATE. Requires user or system intervention to clear.",
+        "is_initial": false,
+        "invariants": [
+          "OperationalState.OperationalState == Error"
+        ],
+        "state_attributes": {
+          "OperationalState.OperationalState": "Error"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Device is in a fault condition. Microwave may have entered an unsafe state. All cooking commands are rejected to prevent hazardous operation during an unresolved fault."
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T001",
+        "from_state": "Running",
+        "to_state": "Running",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Running",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "OperationalState is Running; device cannot accept configuration commands during active cooking",
+            "status_code": "INVALID_IN_STATE",
+            "description": "SetCookingParameters rejected because the device is actively cooking. Attributes and state remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.1 and Section 8.13.6.2.6 'Effect on Receipt' — first check: operational state"
+      },
+      {
+        "id": "T002",
+        "from_state": "Paused",
+        "to_state": "Paused",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Paused",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "OperationalState is Paused; device cannot accept configuration commands while paused",
+            "status_code": "INVALID_IN_STATE",
+            "description": "SetCookingParameters rejected because the device is in Paused state. Attributes and state remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.1 and Section 8.13.6.2.6 'Effect on Receipt' — first check: operational state"
+      },
+      {
+        "id": "T003",
+        "from_state": "Error",
+        "to_state": "Error",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Error",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "OperationalState is Error; device cannot accept commands in fault state",
+            "status_code": "INVALID_IN_STATE",
+            "description": "SetCookingParameters rejected because the device is in Error state. Attributes and state remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.1 and Section 8.13.6.2.6 'Effect on Receipt' — first check: operational state"
+      },
+      {
+        "id": "T004",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Stopped && CookMode_field_present == true && CookMode_field NOT IN MicrowaveOvenMode.SupportedModes[*].Mode",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "CookMode field is present and its value is not a valid entry in the SupportedModes list of the Microwave Oven Mode cluster on the same endpoint",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "CookMode field violates the constraint that it must match a SupportedModes entry. Attributes and state remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.2.1 and Section 8.13.6.2.6 'Effect on Receipt' — second check: field constraints"
+      },
+      {
+        "id": "T005",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Stopped && CookTime_field_present == true && (CookTime_field < 1 || CookTime_field > MaxCookTime)",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "CookTime field is present and is outside the range [1, MaxCookTime]",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "CookTime field violates the constraint of the CookTime attribute (1 to MaxCookTime seconds). Attributes and state remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.2.2 and Section 8.13.6.2.6 'Effect on Receipt' — second check: field constraints"
+      },
+      {
+        "id": "T006",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Stopped && Feature_PWRNUM == true && PowerSetting_field_present == true && validate_power_setting_pwrnum(PowerSetting_field) == false",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "PowerSetting field is present with PWRNUM feature active and fails constraint check: without PWRLMTS — not a multiple of 10 in [10,100]; with PWRLMTS — outside [MinPower, MaxPower] or (value - MinPower) % PowerStep != 0",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "PowerSetting field does not conform to the constraints of the PowerSetting attribute. Attributes and state remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.5.3, Section 8.13.6.2.3 and Section 8.13.6.2.6 'Effect on Receipt' — second check: field constraints"
+      },
+      {
+        "id": "T007",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Stopped && Feature_WATTS == true && WattSettingIndex_field_present == true && WattSettingIndex_field >= len(SupportedWatts)",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "WattSettingIndex field is present and its value is greater than or equal to the length of the SupportedWatts list",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "WattSettingIndex is out of bounds for the SupportedWatts list. SelectedWattIndex attribute remains unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.2.4 and Section 8.13.6.2.6 'Effect on Receipt' — second check: field constraints"
+      },
+      {
+        "id": "T008",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Stopped && all_SetCookingParameters_field_constraints_valid == true && StartAfterSetting_field_present == true && StartAfterSetting_field == true && OperationalState_Start_command_not_supported == true",
+        "actions": [
+          "return INVALID_COMMAND"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "StartAfterSetting field is present and set to TRUE but the Start command of the Operational State cluster (or its derivative) on the same endpoint is not supported",
+            "status_code": "INVALID_COMMAND",
+            "description": "Cannot fulfill StartAfterSetting=true because Start command is not available on the Operational State cluster. Attributes and state remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.2.6 'Effect on Receipt' — third check: StartAfterSetting feasibility"
+      },
+      {
+        "id": "T009",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Stopped && all_SetCookingParameters_field_constraints_valid == true && (StartAfterSetting_field_present == false || StartAfterSetting_field == false)",
+        "actions": [
+          "call_function(apply_cook_mode, CookMode_field, CookMode_field_present)",
+          "call_function(apply_cook_time, CookTime_field, CookTime_field_present)",
+          "call_function(apply_power_setting_pwrnum, PowerSetting_field, PowerSetting_field_present)",
+          "call_function(apply_watt_setting_index, WattSettingIndex_field, WattSettingIndex_field_present)"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 8.13.6.2.6 'Effect on Receipt' — success path, StartAfterSetting absent or false"
+      },
+      {
+        "id": "T010",
+        "from_state": "Stopped",
+        "to_state": "Running",
+        "trigger": {
+          "type": "command",
+          "name": "SetCookingParameters",
+          "command_id": "0x00"
+        },
+        "guard_condition": "OperationalState.OperationalState == Stopped && all_SetCookingParameters_field_constraints_valid == true && StartAfterSetting_field_present == true && StartAfterSetting_field == true && OperationalState_Start_command_supported == true",
+        "actions": [
+          "call_function(apply_cook_mode, CookMode_field, CookMode_field_present)",
+          "call_function(apply_cook_time, CookTime_field, CookTime_field_present)",
+          "call_function(apply_power_setting_pwrnum, PowerSetting_field, PowerSetting_field_present)",
+          "call_function(apply_watt_setting_index, WattSettingIndex_field, WattSettingIndex_field_present)",
+          "invoke_OperationalState.Start()"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 8.13.6.2.5 and Section 8.13.6.2.6 'Effect on Receipt' — success path, StartAfterSetting=true"
+      },
+      {
+        "id": "T011",
+        "from_state": "Running",
+        "to_state": "Running",
+        "trigger": {
+          "type": "command",
+          "name": "AddMoreTime",
+          "command_id": "0x01"
+        },
+        "guard_condition": "OperationalState.OperationalState == Running && (CookTime + TimeToAdd) > MaxCookTime",
+        "actions": [
+          "return CONSTRAINT_ERROR"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "CookTime + TimeToAdd would exceed MaxCookTime",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Adding the requested time would violate the MaxCookTime upper bound. Command is ignored; CookTime and CountdownTime remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.3.2 'Effect on Receipt' — first check: sum constraint"
+      },
+      {
+        "id": "T012",
+        "from_state": "Stopped",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "AddMoreTime",
+          "command_id": "0x01"
+        },
+        "guard_condition": "OperationalState.OperationalState == Stopped",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "OperationalState is Stopped; adding cook time while not operating is not meaningful",
+            "status_code": "INVALID_IN_STATE",
+            "description": "AddMoreTime rejected because device is in Stopped state. CookTime and CountdownTime remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.3.2 'Effect on Receipt' — second check: operational state"
+      },
+      {
+        "id": "T013",
+        "from_state": "Paused",
+        "to_state": "Paused",
+        "trigger": {
+          "type": "command",
+          "name": "AddMoreTime",
+          "command_id": "0x01"
+        },
+        "guard_condition": "OperationalState.OperationalState == Paused",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "OperationalState is Paused; operational state does not support AddMoreTime while paused",
+            "status_code": "INVALID_IN_STATE",
+            "description": "AddMoreTime rejected because device is in Paused state. CookTime and CountdownTime remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.3.2 'Effect on Receipt' — second check: operational state"
+      },
+      {
+        "id": "T014",
+        "from_state": "Error",
+        "to_state": "Error",
+        "trigger": {
+          "type": "command",
+          "name": "AddMoreTime",
+          "command_id": "0x01"
+        },
+        "guard_condition": "OperationalState.OperationalState == Error",
+        "actions": [
+          "return INVALID_IN_STATE"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "OperationalState is Error; commands may not be processed in fault state",
+            "status_code": "INVALID_IN_STATE",
+            "description": "AddMoreTime rejected because device is in Error state. CookTime and CountdownTime remain unchanged."
+          }
+        ],
+        "spec_reference": "Section 8.13.6.3.2 'Effect on Receipt' — second check: operational state"
+      },
+      {
+        "id": "T015",
+        "from_state": "Running",
+        "to_state": "Running",
+        "trigger": {
+          "type": "command",
+          "name": "AddMoreTime",
+          "command_id": "0x01"
+        },
+        "guard_condition": "OperationalState.OperationalState == Running && (CookTime + TimeToAdd) <= MaxCookTime",
+        "actions": [
+          "CookTime := CookTime + TimeToAdd",
+          "OperationalState.CountdownTime := OperationalState.CountdownTime + TimeToAdd"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 8.13.6.3.2 'Effect on Receipt' — success path"
+      },
+      {
+        "id": "T016",
+        "from_state": "Running",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "timer",
+          "name": "CookTimeExpiry",
+          "command_id": null
+        },
+        "guard_condition": "OperationalState.CountdownTime == 0",
+        "actions": [
+          "OperationalState.OperationalState := Stopped"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Triggered automatically when the Operational State cluster CountdownTime (mirroring CookTime) reaches zero",
+        "error_responses": [],
+        "spec_reference": "Section 8.13 — implied by Operational State cluster dependency; CookTime drives CountdownTime"
+      },
+      {
+        "id": "T017",
+        "from_state": "Running",
+        "to_state": "Paused",
+        "trigger": {
+          "type": "command",
+          "name": "OperationalState.Pause",
+          "command_id": null
+        },
+        "guard_condition": "OperationalState.Pause_command_supported == true",
+        "actions": [
+          "OperationalState.OperationalState := Paused"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 8.13.6.1 — operational state governed by Operational State cluster on same endpoint"
+      },
+      {
+        "id": "T018",
+        "from_state": "Paused",
+        "to_state": "Running",
+        "trigger": {
+          "type": "command",
+          "name": "OperationalState.Resume",
+          "command_id": null
+        },
+        "guard_condition": "OperationalState.Resume_command_supported == true",
+        "actions": [
+          "OperationalState.OperationalState := Running"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 8.13.6.1 — operational state governed by Operational State cluster on same endpoint"
+      },
+      {
+        "id": "T019",
+        "from_state": "Running",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "OperationalState.Stop",
+          "command_id": null
+        },
+        "guard_condition": "OperationalState.Stop_command_supported == true",
+        "actions": [
+          "OperationalState.OperationalState := Stopped"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 8.13.6.1 — operational state governed by Operational State cluster on same endpoint"
+      },
+      {
+        "id": "T020",
+        "from_state": "Paused",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "command",
+          "name": "OperationalState.Stop",
+          "command_id": null
+        },
+        "guard_condition": "OperationalState.Stop_command_supported == true",
+        "actions": [
+          "OperationalState.OperationalState := Stopped"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 8.13.6.1 — operational state governed by Operational State cluster on same endpoint"
+      },
+      {
+        "id": "T021",
+        "from_state": "Running",
+        "to_state": "Error",
+        "trigger": {
+          "type": "event",
+          "name": "OperationalState.OperationalError",
+          "command_id": null
+        },
+        "guard_condition": "OperationalState_fault_detected == true",
+        "actions": [
+          "OperationalState.OperationalState := Error"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 8.13.6.1 — operational state governed by Operational State cluster on same endpoint"
+      },
+      {
+        "id": "T022",
+        "from_state": "Error",
+        "to_state": "Stopped",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "ErrorConditionCleared",
+          "command_id": null
+        },
+        "guard_condition": "error_condition_resolved == true",
+        "actions": [
+          "OperationalState.OperationalState := Stopped"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 8.13.6.1 — error clearance governed by Operational State cluster on same endpoint"
+      }
+    ],
+
+    "events": [],
+
+    "timers": [
+      {
+        "name": "CookTimer",
+        "source_attribute": "CookTime",
+        "trigger": "Oven operation starts via T010 (SetCookingParameters with StartAfterSetting=true) or via a separate OperationalState.Start command after T009 sets parameters. At start, CookTime is mirrored into CountdownTime of the Operational State cluster and begins counting down.",
+        "expiry_transition": "T016",
+        "resolution": "seconds"
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "apply_cook_mode",
+        "parameters": [
+          {"name": "cook_mode_field", "type": "uint8", "description": "Value of the CookMode field from the SetCookingParameters command, if present"},
+          {"name": "field_present", "type": "bool", "description": "Whether the CookMode field was included in the command"}
+        ],
+        "return_type": "void",
+        "description": "If field_present is true, sets MicrowaveOvenMode.CurrentMode to the value of cook_mode_field (which is guaranteed valid by T004 guard). If field_present is false, sets MicrowaveOvenMode.CurrentMode to the mode value from SupportedModes that carries the Normal mode tag.",
+        "usage_in_fsm": "Actions of T009 and T010"
+      },
+      {
+        "name": "apply_cook_time",
+        "parameters": [
+          {"name": "cook_time_field", "type": "elapsed-s", "description": "Value of the CookTime field from the SetCookingParameters command, if present"},
+          {"name": "field_present", "type": "bool", "description": "Whether the CookTime field was included in the command"}
+        ],
+        "return_type": "void",
+        "description": "If field_present is true, sets CookTime to the value of cook_time_field (which is guaranteed to be in [1, MaxCookTime] by T005 guard). If field_present is false, sets CookTime to 30 seconds.",
+        "usage_in_fsm": "Actions of T009 and T010"
+      },
+      {
+        "name": "apply_power_setting_pwrnum",
+        "parameters": [
+          {"name": "power_setting_field", "type": "uint8", "description": "Value of the PowerSetting field from the SetCookingParameters command, if present"},
+          {"name": "field_present", "type": "bool", "description": "Whether the PowerSetting field was included in the command"}
+        ],
+        "return_type": "void",
+        "description": "No-op if Feature_PWRNUM is not active. If Feature_PWRNUM is active and field_present is true, sets PowerSetting to the value of power_setting_field (guaranteed valid by T006 guard). If Feature_PWRNUM is active and field_present is false, sets PowerSetting to MaxPower when Feature_PWRLMTS is supported, otherwise sets PowerSetting to 100.",
+        "usage_in_fsm": "Actions of T009 and T010"
+      },
+      {
+        "name": "apply_watt_setting_index",
+        "parameters": [
+          {"name": "watt_setting_index_field", "type": "uint8", "description": "Value of the WattSettingIndex field from the SetCookingParameters command, if present"},
+          {"name": "field_present", "type": "bool", "description": "Whether the WattSettingIndex field was included in the command"}
+        ],
+        "return_type": "void",
+        "description": "No-op if Feature_WATTS is not active. If Feature_WATTS is active and field_present is true, sets SelectedWattIndex to the value of watt_setting_index_field (guaranteed valid by T007 guard). If Feature_WATTS is active and field_present is false, sets SelectedWattIndex to the index within SupportedWatts that corresponds to the highest watt setting available for the currently selected CookMode.",
+        "usage_in_fsm": "Actions of T009 and T010"
+      },
+      {
+        "name": "validate_power_setting_pwrnum",
+        "parameters": [
+          {"name": "value", "type": "uint8", "description": "The PowerSetting field value from SetCookingParameters to validate"}
+        ],
+        "return_type": "bool",
+        "description": "Returns true if value satisfies the PowerSetting attribute constraints for the active feature configuration. When Feature_PWRLMTS is NOT supported: returns true only if value is in {10, 20, 30, 40, 50, 60, 70, 80, 90, 100} (range [10, 100] and multiple of 10). When Feature_PWRLMTS IS supported: returns true only if value is in the range [MinPower, MaxPower] inclusive AND (value - MinPower) % PowerStep == 0.",
+        "usage_in_fsm": "Guard condition of T006"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": ["SetCookingParameters", "AddMoreTime"],
+      "manage_commands": [],
+      "administer_commands": [],
+      "timed_commands": []
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "transition",
+        "element_id": "T010",
+        "safety_concern": "SetCookingParameters with StartAfterSetting=true immediately activates microwave radiation (starts cooking) in a single command with no confirmation step. Any client with only OPERATE privilege can invoke this.",
+        "mitigation_in_spec": "Requires Operate privilege; command fails with INVALID_IN_STATE if currently Running or Paused; all field constraints validated before start is initiated"
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T015",
+        "safety_concern": "AddMoreTime extends active cook time while the oven is running and microwave radiation is active. Repeated calls within a single cook cycle could accumulate large additional cook time (up to MaxCookTime - original CookTime).",
+        "mitigation_in_spec": "MaxCookTime attribute enforces an absolute upper bound per invocation; CONSTRAINT_ERROR returned when CookTime + TimeToAdd > MaxCookTime (T011). However no rate limit on successive AddMoreTime calls is specified."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "MaxCookTime",
+        "safety_concern": "MaxCookTime is a Fixed attribute (Quality F) set at manufacturing time with a maximum allowed value of 86400 seconds (24 hours). If a device sets this to an excessively high value, prolonged cooking cycles become possible.",
+        "mitigation_in_spec": "Attribute is Fixed (not writable by clients); range is hard-capped at 86400 seconds by the spec. Cannot be changed at runtime."
+      },
+      {
+        "element_type": "state",
+        "element_id": "Running",
+        "safety_concern": "Microwave radiation is active during the Running state. The state is entered either by SetCookingParameters with StartAfterSetting=true (T010) or by a separate Start command from the Operational State cluster. Unauthorized state entry could cause physical harm.",
+        "mitigation_in_spec": "Operate privilege required for both entry paths; INVALID_IN_STATE enforced from Running/Paused/Error states for SetCookingParameters"
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "PowerSetting / SelectedWattIndex",
+        "safety_concern": "Power level directly controls microwave emission intensity. Misconfigured power (e.g., maximum wattage) during a long CookTime can overheat or ignite contents.",
+        "mitigation_in_spec": "PowerSetting constrained by MinPower/MaxPower/PowerStep (PWRLMTS) or fixed 10-100 multiple-of-10 scale. SelectedWattIndex constrained to valid SupportedWatts indices. Both validated before cooking starts."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "location": "Section 8.13.6.1",
+        "gap_type": "weak_normative",
+        "description": "The spec uses MAY (not SHALL) when stating that servers may respond with INVALID_IN_STATE: 'the server MAY respond to commands defined in this cluster with an INVALID_IN_STATE response'. Implementations are not required to reject commands in invalid operational states.",
+        "security_impact": "An implementation that omits the INVALID_IN_STATE check may allow SetCookingParameters to reconfigure power level or mode while the oven is actively cooking, enabling unauthorized mid-cycle manipulation of radiation intensity."
+      },
+      {
+        "location": "Section 8.13.6.2.6 and Section 8.13.6.3.2",
+        "gap_type": "missing_constraint",
+        "description": "The spec does not enumerate which specific Operational State values (Stopped, Running, Paused, Error) allow or reject SetCookingParameters and AddMoreTime. The determination is left to the implementation based on unspecified 'restrictions imposed by the current operational state'.",
+        "security_impact": "Ambiguity allows implementations to accept SetCookingParameters while Running (enabling power escalation mid-cook) or AddMoreTime while Stopped (wasting cook time budget). The FSM models reasonable defaults but these are not normatively enforced."
+      },
+      {
+        "location": "Section 8.13.6.2.4",
+        "gap_type": "ambiguous",
+        "description": "When WattSettingIndex field is absent, the SelectedWattIndex default is defined as 'the index associated with the highest Watt setting for the selected CookMode'. The mapping between CookMode values and subsets of SupportedWatts is not defined in this cluster specification.",
+        "security_impact": "Ambiguous default watt selection may result in different implementations selecting different power levels for the same absent field. An attacker omitting the field could trigger unexpectedly high or low wattage depending on implementation."
+      },
+      {
+        "location": "Section 8.13.4",
+        "gap_type": "missing_constraint",
+        "description": "Features PWRNUM (bit 0) and WATTS (bit 1) are declared mutually exclusive via O.a conformance. However, the spec does not define normative behavior if a device reports both features simultaneously (invalid FeatureMap) or neither feature (no power control capability).",
+        "security_impact": "A device advertising both features creates an ambiguous power model, potentially allowing a client to submit both PowerSetting and WattSettingIndex fields with conflicting effective power levels. No conflict resolution is specified."
+      },
+      {
+        "location": "Section 8.13.6.2.1",
+        "gap_type": "ambiguous",
+        "description": "When the CookMode field is absent, the server SHALL set CurrentMode to 'a mode having the Normal mode tag'. The spec does not define behavior when no mode in SupportedModes of the Microwave Oven Mode cluster carries the Normal tag, or when multiple modes share that tag.",
+        "security_impact": "If no Normal-tagged mode exists at runtime, the fallback CookMode is undefined. Implementations may select an arbitrary mode (e.g., a high-power mode), enabling unexpected power levels. No error response is mandated for this case."
+      },
+      {
+        "location": "Section 8.13.6.3.2",
+        "gap_type": "missing_constraint",
+        "description": "No per-cycle or per-session rate limit is specified for AddMoreTime. A client with Operate privilege can call AddMoreTime repeatedly during a single cooking cycle, extending CookTime up to MaxCookTime total in small increments.",
+        "security_impact": "A compromised controller or rogue fabric member with Operate access could extend a short cook cycle to the device maximum (up to 86400 seconds/24 hours), potentially causing fire or property damage. No mitigation is specified."
+      }
+    ],
+
+    "initial_state": "Stopped",
+    "all_states": ["Stopped", "Running", "Paused", "Error"],
+    "all_triggers": [
+      "SetCookingParameters",
+      "AddMoreTime",
+      "CookTimeExpiry",
+      "OperationalState.Pause",
+      "OperationalState.Resume",
+      "OperationalState.Stop",
+      "OperationalState.Start",
+      "OperationalState.OperationalError",
+      "ErrorConditionCleared"
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true
+    }
+  }
+}

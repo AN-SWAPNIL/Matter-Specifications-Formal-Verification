@@ -1,0 +1,870 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "DAC_Uniqueness_Per_Device",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "Each commissionable Matter Node SHALL include a unique Device Attestation Certificate and corresponding private key.",
+      "formal": "∀ device₁, device₂: device₁ ≠ device₂ → (DAC(device₁) ≠ DAC(device₂) ∧ PrivKey(device₁) ≠ PrivKey(device₂))",
+      "violation": "If multiple devices share the same DAC or private key, device identity becomes ambiguous. This breaks device-level authentication and enables device impersonation attacks. A compromised device's credentials could be cloned to unauthorized devices.",
+      "attack_vector": "Attacker clones DAC and private key from one device to multiple unauthorized devices, allowing mass impersonation and bypassing per-device authentication controls."
+    },
+    {
+      "id": "PROP_002",
+      "name": "DAC_X509v3_DER_Encoding",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "The DAC SHALL be a DER-encoded X.509v3-compliant certificate as defined in RFC 5280.",
+      "formal": "∀ dac: ValidDAC(dac) → (Encoding(dac) = DER ∧ Version(dac) = X509v3 ∧ RFC5280Compliant(dac))",
+      "violation": "Non-standard encodings or certificate formats can bypass validation logic, cause parsing failures, or enable exploitation of parser vulnerabilities. Different implementations may interpret malformed certificates differently, leading to security inconsistencies.",
+      "attack_vector": "Attacker crafts certificates with non-DER encoding or non-X.509v3 structure to exploit parser vulnerabilities, bypass validation checks, or cause denial of service through parsing errors."
+    },
+    {
+      "id": "PROP_003",
+      "name": "Certification_Path_Length_Exactly_Two",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The DAC SHALL be issued by a PAI that chains directly to an approved PAA, resulting in a certification path length of exactly 2 (3 certificates total: PAA, PAI, DAC).",
+      "formal": "∀ dac: ValidDAC(dac) → ∃! pai, paa: (Issues(pai, dac) ∧ Issues(paa, pai) ∧ PathLength(dac) = 2)",
+      "violation": "If path length is not enforced to be exactly 2, attackers could insert additional intermediate certificates, creating unauthorized trust chains. This enables path lengthening attacks where malicious CAs are inserted between legitimate authorities.",
+      "attack_vector": "Attacker creates a rogue intermediate CA certificate signed by a compromised PAI and uses it to issue fraudulent DACs, bypassing intended trust hierarchy and policy enforcement."
+    },
+    {
+      "id": "PROP_004",
+      "name": "Cryptographic_Algorithm_Binding",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "All certificates SHALL use ECDSA with SHA256 signature algorithm and prime256v1 (secp256r1) elliptic curve.",
+      "formal": "∀ cert ∈ {DAC, PAI, PAA}: SignatureAlgorithm(cert) = ECDSA-SHA256 ∧ Curve(cert) = prime256v1",
+      "violation": "Using weaker cryptographic algorithms (e.g., RSA-1024, SHA1) or allowing algorithm flexibility enables downgrade attacks. Attackers could exploit known vulnerabilities in deprecated algorithms or force the system to accept weaker cryptography.",
+      "attack_vector": "Attacker substitutes a certificate signed with a weaker algorithm (e.g., ECDSA-SHA1 or broken curve) to exploit cryptographic weaknesses, forge signatures, or perform collision attacks."
+    },
+    {
+      "id": "PROP_005",
+      "name": "VendorID_ProductID_Presence_In_DAC",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "The DAC SHALL contain specific values of Vendor ID and Product ID in its subject field to indicate provenance.",
+      "formal": "∀ dac: ValidDAC(dac) → (∃vid, pid: Contains(Subject(dac), vid) ∧ Contains(Subject(dac), pid))",
+      "violation": "Without VID/PID in the certificate, product provenance cannot be cryptographically verified. This enables unauthorized manufacturers to create devices claiming to be certified products, bypassing manufacturer accountability.",
+      "attack_vector": "Attacker creates devices with legitimate-looking DACs but without proper VID/PID bindings, allowing counterfeit products to pass initial commissioning checks and claim false certifications."
+    },
+    {
+      "id": "PROP_006",
+      "name": "Encoding_Method_Exclusivity_Per_Field",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "VendorID and ProductID SHALL be encoded by only one method (preferred or fallback) within a given subject or issuer field, without mixing methods.",
+      "formal": "∀ field ∈ {subject, issuer}: (UsesPreferredMethod(field, VID) → ¬UsesFallbackMethod(field, VID)) ∧ (UsesPreferredMethod(field, PID) → ¬UsesFallbackMethod(field, PID))",
+      "violation": "Mixing encoding methods within the same field creates ambiguity in which encoding is authoritative. Different validators might parse different values, leading to inconsistent validation results and potential security bypasses.",
+      "attack_vector": "Attacker crafts certificates with both preferred and fallback encodings containing different VID/PID values, exploiting parser differences to pass validation on some systems while claiming false identity on others."
+    },
+    {
+      "id": "PROP_007",
+      "name": "DAC_PAI_Subject_Uniqueness",
+      "category": "IdentityBinding",
+      "importance": "HIGH",
+      "claim": "The subject of all DAC and PAI certificates SHALL be unique among all those issued by their issuer.",
+      "formal": "∀ cert₁, cert₂: (Issuer(cert₁) = Issuer(cert₂) ∧ cert₁ ≠ cert₂) → Subject(cert₁) ≠ Subject(cert₂)",
+      "violation": "If subjects are not unique, certificate revocation becomes ambiguous. Revoking one certificate might unintentionally affect others, or targeted revocation might fail to identify the correct certificate. This breaks the PKI's accountability model.",
+      "attack_vector": "Attacker obtains a DAC with the same subject as a legitimate device, then continues using it after the legitimate device's certificate is revoked, evading revocation enforcement."
+    },
+    {
+      "id": "PROP_008",
+      "name": "PAI_VendorID_Assignment",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "A PAI SHALL be assigned to a Vendor ID value and cannot be shared across vendors.",
+      "formal": "∀ pai: ValidPAI(pai) → ∃! vid: AssignedTo(pai, vid)",
+      "violation": "If PAIs can be shared across vendors, vendor isolation breaks down. One vendor could issue certificates for another vendor's products, enabling supply chain attacks and breaking vendor accountability.",
+      "attack_vector": "Compromised vendor uses a shared PAI to issue DACs for another vendor's products, creating counterfeit devices that appear legitimate and bypassing vendor-specific security controls."
+    },
+    {
+      "id": "PROP_009",
+      "name": "PAI_ProductID_Scope_Restriction",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "If a PAI is scoped to a ProductID, it cannot be used for multiple products, otherwise Device Attestation Procedure will fail policy validations.",
+      "formal": "∀ pai, pid: ScopedTo(pai, pid) → (∀ dac: Issues(pai, dac) → ProductID(dac) = pid)",
+      "violation": "Using a product-scoped PAI for multiple products violates certificate issuance policy. This enables a compromised single-product PAI to issue certificates for unauthorized products, breaking product-level isolation.",
+      "attack_vector": "Attacker compromises a PAI scoped to a low-security product and uses it to issue DACs for high-security products, bypassing product-specific certification requirements."
+    },
+    {
+      "id": "PROP_010",
+      "name": "DAC_Issuer_Matches_PAI_Subject",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The issuer field of the DAC SHALL match, byte-for-byte, the subject field of the PAI certificate that issued the DAC.",
+      "formal": "∀ dac, pai: Issues(pai, dac) → Issuer(dac) = Subject(pai) (byte-for-byte)",
+      "violation": "If issuer and subject don't match exactly, the certificate chain breaks. This enables attackers to construct fraudulent chains with certificates from different trust hierarchies or substitute certificates mid-chain.",
+      "attack_vector": "Attacker creates a DAC with an issuer field that almost matches a legitimate PAI but with subtle differences, hoping to exploit lax validation that doesn't check byte-for-byte equality."
+    },
+    {
+      "id": "PROP_011",
+      "name": "DAC_VendorID_Matches_Issuer_VendorID",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "The VendorID value in the DAC subject SHALL match the VendorID value in the DAC issuer (which comes from the PAI subject).",
+      "formal": "∀ dac: ValidDAC(dac) → VendorID(Subject(dac)) = VendorID(Issuer(dac))",
+      "violation": "VendorID mismatch between DAC and its issuer enables cross-vendor certificate issuance attacks. A PAI from vendor A could issue DACs claiming to be from vendor B, breaking vendor isolation.",
+      "attack_vector": "Attacker compromises vendor A's PAI and issues DACs with vendor B's VendorID in the subject, creating counterfeit vendor B devices that chain to vendor A's legitimate infrastructure."
+    },
+    {
+      "id": "PROP_012",
+      "name": "DAC_ProductID_Conditional_Match",
+      "category": "IdentityBinding",
+      "importance": "HIGH",
+      "claim": "If a ProductID value is present in the DAC issuer field, the ProductID in the DAC subject SHALL match it.",
+      "formal": "∀ dac: (∃pid: Contains(Issuer(dac), pid)) → ProductID(Subject(dac)) = ProductID(Issuer(dac))",
+      "violation": "ProductID mismatch allows product-scoped PAIs to issue certificates for products outside their authorized scope. This breaks product-level certification controls and enables unauthorized product variants.",
+      "attack_vector": "Attacker uses a PAI scoped to product X to issue DACs for product Y by embedding product Y's ProductID in the DAC subject, bypassing product-specific certification requirements."
+    },
+    {
+      "id": "PROP_013",
+      "name": "DAC_BasicConstraint_CA_False",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The DAC Basic Constraint extension SHALL be marked critical and have the cA field set to FALSE.",
+      "formal": "∀ dac: ValidDAC(dac) → (BasicConstraint(dac).critical = TRUE ∧ BasicConstraint(dac).cA = FALSE)",
+      "violation": "If DAC has cA=TRUE, devices could issue their own certificates, turning every device into a certificate authority. This enables compromised devices to create entire fraudulent certificate chains.",
+      "attack_vector": "Attacker compromises a device with cA=TRUE in its DAC and uses it to issue fraudulent intermediate and device certificates, creating a rogue PKI under the legitimate hierarchy."
+    },
+    {
+      "id": "PROP_014",
+      "name": "DAC_KeyUsage_DigitalSignature_Only",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "The DAC Key Usage extension SHALL be marked critical and only have the digitalSignature bit set; other bits SHALL NOT be set.",
+      "formal": "∀ dac: ValidDAC(dac) → (KeyUsage(dac).critical = TRUE ∧ KeyUsage(dac).bits = {digitalSignature} ∧ |KeyUsage(dac).bits| = 1)",
+      "violation": "Additional key usage bits (e.g., keyCertSign, keyEncipherment) grant unintended cryptographic capabilities. A DAC with keyCertSign could issue certificates; keyEncipherment could enable unauthorized encryption operations.",
+      "attack_vector": "Attacker exploits a DAC with keyCertSign bit set to issue fraudulent certificates, or uses keyEncipherment bit to decrypt intercepted communications intended for different keys."
+    },
+    {
+      "id": "PROP_015",
+      "name": "PAI_BasicConstraint_CA_True_PathLen_Zero",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The PAI Basic Constraint extension SHALL be marked critical and have cA field set to TRUE and pathLen field set to 0.",
+      "formal": "∀ pai: ValidPAI(pai) → (BasicConstraint(pai).critical = TRUE ∧ BasicConstraint(pai).cA = TRUE ∧ BasicConstraint(pai).pathLen = 0)",
+      "violation": "If pathLen is not 0, the PAI could issue additional intermediate certificates, enabling unauthorized PKI expansion. If pathLen > 0 or missing, attackers could insert rogue intermediates between PAI and DAC.",
+      "attack_vector": "Attacker compromises a PAI with pathLen=1 and creates a rogue intermediate CA to issue DACs for unauthorized products, adding an extra layer that obscures the attack origin."
+    },
+    {
+      "id": "PROP_016",
+      "name": "PAI_KeyUsage_CertSign_CRLSign",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "The PAI Key Usage extension SHALL be marked critical and have both keyCertSign and cRLSign bits set; digitalSignature MAY be set; other bits SHALL NOT be set.",
+      "formal": "∀ pai: ValidPAI(pai) → (KeyUsage(pai).critical = TRUE ∧ KeyUsage(pai).keyCertSign = TRUE ∧ KeyUsage(pai).cRLSign = TRUE ∧ (KeyUsage(pai).bits \\ {keyCertSign, cRLSign, digitalSignature} = ∅))",
+      "violation": "Missing keyCertSign prevents certificate issuance; missing cRLSign prevents revocation list publication. Additional bits beyond the allowed set grant unintended capabilities like key agreement or encipherment.",
+      "attack_vector": "Attacker exploits PAI with additional key usage bits (e.g., keyEncipherment) to perform unauthorized cryptographic operations, or targets PAI without cRLSign to operate without revocation capabilities."
+    },
+    {
+      "id": "PROP_017",
+      "name": "PAA_Self_Signed_Issuer_Subject_Match",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The PAA issuer and subject fields SHALL match exactly (self-signed root certificate).",
+      "formal": "∀ paa: ValidPAA(paa) → Issuer(paa) = Subject(paa)",
+      "violation": "If PAA is not self-signed, it chains to an external authority, breaking the root-of-trust model. This enables unauthorized external CAs to become implicit trust anchors.",
+      "attack_vector": "Attacker creates a non-self-signed PAA that chains to a compromised external CA, injecting an unauthorized root of trust into the attestation hierarchy."
+    },
+    {
+      "id": "PROP_018",
+      "name": "PAA_No_ProductID",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "A ProductID value SHALL NOT be present in either the subject or issuer fields of a PAA certificate.",
+      "formal": "∀ paa: ValidPAA(paa) → (¬∃pid: Contains(Subject(paa), pid) ∨ Contains(Issuer(paa), pid))",
+      "violation": "ProductID at PAA level would restrict the root authority to a single product, violating the hierarchical trust model. It would require separate PAAs for each product, creating operational complexity and weakening the federated trust model.",
+      "attack_vector": "Attacker leverages product-scoped PAA to claim exclusive authority over a product category, potentially blocking legitimate competition or creating trust fragmentation."
+    },
+    {
+      "id": "PROP_019",
+      "name": "PAA_BasicConstraint_CA_True_PathLen_One",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The PAA Basic Constraint extension SHALL be marked critical and have cA=TRUE; if pathLen is present, it SHALL be set to 1.",
+      "formal": "∀ paa: ValidPAA(paa) → (BasicConstraint(paa).critical = TRUE ∧ BasicConstraint(paa).cA = TRUE ∧ (PathLenPresent(paa) → BasicConstraint(paa).pathLen = 1))",
+      "violation": "If pathLen > 1, the PAA could issue intermediates that themselves issue intermediates, creating unauthorized hierarchy levels. This enables deep chain attacks where multiple rogue CAs are inserted.",
+      "attack_vector": "Attacker uses PAA with pathLen=2 to create a two-tier rogue CA infrastructure, making detection and revocation significantly more complex."
+    },
+    {
+      "id": "PROP_020",
+      "name": "PAA_KeyUsage_CertSign_CRLSign_Required",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "The PAA Key Usage extension SHALL be marked critical and have both keyCertSign and cRLSign bits set; digitalSignature MAY be set; other bits SHALL NOT be set.",
+      "formal": "∀ paa: ValidPAA(paa) → (KeyUsage(paa).critical = TRUE ∧ KeyUsage(paa).keyCertSign = TRUE ∧ KeyUsage(paa).cRLSign = TRUE)",
+      "violation": "Missing keyCertSign prevents the PAA from issuing PAI certificates, breaking the trust chain. Missing cRLSign prevents revocation list management. Additional bits grant unintended capabilities.",
+      "attack_vector": "Attacker exploits PAA without cRLSign to operate a compromised PAI indefinitely without revocation, or uses additional key usage bits for unauthorized cryptographic operations."
+    },
+    {
+      "id": "PROP_021",
+      "name": "Attestation_Nonce_Fresh_Random_32_Bytes",
+      "category": "ReplayProtection",
+      "importance": "CRITICAL",
+      "claim": "The Commissioner SHALL generate a random 32-byte attestation nonce using Crypto_DRBG() for each attestation.",
+      "formal": "∀ attestation: FreshNonce(attestation) ∧ Length(Nonce(attestation)) = 32 ∧ GeneratedBy(Nonce(attestation), Crypto_DRBG)",
+      "violation": "Predictable or reused nonces enable replay attacks. An attacker could capture a valid attestation response and replay it in future commissioning attempts, bypassing freshness verification and device presence validation.",
+      "attack_vector": "Attacker captures an attestation response with a predictable nonce, then replays it to fake device presence without possessing the actual device or its private key."
+    },
+    {
+      "id": "PROP_022",
+      "name": "Attestation_Nonce_Match_In_Response",
+      "category": "ReplayProtection",
+      "importance": "CRITICAL",
+      "claim": "The AttestationNonce in Device Attestation elements SHALL match the Commissioner's provided AttestationNonce.",
+      "formal": "∀ request, response: RelatedTo(request, response) → Nonce(response) = Nonce(request)",
+      "violation": "If nonce matching is not enforced, an attacker could substitute a pre-captured attestation response with a different nonce, enabling replay attacks across different commissioning sessions.",
+      "attack_vector": "Attacker intercepts an attestation request with nonce N1, but responds with a previously captured valid response containing nonce N2, bypassing freshness checks."
+    },
+    {
+      "id": "PROP_023",
+      "name": "Attestation_Signature_Cryptographic_Verification",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "The Device Attestation Signature SHALL be validated using Crypto_Verify with the public key from the DAC, the Attestation Information TBS, and the signature.",
+      "formal": "∀ attestation: Valid(attestation) ↔ Crypto_Verify(PublicKey(DAC(attestation)), TBS(attestation), Signature(attestation)) = SUCCESS",
+      "violation": "Without cryptographic signature verification, anyone could forge attestation responses without possessing the device's private key. This completely breaks device authentication and enables trivial impersonation attacks.",
+      "attack_vector": "Attacker forges attestation responses without possessing the device's private key, creating fake devices that pass commissioning with arbitrary DACs copied from legitimate devices."
+    },
+    {
+      "id": "PROP_024",
+      "name": "Certificate_Chain_Validation_With_Revocation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The DAC certificate chain SHALL be validated using Crypto_VerifyChainDER, verifying PAI and PAA presence, and including revocation checks of DAC and PAI.",
+      "formal": "∀ dac, pai, paa: ValidChain(dac) ↔ (Crypto_VerifyChainDER(dac, pai, paa) = SUCCESS ∧ ChainLength(dac) = 3 ∧ ¬Revoked(dac) ∧ ¬Revoked(pai))",
+      "violation": "Without proper chain validation, fraudulent certificates with invalid signatures could be accepted. Without revocation checks, compromised or recalled certificates remain usable, enabling continued attacks with known-bad credentials.",
+      "attack_vector": "Attacker uses a revoked or cryptographically invalid certificate chain to authenticate a device. Without proper validation, the Commissioner accepts the fraudulent attestation."
+    },
+    {
+      "id": "PROP_025",
+      "name": "Chain_Validation_At_DAC_NotBefore_Timestamp",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Chain validation SHALL be performed with respect to the notBefore timestamp of the DAC to ensure the DAC was valid when issued.",
+      "formal": "∀ dac: ValidateTime(Chain(dac)) = NotBefore(dac)",
+      "violation": "If validation uses current time instead of issuance time, certificates issued during a window when the PAI/PAA was valid but later became invalid/expired could be rejected. Conversely, backdated certificates could appear valid.",
+      "attack_vector": "Attacker creates a backdated DAC claiming to be issued when the PAI was valid, but actually issued after the PAI was compromised and revoked, bypassing temporal validity checks."
+    },
+    {
+      "id": "PROP_026",
+      "name": "PAA_In_Trusted_Root_Store",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The PAA SHALL be validated for presence in the Commissioner's trusted root store, which SHOULD include at least the globally trusted PAA certificates from the Distributed Compliance Ledger at the DAC's notBefore timestamp.",
+      "formal": "∀ dac, paa: ValidDAC(dac) → (RootOf(paa, dac) ∧ paa ∈ TrustedStore(Commissioner) ∧ paa ∈ DCL(NotBefore(dac)))",
+      "violation": "Without trust anchor validation, any self-signed certificate could act as a PAA, completely bypassing the certification authority model. Attackers could create entire fraudulent PKI hierarchies.",
+      "attack_vector": "Attacker creates a self-signed rogue PAA, issues a PAI, and generates DACs for fraudulent devices. Without trust store validation, these appear legitimate."
+    },
+    {
+      "id": "PROP_027",
+      "name": "VendorID_Consistency_Across_Chain",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "The VendorID in the DAC subject SHALL match the VendorID in the PAI subject; if the PAA contains a VendorID, it SHALL match the PAI VendorID.",
+      "formal": "∀ dac, pai, paa: Chain(dac, pai, paa) → (VID(dac) = VID(pai) ∧ (HasVID(paa) → VID(paa) = VID(pai)))",
+      "violation": "VendorID mismatches across the chain enable cross-vendor attacks where a vendor's compromised intermediate is used to issue certificates for other vendors' products, breaking vendor isolation.",
+      "attack_vector": "Attacker uses vendor A's compromised PAI to issue DACs with vendor B's VID, creating counterfeit vendor B devices that chain through vendor A's infrastructure."
+    },
+    {
+      "id": "PROP_028",
+      "name": "Certification_Declaration_VendorID_Match",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "The vendor_id field in the Certification Declaration SHALL match the VendorID attribute found in the Basic Information cluster.",
+      "formal": "∀ device: CD_VendorID(device) = BasicInfo_VendorID(device)",
+      "violation": "Mismatched VendorIDs between the Certification Declaration and device runtime attributes enable devices to claim certification under one vendor while operating as another, bypassing vendor-specific policies.",
+      "attack_vector": "Attacker loads a legitimate vendor A's Certification Declaration onto a device that reports vendor B's VID in Basic Info, claiming false certification provenance."
+    },
+    {
+      "id": "PROP_029",
+      "name": "Certification_Declaration_ProductID_Containment",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "The product_id_array field in the Certification Declaration SHALL contain the value of the ProductID attribute found in the Basic Information cluster.",
+      "formal": "∀ device: BasicInfo_ProductID(device) ∈ CD_ProductIDArray(device)",
+      "violation": "If the runtime ProductID is not in the certified product list, the device is operating outside its certified configuration. This enables uncertified product variants or modified devices to bypass certification checks.",
+      "attack_vector": "Attacker modifies a certified device to report a different ProductID not in the Certification Declaration, creating an uncertified product variant while reusing legitimate certification credentials."
+    },
+    {
+      "id": "PROP_030",
+      "name": "DAC_Origin_Fields_Both_Or_Neither",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "The Certification Declaration SHALL contain both or neither of the dac_origin_vendor_id and dac_origin_product_id fields.",
+      "formal": "∀ cd: (HasField(cd, dac_origin_vendor_id) ↔ HasField(cd, dac_origin_product_id))",
+      "violation": "Having only one dac_origin field creates ambiguous origin semantics. Partial origin information prevents consistent validation and could enable confusion attacks where origin is partially validated.",
+      "attack_vector": "Attacker creates Certification Declaration with only dac_origin_vendor_id, exploiting inconsistent validation logic to bypass dac_origin_product_id checks on some implementations."
+    },
+    {
+      "id": "PROP_031",
+      "name": "DAC_Origin_VendorID_Validation",
+      "category": "IdentityBinding",
+      "importance": "HIGH",
+      "claim": "If Certification Declaration has dac_origin fields, the VendorID from DAC and PAI subject SHALL match dac_origin_vendor_id, and ProductID from DAC (and PAI if present) SHALL match dac_origin_product_id.",
+      "formal": "∀ device: HasDACOrigin(CD(device)) → (VID(DAC(device)) = CD(device).dac_origin_vendor_id ∧ VID(PAI(device)) = CD(device).dac_origin_vendor_id ∧ PID(DAC(device)) = CD(device).dac_origin_product_id ∧ (HasPID(PAI(device)) → PID(PAI(device)) = CD(device).dac_origin_product_id))",
+      "violation": "DAC origin fields enable tracking ODM-manufactured devices where the DAC issuer differs from the certified vendor. Bypassing these checks allows ODM credentials to be used for products outside their authorized scope.",
+      "attack_vector": "Attacker uses ODM-issued DAC (dac_origin) to certify a product under a different vendor/product than authorized, bypassing ODM contractual scope restrictions."
+    },
+    {
+      "id": "PROP_032",
+      "name": "DAC_Without_Origin_Standard_VID_PID_Validation",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "If Certification Declaration has no dac_origin fields, the VendorID from DAC and PAI SHALL match vendor_id, and ProductID from DAC SHALL be in product_id_array, and PAI ProductID (if present) SHALL match a product_id_array value.",
+      "formal": "∀ device: ¬HasDACOrigin(CD(device)) → (VID(DAC(device)) = CD(device).vendor_id ∧ VID(PAI(device)) = CD(device).vendor_id ∧ PID(DAC(device)) ∈ CD(device).product_id_array ∧ (HasPID(PAI(device)) → PID(PAI(device)) ∈ CD(device).product_id_array))",
+      "violation": "Without proper VID/PID validation against the Certification Declaration, devices could claim certification for vendors/products they are not certified for, bypassing the entire certification framework.",
+      "attack_vector": "Attacker creates a device with DAC for vendor/product X but loads Certification Declaration for vendor/product Y, claiming false certification if validation is not enforced."
+    },
+    {
+      "id": "PROP_033",
+      "name": "Authorized_PAA_List_Enforcement",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "If Certification Declaration contains the authorized_paa_list field, the Subject Key Identifier of the PAA SHALL be present in the list.",
+      "formal": "∀ device: HasAuthorizedPAAList(CD(device)) → SKI(PAA(device)) ∈ CD(device).authorized_paa_list",
+      "violation": "The authorized_paa_list restricts which PAAs can certify a product. Bypassing this check allows products certified by unauthorized PAAs to be commissioned, potentially introducing weaker certification standards or compromised roots of trust.",
+      "attack_vector": "Attacker obtains certification from a compromised or less rigorous PAA not on the authorized list, then bypasses the PAA list check to commission devices with substandard certification."
+    },
+    {
+      "id": "PROP_034",
+      "name": "Certificate_ID_DCL_Matching",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "The certificate_id field SHOULD match the CDCertificateID from the Distributed Compliance Ledger entry matching VendorID, ProductID, and SoftwareVersion.",
+      "formal": "∀ device: CD(device).certificate_id = DCL(VID(device), PID(device), SWVersion(device)).CDCertificateID",
+      "violation": "Certificate ID mismatch could indicate firmware update without updated Certification Declaration, or use of outdated/incorrect certification. This creates audit trail inconsistencies and could mask certification fraud.",
+      "attack_vector": "Attacker uses an old Certification Declaration with outdated certificate_id to hide that the current firmware version is not certified, deploying uncertified code under outdated credentials."
+    },
+    {
+      "id": "PROP_035",
+      "name": "Firmware_Information_DCL_Matching",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "The firmware_information field in Attestation Information, if present, SHALL match the content in the Distributed Compliance Ledger for the specific device.",
+      "formal": "∀ device: HasFirmwareInfo(AttestationInfo(device)) → FirmwareInfo(AttestationInfo(device)) = DCL(device).FirmwareInfo",
+      "violation": "Firmware information mismatch could indicate unauthorized firmware modifications or devices running uncertified firmware versions. This enables deployment of malicious or vulnerable firmware under legitimate attestation.",
+      "attack_vector": "Attacker modifies device firmware but keeps original attestation credentials, bypassing firmware validation by exploiting Commissioners that don't verify firmware_information against DCL."
+    },
+    {
+      "id": "PROP_036",
+      "name": "Fallback_Encoding_Format_Strict",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Fallback method encoding SHALL use exactly 4 uppercase hexadecimal characters without leading zero elision, prefixed by 'Mvid:' or 'Mpid:'.",
+      "formal": "∀ field: UsesFallbackMethod(field) → (∃vid_str, pid_str: Match(field, 'Mvid:[0-9A-F]{4}') ∨ Match(field, 'Mpid:[0-9A-F]{4}') ∧ NoLeadingZeroElision(vid_str, pid_str) ∧ Uppercase(vid_str, pid_str))",
+      "violation": "Accepting non-strict encodings (e.g., lowercase, variable length, missing leading zeros) creates parsing ambiguities. Different implementations may extract different VID/PID values from the same certificate, leading to inconsistent validation.",
+      "attack_vector": "Attacker crafts certificate with malformed fallback encoding (e.g., 'Mvid:FFF' or 'Mvid:fff1') that some parsers accept and extract different values, causing validation inconsistencies across Commissioners."
+    },
+    {
+      "id": "PROP_037",
+      "name": "Fallback_Encoding_Leftmost_Match",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "When using fallback method, the leftmost match having correct encoding SHALL be used, with other correct matches discarded.",
+      "formal": "∀ field: UsesFallbackMethod(field) → UseValue(leftmost_valid_match(field))",
+      "violation": "If multiple valid encodings exist and parsers use different matches (leftmost vs rightmost), different Commissioners would extract different VID/PID values, creating validation inconsistencies.",
+      "attack_vector": "Attacker creates certificate with multiple valid fallback encodings 'Mvid:FFF1 Mvid:FFF2', exploiting parsers that use rightmost instead of leftmost to bypass VID-based access controls on some systems."
+    },
+    {
+      "id": "PROP_038",
+      "name": "Fallback_Encoding_Prefix_Without_Valid_Match_Invalid",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If the prefix 'Mvid:' or 'Mpid:' is found but there is no fully correct match anywhere in commonName, the field SHALL be considered incorrectly formatted.",
+      "formal": "∀ field: (Contains(field, 'Mvid:') ∧ ¬∃valid_match: FullyCorrect(valid_match, field)) → Invalid(field)",
+      "violation": "Partial matches or malformed prefixes could be silently ignored, leading to missing VID/PID values. Some implementations might fail-open and accept certificates without proper identification, bypassing identity checks.",
+      "attack_vector": "Attacker creates certificate with malformed 'Mvid:' prefix but no valid encoding, exploiting fail-open parsers that accept it despite missing valid VID, bypassing VID-based access controls."
+    },
+    {
+      "id": "PROP_039",
+      "name": "Preferred_Method_Disables_Fallback_Parsing",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If either Matter-specific OID appears in any RelativeDistinguishedName of a field, the fallback method SHALL be skipped altogether for that field.",
+      "formal": "∀ field: (∃rdn: ContainsOID(rdn, matter-oid-vid) ∨ ContainsOID(rdn, matter-oid-pid)) → ¬UseFallbackParsing(field)",
+      "violation": "Parsing both methods simultaneously could result in different VID/PID values being extracted by different components. This creates exploitable ambiguity where attestation succeeds with one identity but authorization uses another.",
+      "attack_vector": "Attacker creates certificate with preferred method VID=X and fallback method VID=Y, exploiting inconsistent parsing to authenticate as vendor X but gain vendor Y's privileges."
+    },
+    {
+      "id": "PROP_040",
+      "name": "Encoding_Method_Field_Independence",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "The rules for whether to use preferred or fallback method apply field by field independently for each instance of subject or issuer field.",
+      "formal": "∀ cert, field₁, field₂ ∈ {subject, issuer}: EncodingMethod(field₁) independent_of EncodingMethod(field₂)",
+      "violation": "If encoding method determination is not field-independent, validation logic becomes complex and error-prone. Global state or cross-field dependencies could lead to inconsistent parsing and validation bypass.",
+      "attack_vector": "Attacker crafts certificate where subject uses preferred method but issuer uses fallback method, exploiting validators that incorrectly apply method determination globally, causing issuer-subject mismatch."
+    },
+    {
+      "id": "PROP_041",
+      "name": "DAC_Issuer_Matches_PAI_Subject_Byte_For_Byte",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The DAC issuer field SHALL match, byte-for-byte, the PAI subject field per RFC 5280 chain validation requirements.",
+      "formal": "∀ dac, pai: Issues(pai, dac) → ByteEquals(Issuer(dac), Subject(pai))",
+      "violation": "Any deviation in encoding, whitespace, attribute ordering, or content breaks the certificate chain. Lenient matching could allow substitute PAIs or enable attackers to construct chains with certificates from different trust paths.",
+      "attack_vector": "Attacker creates DAC with issuer that differs from legitimate PAI subject in subtle encoding details (e.g., UTF8String vs PrintableString), hoping lenient validators accept it with a substitute PAI."
+    },
+    {
+      "id": "PROP_042",
+      "name": "PAI_Issuer_Matches_PAA_Subject_Byte_For_Byte",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The PAI issuer field SHALL match, byte-for-byte, the PAA subject field per RFC 5280 chain validation requirements.",
+      "formal": "∀ pai, paa: Issues(paa, pai) → ByteEquals(Issuer(pai), Subject(paa))",
+      "violation": "Any deviation breaks the chain from PAI to PAA. Lenient matching could allow substitute PAAs or enable attackers to construct chains using compromised or unauthorized root certificates.",
+      "attack_vector": "Attacker creates PAI with issuer that differs from legitimate PAA subject in attribute ordering or encoding, enabling use of rogue PAA with lenient validators."
+    },
+    {
+      "id": "PROP_043",
+      "name": "Certificate_Version_V3",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "All DAC, PAI, and PAA certificates SHALL have version field set to 2 (indicating X.509 v3).",
+      "formal": "∀ cert ∈ {DAC, PAI, PAA}: Version(cert) = 2 (v3)",
+      "violation": "Older certificate versions (v1, v2) have limited or missing extension support. Using v1/v2 certificates prevents proper constraint enforcement (BasicConstraints, KeyUsage, etc.), enabling policy bypass attacks.",
+      "attack_vector": "Attacker uses v1 certificate without BasicConstraints extension, bypassing cA=FALSE enforcement to use a DAC as a certificate authority."
+    },
+    {
+      "id": "PROP_044",
+      "name": "Certificate_Extensions_Criticality_Enforcement",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Critical extensions (BasicConstraints, KeyUsage) SHALL be marked critical and SHALL cause validation failure if not understood.",
+      "formal": "∀ cert, ext: (Critical(ext) ∧ ¬Understood(validator, ext)) → ValidationFails(cert)",
+      "violation": "If critical extensions are ignored, essential security constraints are bypassed. A validator that doesn't understand critical KeyUsage would accept certificates with wrong usage, enabling authorization bypass.",
+      "attack_vector": "Attacker relies on non-compliant validators that ignore critical extensions to use a DAC with cA=TRUE as a certificate authority, issuing fraudulent certificates."
+    },
+    {
+      "id": "PROP_045",
+      "name": "Unknown_Extensions_Ignorable_If_Non_Critical",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Extensions not defined in the specification SHALL be ignored by Commissioners if not marked critical, allowing CA operational flexibility.",
+      "formal": "∀ cert, ext: (¬Critical(ext) ∧ ¬DefinedInSpec(ext)) → MayIgnore(Commissioner, ext)",
+      "violation": "Requiring all extensions to be understood prevents future extensibility and CA operational flexibility. However, critical unknown extensions MUST cause failures to prevent security-relevant constraints from being ignored.",
+      "attack_vector": "Attacker adds a critical extension with security constraints that older validators don't understand, causing those validators to incorrectly accept non-compliant certificates."
+    },
+    {
+      "id": "PROP_046",
+      "name": "CRL_Distribution_Points_DCL_Exclusive",
+      "category": "Revocation",
+      "importance": "HIGH",
+      "claim": "If a certificate contains CRLDistributionPoints extension, it SHALL be ignored; DCL Device Attestation PKI Revocation Distribution Points is the only supported revocation method.",
+      "formal": "∀ cert: Contains(cert, CRLDistributionPoints) → Ignore(CRLDistributionPoints) ∧ UseOnly(DCL_RevocationPoints)",
+      "violation": "Supporting multiple revocation mechanisms creates complexity and potential for inconsistency. An attacker could exploit validators that honor CRLDistributionPoints to point to attacker-controlled CRLs that don't list compromised certificates.",
+      "attack_vector": "Attacker embeds CRLDistributionPoints pointing to attacker-controlled CRL in a compromised certificate, exploiting validators that check embedded CRL instead of DCL-based revocation."
+    },
+    {
+      "id": "PROP_047",
+      "name": "Revocation_Set_Availability_Warning",
+      "category": "Revocation",
+      "importance": "HIGH",
+      "claim": "If revocation set is unavailable due to transient resource access failure, Commissioner SHOULD notify user that commissioning could succeed for non-genuine devices.",
+      "formal": "∀ commissioning: ¬Available(RevocationSet) → ShouldNotify(User, \"RevocationCheckSkipped\")",
+      "violation": "Silent failure to check revocation allows compromised or recalled certificates to be accepted without user awareness. Users cannot make informed risk decisions if bypass is not disclosed.",
+      "attack_vector": "Attacker exploits offline commissioning or blocks DCL access to prevent revocation checks, then uses known-revoked credentials while Commissioner fails open without notification."
+    },
+    {
+      "id": "PROP_048",
+      "name": "Stale_CRL_Warning",
+      "category": "Revocation",
+      "importance": "MEDIUM",
+      "claim": "If no updated CRL is available beyond the nextUpdate field timestamp, Commissioner MAY assume no new revocation information and SHOULD notify user of potential risk.",
+      "formal": "∀ commissioning: CurrentTime > NextUpdate(CRL) ∧ NoUpdateAvailable → MayAssume(NoNewRevocations) ∧ ShouldNotify(User, \"StaleRevocationData\")",
+      "violation": "Using stale revocation data means recently revoked certificates won't be detected. Users should be aware that revocation checking is based on outdated information and recent compromises may not be reflected.",
+      "attack_vector": "Attacker uses recently compromised certificate during period when CRL is stale, exploiting window between compromise and CRL update to commission devices with compromised credentials."
+    },
+    {
+      "id": "PROP_049",
+      "name": "CRL_Delegation_Support",
+      "category": "Revocation",
+      "importance": "MEDIUM",
+      "claim": "CRL delegation (indirect CRLs) is supported for both PAI and PAA, allowing certificate authorities to delegate CRL signing to other entities.",
+      "formal": "∀ ca ∈ {PAI, PAA}: May(ca, DelegateCRLSigning) ∧ ValidIf(DelegateChain(ca))",
+      "violation": "Without proper delegation validation, attackers could create fraudulent delegation chains to issue CRLs that hide revoked certificates or falsely revoke legitimate ones.",
+      "attack_vector": "Attacker creates fake CRL signing delegation certificate to issue fraudulent CRLs that omit entries for compromised certificates, enabling continued use of revoked credentials."
+    },
+    {
+      "id": "PROP_050",
+      "name": "CRL_Signer_Certificate_Validation",
+      "category": "Revocation",
+      "importance": "CRITICAL",
+      "claim": "The CRLSignerCertificate certification path SHALL be validated using approved PAAs in the DCL as trust anchors; if CRLSignerDelegator is present, it must also be validated.",
+      "formal": "∀ crl_entry: ValidPath(CRLSignerCert(crl_entry), ApprovedPAAs(DCL)) ∧ (Present(CRLSignerDelegator(crl_entry)) → ValidPath(CRLSignerDelegator(crl_entry), ApprovedPAAs(DCL)))",
+      "violation": "Without proper CRL signer validation, attackers could inject fraudulent CRLs signed by unauthorized entities, either hiding revoked certificates or falsely revoking legitimate ones.",
+      "attack_vector": "Attacker creates fake CRLSignerCertificate not chaining to legitimate PAA and publishes CRL that omits compromised certificates, enabling continued use of revoked credentials."
+    },
+    {
+      "id": "PROP_051",
+      "name": "CRL_Authority_Key_Identifier_Match",
+      "category": "Revocation",
+      "importance": "HIGH",
+      "claim": "The crlExtensions Authority Key Identifier of the CRL SHALL match the CRLSignerCertificate's Subject Key Identifier.",
+      "formal": "∀ crl, crl_signer: SignedBy(crl, crl_signer) → AKI(crl) = SKI(crl_signer)",
+      "violation": "AKI mismatch indicates the CRL was not signed by the claimed certificate. This could enable CRL substitution attacks where attackers use CRLs from different sources or forge CRL signatures.",
+      "attack_vector": "Attacker substitutes a CRL signed by a different (possibly compromised) key, exploiting validators that don't check AKI to inject fraudulent revocation data."
+    },
+    {
+      "id": "PROP_052",
+      "name": "Multiple_CRL_Entries_Require_IDP",
+      "category": "Revocation",
+      "importance": "HIGH",
+      "claim": "If more than one DCL entry exists with matching VendorID and IssuerSubjectKeyID, the CRL SHALL have Issuing Distribution Point critical extension with uniformResourceIdentifier matching entry.DataUrl.",
+      "formal": "∀ vid, ski: Count(DCL_Entries(vid, ski)) > 1 → (∀ crl ∈ CRLs(vid, ski): HasCritical(crl, IDP) ∧ IDP(crl).URI = DCL_Entry(crl).DataUrl)",
+      "violation": "Without IDP extension, CRLs from different distribution points would be indistinguishable, enabling attackers to use CRLs from one distribution point to validate certificates meant for another.",
+      "attack_vector": "Attacker uses CRL from distribution point A (which doesn't list compromised cert) to validate certificate that should use distribution point B's CRL (which does list it), bypassing revocation."
+    },
+    {
+      "id": "PROP_053",
+      "name": "CRL_Delta_Not_Supported",
+      "category": "Revocation",
+      "importance": "MEDIUM",
+      "claim": "Delta CRLs are not supported; the use-deltas input variable SHALL be false during CRL validation per RFC 5280.",
+      "formal": "∀ crl_validation: UseDeltas(crl_validation) = FALSE",
+      "violation": "Supporting delta CRLs adds complexity and potential for state management errors. Attackers could exploit stale base CRLs by preventing delta CRL fetching, hiding recent revocations.",
+      "attack_vector": "Attacker blocks delta CRL delivery while ensuring base CRL is available, causing validator to miss recent revocations listed only in delta CRL."
+    },
+    {
+      "id": "PROP_054",
+      "name": "Certificate_Issuer_Extension_Handling",
+      "category": "Revocation",
+      "importance": "MEDIUM",
+      "claim": "In CRL processing, if revokedCertificates entry has certificateIssuer extension and the issuer doesn't match CertificateAuthorityName, the entry SHALL be ignored.",
+      "formal": "∀ crl_entry: Has(crl_entry, certificateIssuer) ∧ certificateIssuer ≠ CertificateAuthorityName → Ignore(crl_entry)",
+      "violation": "Incorrectly processing certificateIssuer extension could cause revocations meant for other CAs to be applied, falsely revoking legitimate certificates, or vice versa, missing relevant revocations.",
+      "attack_vector": "Attacker exploits incorrect certificateIssuer handling to apply revocations from CA A to CA B's certificates, causing denial of service by falsely revoking legitimate certificates."
+    },
+    {
+      "id": "PROP_055",
+      "name": "Revocation_Status_Chain_Validation",
+      "category": "Revocation",
+      "importance": "HIGH",
+      "claim": "When determining revocation status of DAC, the DAC's issuer (PAI) SHALL match CRLSignerCertificate or CRLSignerDelegator in both Subject Key and Subject; for PAI revocation, the PAI's issuer (PAA) SHALL match.",
+      "formal": "∀ dac, pai: CheckingRevocation(dac) → (Issuer(dac) = CRLSignerCert ∨ Issuer(dac) = CRLSignerDelegator) ∧ Match(SKI, Subject)",
+      "violation": "Without proper chain matching, revocation data from wrong CAs could be applied. An attacker could use revocation data from a different vendor's PAI to falsely claim certificates are not revoked.",
+      "attack_vector": "Attacker uses CRL from unrelated PAI that doesn't list compromised certificate, exploiting improper chain validation to bypass revocation check for compromised cert under different PAI."
+    },
+    {
+      "id": "PROP_056",
+      "name": "Commissioner_Holds_Private_Key_Proof",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "The Commissioner SHALL verify that the Commissionee holds the private key corresponding to its DAC through the AttestationResponse signature verification.",
+      "formal": "∀ device: Commissioned(device) → PossessesPrivateKey(device, PrivKey(DAC(device)))",
+      "violation": "Without proof of private key possession, an attacker could commission a device using a copied DAC without having the corresponding private key, enabling certificate theft attacks.",
+      "attack_vector": "Attacker extracts DAC public certificate from legitimate device and attempts to commission fraudulent device using the copied DAC, bypassing authentication if private key possession is not proven."
+    },
+    {
+      "id": "PROP_057",
+      "name": "AttestationChallenge_From_Secure_Session",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The AttestationChallenge SHALL be obtained from a CASE session, resumed CASE session, or PASE session depending on the secure session method used for attestation.",
+      "formal": "∀ attestation: AttestationChallenge(attestation) = SessionContext(SecureSession(attestation))",
+      "violation": "If AttestationChallenge is not bound to secure session context, an attacker could replay attestation exchanges across different sessions, enabling man-in-the-middle attacks or session hijacking.",
+      "attack_vector": "Attacker intercepts attestation exchange in one session and replays it in a different session with different security context, hijacking device authentication."
+    },
+    {
+      "id": "PROP_058",
+      "name": "DAC_Uniqueness_Requirement_Enforced",
+      "category": "IdentityBinding",
+      "importance": "CRITICAL",
+      "claim": "Each DAC SHALL be unique to a single device through unique subject field per RFC 5280 using unique RelativeDistinguishedNames (e.g., unique commonName, serialNumber, organizationalUnitName).",
+      "formal": "∀ dac₁, dac₂: dac₁ ≠ dac₂ → Subject(dac₁) ≠ Subject(dac₂) ∧ (UniqueField(dac₁) ≠ UniqueField(dac₂))",
+      "violation": "Non-unique subjects break certificate revocation and device tracking. Multiple devices with identical subjects cannot be individually revoked or identified, enabling impersonation and complicating incident response.",
+      "attack_vector": "Attacker manufactures multiple devices with identical DAC subjects. When one is compromised and revoked, the revocation ambiguously affects all devices with that subject."
+    },
+    {
+      "id": "PROP_059",
+      "name": "Private_Key_Confidentiality",
+      "category": "Cryptography",
+      "importance": "CRITICAL",
+      "claim": "The DAC private key SHALL remain confidential and securely stored on the device, never transmitted or exposed.",
+      "formal": "∀ device, privkey: PrivKey(DAC(device)) = privkey → (¬Transmitted(privkey) ∧ SecureStorage(privkey))",
+      "violation": "If private key is exposed or transmitted, attackers can clone device identity and impersonate the device indefinitely. Compromised private keys break the entire attestation security model.",
+      "attack_vector": "Attacker extracts private key from device through side-channel attack, firmware dumping, or insecure storage, then uses it to create unlimited clones of the device identity."
+    },
+    {
+      "id": "PROP_060",
+      "name": "Certificate_Size_Constraints",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Certificate format is constrained to maximum sizes to reduce complexity and system requirements for implementations, limiting optional extensions.",
+      "formal": "∀ cert: Size(cert) ≤ MaxCertSize ∧ OptionalExtensions(cert) ⊆ AllowedExtensions",
+      "violation": "Oversized certificates or unlimited extensions could exceed device memory constraints, cause parsing failures, or enable denial of service attacks through resource exhaustion.",
+      "attack_vector": "Attacker creates certificates with massive optional extensions to exhaust Commissioner memory, cause parsing failures, or trigger buffer overflows in constrained implementations."
+    },
+    {
+      "id": "PROP_061",
+      "name": "Validity_Period_Flexible",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "DAC validity period is vendor-determined and MAY be set to 99991231235959Z to indicate no well-defined expiration date.",
+      "formal": "∀ dac: ValidityEnd(dac) ≤ 99991231235959Z ∧ (ValidityEnd(dac) = 99991231235959Z → NoExpiration(dac))",
+      "violation": "While flexible validity supports devices with long lifecycles, extremely long validity periods mean compromised certificates remain valid for extended periods unless actively revoked, increasing revocation infrastructure importance.",
+      "attack_vector": "Attacker compromises device with century-long DAC validity. If revocation infrastructure fails or is not monitored, the compromised credentials remain exploitable for decades."
+    },
+    {
+      "id": "PROP_062",
+      "name": "Immutable_Credentials",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Device credentials (DAC and private key) are described as 'immutable', indicating they cannot be changed post-manufacturing.",
+      "formal": "∀ device, t₁, t₂: t₂ > t₁ ∧ Manufactured(device, t₁) → (DAC(device, t₂) = DAC(device, t₁) ∧ PrivKey(device, t₂) = PrivKey(device, t₁))",
+      "violation": "If credentials can be modified post-manufacturing, attackers could replace legitimate credentials with malicious ones, or exploit credential update mechanisms to bypass attestation. Mutable credentials also complicate revocation.",
+      "attack_vector": "Attacker exploits credential update mechanism to replace device's legitimate DAC with an attacker-controlled certificate, enabling persistent backdoor access."
+    },
+    {
+      "id": "PROP_063",
+      "name": "Validation_Step_Order_Optimizable",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "The order of validation steps MAY be optimized by Commissioners, allowing early termination if steps are deemed to make remainder impossible.",
+      "formal": "∀ validation_sequence: CanOptimizeOrder(validation_sequence) ∧ (EarlyFailure(step) → MaySkip(remaining_steps))",
+      "violation": "While optimization is allowed, incorrect optimization could skip security-critical checks. Commissioners must ensure all required checks are performed in at least one code path.",
+      "attack_vector": "Attacker exploits buggy optimization logic that incorrectly determines certain validation steps are unnecessary, bypassing security checks through optimization paths."
+    },
+    {
+      "id": "PROP_064",
+      "name": "DCL_Timestamp_Based_PAA_Trust",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "The Commissioner's trusted root store SHOULD include PAA certificates present in the DCL at the issuing timestamp (notBefore) of the DAC.",
+      "formal": "∀ dac: TrustedPAAs(Commissioner) ⊇ DCL_PAAs(NotBefore(dac))",
+      "violation": "Using current DCL state instead of historical state at issuance time could incorrectly reject DACs issued when a PAA was valid but later removed, or accept DACs claiming issuance when PAA was already removed.",
+      "attack_vector": "Attacker creates DAC with backdated notBefore when a now-removed or compromised PAA was still in DCL, exploiting validators that don't check historical DCL state."
+    },
+    {
+      "id": "PROP_065",
+      "name": "VendorID_In_PAI_Matches_DCL_Entry",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "In CRL processing, if CRLSignerCertificate encoded a VendorID (for PAA CRLs) or if CRLSignerCertificate or CRLSignerDelegator has VendorID (for PAI CRLs), it SHALL match the DCL entry's VendorID.",
+      "formal": "∀ crl_entry: (IsPAA(crl_entry) → VID(CRLSignerCert(crl_entry)) = DCL_Entry(crl_entry).VendorID) ∧ (¬IsPAA(crl_entry) → VID(CRLSigner_or_Delegator(crl_entry)) = DCL_Entry(crl_entry).VendorID)",
+      "violation": "VendorID mismatch between CRL signer and DCL entry could indicate fraudulent DCL entries or misassociated CRLs. This enables cross-vendor CRL confusion attacks.",
+      "attack_vector": "Attacker creates DCL entry with vendor A's VendorID but vendor B's CRLSignerCertificate, causing vendor B's revocations to be incorrectly applied to vendor A's certificates."
+    },
+    {
+      "id": "PROP_066",
+      "name": "ProductID_In_PAI_Matches_DCL_Entry",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "For PAI CRLs, if CRLSignerCertificate or CRLSignerDelegator has ProductID in subject, it SHALL match the DCL entry's ProductID.",
+      "formal": "∀ crl_entry: ¬IsPAA(crl_entry) ∧ HasPID(CRLSigner_or_Delegator(crl_entry)) → PID(CRLSigner_or_Delegator(crl_entry)) = DCL_Entry(crl_entry).ProductID",
+      "violation": "ProductID mismatch could indicate fraudulent DCL entries associating CRLs with wrong products. This enables product-scoped revocation bypass attacks.",
+      "attack_vector": "Attacker creates DCL entry with product X's ProductID but product Y's CRLSignerCertificate, causing product Y revocations to be misapplied to product X or vice versa."
+    },
+    {
+      "id": "PROP_067",
+      "name": "CRL_RevocationType_Filtering",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If DCL entry's RevocationType is not equal to 1 (RFC 5280 CRL), the entry SHALL be skipped as it is a format not defined in this specification.",
+      "formal": "∀ dcl_entry: RevocationType(dcl_entry) ≠ 1 → Skip(dcl_entry)",
+      "violation": "Processing unknown revocation types could lead to parsing errors, misinterpretation of revocation data, or exploitation of future format vulnerabilities in unsupported formats.",
+      "attack_vector": "Attacker injects DCL entries with unknown RevocationType values that exploit bugs in forward-compatibility handling, causing crashes or incorrect revocation processing."
+    },
+    {
+      "id": "PROP_068",
+      "name": "CRL_Certificate_Authority_Name_Assignment",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "CertificateAuthorityName SHALL be assigned based on whether IsPAA is true and whether CRLSignerCertificate is self-signed or delegated, using subject of appropriate certificate in the chain.",
+      "formal": "∀ crl_entry: CertificateAuthorityName(crl_entry) = DetermineByChain(IsPAA(crl_entry), SelfSigned(CRLSignerCert(crl_entry)), CRLSignerDelegator(crl_entry))",
+      "violation": "Incorrect CertificateAuthorityName assignment causes revocation data to be indexed under wrong CA, preventing revocation checks from finding relevant data.",
+      "attack_vector": "Attacker exploits incorrect authority name assignment to ensure compromised certificate's revocation is indexed under wrong CA, preventing it from being detected during validation."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "The Crypto_DRBG() function provides cryptographically secure random number generation suitable for nonce generation.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_021 fails. Weak random number generation enables nonce prediction and replay attacks."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "The Crypto_Verify() function correctly implements ECDSA signature verification for the specified curve and hash algorithm.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_023 fails. Incorrect signature verification enables forged attestations without private key possession."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "The Crypto_VerifyChainDER() function correctly validates certificate chains according to RFC 5280 requirements.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_024 fails. Incorrect chain validation could accept fraudulent certificate chains."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Commissioners have access to the Distributed Compliance Ledger (DCL) for PAA trust anchors and revocation information.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_026, PROP_024, PROP_047, PROP_050 fail. Without DCL access, trust anchor and revocation validation cannot be performed reliably."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "The Distributed Compliance Ledger (DCL) is trustworthy and not compromised.",
+      "type": "Implicit",
+      "impact_if_violated": "All properties relying on DCL data (PROP_026, PROP_034, PROP_035, PROP_050, PROP_064, PROP_065) fail if DCL is compromised to contain fraudulent entries."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Device private keys are securely generated and stored, protected from extraction attacks.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_001, PROP_059 fail. Private key compromise enables device identity cloning and impersonation."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Certificate Authorities (PAA, PAI) follow proper key management and signing procedures, maintain secure HSMs, and don't issue unauthorized certificates.",
+      "type": "Implicit",
+      "impact_if_violated": "Multiple properties (PROP_003, PROP_008, PROP_009, PROP_010, PROP_011, PROP_012) fail if CAs are compromised or malicious."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "ECDSA with SHA256 and prime256v1 remain cryptographically secure for the operational lifetime of devices.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_004, PROP_023 fail if the cryptographic algorithms are broken or weakened."
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "RFC 5280 X.509 certificate format and validation rules are sufficiently secure and correctly specified.",
+      "type": "Explicit",
+      "impact_if_violated": "All certificate validation properties fail if RFC 5280 has fundamental security flaws."
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "Secure session establishment (CASE/PASE) provides confidentiality and integrity for attestation message exchange.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_057 fails. Compromised session security enables man-in-the-middle attacks on attestation."
+    },
+    {
+      "id": "ASSUM_011",
+      "statement": "Commissioners correctly implement all SHALL and SHOULD requirements without implementation bugs.",
+      "type": "Implicit",
+      "impact_if_violated": "All properties fail partially or completely if Commissioner implementations have bugs or vulnerabilities."
+    },
+    {
+      "id": "ASSUM_012",
+      "statement": "The Basic Information cluster correctly and accurately reports VendorID, ProductID, and SoftwareVersion.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_028, PROP_029 fail if Basic Information cluster can be manipulated to report false values."
+    },
+    {
+      "id": "ASSUM_013",
+      "statement": "Time synchronization is accurate enough for timestamp-based validation, or validation is done relative to notBefore timestamps.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_025, PROP_061, PROP_064 fail if time synchronization issues cause incorrect validity period evaluation."
+    },
+    {
+      "id": "ASSUM_014",
+      "statement": "Certificate revocation information in the DCL is updated in a timely manner when certificates are compromised.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_024, PROP_047, PROP_048 provide reduced protection if revocation updates are delayed."
+    },
+    {
+      "id": "ASSUM_015",
+      "statement": "Vendors properly scope PAIs to appropriate VendorID and ProductID values according to their intended usage.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_008, PROP_009 fail if vendors misuse or incorrectly scope their PAIs."
+    },
+    {
+      "id": "ASSUM_016",
+      "statement": "Certificate subject uniqueness is enforced by issuing CAs through proper operational procedures.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_007, PROP_058 fail if CAs issue duplicate subjects due to operational errors or compromise."
+    },
+    {
+      "id": "ASSUM_017",
+      "statement": "The fallback encoding method (commonName with Mvid:/Mpid:) is only used when CA infrastructure cannot support Matter-specific OIDs.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_006, PROP_036, PROP_037, PROP_038, PROP_039 become more important as fallback method has higher parsing complexity and error potential."
+    },
+    {
+      "id": "ASSUM_018",
+      "statement": "Certification Declarations are issued only for genuinely certified products and are not forged or misapplied.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_028, PROP_029, PROP_030, PROP_031, PROP_032, PROP_033, PROP_034, PROP_035 fail if Certification Declarations can be forged or misused."
+    },
+    {
+      "id": "ASSUM_019",
+      "statement": "CRL signing delegation chains are properly established and validated according to the specification.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_049, PROP_050, PROP_055 fail if delegation validation is incorrect or delegated signers are compromised."
+    },
+    {
+      "id": "ASSUM_020",
+      "statement": "Commissioners fail safely (reject attestation) when in doubt or when validation data is unavailable, with appropriate user notification.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_047, PROP_048, PROP_063 rely on safe failure modes; failure to reject when in doubt enables bypass attacks."
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "Unprovisioned",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_062"],
+      "critical_property": "Device must have unique, immutable DAC and private key before entering Commissionable state"
+    },
+    {
+      "state_name": "Commissionable",
+      "properties_enforcing_transitions": ["PROP_021", "PROP_056", "PROP_057"],
+      "critical_property": "Device must prove private key possession through attestation signature over fresh nonce in secure session before commissioning"
+    },
+    {
+      "state_name": "Attestation_Request_Sent",
+      "properties_enforcing_transitions": ["PROP_021", "PROP_022"],
+      "critical_property": "Fresh random nonce must be generated and matched in response to prevent replay attacks"
+    },
+    {
+      "state_name": "Attestation_Response_Received",
+      "properties_enforcing_transitions": ["PROP_023", "PROP_024", "PROP_056"],
+      "critical_property": "Signature must be cryptographically verified and certificate chain validated before accepting attestation"
+    },
+    {
+      "state_name": "Certificate_Chain_Validation",
+      "properties_enforcing_transitions": ["PROP_002", "PROP_003", "PROP_004", "PROP_010", "PROP_011", "PROP_012", "PROP_013", "PROP_014", "PROP_015", "PROP_016", "PROP_017", "PROP_018", "PROP_019", "PROP_020", "PROP_024", "PROP_025", "PROP_026", "PROP_027", "PROP_041", "PROP_042", "PROP_043", "PROP_044"],
+      "critical_property": "All certificate format, cryptographic, and hierarchical constraints must be satisfied before accepting chain"
+    },
+    {
+      "state_name": "Revocation_Checking",
+      "properties_enforcing_transitions": ["PROP_024", "PROP_046", "PROP_047", "PROP_048", "PROP_050", "PROP_051", "PROP_052", "PROP_053", "PROP_054", "PROP_055"],
+      "critical_property": "Certificates must not be revoked according to DCL-based revocation data before accepting attestation"
+    },
+    {
+      "state_name": "Policy_Validation",
+      "properties_enforcing_transitions": ["PROP_005", "PROP_006", "PROP_007", "PROP_008", "PROP_009", "PROP_011", "PROP_012", "PROP_027", "PROP_028", "PROP_029", "PROP_030", "PROP_031", "PROP_032", "PROP_033", "PROP_034", "PROP_035", "PROP_036", "PROP_037", "PROP_038", "PROP_039", "PROP_040", "PROP_065", "PROP_066"],
+      "critical_property": "VendorID/ProductID consistency, Certification Declaration matching, and policy constraints must be satisfied before commissioning"
+    },
+    {
+      "state_name": "Commissioned",
+      "properties_enforcing_transitions": ["PROP_062"],
+      "critical_property": "Device credentials remain immutable post-commissioning; changes require re-attestation"
+    }
+  ],
+  "additionalInsights": "The Device Attestation specification reveals several complex attack surfaces:\n\n1. **Encoding Ambiguity Risk**: The dual encoding methods (preferred OID-based and fallback commonName-based) for VendorID/ProductID create significant complexity. The 'fallback method' has strict formatting rules but parsing ambiguities (leftmost match, case sensitivity, exact length) that could be exploited if validators have inconsistent implementations. Properties PROP_006, PROP_036-PROP_040 address this, but the attack surface is substantial.\n\n2. **Certificate Chain vs. Certification Declaration Duality**: Security relies on BOTH cryptographic chain validation (DAC→PAI→PAA) AND semantic policy validation (Certification Declaration matching). An attacker who compromises either path could potentially bypass controls. The 'dac_origin' fields add complexity for ODM scenarios, creating additional validation paths that must be consistently implemented.\n\n3. **Revocation Complexity**: The DCL-based revocation system with support for CRL delegation (indirect CRLs), multiple distribution points requiring IDP extensions, and certificateIssuer handling creates significant implementation complexity. Properties PROP_046-PROP_055, PROP_068 address this, but the multi-step validation algorithm with many conditional branches is error-prone.\n\n4. **Temporal Validation Windows**: Multiple temporal aspects (DAC notBefore validation, PAA trust at issuance time, CRL nextUpdate staleness, firmware version matching) create a complex state space. Properties PROP_025, PROP_048, PROP_061, PROP_064 address different temporal concerns, but timezone issues, clock skew, and timestamp manipulation could enable bypass attacks.\n\n5. **Fail-Open Risk Points**: The specification allows Commissioners to proceed with commissioning when revocation data is unavailable (PROP_047, PROP_048) or firmware_information validation is unsupported (PROP_035). While user notification is required, this creates fail-open scenarios that attackers could exploit by blocking DCL access or targeting Commissioners without full feature support.\n\n6. **Scope Isolation Dependencies**: Product-level isolation relies on correct ProductID scoping of PAIs (PROP_009) and consistent VID/PID validation throughout the chain. A single misconfigured PAI or validation bypass could enable cross-product attacks. The policy failure is supposed to be automatic, but this assumes perfect validator implementation.\n\n7. **Private Key Protection Implicit**: While PROP_059 addresses private key confidentiality, the specification provides no mechanisms to enforce secure storage at the device level. This critical security foundation is entirely assumed, with no attestation of secure element usage or key protection level.\n\n8. **Optimization Hazards**: Allowing validators to optimize validation step ordering (PROP_063) creates risk that buggy optimization logic could skip critical checks. While flexibility is valuable, the lack of mandatory check ordering enables implementation diversity that could hide vulnerabilities.\n\n9. **Extension Handling Risks**: The requirement to ignore unknown non-critical extensions (PROP_045) while failing on critical unknown extensions creates forward/backward compatibility tensions. Attackers could inject critical extensions that older validators don't understand, creating acceptance inconsistencies across Commissioner versions.\n\n10. **Identity Binding Fragility**: Device identity relies on the binding between DAC subject, Basic Information cluster attributes, and Certification Declaration fields. Attackers who can manipulate any of these (particularly the runtime Basic Info cluster) could create identity confusion attacks despite valid attestation.\n\nThe specification shows sophisticated defense-in-depth with cryptographic, policy, and revocation layers, but the complexity creates a large attack surface where implementation errors or subtle specification ambiguities could enable bypass attacks.",
+  "summary": {
+    "total_properties": 68,
+    "by_importance": {
+      "CRITICAL": 36,
+      "HIGH": 23,
+      "MEDIUM": 9
+    },
+    "by_category": {
+      "Security": 11,
+      "IdentityBinding": 11,
+      "Cryptography": 5,
+      "AccessControl": 7,
+      "Revocation": 11,
+      "Consistency": 6,
+      "Correctness": 8,
+      "ReplayProtection": 3,
+      "Timing": 5,
+      "ScopeIsolation": 0
+    },
+    "total_assumptions": 20
+  }
+}

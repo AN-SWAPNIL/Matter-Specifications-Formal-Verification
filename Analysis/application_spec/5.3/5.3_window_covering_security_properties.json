@@ -1,0 +1,560 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Window Covering",
+    "cluster_id": "0x0102",
+    "pics_code": "WNCV",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 5.3, Pages 477-493",
+
+    "properties": [
+
+      {
+        "id": "PROP_WNCV_001",
+        "name": "All_Movement_Commands_Require_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "All five movement commands (UpOrOpen, DownOrClose, StopMotion, GoToLiftPercentage, GoToTiltPercentage) SHALL require at minimum Operate (O) privilege; View-only nodes SHALL be unable to actuate the covering.",
+        "formal": "∀cmd ∈ {UpOrOpen, DownOrClose, StopMotion, GoToLiftPercentage, GoToTiltPercentage}. invoke(cmd) ⟹ has_privilege(invoker, O)",
+        "spec_source": "Section 5.3.7 Commands table: all five commands list Access = 'O' (Operate)",
+        "violation": {
+          "description": "A node holding only View (V) privilege can issue movement commands to physically actuate the window covering without authorization. This bypasses the intended access control hierarchy and allows unprivileged nodes to control a physical actuator.",
+          "attack_vector": "Compromise or spoof a View-privilege node and issue movement commands directly. If the server does not validate the invoker's privilege level, the command executes.",
+          "physical_impact": "Unauthorized opening or closing of window coverings: privacy breach (covering opened without occupant consent), security breach (covering closed to obscure break-in), or physical harm (closing on a person)."
+        },
+        "proverifQuery": "query d:device, cmd:command, p:principal ⊢ event command_executed(d, cmd) ==> event has_privilege(p, Operate)"
+      },
+
+      {
+        "id": "PROP_WNCV_002",
+        "name": "Mode_Attribute_Write_Requires_Manage_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "Writing to the Mode attribute (which controls CalibrationMode, MaintenanceMode, and MotorDirectionReversed) SHALL require Manage (M) privilege; Operate-level nodes SHALL NOT be able to modify Mode.",
+        "formal": "write(Mode, new_value) ⟹ has_privilege(writer, M)",
+        "spec_source": "Section 5.3.6 Attributes table: Mode (0x0017) has Access = 'RW VM' (Read: View, Write: Manage)",
+        "violation": {
+          "description": "An Operate-privilege attacker could write Mode to set MaintenanceMode=1, disabling all physical movement of the covering, or set CalibrationMode=1, locking the device in a state requiring a vendor calibration routine to exit. Either attack effectively creates a persistent denial-of-service against the covering's actuation capability.",
+          "attack_vector": "Forge or escalate to an Operate-level node and issue a Write Attribute to Mode 0x0017. If the server fails to validate the Manage privilege requirement, the write succeeds.",
+          "physical_impact": "Covering frozen in closed position (blocking natural light, trapping persons in emergency) or permanently placed in calibration mode (covering unresponsive to all movement commands)."
+        },
+        "proverifQuery": "query d:device, v:value, p:principal ⊢ event attribute_written(d, Mode, v) ==> event has_privilege(p, Manage)"
+      },
+
+      {
+        "id": "PROP_WNCV_003",
+        "name": "No_Mandatory_Halt_On_ObstacleDetected",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "The specification provides no SHALL-level requirement to halt or reject movement commands when SafetyStatus.ObstacleDetected (bit 5) is set, creating a mandatory safety gap for motorized closing motion.",
+        "formal": "SafetyStatus.ObstacleDetected == 1 ∧ motion_active() ⟹ motion_stops()   [NOT ENFORCED BY SPEC — gap property]",
+        "spec_source": "Section 5.3.5.4 SafetyStatusBitmap: 'ObstacleDetected: An obstacle is preventing actuator movement' — conformance M (informational bit only). No SHALL halt is mandated in Section 5.3.7 command effect-on-receipt descriptions.",
+        "violation": {
+          "description": "A window covering executing a DownOrClose or GoToLiftPercentage command to a non-zero target may continue to close even when the ObstacleDetected safety bit is set. The spec only requires the bit to be readable; it does not mandate the server abort or ignore the command upon detecting an obstacle.",
+          "attack_vector": "Issue a DownOrClose command; if the obstacle sensor triggers and sets SafetyStatus.ObstacleDetected, a non-compliant (or spec-conformant) device may continue closing, crushing the obstacle.",
+          "physical_impact": "Physical entrapment of persons, animals, or objects between the covering and its frame during motorized closing; potential injury or property damage."
+        },
+        "proverifQuery": "query d:device ⊢ event obstacle_detected(d) ∧ event motion_closing(d) ==> event motion_halted(d)"
+      },
+
+      {
+        "id": "PROP_WNCV_004",
+        "name": "CalibrationMode_Cannot_Be_Cleared_By_Direct_Write",
+        "category": "StateIntegrity",
+        "importance": "CRITICAL",
+        "claim": "While the device is in CalibrationMode, writing CalibrationMode=0 to the Mode attribute SHALL be rejected with FAILURE; exit from CalibrationMode SHALL only occur upon completion of the device's calibration routine.",
+        "formal": "Mode.CalibrationMode == 1 ∧ write(Mode, {CalibrationMode: 0}) ⟹ return FAILURE ∧ Mode.CalibrationMode == 1",
+        "spec_source": "Section 5.3.6.13.2 'CalibrationMode Bit': 'In a write interaction, setting this bit to 0, while the device is in calibration mode, is not allowed and SHALL generate a FAILURE error status. In order to leave calibration mode, the device must perform its calibration routine.'",
+        "violation": {
+          "description": "If a device incorrectly allows a direct write of CalibrationMode=0, a malicious node with Manage privilege could force the covering out of calibration with corrupted or incomplete position calibration data. This corrupts position tracking, causing CurrentPosition readings to be incorrect and GoTo commands to move to wrong positions.",
+          "attack_vector": "Write Mode attribute with CalibrationMode=0 while device is in calibration. A flawed implementation that does not check the current CalibrationMode state before processing the write would silently accept it.",
+          "physical_impact": "Miscalibrated position data causes GoToLiftPercentage/GoToTiltPercentage to command movement to physically incorrect positions, potentially causing the covering to over-travel into mechanical end-stops."
+        },
+        "proverifQuery": "query d:device ⊢ event mode_write(d, CalibrationMode, 0) ∧ event in_calibration_mode(d) ==> event write_rejected(d, FAILURE)"
+      },
+
+      {
+        "id": "PROP_WNCV_005",
+        "name": "MaintenanceMode_Blocks_All_Movement_With_BUSY",
+        "category": "StateIntegrity",
+        "importance": "CRITICAL",
+        "claim": "While Mode.MaintenanceMode == 1, all commands and local inputs that can result in movement SHALL be ignored and SHALL respond with BUSY status.",
+        "formal": "Mode.MaintenanceMode == 1 ∧ invoke(cmd ∈ {UpOrOpen, DownOrClose, StopMotion, GoToLiftPercentage, GoToTiltPercentage}) ⟹ return BUSY ∧ ¬motion_starts()",
+        "spec_source": "Section 5.3.6.13.3 'MaintenanceMode Bit': 'While in maintenance mode, all commands (e.g: UpOrOpen, DownOrClose, GoTos) or local inputs that can result in movement, must be ignored and respond with a BUSY status.'",
+        "violation": {
+          "description": "An implementation that executes movement commands despite MaintenanceMode=1 could cause actuator movement while a technician is physically working on the mechanism, creating a serious physical safety hazard. Conversely, an attacker with Manage privilege could set MaintenanceMode=1 to permanently disable the covering with no timeout or forced-exit mechanism.",
+          "attack_vector": "1) Physical: Maintenance performed while device erroneously accepts movement commands. 2) DoS: Attacker sets MaintenanceMode=1 using Manage privilege to disable covering indefinitely since no timeout exists.",
+          "physical_impact": "Motorized movement during maintenance poses injury risk to technicians. DoS attack leaves covering frozen in position (e.g., emergency evacuation route blocked by closed blinds)."
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event command_received(d, cmd) ∧ event maintenance_mode(d) ==> event response_BUSY(d, cmd)"
+      },
+
+      {
+        "id": "PROP_WNCV_006",
+        "name": "OperationalStatus_Global_Reflects_Overall_Motion",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "OperationalStatus.Global bits SHALL always reflect the overall motion direction of the device; they must be updated atomically with the start and stop of any movement.",
+        "formal": "∀t. motion_opening(d, t) ⟹ OperationalStatus.Global(d, t) == 01b ∧ motion_closing(d, t) ⟹ OperationalStatus.Global(d, t) == 10b ∧ ¬motion(d, t) ⟹ OperationalStatus.Global(d, t) == 00b",
+        "spec_source": "Section 5.3.5.3.1 'Global Bits': 'These bits SHALL indicate in which direction the covering is currently moving or if it has stopped. Global operational state SHALL always reflect the overall motion of the device.'",
+        "violation": {
+          "description": "Stale or incorrect OperationalStatus.Global leads subscribers (pollers or reporters) to believe the device is stationary when it is moving, or moving when it is stationary. This breaks any controller logic that depends on OperationalStatus to decide whether to issue further commands.",
+          "attack_vector": "Race condition: if OperationalStatus is not updated atomically with motor start, a read between command acceptance and attribute update returns stale state, enabling controller logic flaws.",
+          "physical_impact": "A controller sending commands based on incorrect motion state could issue conflicting commands (e.g., GoTo while already moving), causing unexpected physical behavior."
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event motion_started(d, Opening, t) ==> event operational_status(d, Global, 01b, t)"
+      },
+
+      {
+        "id": "PROP_WNCV_007",
+        "name": "CurrentPosition_Always_Reflects_Physical_Position",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "CurrentPosition attributes SHALL always reflect the actual physical position of the actuator; TargetPosition attributes SHALL reflect the requested position once a positioning command is received.",
+        "formal": "∀t. CurrentPositionLiftPercent100ths(d, t) == physical_lift_position(d, t) [Feature_PA_LF] ∧ CurrentPositionTiltPercent100ths(d, t) == physical_tilt_position(d, t) [Feature_PA_TL]",
+        "spec_source": "Section 5.3.4.3 'PositionAware Features': 'The CurrentPosition attributes SHALL always reflects the physical position of an actuator and the TargetPosition attribute SHALL reflect the requested position of an actuator once a positioning command is received.'",
+        "violation": {
+          "description": "If CurrentPosition diverges from physical position, GoToLiftPercentage/GoToTiltPercentage commands will move to incorrect absolute positions. Controllers performing safety-critical position checks (e.g., verifying covering is fully open before activating HVAC) will receive incorrect state.",
+          "attack_vector": "Firmware bug or malicious firmware update causes CurrentPosition to be cached rather than continuously updated from encoder/timer, creating a phantom position value.",
+          "physical_impact": "A covering commanded to go to 50% open may physically move to an incorrect position, affecting building energy management, privacy zones, or fire safety (smoke venting requires fully open position)."
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event position_read(d, CurrentLift, v, t) ==> event physical_position_is(d, Lift, v, t)"
+      },
+
+      {
+        "id": "PROP_WNCV_008",
+        "name": "TargetPosition_Set_On_Command_Receipt",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "On receipt of UpOrOpen, TargetPositionLiftPercent100ths and TargetPositionTiltPercent100ths SHALL immediately be set to 0; on DownOrClose receipt they SHALL be set to 10000; these updates SHALL precede the actual physical movement.",
+        "formal": "receive(UpOrOpen) ⟹ TargetPositionLiftPercent100ths := 0 [PA_LF] ∧ TargetPositionTiltPercent100ths := 0 [PA_TL] ∧ receive(DownOrClose) ⟹ TargetPositionLiftPercent100ths := 10000 [PA_LF] ∧ TargetPositionTiltPercent100ths := 10000 [PA_TL]",
+        "spec_source": "Section 5.3.7.1 'UpOrOpen Command': 'TargetPositionLiftPercent100ths attribute SHALL be set to 0.00%'; Section 5.3.7.2 'DownOrClose Command': 'TargetPositionLiftPercent100ths attribute SHALL be set to 100.00%'",
+        "violation": {
+          "description": "If TargetPosition is not updated before movement begins, subscribers monitoring TargetPosition to decide when to send StopMotion will operate on stale data. A StopMotion sent based on a stale TargetPosition could fail to stop the covering at the intended midpoint.",
+          "attack_vector": "Exploit the window between command receipt and TargetPosition update to inject a StopMotion, causing the covering to stop at a physically unintended position when TargetPosition is subsequently read as stale.",
+          "physical_impact": "Covering stops at unpredictable position; in fire evacuation scenarios, smoke venting blinds may not fully open."
+        },
+        "proverifQuery": "query d:device, t:time ⊢ event command_received(d, UpOrOpen, t) ==> event attribute_updated(d, TargetLiftPercent100ths, 0, t)"
+      },
+
+      {
+        "id": "PROP_WNCV_009",
+        "name": "Unsupported_Mode_Bits_Generate_CONSTRAINT_ERROR",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "Any write to the Mode attribute that sets an unsupported mode bit or any out-of-bounds bit (> bit 3) SHALL be ignored and SHALL return CONSTRAINT_ERROR.",
+        "formal": "∀v. write(Mode, v) ∧ (v > 15 ∨ has_unsupported_bit(v)) ⟹ return CONSTRAINT_ERROR ∧ Mode == Mode_prev",
+        "spec_source": "Section 5.3.6.13 'Mode Attribute': 'any write interaction to the Mode attribute, with an unsupported mode bit or any out of bounds bits set, must be ignored and a response containing the status of CONSTRAINT_ERROR will be returned.'",
+        "violation": {
+          "description": "If unsupported bits are accepted silently, an attacker can probe mode manipulation by writing arbitrary bit patterns and observing whether they take effect. Accepted unsupported bits may trigger undefined vendor-specific behavior, potentially causing unexpected motor actions.",
+          "attack_vector": "Write Mode=0xFF or a value with reserved bits set. If server silently truncates or accepts, the device enters an undefined configuration state.",
+          "physical_impact": "Undefined motor behavior; device may enter an unrecoverable state requiring physical reset."
+        },
+        "proverifQuery": "query d:device, v:value ⊢ event mode_write(d, v) ∧ unsupported_bits(v) ==> event response(d, CONSTRAINT_ERROR)"
+      },
+
+      {
+        "id": "PROP_WNCV_010",
+        "name": "MotorDirectionReversed_Controls_LiftMovementReversed",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "Setting Mode.MotorDirectionReversed SHALL update ConfigStatus.LiftMovementReversed to the same value, ensuring direction configuration is consistently reflected in status.",
+        "formal": "write(Mode.MotorDirectionReversed, b) ⟹ ConfigStatus.LiftMovementReversed := b",
+        "spec_source": "Section 5.3.6.13.1 'MotorDirectionReversed Bit': 'This bit SHALL control the LiftMovementReversed bit in the ConfigStatus attribute.'",
+        "violation": {
+          "description": "If ConfigStatus.LiftMovementReversed does not track Mode.MotorDirectionReversed, clients reading ConfigStatus to determine actual movement direction will have incorrect information. Commands issued by controllers that compensate for reversed direction will produce physically opposite results.",
+          "attack_vector": "A node with Manage privilege toggles MotorDirectionReversed repeatedly. If ConfigStatus is not synchronized, controllers relying on ConfigStatus for direction compensation will send inverted commands.",
+          "physical_impact": "Open commands physically close the covering and vice versa, undermining all automation logic and creating unpredictable physical behavior."
+        },
+        "proverifQuery": "query d:device, b:bit ⊢ event mode_written(d, MotorDirectionReversed, b) ==> event config_status_updated(d, LiftMovementReversed, b)"
+      },
+
+      {
+        "id": "PROP_WNCV_011",
+        "name": "FeatureMap_Matches_Type_Attribute_Supported_Features",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The FeatureMap SHALL match the features advertised by the Type attribute; a device that reports Type=RollerShade (LF-only) SHALL have LF feature bit set and TL feature bit clear.",
+        "formal": "∀d. Type(d) ∈ LF_only_types ⟹ Feature_LF(d) == 1 ∧ Feature_TL(d) == 0 ∧ Type(d) ∈ TL_only_types ⟹ Feature_TL(d) == 1 ∧ Feature_LF(d) == 0",
+        "spec_source": "Section 5.3.4 'Features': 'Due to backward compatibility reasons this feature map SHALL match the advertised Type Attribute Supported Features.'",
+        "violation": {
+          "description": "A mismatch between FeatureMap and Type causes controllers to either expect commands that do not exist (crash GoToLiftPercentage on a TL-only device) or fail to use available commands (not sending GoToTiltPercentage on a LF+TL device). Attackers can exploit the mismatch to probe implementation inconsistencies.",
+          "attack_vector": "Query FeatureMap and Type independently; if inconsistent, probe the device with commands supported by one but not the other to trigger undefined behavior.",
+          "physical_impact": "Controller automation logic fails silently if feature capabilities are misreported, potentially preventing emergency position commands from being issued."
+        },
+        "proverifQuery": "query d:device ⊢ event type_attribute(d, v) ∧ lf_only_type(v) ==> event feature_bit(d, LF, 1) ∧ event feature_bit(d, TL, 0)"
+      },
+
+      {
+        "id": "PROP_WNCV_012",
+        "name": "GoToLiftPercentage_NonPA_Maps_Zero_To_Open",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When PositionAwareLift (PA_LF) is not supported, GoToLiftPercentage with value 0 SHALL be treated as UpOrOpen and any non-zero value SHALL be treated as DownOrClose.",
+        "formal": "Feature_PA_LF == false ∧ invoke(GoToLiftPercentage, {LiftPercent100thsValue: 0}) ⟹ execute(UpOrOpen) ∧ Feature_PA_LF == false ∧ invoke(GoToLiftPercentage, {LiftPercent100thsValue: v}) ∧ v > 0 ⟹ execute(DownOrClose)",
+        "spec_source": "Section 5.3.7.4 'GoToLiftPercentage Command': 'If the server does not support the PositionAware feature, then a zero percentage SHALL be treated as a UpOrOpen command and a non-zero percentage SHALL be treated as an DownOrClose command.'",
+        "violation": {
+          "description": "If a non-PA_LF device accepts GoToLiftPercentage with LiftPercent100thsValue=50 and attempts precise positioning, it may drive the motor indefinitely (no position feedback to stop). Alternatively, if it misclassifies 0 as DownOrClose, the covering closes when an open was intended.",
+          "attack_vector": "Send GoToLiftPercentage with value 1 to a non-PA_LF device expecting DownOrClose behavior; if the device misinterprets and goes to UpOrOpen, the covering exposes the interior.",
+          "physical_impact": "Unexpected covering direction: privacy breach or incorrect emergency position."
+        },
+        "proverifQuery": "query d:device, v:value ⊢ event command_received(d, GoToLiftPercentage, v) ∧ feature_absent(d, PA_LF) ∧ v == 0 ==> event execute_equivalent(d, UpOrOpen)"
+      },
+
+      {
+        "id": "PROP_WNCV_013",
+        "name": "After_UpOrOpen_Completion_Position_Is_Zero",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "Once UpOrOpen movement has successfully completed, CurrentPositionLiftPercent100ths and CurrentPositionTiltPercent100ths SHALL both be updated to 0.00% (value 0).",
+        "formal": "complete(UpOrOpen) ⟹ CurrentPositionLiftPercent100ths := 0 [PA_LF] ∧ CurrentPositionLiftPercentage := 0 [PA_LF] ∧ CurrentPositionTiltPercent100ths := 0 [PA_TL] ∧ CurrentPositionTiltPercentage := 0 [PA_TL]",
+        "spec_source": "Section 5.3.7.1 'UpOrOpen Command': 'once the movement has successfully finished, the server attributes SHALL be updated as follows: CurrentPositionLiftPercent100ths attribute SHALL be 0.00%'",
+        "violation": {
+          "description": "If CurrentPosition is not updated to 0 after UpOrOpen completes, position tracking diverges from physical reality. Any subsequent GoToLiftPercentage targeting a specific position will command movement from the wrong starting reference.",
+          "attack_vector": "Exploit firmware bug where CurrentPosition is only updated during motion (via timer interpolation) but not snapped to 0 upon reaching the open limit, leaving a small residual error that accumulates.",
+          "physical_impact": "Progressive position tracking drift leads to the covering stopping short of its physical limit, degrading energy efficiency (gap in blackout shade) over time."
+        },
+        "proverifQuery": "query d:device ⊢ event movement_complete(d, UpOrOpen) ==> event position_value(d, CurrentLiftPercent100ths, 0)"
+      },
+
+      {
+        "id": "PROP_WNCV_014",
+        "name": "StopMotion_Sets_Target_Equal_To_Current",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "Upon receipt of StopMotion, TargetPositionLiftPercent100ths and TargetPositionTiltPercent100ths SHALL be set to the values of CurrentPositionLiftPercent100ths and CurrentPositionTiltPercent100ths respectively.",
+        "formal": "invoke(StopMotion) ⟹ TargetPositionLiftPercent100ths := CurrentPositionLiftPercent100ths [PA_LF] ∧ TargetPositionTiltPercent100ths := CurrentPositionTiltPercent100ths [PA_TL]",
+        "spec_source": "Section 5.3.7.3 'StopMotion Command': 'TargetPositionLiftPercent100ths attribute will be set to CurrentPositionLiftPercent100ths attribute value.'",
+        "violation": {
+          "description": "If StopMotion fails to update TargetPosition to CurrentPosition, the device retains an old TargetPosition that no longer matches its actual stopped location. A device that resumes movement toward the old target after an external event (e.g., power cycle recovery) will move unexpectedly to a client-unintended position.",
+          "attack_vector": "Issue StopMotion, verify Target != Current via subscription. Power-cycle device; if it resumes toward stale TargetPosition, unexpected movement occurs.",
+          "physical_impact": "Post-reset unexpected covering movement could cause physical harm or privacy breach."
+        },
+        "proverifQuery": "query d:device, curr:value ⊢ event stop_motion_executed(d) ∧ event current_position(d, Lift, curr) ==> event target_position(d, Lift, curr)"
+      },
+
+      {
+        "id": "PROP_WNCV_015",
+        "name": "PositionAware_Attributes_Bounded_Zero_To_10000",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "CurrentPositionLiftPercent100ths and CurrentPositionTiltPercent100ths SHALL have a maximum value of 10000 (100.00%), and GoToLiftPercentage/GoToTiltPercentage payloads SHALL be validated within [0, 10000].",
+        "formal": "∀t. CurrentPositionLiftPercent100ths(t) ∈ [0, 10000] ∧ CurrentPositionTiltPercent100ths(t) ∈ [0, 10000] ∧ LiftPercent100thsValue ∈ [0, 10000]",
+        "spec_source": "Section 5.3.6 Attributes table: CurrentPositionLiftPercent100ths (0x000E) Constraint = 'max 10000'; CurrentPositionTiltPercent100ths (0x000F) Constraint = 'max 10000'",
+        "violation": {
+          "description": "A GoToLiftPercentage payload with a value above 10000 that is accepted without validation could cause the motor to be commanded beyond the physical closed limit, potentially damaging the mechanical end-stop or motor.",
+          "attack_vector": "Send GoToLiftPercentage with LiftPercent100thsValue = 65535 (uint16 max). An implementation that does not bounds-check the payload before setting TargetPosition may drive the motor indefinitely.",
+          "physical_impact": "Motor over-travel beyond closed limit: mechanical damage to the covering or mounting hardware."
+        },
+        "proverifQuery": "query d:device, v:value ⊢ event goto_lift_received(d, v) ∧ v > 10000 ==> event command_rejected(d)"
+      },
+
+      {
+        "id": "PROP_WNCV_016",
+        "name": "GoToLiftPercentage_Tilt_Only_Device_Should_Reject",
+        "category": "Authorization",
+        "importance": "MEDIUM",
+        "claim": "If the window covering supports only the Tilt (TL) feature and not Lift (LF), GoToLiftPercentage SHOULD be ignored and UNSUPPORTED_COMMAND SHOULD be returned.",
+        "formal": "Feature_LF == false ∧ Feature_TL == true ∧ invoke(GoToLiftPercentage) ⟹ return UNSUPPORTED_COMMAND",
+        "spec_source": "Section 5.3.7.4 'GoToLiftPercentage Command': 'If the device is only a tilt control device, then the command SHOULD be ignored and a UNSUPPORTED_COMMAND status SHOULD be returned.'",
+        "violation": {
+          "description": "A tilt-only device that accepts GoToLiftPercentage without returning UNSUPPORTED_COMMAND may attempt to actuate a non-existent lift mechanism, causing undefined motor behavior. Clients cannot distinguish TL-only from LF/TL devices by command response, enabling cross-feature command confusion.",
+          "attack_vector": "Send GoToLiftPercentage to a TL-only device. If it silently executes (e.g., mapping to GoToTiltPercentage), the direction semantics change without client awareness.",
+          "physical_impact": "Incorrect tilt actuation when lift was intended, or undefined motor behavior in tilt-only hardware."
+        },
+        "proverifQuery": "query d:device ⊢ event command_received(d, GoToLiftPercentage) ∧ feature_absent(d, LF) ==> event response(d, UNSUPPORTED_COMMAND)"
+      },
+
+      {
+        "id": "PROP_WNCV_017",
+        "name": "MaintenanceMode_Should_Set_Operational_Bit_Zero",
+        "category": "PhysicalSafety",
+        "importance": "MEDIUM",
+        "claim": "When MaintenanceMode is active, the ConfigStatus.Operational bit SHOULD be set to 0 (not operational) to inform clients and operators of the device's non-operational status.",
+        "formal": "Mode.MaintenanceMode == 1 ⟹ ConfigStatus.Operational == 0",
+        "spec_source": "Section 5.3.6.13.3 'MaintenanceMode Bit': 'Additionally, the Operational bit of the ConfigStatus attribute should be set to its not operational value.'",
+        "violation": {
+          "description": "If ConfigStatus.Operational remains 1 (operational) while MaintenanceMode=1 is active, clients and dashboards interpret the device as fully functional. This masks the maintenance state from monitoring systems, operators, and other automation nodes that check Operational before issuing commands.",
+          "attack_vector": "Maintenance is performed; Operational bit stays 1. A secondary automation controller, not aware of MaintenanceMode, continues sending movement commands (which return BUSY). The automation controller may log errors or raise alarms for an unrecognized fault condition.",
+          "physical_impact": "Masked maintenance state could lead to operator confusion and potentially unsafe maintenance procedures if the automation continues to interact with the device."
+        },
+        "proverifQuery": "query d:device ⊢ event maintenance_mode_active(d) ==> event config_status_bit(d, Operational, 0)"
+      },
+
+      {
+        "id": "PROP_WNCV_018",
+        "name": "SafetyStatus_RemoteLockout_Informational_Only",
+        "category": "Authorization",
+        "importance": "MEDIUM",
+        "claim": "SafetyStatus.RemoteLockout (bit 0) indicates movement commands are locked out, but the specification defines no normative (SHALL) command rejection behavior tied to this bit; implementations MUST ensure this bit accurately reflects any lockout condition in effect.",
+        "formal": "SafetyStatus.RemoteLockout == 1 ⟹ [implementation-defined: commands MAY be rejected but SHALL NOT be silently executed without lockout awareness]",
+        "spec_source": "Section 5.3.5.4 'SafetyStatusBitmap': 'RemoteLockout: Movement commands are ignored (locked out). e.g. not granted authorization, outside some time/date range.' Conformance M. No corresponding SHALL in Section 5.3.7 command handlers.",
+        "violation": {
+          "description": "Because no normative command-rejection rule references RemoteLockout, implementations may silently ignore the bit and execute commands even when it is set. Alternatively, the bit may be set for any reason by the manufacturer, but clients have no standard way to know why commands are failing.",
+          "attack_vector": "Set SafetyStatus.RemoteLockout=1 (if remotely writable, which is unspecified) to lock out legitimate controllers. Or: send commands when RemoteLockout=1 and observe that some implementations still execute them, bypassing a vendor lockout policy.",
+          "physical_impact": "Unauthorized movement if lockout is not enforced; denial of service if lockout cannot be cleared remotely."
+        },
+        "proverifQuery": "query d:device ⊢ event remote_lockout_set(d) ∧ event command_received(d, any_movement_cmd) ==> event command_rejected(d)"
+      },
+
+      {
+        "id": "PROP_WNCV_019",
+        "name": "OperationalStatus_Value_Bounded_At_63",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The OperationalStatus attribute SHALL have a maximum value of 63 (bits 6-7 are unused/reserved and SHALL be 0).",
+        "formal": "∀t. OperationalStatus(d, t) ≤ 63",
+        "spec_source": "Section 5.3.6 Attributes table: OperationalStatus (0x000A) Constraint = 'max 63'",
+        "violation": {
+          "description": "An implementation that sets reserved bits in OperationalStatus confuses clients that parse the bitmap according to the specification, as undefined bits being set could be interpreted as reserved-future meaning by future clients.",
+          "attack_vector": "Firmware bug sets bits 6-7, causing OperationalStatus value > 63. Clients checking for a specific value (e.g., == 0 for stopped) will fail to match.",
+          "physical_impact": "None directly, but incorrect motion status interpretation could cause controller logic errors."
+        },
+        "proverifQuery": "query d:device, v:value ⊢ event operational_status_read(d, v) ==> v <= 63"
+      },
+
+      {
+        "id": "PROP_WNCV_020",
+        "name": "Mode_Attribute_Value_Bounded_At_15",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The Mode attribute SHALL have a maximum meaningful value of 15 (bits 0-3 defined; bits 4-7 reserved); any write with value > 15 SHALL return CONSTRAINT_ERROR.",
+        "formal": "∀v. write(Mode, v) ∧ v > 15 ⟹ return CONSTRAINT_ERROR",
+        "spec_source": "Section 5.3.6 Attributes table: Mode (0x0017) Constraint = 'max 15'; Section 5.3.6.13: 'any out of bounds bits set, must be ignored and a response containing the status of CONSTRAINT_ERROR'",
+        "violation": {
+          "description": "Accepting Mode values > 15 either silently truncates (masking the error from the client) or enables undefined behavior in implementations that use bits 4-7 for vendor extensions without advertising them.",
+          "attack_vector": "Write Mode=0x1F to set both standard bits and reserved bits. An implementation that silently accepts changes vendor-undefined behavior; a different device from the same vendor may have different behavior for the reserved bits.",
+          "physical_impact": "Vendor-specific undefined motor behavior triggered by reserved bit manipulation."
+        },
+        "proverifQuery": "query d:device, v:value ⊢ event mode_write_received(d, v) ∧ v > 15 ==> event response(d, CONSTRAINT_ERROR)"
+      },
+
+      {
+        "id": "PROP_WNCV_021",
+        "name": "CalibrationMode_May_Trigger_Self_Cal_Before_Movement",
+        "category": "Authorization",
+        "importance": "MEDIUM",
+        "claim": "In CalibrationMode, movement commands (UpOrOpen, DownOrClose, GoTos) that can result in movement MAY trigger a self-calibration routine before executing the movement; devices that cannot self-calibrate SHOULD reject movement commands with FAILURE.",
+        "formal": "Mode.CalibrationMode == 1 ∧ invoke(movement_cmd) ∧ ¬can_self_calibrate(d) ⟹ return FAILURE",
+        "spec_source": "Section 5.3.6.13.2 'CalibrationMode Bit': 'all commands...that can result in movement, could be accepted and result in a self-calibration being initiated before the command is executed. In case the window covering does not have the ability or is not able to perform a self-calibration, the command SHOULD be ignored and a FAILURE status SHOULD be returned.'",
+        "violation": {
+          "description": "A device that accepts movement commands in CalibrationMode without self-calibrating may move to incorrectly calibrated positions. A device that does not return FAILURE when it cannot self-calibrate masks the calibration failure from the client.",
+          "attack_vector": "Issue GoToLiftPercentage during active CalibrationMode on a device that cannot self-calibrate. If accepted without FAILURE, the client falsely believes a successful calibrated movement occurred.",
+          "physical_impact": "Movement to physically incorrect positions due to uncompleted calibration."
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event calibration_mode_active(d) ∧ event movement_command(d, cmd) ∧ ¬can_self_calibrate(d) ==> event response(d, FAILURE)"
+      },
+
+      {
+        "id": "PROP_WNCV_022",
+        "name": "After_DownOrClose_Completion_Position_Is_10000",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "Once DownOrClose movement has successfully completed, CurrentPositionLiftPercent100ths SHALL be updated to 10000 (100.00%) and CurrentPositionLiftPercentage to 100.",
+        "formal": "complete(DownOrClose) ⟹ CurrentPositionLiftPercent100ths := 10000 [PA_LF] ∧ CurrentPositionLiftPercentage := 100 [PA_LF] ∧ CurrentPositionTiltPercent100ths := 10000 [PA_TL] ∧ CurrentPositionTiltPercentage := 100 [PA_TL]",
+        "spec_source": "Section 5.3.7.2 'DownOrClose Command': 'once the movement has successfully finished...CurrentPositionLiftPercent100ths attribute SHALL be 100.00%'",
+        "violation": {
+          "description": "If CurrentPosition is not snapped to 10000 after DownOrClose completes, position tracking under-reports the closed extent, causing subsequent GoTo commands to compute incorrect incremental movements from a wrong reference baseline.",
+          "attack_vector": "Timer-based position computation (no encoder) that stops interpolation slightly before 10000 due to rounding, leaving residual error that accumulates over multiple cycles.",
+          "physical_impact": "Progressive position drift; over many operations the covering fails to reach fully closed, degrading thermal insulation and blackout performance."
+        },
+        "proverifQuery": "query d:device ⊢ event movement_complete(d, DownOrClose) ==> event position_value(d, CurrentLiftPercent100ths, 10000)"
+      },
+
+      {
+        "id": "PROP_WNCV_023",
+        "name": "Type_Attribute_Constrained_By_Feature_Combination",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The Type attribute value SHALL be constrained to the set of valid TypeEnum values appropriate for the device's feature combination (LF-only, TL-only, or LF+TL); values outside this set SHALL NOT be used.",
+        "formal": "Feature_LF == true ∧ Feature_TL == false ⟹ Type ∈ {0,1,2,3,4,5,6,9,255} ∧ Feature_TL == true ∧ Feature_LF == false ⟹ Type ∈ {6,7,255} ∧ Feature_LF == true ∧ Feature_TL == true ⟹ Type ∈ {8,255}",
+        "spec_source": "Section 5.3.6.1 'Type Attribute': feature-specific constraint tables listing valid Type values for each of LF-only, TL-only, and LF+TL configurations.",
+        "violation": {
+          "description": "A device reporting Type=TiltBlindLiftAndTilt (8) while only supporting LF feature (no TL) misleads clients into sending GoToTiltPercentage commands to a device that cannot respond. The response behavior (UNSUPPORTED_COMMAND or silent ignore) is then unpredictable.",
+          "attack_vector": "Device firmware bug sets wrong Type. A controller reads Type, infers feature support, and sends tilt commands that are not supported, leading to unexpected responses or silent failures.",
+          "physical_impact": "Controller automation fails silently; emergency position automation may not execute correctly."
+        },
+        "proverifQuery": "query d:device, t:typeval ⊢ event type_attribute(d, t) ∧ feature_lf_only(d) ==> lf_only_type(t)"
+      }
+
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "The Matter fabric access control layer correctly enforces V/O/M/A privilege levels before cluster command handlers execute. The Window Covering cluster itself does not re-authenticate callers — it relies entirely on the ACL layer having already validated invoker privilege.",
+        "type": "Implicit",
+        "source": "Matter Core Specification (fabric access control); Section 5.3.7 access column only specifies required level, not enforcement mechanism.",
+        "dependencies": ["PROP_WNCV_001", "PROP_WNCV_002"],
+        "impact_if_violated": "PROP_WNCV_001 and PROP_WNCV_002 entirely fail: any node regardless of privilege can issue movement commands or write Mode attribute."
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "SafetyStatus bits (ObstacleDetected, ThermalProtection, MotorJammed, HardwareFailure, etc.) are set exclusively by trusted hardware sensors or internal firmware logic, not by remote attribute writes. The SafetyStatus attribute is Read-only (R V), ensuring clients cannot forge safety indications.",
+        "type": "Explicit",
+        "source": "Section 5.3.6 Attributes table: SafetyStatus (0x001A) Access = 'R V' (Read only, View required for read; no write access defined)",
+        "dependencies": ["PROP_WNCV_003", "PROP_WNCV_018"],
+        "impact_if_violated": "An attacker who can write SafetyStatus could set RemoteLockout=1 to deny service, or clear ObstacleDetected=0 to prevent safety indication from reaching monitoring clients."
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "Position values 0 = fully open and 10000 = fully closed are physically consistent across all device implementations; the installed open/closed physical limits are correctly set during initial commissioning (InstalledOpenLimitLift, InstalledClosedLimitLift).",
+        "type": "Implicit",
+        "source": "Section 5.3.4.3 'PositionAware Features': 'Max 10000 equals 100.00%'; Section 5.3.4.4 AbsolutePosition referenced InstalledOpenLimits/InstalledClosedLimits (removed in revision 7 but referenced conceptually)",
+        "dependencies": ["PROP_WNCV_007", "PROP_WNCV_013", "PROP_WNCV_022"],
+        "impact_if_violated": "GoToLiftPercentage targeting 50% on a misconfigured device moves to a physically incorrect position; position tracking properties become meaningless."
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "Lift direction semantics (0% = open/up, 100% = closed/down) are consistent: UpOrOpen moves toward 0% and DownOrClose moves toward 100%. LiftMovementReversed is a configuration that swaps the motor winding direction while keeping the same position semantics.",
+        "type": "Implicit",
+        "source": "Section 5.3.7.1 'UpOrOpen': TargetPositionLiftPercent100ths set to 0.00%; Section 5.3.7.2 'DownOrClose': set to 100.00%",
+        "dependencies": ["PROP_WNCV_010", "PROP_WNCV_012"],
+        "impact_if_violated": "UpOrOpen physically closes the covering or vice versa, inverting all safety and automation behaviors."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 5.3.5.4 'SafetyStatusBitmap Type' and Section 5.3.7 Commands",
+        "normative_weakness": "Unspecified",
+        "description": "SafetyStatus.RemoteLockout (bit 0) is described as causing movement commands to be 'ignored (locked out)' but no corresponding SHALL-level rejection clause exists anywhere in the command 'Effect on Receipt' sections (5.3.7.1-5.3.7.5). The bit is purely informational with no normative enforcement.",
+        "properties_affected": ["PROP_WNCV_018"],
+        "security_impact": "Implementations may execute movement commands even when RemoteLockout is set, bypassing any vendor access-time or geographic lockout policy. Clients have no standardized error code to understand why a command was blocked by lockout."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 5.3 (entire cluster)",
+        "normative_weakness": "Unspecified",
+        "description": "The Window Covering cluster defines no events. There is no standardized notification mechanism for OperationalStatus changes, SafetyStatus changes, or Mode changes. Clients must poll all state-bearing attributes to detect safety-critical changes.",
+        "properties_affected": ["PROP_WNCV_006", "PROP_WNCV_007"],
+        "security_impact": "Without events, safety-critical state changes (obstacle detected, motor jammed, thermal protection triggered, device entering maintenance mode) are not proactively reported. Polling latency creates a window where a safety hazard is active but undetected by monitoring clients."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 5.3.5.4 'SafetyStatusBitmap' and Section 5.3.7 Commands",
+        "normative_weakness": "Unspecified",
+        "description": "No SHALL-level requirement exists to halt motion or reject movement commands when any of the following SafetyStatus bits are set: ObstacleDetected (bit 5), ThermalProtection (bit 4), MotorJammed (bit 8), HardwareFailure (bit 9), StopInput (bit 7). All 12 SafetyStatus bits are defined as informational indicators only.",
+        "properties_affected": ["PROP_WNCV_003"],
+        "security_impact": "A device with an active obstacle, jammed motor, or thermal protection triggered may continue to accept and attempt movement commands, potentially causing physical damage (motor burnout from jammed state) or injury (continued closing despite obstacle)."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 5.3.6.13.2 'CalibrationMode Bit'",
+        "normative_weakness": "SHOULD",
+        "description": "CalibrationMode exit is entirely vendor-specific (calibration routine, possibly requiring external tools). There is no maximum calibration duration, mandatory timeout, or forced exit mechanism. A direct write of CalibrationMode=0 is forbidden, meaning there is no standardized way for a controller to remotely exit CalibrationMode if the device's internal calibration routine never completes.",
+        "properties_affected": ["PROP_WNCV_004", "PROP_WNCV_021"],
+        "security_impact": "A node with Manage privilege can permanently lock the device in CalibrationMode if the device cannot self-calibrate. No recovery path is standardized; physical access or vendor-specific tooling is required, creating a persistent remote denial-of-service vector."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 5.3.6.13.3 'MaintenanceMode Bit'",
+        "normative_weakness": "SHOULD",
+        "description": "Setting ConfigStatus.Operational to 0 when MaintenanceMode is active uses 'should' (lowercase, non-normative). Implementations may legitimately leave ConfigStatus.Operational=1 during MaintenanceMode, misrepresenting the device's operational status to clients.",
+        "properties_affected": ["PROP_WNCV_017", "PROP_WNCV_005"],
+        "security_impact": "Monitoring clients check ConfigStatus.Operational to determine if the device is controllable. If it remains 1 during MaintenanceMode, automated systems will not alert operators to the maintenance condition and may incorrectly classify the BUSY responses as transient errors rather than a deliberate maintenance state."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 5.3.7.4 'GoToLiftPercentage Command' and Section 5.3.7.5",
+        "normative_weakness": "SHOULD",
+        "description": "GoToLiftPercentage on a tilt-only device uses SHOULD for both the ignore and rejection behaviors. GoToTiltPercentage on a lift-only device has no symmetric rejection clause at all — neither SHALL nor SHOULD — creating asymmetric feature enforcement.",
+        "properties_affected": ["PROP_WNCV_016"],
+        "security_impact": "Attacker can probe device capabilities by sending cross-feature commands and observing varied responses (UNSUPPORTED_COMMAND vs silent execution) to fingerprint device implementation, infer feature support, or trigger undefined actuator behavior on devices that accept cross-feature commands silently."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 5.3.6.13 'Mode Attribute'",
+        "normative_weakness": "Unspecified",
+        "description": "The specification does not define behavior when CalibrationMode and MaintenanceMode bits are set simultaneously in a single Mode write. Both bits are independently valid but their interaction (maintenance blocks movement; calibration expects movement) is undefined.",
+        "properties_affected": ["PROP_WNCV_004", "PROP_WNCV_005"],
+        "security_impact": "A malicious node writes Mode with both CalibrationMode=1 and MaintenanceMode=1 simultaneously. The device is in an internally contradictory state: maintenance requires blocking movement but calibration expects it. Vendor-specific behavior resolution may create exploitable inconsistencies between products from different manufacturers."
+      },
+      {
+        "id": "GAP_008",
+        "location": "Section 5.3.7 Commands (general)",
+        "normative_weakness": "Unspecified",
+        "description": "No rate limiting is specified for any movement command. An Operate-privilege node can continuously send UpOrOpen / DownOrClose alternately at high frequency, repeatedly reversing the motor. No maximum command rate, minimum inter-command interval, or command storm protection is mandated.",
+        "properties_affected": ["PROP_WNCV_001"],
+        "security_impact": "High-frequency alternating movement commands cause excessive motor wear, thermal overload of drive electronics, and potential physical destruction of the covering mechanism — a targeted physical denial-of-service attack requiring only Operate privilege."
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": ["Window Covering (0x0102)", "Scenes (0x0005)"],
+        "property": {
+          "claim": "When a Scene is recalled that includes Window Covering target position attributes, the resulting GoTo movement should be authorized at the privilege level required by the corresponding movement command (Operate), even though scene recall itself may require a different privilege level.",
+          "formal": "Scene.recall() ∧ scene_includes(WNCV_position) ⟹ requires_privilege_for(WNCV_movement, Operate)"
+        },
+        "violation_scenario": "If scene recall that triggers window covering movement does not re-validate Operate privilege for the movement, a View-privilege node that can recall scenes could indirectly actuate the covering without Operate access, bypassing PROP_WNCV_001."
+      },
+      {
+        "id": "XPROP_002",
+        "clusters_involved": ["Window Covering (0x0102)", "Groups (0x0004)"],
+        "property": {
+          "claim": "Group-addressed movement commands (UpOrOpen, DownOrClose, StopMotion, GoToLiftPercentage, GoToTiltPercentage) targeting the Window Covering cluster SHALL enforce the same Operate privilege requirement as direct-addressed commands.",
+          "formal": "group_invoke(cmd, group_id) ∧ WNCV ∈ group_members ⟹ has_privilege(invoker, Operate)"
+        },
+        "violation_scenario": "If group-addressed commands bypass per-cluster ACL checks (relying only on group membership), a node with group membership but insufficient individual ACL privilege could actuate multiple window coverings simultaneously via a single group command."
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_WNCV_003",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "A motorized window covering executing DownOrClose does not stop when an obstacle (person, child, pet, object) is detected in the path of the closing mechanism. The covering continues closing, applying mechanical force to the obstacle until the end-of-travel limit or motor thermal protection is reached.",
+        "spec_mitigation": "UNSPECIFIED — SafetyStatus.ObstacleDetected bit is defined as informational. No SHALL-level halt or command rejection is mandated when the bit is set."
+      },
+      {
+        "property_id": "PROP_WNCV_005",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "A node with Manage privilege sets MaintenanceMode=1 remotely on all window coverings in a building. All coverings freeze in their current position indefinitely (no forced-exit timeout). In a fire emergency requiring smoke venting via automated blinds opening, all covering actuation commands return BUSY and the smoke venting system fails to operate.",
+        "spec_mitigation": "UNSPECIFIED — No timeout on MaintenanceMode, no mandatory alert to other fabric members, and no emergency override command is defined."
+      },
+      {
+        "property_id": "PROP_WNCV_004",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "A node with Manage privilege sets CalibrationMode=1. The device cannot complete calibration autonomously and no external calibration tool is available. Since clearing CalibrationMode via write is forbidden, the device is permanently stuck in calibration mode, unable to respond to movement commands from emergency automation.",
+        "spec_mitigation": "UNSPECIFIED — No timeout, watchdog, or remote forced-exit path for CalibrationMode. Physical intervention or vendor tool required."
+      },
+      {
+        "property_id": "PROP_WNCV_001",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "An unauthorized node (View privilege) issues continuous alternating UpOrOpen/DownOrClose commands. The motor continuously reverses direction at high frequency, causing mechanical wear, thermal overload of motor windings, and eventual motor failure. The covering remains non-functional after the attack.",
+        "spec_mitigation": "UNSPECIFIED — No rate limiting on movement commands. Operate privilege is required per spec, but no command storm protection exists even for legitimately privileged nodes."
+      }
+    ],
+
+    "summary": {
+      "total_properties": 23,
+      "by_importance": {
+        "CRITICAL": 5,
+        "HIGH": 10,
+        "MEDIUM": 8
+      },
+      "by_category": {
+        "AccessControl": 2,
+        "StateIntegrity": 13,
+        "PhysicalSafety": 2,
+        "Authentication": 0,
+        "SecretProtection": 0,
+        "Availability": 0,
+        "Authorization": 3,
+        "Timing": 0,
+        "EventIntegrity": 0,
+        "CrossCluster": 0
+      },
+      "spec_gaps_found": 8,
+      "safety_critical_count": 4,
+      "notes": [
+        "No Authentication or SecretProtection properties exist: Window Covering has no credentials, PINs, or secret data; all security is enforced by the Matter ACL layer.",
+        "No Timing properties exist: Window Covering has no auto-relock timers, session timeouts, or rate-limiting schedules defined in the spec (GAP_008 documents the absence of rate limiting as a gap).",
+        "No EventIntegrity properties exist: The cluster defines zero events (GAP_002 documents this absence); all state monitoring requires polling.",
+        "Dominant property category is StateIntegrity (13 of 23): the cluster's security posture depends primarily on correct attribute synchronization between physical state and reported values (CurrentPosition, TargetPosition, OperationalStatus, ConfigStatus, Mode).",
+        "Cross-cluster scenarios (XPROP_001/XPROP_002) with Scenes and Groups represent privilege escalation risks where indirect command pathways may bypass direct Operate-privilege checks."
+      ]
+    }
+  }
+}

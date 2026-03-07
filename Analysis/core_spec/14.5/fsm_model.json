@@ -1,0 +1,1761 @@
+{
+  "fsm_model": {
+    "section_name": "14.5 TLS Client Management Cluster",
+    "section_ref": "Matter Core Specification 1.5, Section 14.5",
+    "extraction_date": "2026-02-13",
+    "completeness_verification": {
+      "all_commands_covered": true,
+      "commands": ["ProvisionEndpoint (0x00)", "FindEndpoint (0x02)", "RemoveEndpoint (0x04)"],
+      "all_validation_steps_covered": true,
+      "all_error_codes_covered": true,
+      "all_spec_requirements_implemented": true,
+      "specification_inconsistency_noted": "Status code table defines EndpointInUse (0x05) but RemoveEndpoint command processing uses INVALID_IN_STATE. FSM follows command processing logic.",
+      "states_count": 31,
+      "transitions_count": 62,
+      "functions_count": 31,
+      "security_properties_count": 10
+    },
+    
+    "states": [
+      {
+        "name": "Idle_TimeNotSynchronized",
+        "description": "System is idle, waiting for commands. Time synchronization has not occurred (UTCTime is null). Certificate operations are blocked.",
+        "is_initial": true,
+        "invariants": ["UTCTime == null", "no_command_processing == true"],
+        "state_variables": {
+          "UTCTime": "null",
+          "ProvisionedEndpoints": "list[TLSEndpointStruct]",
+          "MaxProvisioned": "uint8 (5-254)",
+          "command_active": "false"
+        }
+      },
+      {
+        "name": "Idle_TimeSynchronized",
+        "description": "System is idle, waiting for commands. Time synchronization has occurred (UTCTime is not null). All operations are available.",
+        "is_initial": false,
+        "invariants": ["UTCTime != null", "no_command_processing == true"],
+        "state_variables": {
+          "UTCTime": "timestamp (not null)",
+          "ProvisionedEndpoints": "list[TLSEndpointStruct]",
+          "MaxProvisioned": "uint8 (5-254)",
+          "command_active": "false"
+        }
+      },
+      {
+        "name": "Validating_ProvisionEndpoint_TimeCheck",
+        "description": "Processing ProvisionEndpoint command, checking if UTCTime is synchronized. First validation step.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "command_type == 'ProvisionEndpoint'"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID}",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "time_check"
+        }
+      },
+      {
+        "name": "Validating_ProvisionEndpoint_RootCertCheck",
+        "description": "Validating ProvisionEndpoint command, checking if root certificate (CAID) exists and matches fabric.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "UTCTime != null"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID}",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "root_cert_check"
+        }
+      },
+      {
+        "name": "Validating_ProvisionEndpoint_ClientCertCheck",
+        "description": "Validating ProvisionEndpoint command, checking if client certificate (CCDID) exists and matches fabric (if CCDID is not NULL).",
+        "is_initial": false,
+        "invariants": ["command_active == true", "root_cert_valid == true"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID}",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "client_cert_check"
+        }
+      },
+      {
+        "name": "Validating_ProvisionEndpoint_BranchDecision",
+        "description": "Validation passed, deciding whether to create new endpoint (EndpointID==NULL) or update existing (EndpointID!=NULL).",
+        "is_initial": false,
+        "invariants": ["command_active == true", "certificates_validated == true"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID}",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "branch_decision"
+        }
+      },
+      {
+        "name": "Creating_NewEndpoint_CapacityCheck",
+        "description": "Creating new endpoint (EndpointID==NULL branch), checking if list has capacity.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "EndpointID_param == null"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID=null}",
+          "accessing_fabric": "fabric_id",
+          "creation_step": "capacity_check"
+        }
+      },
+      {
+        "name": "Creating_NewEndpoint_DuplicateCheck",
+        "description": "Creating new endpoint, checking if Hostname/Port combination already exists in same fabric.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "capacity_available == true"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID=null}",
+          "accessing_fabric": "fabric_id",
+          "creation_step": "duplicate_check"
+        }
+      },
+      {
+        "name": "Creating_NewEndpoint_Allocating",
+        "description": "Creating new endpoint, generating unique EndpointID and populating TLSEndpointStruct.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "no_duplicate_found == true"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID=null}",
+          "accessing_fabric": "fabric_id",
+          "new_endpoint_id": "TLSEndpointID (generated)",
+          "creation_step": "allocating"
+        }
+      },
+      {
+        "name": "Updating_ExistingEndpoint_ExistenceCheck",
+        "description": "Updating existing endpoint (EndpointID!=NULL branch), checking if endpoint exists.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "EndpointID_param != null"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID}",
+          "accessing_fabric": "fabric_id",
+          "update_step": "existence_check"
+        }
+      },
+      {
+        "name": "Updating_ExistingEndpoint_FabricCheck",
+        "description": "Updating existing endpoint, checking if endpoint belongs to accessing fabric.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "endpoint_exists == true"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID}",
+          "accessing_fabric": "fabric_id",
+          "update_step": "fabric_check"
+        }
+      },
+      {
+        "name": "Updating_ExistingEndpoint_Modifying",
+        "description": "Updating existing endpoint, modifying fields with new values.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "fabric_matches == true"],
+        "state_variables": {
+          "command_params": "{Hostname, Port, CAID, CCDID, EndpointID}",
+          "accessing_fabric": "fabric_id",
+          "update_step": "modifying"
+        }
+      },
+      {
+        "name": "Validating_FindEndpoint_EmptyListCheck",
+        "description": "Processing FindEndpoint command, checking if ProvisionedEndpoints list is empty.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "command_type == 'FindEndpoint'"],
+        "state_variables": {
+          "requested_endpoint_id": "TLSEndpointID",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "empty_list_check"
+        }
+      },
+      {
+        "name": "Validating_FindEndpoint_ExistenceCheck",
+        "description": "Validating FindEndpoint command, checking if endpoint with given ID exists.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "list_not_empty == true"],
+        "state_variables": {
+          "requested_endpoint_id": "TLSEndpointID",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "existence_check"
+        }
+      },
+      {
+        "name": "Validating_FindEndpoint_FabricCheck",
+        "description": "Validating FindEndpoint command, checking if endpoint belongs to accessing fabric.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "endpoint_exists == true"],
+        "state_variables": {
+          "requested_endpoint_id": "TLSEndpointID",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "fabric_check"
+        }
+      },
+      {
+        "name": "Executing_FindEndpoint_RetrievingData",
+        "description": "Executing FindEndpoint command, retrieving endpoint data to return.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "endpoint_fabric_matches == true"],
+        "state_variables": {
+          "requested_endpoint_id": "TLSEndpointID",
+          "accessing_fabric": "fabric_id",
+          "endpoint_data": "TLSEndpointStruct"
+        }
+      },
+      {
+        "name": "Validating_RemoveEndpoint_EmptyListCheck",
+        "description": "Processing RemoveEndpoint command, checking if ProvisionedEndpoints list is empty.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "command_type == 'RemoveEndpoint'"],
+        "state_variables": {
+          "target_endpoint_id": "TLSEndpointID",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "empty_list_check"
+        }
+      },
+      {
+        "name": "Validating_RemoveEndpoint_ExistenceCheck",
+        "description": "Validating RemoveEndpoint command, checking if endpoint with given ID exists.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "list_not_empty == true"],
+        "state_variables": {
+          "target_endpoint_id": "TLSEndpointID",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "existence_check"
+        }
+      },
+      {
+        "name": "Validating_RemoveEndpoint_FabricCheck",
+        "description": "Validating RemoveEndpoint command, checking if endpoint belongs to accessing fabric.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "endpoint_exists == true"],
+        "state_variables": {
+          "target_endpoint_id": "TLSEndpointID",
+          "accessing_fabric": "fabric_id",
+          "validation_step": "fabric_check"
+        }
+      },
+      {
+        "name": "Validating_RemoveEndpoint_ReferenceCountCheck",
+        "description": "Validating RemoveEndpoint command, checking if endpoint is in use (ReferenceCount > 0).",
+        "is_initial": false,
+        "invariants": ["command_active == true", "endpoint_fabric_matches == true"],
+        "state_variables": {
+          "target_endpoint_id": "TLSEndpointID",
+          "accessing_fabric": "fabric_id",
+          "endpoint_reference_count": "uint8",
+          "validation_step": "reference_count_check"
+        }
+      },
+      {
+        "name": "Executing_RemoveEndpoint_Deleting",
+        "description": "Executing RemoveEndpoint command, removing endpoint from list and persisting.",
+        "is_initial": false,
+        "invariants": ["command_active == true", "endpoint_reference_count == 0"],
+        "state_variables": {
+          "target_endpoint_id": "TLSEndpointID",
+          "accessing_fabric": "fabric_id"
+        }
+      },
+      {
+        "name": "Command_Success_ProvisionEndpoint",
+        "description": "ProvisionEndpoint command completed successfully. Returns EndpointID.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == true"],
+        "state_variables": {
+          "returned_endpoint_id": "TLSEndpointID",
+          "operation": "provision_endpoint"
+        }
+      },
+      {
+        "name": "Command_Success_FindEndpoint",
+        "description": "FindEndpoint command completed successfully. Returns TLSEndpointStruct.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == true"],
+        "state_variables": {
+          "returned_endpoint": "TLSEndpointStruct",
+          "operation": "find_endpoint"
+        }
+      },
+      {
+        "name": "Command_Success_RemoveEndpoint",
+        "description": "RemoveEndpoint command completed successfully. Endpoint removed.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == true"],
+        "state_variables": {
+          "operation": "remove_endpoint"
+        }
+      },
+      {
+        "name": "Command_Failed_InvalidTime",
+        "description": "Command failed because UTCTime is null (time not synchronized). Returns InvalidTime error.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == false"],
+        "state_variables": {
+          "error_code": "InvalidTime (0x06)",
+          "error_message": "Time sync has not yet occurred"
+        }
+      },
+      {
+        "name": "Command_Failed_RootCertificateNotFound",
+        "description": "Command failed because CAID not found or fabric mismatch. Returns RootCertificateNotFound error.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == false"],
+        "state_variables": {
+          "error_code": "RootCertificateNotFound (0x03)",
+          "error_message": "No root certificate exists for this CAID"
+        }
+      },
+      {
+        "name": "Command_Failed_ClientCertificateNotFound",
+        "description": "Command failed because CCDID not found or fabric mismatch. Returns ClientCertificateNotFound error.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == false"],
+        "state_variables": {
+          "error_code": "ClientCertificateNotFound (0x04)",
+          "error_message": "No client certificate exists for this CCDID"
+        }
+      },
+      {
+        "name": "Command_Failed_ResourceExhausted",
+        "description": "Command failed because maximum number of endpoints reached. Returns RESOURCE_EXHAUSTED error.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == false"],
+        "state_variables": {
+          "error_code": "RESOURCE_EXHAUSTED",
+          "error_message": "Maximum provisioned endpoints reached for fabric"
+        }
+      },
+      {
+        "name": "Command_Failed_EndpointAlreadyInstalled",
+        "description": "Command failed because Hostname/Port combination already exists. Returns EndpointAlreadyInstalled error.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == false"],
+        "state_variables": {
+          "error_code": "EndpointAlreadyInstalled (0x02)",
+          "error_message": "The endpoint is already installed"
+        }
+      },
+      {
+        "name": "Command_Failed_NotFound",
+        "description": "Command failed because endpoint not found or fabric mismatch. Returns NOT_FOUND error.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == false"],
+        "state_variables": {
+          "error_code": "NOT_FOUND",
+          "error_message": "Endpoint not found or fabric mismatch"
+        }
+      },
+      {
+        "name": "Command_Failed_InvalidInState",
+        "description": "Command failed because endpoint is in use (ReferenceCount > 0). Returns INVALID_IN_STATE error per command processing logic. Note: Specification defines cluster-specific status code EndpointInUse (0x05) in status code table, but RemoveEndpoint command explicitly states to use INVALID_IN_STATE.",
+        "is_initial": false,
+        "invariants": ["command_completed == true", "success == false"],
+        "state_variables": {
+          "error_code": "INVALID_IN_STATE",
+          "error_code_alternative": "EndpointInUse (0x05) - defined in spec but not used by command processing",
+          "error_message": "Endpoint is in use and cannot be removed"
+        }
+      }
+    ],
+
+    "transitions": [
+      {
+        "from_state": "Idle_TimeNotSynchronized",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "time_synchronization_event",
+        "guard_condition": "UTCTime_becomes_not_null == true",
+        "actions": [
+          "UTCTime := current_synchronized_time"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle_TimeNotSynchronized",
+        "to_state": "Validating_ProvisionEndpoint_TimeCheck",
+        "trigger": "ProvisionEndpoint_command",
+        "guard_condition": "has_administer_privilege(accessing_fabric) == true && has_fabric_privilege(accessing_fabric) == true",
+        "actions": [
+          "command_active := true",
+          "command_type := 'ProvisionEndpoint'",
+          "store_command_params(Hostname, Port, CAID, CCDID, EndpointID)",
+          "store_accessing_fabric(fabric_id)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle_TimeNotSynchronized",
+        "to_state": "Validating_FindEndpoint_EmptyListCheck",
+        "trigger": "FindEndpoint_command",
+        "guard_condition": "has_operate_privilege(accessing_fabric) == true && has_fabric_privilege(accessing_fabric) == true",
+        "actions": [
+          "command_active := true",
+          "command_type := 'FindEndpoint'",
+          "requested_endpoint_id := EndpointID",
+          "store_accessing_fabric(fabric_id)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle_TimeNotSynchronized",
+        "to_state": "Validating_RemoveEndpoint_EmptyListCheck",
+        "trigger": "RemoveEndpoint_command",
+        "guard_condition": "has_administer_privilege(accessing_fabric) == true && has_fabric_privilege(accessing_fabric) == true",
+        "actions": [
+          "command_active := true",
+          "command_type := 'RemoveEndpoint'",
+          "target_endpoint_id := EndpointID",
+          "store_accessing_fabric(fabric_id)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle_TimeSynchronized",
+        "to_state": "Validating_ProvisionEndpoint_TimeCheck",
+        "trigger": "ProvisionEndpoint_command",
+        "guard_condition": "has_administer_privilege(accessing_fabric) == true && has_fabric_privilege(accessing_fabric) == true",
+        "actions": [
+          "command_active := true",
+          "command_type := 'ProvisionEndpoint'",
+          "store_command_params(Hostname, Port, CAID, CCDID, EndpointID)",
+          "store_accessing_fabric(fabric_id)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle_TimeSynchronized",
+        "to_state": "Validating_FindEndpoint_EmptyListCheck",
+        "trigger": "FindEndpoint_command",
+        "guard_condition": "has_operate_privilege(accessing_fabric) == true && has_fabric_privilege(accessing_fabric) == true",
+        "actions": [
+          "command_active := true",
+          "command_type := 'FindEndpoint'",
+          "requested_endpoint_id := EndpointID",
+          "store_accessing_fabric(fabric_id)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Idle_TimeSynchronized",
+        "to_state": "Validating_RemoveEndpoint_EmptyListCheck",
+        "trigger": "RemoveEndpoint_command",
+        "guard_condition": "has_administer_privilege(accessing_fabric) == true && has_fabric_privilege(accessing_fabric) == true",
+        "actions": [
+          "command_active := true",
+          "command_type := 'RemoveEndpoint'",
+          "target_endpoint_id := EndpointID",
+          "store_accessing_fabric(fabric_id)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_ProvisionEndpoint_TimeCheck",
+        "to_state": "Command_Failed_InvalidTime",
+        "trigger": "time_check_validation",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "error_code := 'InvalidTime'",
+          "error_message := 'Time sync has not yet occurred'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_ProvisionEndpoint_TimeCheck",
+        "to_state": "Validating_ProvisionEndpoint_RootCertCheck",
+        "trigger": "time_check_validation",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "validation_step := 'root_cert_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_ProvisionEndpoint_RootCertCheck",
+        "to_state": "Command_Failed_RootCertificateNotFound",
+        "trigger": "root_cert_validation",
+        "guard_condition": "lookup_root_certificate(CAID) == null",
+        "actions": [
+          "error_code := 'RootCertificateNotFound'",
+          "error_message := 'No root certificate exists for this CAID'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_ProvisionEndpoint_RootCertCheck",
+        "to_state": "Command_Failed_RootCertificateNotFound",
+        "trigger": "root_cert_validation",
+        "guard_condition": "lookup_root_certificate(CAID) != null && get_certificate_fabric(CAID) != accessing_fabric",
+        "actions": [
+          "error_code := 'RootCertificateNotFound'",
+          "error_message := 'Root certificate fabric does not match accessing fabric'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_ProvisionEndpoint_RootCertCheck",
+        "to_state": "Validating_ProvisionEndpoint_ClientCertCheck",
+        "trigger": "root_cert_validation",
+        "guard_condition": "lookup_root_certificate(CAID) != null && get_certificate_fabric(CAID) == accessing_fabric",
+        "actions": [
+          "root_cert_valid := true",
+          "validation_step := 'client_cert_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_ProvisionEndpoint_ClientCertCheck",
+        "to_state": "Command_Failed_ClientCertificateNotFound",
+        "trigger": "client_cert_validation",
+        "guard_condition": "CCDID != null && (lookup_client_certificate(CCDID) == null || get_client_certificate_fabric(CCDID) != accessing_fabric)",
+        "actions": [
+          "error_code := 'ClientCertificateNotFound'",
+          "error_message := 'No client certificate exists for this CCDID or fabric mismatch'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_ProvisionEndpoint_ClientCertCheck",
+        "to_state": "Validating_ProvisionEndpoint_BranchDecision",
+        "trigger": "client_cert_validation",
+        "guard_condition": "CCDID == null || (lookup_client_certificate(CCDID) != null && get_client_certificate_fabric(CCDID) == accessing_fabric)",
+        "actions": [
+          "certificates_validated := true",
+          "validation_step := 'branch_decision'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_ProvisionEndpoint_BranchDecision",
+        "to_state": "Creating_NewEndpoint_CapacityCheck",
+        "trigger": "branch_decision",
+        "guard_condition": "EndpointID == null",
+        "actions": [
+          "creation_step := 'capacity_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_ProvisionEndpoint_BranchDecision",
+        "to_state": "Updating_ExistingEndpoint_ExistenceCheck",
+        "trigger": "branch_decision",
+        "guard_condition": "EndpointID != null",
+        "actions": [
+          "update_step := 'existence_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Creating_NewEndpoint_CapacityCheck",
+        "to_state": "Command_Failed_ResourceExhausted",
+        "trigger": "capacity_check",
+        "guard_condition": "count_fabric_endpoints(accessing_fabric) >= MaxProvisioned",
+        "actions": [
+          "error_code := 'RESOURCE_EXHAUSTED'",
+          "error_message := 'Maximum provisioned endpoints reached for fabric'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Creating_NewEndpoint_CapacityCheck",
+        "to_state": "Creating_NewEndpoint_DuplicateCheck",
+        "trigger": "capacity_check",
+        "guard_condition": "count_fabric_endpoints(accessing_fabric) < MaxProvisioned",
+        "actions": [
+          "capacity_available := true",
+          "creation_step := 'duplicate_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Creating_NewEndpoint_DuplicateCheck",
+        "to_state": "Command_Failed_EndpointAlreadyInstalled",
+        "trigger": "duplicate_check",
+        "guard_condition": "exists_endpoint_with_hostname_port(Hostname, Port, accessing_fabric) == true",
+        "actions": [
+          "error_code := 'EndpointAlreadyInstalled'",
+          "error_message := 'The endpoint is already installed'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Creating_NewEndpoint_DuplicateCheck",
+        "to_state": "Creating_NewEndpoint_Allocating",
+        "trigger": "duplicate_check",
+        "guard_condition": "exists_endpoint_with_hostname_port(Hostname, Port, accessing_fabric) == false",
+        "actions": [
+          "no_duplicate_found := true",
+          "creation_step := 'allocating'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Creating_NewEndpoint_Allocating",
+        "to_state": "Command_Success_ProvisionEndpoint",
+        "trigger": "allocate_endpoint",
+        "guard_condition": "true",
+        "actions": [
+          "new_endpoint_id := generate_unique_endpoint_id()",
+          "new_endpoint := create_endpoint_struct(new_endpoint_id, Hostname, Port, CAID, CCDID, accessing_fabric)",
+          "set_reference_count(new_endpoint, 0)",
+          "add_to_provisioned_endpoints(new_endpoint)",
+          "store_to_persistence(ProvisionedEndpoints)",
+          "returned_endpoint_id := new_endpoint_id",
+          "command_completed := true",
+          "success := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Updating_ExistingEndpoint_ExistenceCheck",
+        "to_state": "Command_Failed_NotFound",
+        "trigger": "existence_check",
+        "guard_condition": "lookup_endpoint(EndpointID) == null",
+        "actions": [
+          "error_code := 'NOT_FOUND'",
+          "error_message := 'Endpoint not found'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Updating_ExistingEndpoint_ExistenceCheck",
+        "to_state": "Updating_ExistingEndpoint_FabricCheck",
+        "trigger": "existence_check",
+        "guard_condition": "lookup_endpoint(EndpointID) != null",
+        "actions": [
+          "endpoint_exists := true",
+          "update_step := 'fabric_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Updating_ExistingEndpoint_FabricCheck",
+        "to_state": "Command_Failed_NotFound",
+        "trigger": "fabric_check",
+        "guard_condition": "get_endpoint_fabric(EndpointID) != accessing_fabric",
+        "actions": [
+          "error_code := 'NOT_FOUND'",
+          "error_message := 'Endpoint fabric does not match accessing fabric'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Updating_ExistingEndpoint_FabricCheck",
+        "to_state": "Updating_ExistingEndpoint_Modifying",
+        "trigger": "fabric_check",
+        "guard_condition": "get_endpoint_fabric(EndpointID) == accessing_fabric",
+        "actions": [
+          "fabric_matches := true",
+          "update_step := 'modifying'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Updating_ExistingEndpoint_Modifying",
+        "to_state": "Command_Success_ProvisionEndpoint",
+        "trigger": "modify_endpoint",
+        "guard_condition": "true",
+        "actions": [
+          "endpoint := get_endpoint(EndpointID)",
+          "update_endpoint_hostname(endpoint, Hostname)",
+          "update_endpoint_port(endpoint, Port)",
+          "update_endpoint_caid(endpoint, CAID)",
+          "update_endpoint_ccdid(endpoint, CCDID)",
+          "store_to_persistence(ProvisionedEndpoints)",
+          "returned_endpoint_id := EndpointID",
+          "command_completed := true",
+          "success := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_FindEndpoint_EmptyListCheck",
+        "to_state": "Command_Failed_NotFound",
+        "trigger": "empty_list_check",
+        "guard_condition": "count_endpoints() == 0",
+        "actions": [
+          "error_code := 'NOT_FOUND'",
+          "error_message := 'ProvisionedEndpoints list is empty'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_FindEndpoint_EmptyListCheck",
+        "to_state": "Validating_FindEndpoint_ExistenceCheck",
+        "trigger": "empty_list_check",
+        "guard_condition": "count_endpoints() > 0",
+        "actions": [
+          "list_not_empty := true",
+          "validation_step := 'existence_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_FindEndpoint_ExistenceCheck",
+        "to_state": "Command_Failed_NotFound",
+        "trigger": "existence_check",
+        "guard_condition": "lookup_endpoint(requested_endpoint_id) == null",
+        "actions": [
+          "error_code := 'NOT_FOUND'",
+          "error_message := 'Endpoint not found'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_FindEndpoint_ExistenceCheck",
+        "to_state": "Validating_FindEndpoint_FabricCheck",
+        "trigger": "existence_check",
+        "guard_condition": "lookup_endpoint(requested_endpoint_id) != null",
+        "actions": [
+          "endpoint_exists := true",
+          "validation_step := 'fabric_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_FindEndpoint_FabricCheck",
+        "to_state": "Command_Failed_NotFound",
+        "trigger": "fabric_check",
+        "guard_condition": "get_endpoint_fabric(requested_endpoint_id) != accessing_fabric",
+        "actions": [
+          "error_code := 'NOT_FOUND'",
+          "error_message := 'Endpoint fabric does not match accessing fabric'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_FindEndpoint_FabricCheck",
+        "to_state": "Executing_FindEndpoint_RetrievingData",
+        "trigger": "fabric_check",
+        "guard_condition": "get_endpoint_fabric(requested_endpoint_id) == accessing_fabric",
+        "actions": [
+          "endpoint_fabric_matches := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Executing_FindEndpoint_RetrievingData",
+        "to_state": "Command_Success_FindEndpoint",
+        "trigger": "retrieve_data",
+        "guard_condition": "true",
+        "actions": [
+          "endpoint_data := get_endpoint(requested_endpoint_id)",
+          "returned_endpoint := endpoint_data",
+          "command_completed := true",
+          "success := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_RemoveEndpoint_EmptyListCheck",
+        "to_state": "Command_Failed_NotFound",
+        "trigger": "empty_list_check",
+        "guard_condition": "count_endpoints() == 0",
+        "actions": [
+          "error_code := 'NOT_FOUND'",
+          "error_message := 'ProvisionedEndpoints list is empty'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_RemoveEndpoint_EmptyListCheck",
+        "to_state": "Validating_RemoveEndpoint_ExistenceCheck",
+        "trigger": "empty_list_check",
+        "guard_condition": "count_endpoints() > 0",
+        "actions": [
+          "list_not_empty := true",
+          "validation_step := 'existence_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_RemoveEndpoint_ExistenceCheck",
+        "to_state": "Command_Failed_NotFound",
+        "trigger": "existence_check",
+        "guard_condition": "lookup_endpoint(target_endpoint_id) == null",
+        "actions": [
+          "error_code := 'NOT_FOUND'",
+          "error_message := 'Endpoint not found'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_RemoveEndpoint_ExistenceCheck",
+        "to_state": "Validating_RemoveEndpoint_FabricCheck",
+        "trigger": "existence_check",
+        "guard_condition": "lookup_endpoint(target_endpoint_id) != null",
+        "actions": [
+          "endpoint_exists := true",
+          "validation_step := 'fabric_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_RemoveEndpoint_FabricCheck",
+        "to_state": "Command_Failed_NotFound",
+        "trigger": "fabric_check",
+        "guard_condition": "get_endpoint_fabric(target_endpoint_id) != accessing_fabric",
+        "actions": [
+          "error_code := 'NOT_FOUND'",
+          "error_message := 'Endpoint fabric does not match accessing fabric'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_RemoveEndpoint_FabricCheck",
+        "to_state": "Validating_RemoveEndpoint_ReferenceCountCheck",
+        "trigger": "fabric_check",
+        "guard_condition": "get_endpoint_fabric(target_endpoint_id) == accessing_fabric",
+        "actions": [
+          "endpoint_fabric_matches := true",
+          "validation_step := 'reference_count_check'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_RemoveEndpoint_ReferenceCountCheck",
+        "to_state": "Command_Failed_InvalidInState",
+        "trigger": "reference_count_check",
+        "guard_condition": "get_endpoint_reference_count(target_endpoint_id) > 0",
+        "actions": [
+          "error_code := 'INVALID_IN_STATE'",
+          "error_message := 'Endpoint is in use and cannot be removed'",
+          "command_completed := true",
+          "success := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Validating_RemoveEndpoint_ReferenceCountCheck",
+        "to_state": "Executing_RemoveEndpoint_Deleting",
+        "trigger": "reference_count_check",
+        "guard_condition": "get_endpoint_reference_count(target_endpoint_id) == 0",
+        "actions": [
+          "endpoint_reference_count := 0"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Executing_RemoveEndpoint_Deleting",
+        "to_state": "Command_Success_RemoveEndpoint",
+        "trigger": "delete_endpoint",
+        "guard_condition": "true",
+        "actions": [
+          "remove_endpoint_from_list(target_endpoint_id)",
+          "store_to_persistence(ProvisionedEndpoints)",
+          "command_completed := true",
+          "success := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Success_ProvisionEndpoint",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "response_sent",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Success_ProvisionEndpoint",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "response_sent",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Success_FindEndpoint",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "response_sent",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Success_FindEndpoint",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "response_sent",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Success_RemoveEndpoint",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "response_sent",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Success_RemoveEndpoint",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "response_sent",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_InvalidTime",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "true",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_RootCertificateNotFound",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_RootCertificateNotFound",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_ClientCertificateNotFound",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_ClientCertificateNotFound",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_ResourceExhausted",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_ResourceExhausted",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_EndpointAlreadyInstalled",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_EndpointAlreadyInstalled",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_NotFound",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_NotFound",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_InvalidInState",
+        "to_state": "Idle_TimeSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime != null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "Command_Failed_InvalidInState",
+        "to_state": "Idle_TimeNotSynchronized",
+        "trigger": "error_response_sent",
+        "guard_condition": "UTCTime == null",
+        "actions": [
+          "command_active := false",
+          "clear_command_data()"
+        ],
+        "timing_requirement": null
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "has_administer_privilege",
+        "parameters": [
+          {"name": "fabric_id", "type": "fabric_id", "description": "The fabric to check privilege for"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if the accessing principal has Administer (A) privilege for the specified fabric. Returns true if access granted, false otherwise.",
+        "algorithm_detail": "Access control check against ACL: verify principal has admin role for fabric. Implementation-specific, typically checks session credentials against fabric ACL.",
+        "usage_in_fsm": "Called as guard condition when ProvisionEndpoint or RemoveEndpoint commands are received to enforce access control"
+      },
+      {
+        "name": "has_fabric_privilege",
+        "parameters": [
+          {"name": "fabric_id", "type": "fabric_id", "description": "The fabric to check privilege for"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if the accessing principal has Fabric (F) privilege for the specified fabric. Returns true if accessing fabric matches target fabric, false otherwise.",
+        "algorithm_detail": "Fabric isolation check: verify accessing principal's fabric matches target fabric. Prevents cross-fabric operations.",
+        "usage_in_fsm": "Called as guard condition for all commands to enforce fabric isolation"
+      },
+      {
+        "name": "has_operate_privilege",
+        "parameters": [
+          {"name": "fabric_id", "type": "fabric_id", "description": "The fabric to check privilege for"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if the accessing principal has Operate (O) privilege for the specified fabric. Returns true if access granted, false otherwise.",
+        "algorithm_detail": "Access control check against ACL: verify principal has operator role for fabric. Lower privilege than Administer.",
+        "usage_in_fsm": "Called as guard condition when FindEndpoint command is received to enforce read-only access control"
+      },
+      {
+        "name": "store_command_params",
+        "parameters": [
+          {"name": "Hostname", "type": "octstr", "description": "TLS hostname (4-253 bytes)"},
+          {"name": "Port", "type": "uint16", "description": "TLS port number (1-65535)"},
+          {"name": "CAID", "type": "TLSCAID", "description": "Certificate Authority ID (0-65534)"},
+          {"name": "CCDID", "type": "TLSCCDID", "description": "Client Certificate Details ID (nullable)"},
+          {"name": "EndpointID", "type": "TLSEndpointID", "description": "Endpoint ID (nullable)"}
+        ],
+        "return_type": "void",
+        "description": "Store command parameters in state variables for processing during validation and execution phases.",
+        "algorithm_detail": "Copy parameters to state machine's working memory. Ensures parameters are available throughout multi-step command processing.",
+        "usage_in_fsm": "Called in transition from Idle to Processing state to capture command parameters"
+      },
+      {
+        "name": "store_accessing_fabric",
+        "parameters": [
+          {"name": "fabric_id", "type": "fabric_id", "description": "The fabric ID of the accessing principal"}
+        ],
+        "return_type": "void",
+        "description": "Store the accessing principal's fabric ID for use in validation checks.",
+        "algorithm_detail": "Extract fabric ID from session context and store in state variable. Used for all fabric isolation checks.",
+        "usage_in_fsm": "Called when command is received to capture accessing fabric context"
+      },
+      {
+        "name": "lookup_root_certificate",
+        "parameters": [
+          {"name": "CAID", "type": "TLSCAID", "description": "Certificate Authority ID to look up"}
+        ],
+        "return_type": "TLSRCAC_or_null",
+        "description": "Search ProvisionedRootCertificates list for a root certificate with matching CAID. Returns certificate if found, null if not found.",
+        "algorithm_detail": "Linear or indexed search of ProvisionedRootCertificates list. Match on CAID field. External data structure managed by separate cluster.",
+        "usage_in_fsm": "Called during ProvisionEndpoint validation to verify root certificate exists"
+      },
+      {
+        "name": "get_certificate_fabric",
+        "parameters": [
+          {"name": "CAID", "type": "TLSCAID", "description": "Certificate Authority ID"}
+        ],
+        "return_type": "fabric_id",
+        "description": "Retrieve the fabric ID associated with a root certificate. Returns fabric_id of the certificate.",
+        "algorithm_detail": "Access ProvisionedRootCertificates[CAID].fabric field. Certificates are fabric-scoped, each belongs to exactly one fabric.",
+        "usage_in_fsm": "Called during ProvisionEndpoint validation to verify root certificate belongs to accessing fabric"
+      },
+      {
+        "name": "lookup_client_certificate",
+        "parameters": [
+          {"name": "CCDID", "type": "TLSCCDID", "description": "Client Certificate Details ID to look up"}
+        ],
+        "return_type": "ClientCertDetails_or_null",
+        "description": "Search ProvisionedClientCertificates list for client certificate details with matching CCDID. Returns certificate details if found, null if not found.",
+        "algorithm_detail": "Linear or indexed search of ProvisionedClientCertificates list. Match on CCDID field. External data structure managed by separate cluster.",
+        "usage_in_fsm": "Called during ProvisionEndpoint validation when CCDID is not null to verify client certificate exists"
+      },
+      {
+        "name": "get_client_certificate_fabric",
+        "parameters": [
+          {"name": "CCDID", "type": "TLSCCDID", "description": "Client Certificate Details ID"}
+        ],
+        "return_type": "fabric_id",
+        "description": "Retrieve the fabric ID associated with client certificate details. Returns fabric_id of the certificate.",
+        "algorithm_detail": "Access ProvisionedClientCertificates[CCDID].fabric field. Client certificates are fabric-scoped.",
+        "usage_in_fsm": "Called during ProvisionEndpoint validation to verify client certificate belongs to accessing fabric"
+      },
+      {
+        "name": "count_fabric_endpoints",
+        "parameters": [
+          {"name": "fabric_id", "type": "fabric_id", "description": "Fabric to count endpoints for"}
+        ],
+        "return_type": "uint8",
+        "description": "Count the number of provisioned endpoints belonging to the specified fabric. Returns count (0 to MaxProvisioned).",
+        "algorithm_detail": "Iterate ProvisionedEndpoints list, count entries where endpoint.fabric == fabric_id. Used to enforce per-fabric limits.",
+        "usage_in_fsm": "Called during ProvisionEndpoint validation (new endpoint creation) to check if fabric has reached MaxProvisioned limit"
+      },
+      {
+        "name": "exists_endpoint_with_hostname_port",
+        "parameters": [
+          {"name": "Hostname", "type": "octstr", "description": "TLS hostname to check"},
+          {"name": "Port", "type": "uint16", "description": "TLS port to check"},
+          {"name": "fabric_id", "type": "fabric_id", "description": "Fabric to search within"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if an endpoint with the specified Hostname/Port combination already exists for the given fabric. Returns true if duplicate found, false otherwise.",
+        "algorithm_detail": "Iterate ProvisionedEndpoints list, check if any entry has (endpoint.Hostname == Hostname AND endpoint.Port == Port AND endpoint.fabric == fabric_id). Enforces uniqueness constraint within fabric.",
+        "usage_in_fsm": "Called during ProvisionEndpoint validation (new endpoint creation) to prevent duplicate Hostname/Port within same fabric"
+      },
+      {
+        "name": "generate_unique_endpoint_id",
+        "parameters": [],
+        "return_type": "TLSEndpointID",
+        "description": "Generate a unique TLSEndpointID not currently in use. Returns new ID in range 0-65534.",
+        "algorithm_detail": "Start at 0, increment by 1 for each allocation. Wrap to 0 after 65534. Check uniqueness against all EndpointIDs in ProvisionedEndpoints list (all fabrics). If collision detected, increment and retry until unique ID found. Maintains monotonically increasing sequence per specification guidance.",
+        "usage_in_fsm": "Called during new endpoint allocation to assign unique identifier"
+      },
+      {
+        "name": "create_endpoint_struct",
+        "parameters": [
+          {"name": "endpoint_id", "type": "TLSEndpointID", "description": "Unique endpoint identifier"},
+          {"name": "hostname", "type": "octstr", "description": "TLS hostname"},
+          {"name": "port", "type": "uint16", "description": "TLS port number"},
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate Authority ID"},
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client Certificate Details ID"},
+          {"name": "fabric_id", "type": "fabric_id", "description": "Owning fabric"}
+        ],
+        "return_type": "TLSEndpointStruct",
+        "description": "Create and initialize a new TLSEndpointStruct with provided values. Returns populated struct.",
+        "algorithm_detail": "Allocate memory for TLSEndpointStruct. Set fields: EndpointID=endpoint_id, Hostname=hostname, Port=port, CAID=caid, CCDID=ccdid, Fabric=fabric_id. ReferenceCount will be set separately.",
+        "usage_in_fsm": "Called during new endpoint creation to construct endpoint data structure"
+      },
+      {
+        "name": "set_reference_count",
+        "parameters": [
+          {"name": "endpoint", "type": "TLSEndpointStruct", "description": "Endpoint to modify"},
+          {"name": "count", "type": "uint8", "description": "Reference count value"}
+        ],
+        "return_type": "void",
+        "description": "Set the ReferenceCount field of an endpoint. For new endpoints, always set to 0.",
+        "algorithm_detail": "Assign endpoint.ReferenceCount = count. For new endpoints, count is always 0. After reboot, this should be recomputed based on actual usage.",
+        "usage_in_fsm": "Called during new endpoint creation to initialize ReferenceCount to 0"
+      },
+      {
+        "name": "add_to_provisioned_endpoints",
+        "parameters": [
+          {"name": "endpoint", "type": "TLSEndpointStruct", "description": "Endpoint to add to list"}
+        ],
+        "return_type": "void",
+        "description": "Add a new endpoint to the ProvisionedEndpoints list. List is fabric-scoped.",
+        "algorithm_detail": "Append endpoint to ProvisionedEndpoints list. List modification must be atomic with persistence storage.",
+        "usage_in_fsm": "Called during new endpoint creation after all validation passed"
+      },
+      {
+        "name": "store_to_persistence",
+        "parameters": [
+          {"name": "data", "type": "list[TLSEndpointStruct]", "description": "ProvisionedEndpoints list to persist"}
+        ],
+        "return_type": "void",
+        "description": "Write ProvisionedEndpoints list to persistent storage. Ensures changes survive reboot.",
+        "algorithm_detail": "Atomic write operation to non-volatile storage. Implementation must ensure crash consistency: either old state or new state persisted, never partial state. May use write-ahead logging or copy-on-write.",
+        "usage_in_fsm": "Called after any modification to ProvisionedEndpoints (create, update, delete) to persist changes"
+      },
+      {
+        "name": "lookup_endpoint",
+        "parameters": [
+          {"name": "EndpointID", "type": "TLSEndpointID", "description": "Endpoint ID to look up"}
+        ],
+        "return_type": "TLSEndpointStruct_or_null",
+        "description": "Search ProvisionedEndpoints list for endpoint with matching EndpointID. Returns endpoint if found, null if not found.",
+        "algorithm_detail": "Linear or indexed search of ProvisionedEndpoints list. Match on EndpointID field across all fabrics. Returns first match.",
+        "usage_in_fsm": "Called during FindEndpoint, RemoveEndpoint, and update path of ProvisionEndpoint to verify endpoint exists"
+      },
+      {
+        "name": "get_endpoint_fabric",
+        "parameters": [
+          {"name": "EndpointID", "type": "TLSEndpointID", "description": "Endpoint ID"}
+        ],
+        "return_type": "fabric_id",
+        "description": "Retrieve the fabric ID owning the specified endpoint. Returns fabric_id.",
+        "algorithm_detail": "Access ProvisionedEndpoints[EndpointID].fabric field. Endpoints are fabric-scoped.",
+        "usage_in_fsm": "Called during all command validations to enforce fabric isolation"
+      },
+      {
+        "name": "get_endpoint",
+        "parameters": [
+          {"name": "EndpointID", "type": "TLSEndpointID", "description": "Endpoint ID"}
+        ],
+        "return_type": "TLSEndpointStruct",
+        "description": "Retrieve the complete endpoint struct for the specified EndpointID. Assumes endpoint exists (should be checked first).",
+        "algorithm_detail": "Access ProvisionedEndpoints list, return entry where endpoint.EndpointID == EndpointID. Returns reference or copy.",
+        "usage_in_fsm": "Called during FindEndpoint to retrieve endpoint data for response, and during update to access existing endpoint"
+      },
+      {
+        "name": "update_endpoint_hostname",
+        "parameters": [
+          {"name": "endpoint", "type": "TLSEndpointStruct", "description": "Endpoint to update"},
+          {"name": "hostname", "type": "octstr", "description": "New hostname value"}
+        ],
+        "return_type": "void",
+        "description": "Update the Hostname field of an existing endpoint.",
+        "algorithm_detail": "Assign endpoint.Hostname = hostname. Part of atomic update operation.",
+        "usage_in_fsm": "Called during endpoint update to modify hostname"
+      },
+      {
+        "name": "update_endpoint_port",
+        "parameters": [
+          {"name": "endpoint", "type": "TLSEndpointStruct", "description": "Endpoint to update"},
+          {"name": "port", "type": "uint16", "description": "New port value"}
+        ],
+        "return_type": "void",
+        "description": "Update the Port field of an existing endpoint.",
+        "algorithm_detail": "Assign endpoint.Port = port. Part of atomic update operation.",
+        "usage_in_fsm": "Called during endpoint update to modify port"
+      },
+      {
+        "name": "update_endpoint_caid",
+        "parameters": [
+          {"name": "endpoint", "type": "TLSEndpointStruct", "description": "Endpoint to update"},
+          {"name": "caid", "type": "TLSCAID", "description": "New CAID value"}
+        ],
+        "return_type": "void",
+        "description": "Update the CAID field of an existing endpoint.",
+        "algorithm_detail": "Assign endpoint.CAID = caid. Part of atomic update operation. New CAID must have been validated before this call.",
+        "usage_in_fsm": "Called during endpoint update to change root certificate association"
+      },
+      {
+        "name": "update_endpoint_ccdid",
+        "parameters": [
+          {"name": "endpoint", "type": "TLSEndpointStruct", "description": "Endpoint to update"},
+          {"name": "ccdid", "type": "TLSCCDID", "description": "New CCDID value (nullable)"}
+        ],
+        "return_type": "void",
+        "description": "Update the CCDID field of an existing endpoint.",
+        "algorithm_detail": "Assign endpoint.CCDID = ccdid. Part of atomic update operation. Can set to null to remove client certificate requirement.",
+        "usage_in_fsm": "Called during endpoint update to change client certificate association"
+      },
+      {
+        "name": "count_endpoints",
+        "parameters": [],
+        "return_type": "uint16",
+        "description": "Count total number of endpoints in ProvisionedEndpoints list across all fabrics.",
+        "algorithm_detail": "Return length of ProvisionedEndpoints list. Used to check if list is empty.",
+        "usage_in_fsm": "Called during FindEndpoint and RemoveEndpoint validation to check if list is empty"
+      },
+      {
+        "name": "get_endpoint_reference_count",
+        "parameters": [
+          {"name": "EndpointID", "type": "TLSEndpointID", "description": "Endpoint ID"}
+        ],
+        "return_type": "uint8",
+        "description": "Retrieve the ReferenceCount of the specified endpoint. Returns count of entities currently using endpoint.",
+        "algorithm_detail": "Access ProvisionedEndpoints[EndpointID].ReferenceCount field. This value should be recomputed at runtime (e.g., after reboot) to reflect actual usage.",
+        "usage_in_fsm": "Called during RemoveEndpoint validation to check if endpoint is in use (count > 0 blocks removal)"
+      },
+      {
+        "name": "remove_endpoint_from_list",
+        "parameters": [
+          {"name": "EndpointID", "type": "TLSEndpointID", "description": "Endpoint ID to remove"}
+        ],
+        "return_type": "void",
+        "description": "Remove endpoint with specified EndpointID from ProvisionedEndpoints list.",
+        "algorithm_detail": "Search ProvisionedEndpoints for entry with matching EndpointID, remove from list. List modification must be atomic with persistence.",
+        "usage_in_fsm": "Called during RemoveEndpoint execution after all validation passed"
+      },
+      {
+        "name": "clear_command_data",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Clear all command-related state variables after command completes.",
+        "algorithm_detail": "Reset command_type, command_params, accessing_fabric, validation flags, and other temporary state variables. Prepares state machine for next command.",
+        "usage_in_fsm": "Called when returning to Idle state after command completion (success or failure)"
+      },
+      {
+        "name": "authenticate_tls_server",
+        "parameters": [
+          {"name": "server_certificate_chain", "type": "X.509_certificate_chain", "description": "Certificate chain presented by TLS server"},
+          {"name": "TLSRCAC", "type": "X.509_root_certificate", "description": "Root CA certificate to use for validation"}
+        ],
+        "return_type": "boolean",
+        "description": "Validate TLS server certificate chain against specified root CA. Returns true if chain valid, false otherwise.",
+        "algorithm_detail": "Standard X.509 certificate chain validation: verify each certificate signature, check validity periods, verify chain terminates at TLSRCAC. Per specification, the TLSRCAC represented by endpoint's CAID SHALL be used for authentication.",
+        "usage_in_fsm": "Called during TLS connection establishment (not modeled in this FSM, but referenced in general notes). Server authentication is mandatory for all TLS connections."
+      },
+      {
+        "name": "present_client_certificate",
+        "parameters": [
+          {"name": "CCDID", "type": "TLSCCDID", "description": "Client Certificate Details ID"}
+        ],
+        "return_type": "client_certificate_and_key",
+        "description": "Retrieve client certificate and private key for TLS client authentication. Returns certificate and key material.",
+        "algorithm_detail": "Access ProvisionedClientCertificates[CCDID], retrieve certificate and associated private key. Per specification, when CCDID is non-NULL, these SHALL be used during TLS handshake client authentication.",
+        "usage_in_fsm": "Called during TLS connection establishment when endpoint has non-NULL CCDID (not modeled in this FSM, but referenced in general notes)."
+      },
+      {
+        "name": "check_server_requires_client_auth",
+        "parameters": [
+          {"name": "tls_handshake_state", "type": "tls_handshake_context", "description": "TLS handshake context"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if TLS server requested client certificate during handshake (CertificateRequest message). Returns true if server requires client auth, false otherwise.",
+        "algorithm_detail": "Examine TLS handshake messages, check if server sent CertificateRequest message. Per specification, when endpoint has non-NULL CCDID, connection SHALL fail if server does not require client authentication.",
+        "usage_in_fsm": "Called during TLS connection establishment to enforce mutual TLS requirement (not modeled in this FSM, but referenced in general notes). Critical security check to prevent downgrade attacks."
+      },
+      {
+        "name": "recompute_reference_count",
+        "parameters": [
+          {"name": "EndpointID", "type": "TLSEndpointID", "description": "Endpoint to recompute count for"}
+        ],
+        "return_type": "uint8",
+        "description": "Recompute ReferenceCount by counting active entities using this endpoint. Returns accurate count.",
+        "algorithm_detail": "Iterate all system entities that might use TLS endpoints (connection instances, scheduled tasks, etc.), count how many reference this EndpointID. Per specification, node SHALL recompute this field at runtime (e.g., after reboot from persisted state).",
+        "usage_in_fsm": "Called after system initialization or reboot to restore accurate ReferenceCount values (not explicitly modeled in transitions, but required by specification)."
+      }
+    ],
+
+    "definitions": [
+      {
+        "term": "TLSEndpointID",
+        "definition": "Unsigned 16-bit integer (0-65534) uniquely identifying a provisioned TLS endpoint within the node. Value 65535 is reserved. Specification recommends starting at 0 and monotonically increasing with wraparound.",
+        "security_relevance": "Uniqueness critical to prevent endpoint confusion. Collision allows wrong endpoint selection, potentially routing traffic to unintended server with wrong certificate validation."
+      },
+      {
+        "term": "TLSEndpointStruct",
+        "definition": "Data structure encoding TLS endpoint details: EndpointID (identifier), Hostname (4-253 bytes), Port (1-65535), CAID (root certificate ID), CCDID (client certificate ID, nullable), ReferenceCount (usage count). Fabric-scoped.",
+        "security_relevance": "Fabric scoping enforces multi-tenant isolation. All operations must verify endpoint.fabric == accessing_fabric to prevent cross-fabric access."
+      },
+      {
+        "term": "TLSCAID",
+        "definition": "Certificate Authority ID (0-65534) referencing an entry in ProvisionedRootCertificates list. Associates TLS endpoint with root CA certificate for server authentication.",
+        "security_relevance": "Critical for TLS server authentication. Wrong CAID allows man-in-the-middle attack with invalid server certificate. Must verify CAID exists and belongs to same fabric."
+      },
+      {
+        "term": "TLSCCDID",
+        "definition": "Client Certificate Details ID (nullable, 0-65534 if not null) referencing an entry in ProvisionedClientCertificates list. Associates TLS endpoint with client certificate for mutual TLS.",
+        "security_relevance": "When non-null, enforces mutual TLS. Per specification, node SHALL fail connection if server does not require client authentication. Prevents downgrade attacks. Null value means server-only authentication."
+      },
+      {
+        "term": "ReferenceCount",
+        "definition": "Unsigned 8-bit counter indicating number of entities currently using this TLS endpoint. New endpoints initialized to 0. Node must recompute at runtime (e.g., after reboot).",
+        "security_relevance": "Prevents removal of in-use endpoints. If count > 0, removal fails with INVALID_IN_STATE. Premature removal could crash active connections or cause use-after-free vulnerabilities."
+      },
+      {
+        "term": "Fabric Isolation",
+        "definition": "Security property ensuring all operations are scoped to the accessing principal's fabric. Cross-fabric access is denied even if EndpointID matches. Enforced by checking endpoint.fabric == accessing_fabric.",
+        "security_relevance": "Core multi-tenancy security boundary. Violation allows one fabric to access/modify another fabric's TLS configurations, enabling traffic redirection, credential theft, or denial of service."
+      },
+      {
+        "term": "Time Synchronization Dependency",
+        "definition": "ProvisionEndpoint command requires UTCTime attribute (from Time Synchronization cluster) to be non-null. If null, command fails with InvalidTime. Ensures certificate validity checks have valid time reference.",
+        "security_relevance": "Without time sync, node cannot validate certificate NotBefore/NotAfter fields. Allows use of expired or not-yet-valid certificates, enabling attacks with compromised or premature certificates."
+      },
+      {
+        "term": "MaxProvisioned",
+        "definition": "Fixed attribute (5-254) indicating maximum number of TLS endpoints allowed per fabric. Enforced during new endpoint creation. Prevents resource exhaustion.",
+        "security_relevance": "Resource limit prevents DoS attacks through unbounded endpoint allocation. Malicious admin cannot exhaust memory by creating excessive endpoints."
+      },
+      {
+        "term": "Large Message Qualifier",
+        "definition": "All commands in this cluster use Large Message qualifier uniformly, even when not strictly required. Reduces testing complexity.",
+        "security_relevance": "Ensures consistent message buffer handling. Prevents buffer overflow vulnerabilities from size mismatches between large commands and small message handlers."
+      },
+      {
+        "term": "Mutual TLS Enforcement",
+        "definition": "When endpoint has non-NULL CCDID, the node SHALL fail TLS connection if server does not require client authentication. Prevents downgrade attacks where attacker bypasses mutual TLS.",
+        "security_relevance": "Critical anti-downgrade mechanism. Without this check, attacker can set up rogue server without client auth requirement, bypassing mutual TLS authentication and enabling man-in-the-middle attack."
+      },
+      {
+        "term": "Atomic Persistence",
+        "definition": "All modifications to ProvisionedEndpoints list must be atomically persisted before returning success response. Crash consistency: either old state or new state persisted, never partial.",
+        "security_relevance": "Prevents inconsistent state after crash. Partial writes could corrupt endpoint list, cause parse errors, memory corruption, or leave endpoints in undefined state (e.g., ID allocated but hostname missing)."
+      },
+      {
+        "term": "Certificate Fabric Matching",
+        "definition": "For ProvisionEndpoint, both CAID and CCDID (if non-null) must reference certificates belonging to the accessing fabric. Cross-fabric certificate references are rejected.",
+        "security_relevance": "Enforces certificate ownership. Prevents fabric A from using fabric B's TLS credentials, which would break isolation and enable impersonation attacks."
+      }
+    ],
+
+    "security_properties": [
+      {
+        "property_name": "FABRIC_ISOLATION",
+        "type": "access_control",
+        "description": "All TLS endpoint operations (provision, find, remove, update) are strictly fabric-scoped. Cross-fabric access always denied.",
+        "fsm_states_involved": ["All validation states", "All command processing states"],
+        "critical_transitions": [
+          "Validating_ProvisionEndpoint_RootCertCheck -> Command_Failed_RootCertificateNotFound (fabric mismatch)",
+          "Validating_ProvisionEndpoint_ClientCertCheck -> Command_Failed_ClientCertificateNotFound (fabric mismatch)",
+          "Updating_ExistingEndpoint_FabricCheck -> Command_Failed_NotFound (fabric mismatch)",
+          "Validating_FindEndpoint_FabricCheck -> Command_Failed_NotFound (fabric mismatch)",
+          "Validating_RemoveEndpoint_FabricCheck -> Command_Failed_NotFound (fabric mismatch)"
+        ]
+      },
+      {
+        "property_name": "TIME_BASED_CERTIFICATE_VALIDATION",
+        "type": "timing",
+        "description": "Certificate-related operations require time synchronization. Prevents use of expired or not-yet-valid certificates.",
+        "fsm_states_involved": ["Idle_TimeNotSynchronized", "Validating_ProvisionEndpoint_TimeCheck"],
+        "critical_transitions": [
+          "Validating_ProvisionEndpoint_TimeCheck -> Command_Failed_InvalidTime (UTCTime null)"
+        ]
+      },
+      {
+        "property_name": "CERTIFICATE_EXISTENCE_VALIDATION",
+        "type": "authenticity",
+        "description": "Root certificate (CAID) and client certificate (CCDID, if non-null) must exist before endpoint provisioning succeeds.",
+        "fsm_states_involved": ["Validating_ProvisionEndpoint_RootCertCheck", "Validating_ProvisionEndpoint_ClientCertCheck"],
+        "critical_transitions": [
+          "Validating_ProvisionEndpoint_RootCertCheck -> Command_Failed_RootCertificateNotFound (CAID not found)",
+          "Validating_ProvisionEndpoint_ClientCertCheck -> Command_Failed_ClientCertificateNotFound (CCDID not found)"
+        ]
+      },
+      {
+        "property_name": "RESOURCE_EXHAUSTION_PREVENTION",
+        "type": "consistency",
+        "description": "Per-fabric endpoint limit (MaxProvisioned) enforced. Prevents unbounded allocation.",
+        "fsm_states_involved": ["Creating_NewEndpoint_CapacityCheck"],
+        "critical_transitions": [
+          "Creating_NewEndpoint_CapacityCheck -> Command_Failed_ResourceExhausted (limit reached)"
+        ]
+      },
+      {
+        "property_name": "ENDPOINT_UNIQUENESS",
+        "type": "consistency",
+        "description": "Within a fabric, EndpointID must be unique and Hostname/Port combination must be unique.",
+        "fsm_states_involved": ["Creating_NewEndpoint_DuplicateCheck"],
+        "critical_transitions": [
+          "Creating_NewEndpoint_DuplicateCheck -> Command_Failed_EndpointAlreadyInstalled (duplicate Hostname/Port)"
+        ]
+      },
+      {
+        "property_name": "REFERENCE_COUNTING_PROTECTION",
+        "type": "consistency",
+        "description": "Endpoints with ReferenceCount > 0 cannot be removed. Prevents use-after-free and active connection crashes.",
+        "fsm_states_involved": ["Validating_RemoveEndpoint_ReferenceCountCheck"],
+        "critical_transitions": [
+          "Validating_RemoveEndpoint_ReferenceCountCheck -> Command_Failed_InvalidInState (count > 0)"
+        ]
+      },
+      {
+        "property_name": "MUTUAL_TLS_ENFORCEMENT",
+        "type": "authenticity",
+        "description": "When endpoint has non-NULL CCDID, TLS connection SHALL fail if server does not require client authentication. Prevents downgrade attacks. (Not modeled in FSM, enforced during actual TLS connection.)",
+        "fsm_states_involved": ["N/A - enforced during TLS connection, not command processing"],
+        "critical_transitions": ["N/A - external to command FSM"]
+      },
+      {
+        "property_name": "ACCESS_CONTROL_ENFORCEMENT",
+        "type": "access_control",
+        "description": "ProvisionEndpoint and RemoveEndpoint require Administer privilege. FindEndpoint requires Operate privilege. All require Fabric privilege.",
+        "fsm_states_involved": ["Idle_TimeNotSynchronized", "Idle_TimeSynchronized"],
+        "critical_transitions": [
+          "Idle -> Validating_ProvisionEndpoint (guard: has_administer_privilege && has_fabric_privilege)",
+          "Idle -> Validating_FindEndpoint (guard: has_operate_privilege && has_fabric_privilege)",
+          "Idle -> Validating_RemoveEndpoint (guard: has_administer_privilege && has_fabric_privilege)"
+        ]
+      },
+      {
+        "property_name": "ATOMIC_PERSISTENCE",
+        "type": "consistency",
+        "description": "All endpoint list modifications are atomically persisted before success response. Ensures crash consistency.",
+        "fsm_states_involved": ["Creating_NewEndpoint_Allocating", "Updating_ExistingEndpoint_Modifying", "Executing_RemoveEndpoint_Deleting"],
+        "critical_transitions": [
+          "Creating_NewEndpoint_Allocating -> Command_Success_ProvisionEndpoint (includes store_to_persistence)",
+          "Updating_ExistingEndpoint_Modifying -> Command_Success_ProvisionEndpoint (includes store_to_persistence)",
+          "Executing_RemoveEndpoint_Deleting -> Command_Success_RemoveEndpoint (includes store_to_persistence)"
+        ]
+      },
+      {
+        "property_name": "CERTIFICATE_FABRIC_CONSISTENCY",
+        "type": "access_control",
+        "description": "All certificate references (CAID, CCDID) in an endpoint must belong to the same fabric as the endpoint.",
+        "fsm_states_involved": ["Validating_ProvisionEndpoint_RootCertCheck", "Validating_ProvisionEndpoint_ClientCertCheck"],
+        "critical_transitions": [
+          "Validating_ProvisionEndpoint_RootCertCheck -> Command_Failed_RootCertificateNotFound (fabric mismatch)",
+          "Validating_ProvisionEndpoint_ClientCertCheck -> Command_Failed_ClientCertificateNotFound (fabric mismatch)"
+        ]
+      }
+    ],
+
+    "initial_state": "Idle_TimeNotSynchronized",
+    
+    "all_states": [
+      "Idle_TimeNotSynchronized",
+      "Idle_TimeSynchronized",
+      "Validating_ProvisionEndpoint_TimeCheck",
+      "Validating_ProvisionEndpoint_RootCertCheck",
+      "Validating_ProvisionEndpoint_ClientCertCheck",
+      "Validating_ProvisionEndpoint_BranchDecision",
+      "Creating_NewEndpoint_CapacityCheck",
+      "Creating_NewEndpoint_DuplicateCheck",
+      "Creating_NewEndpoint_Allocating",
+      "Updating_ExistingEndpoint_ExistenceCheck",
+      "Updating_ExistingEndpoint_FabricCheck",
+      "Updating_ExistingEndpoint_Modifying",
+      "Validating_FindEndpoint_EmptyListCheck",
+      "Validating_FindEndpoint_ExistenceCheck",
+      "Validating_FindEndpoint_FabricCheck",
+      "Executing_FindEndpoint_RetrievingData",
+      "Validating_RemoveEndpoint_EmptyListCheck",
+      "Validating_RemoveEndpoint_ExistenceCheck",
+      "Validating_RemoveEndpoint_FabricCheck",
+      "Validating_RemoveEndpoint_ReferenceCountCheck",
+      "Executing_RemoveEndpoint_Deleting",
+      "Command_Success_ProvisionEndpoint",
+      "Command_Success_FindEndpoint",
+      "Command_Success_RemoveEndpoint",
+      "Command_Failed_InvalidTime",
+      "Command_Failed_RootCertificateNotFound",
+      "Command_Failed_ClientCertificateNotFound",
+      "Command_Failed_ResourceExhausted",
+      "Command_Failed_EndpointAlreadyInstalled",
+      "Command_Failed_NotFound",
+      "Command_Failed_InvalidInState"
+    ],
+    
+    "all_triggers": [
+      "time_synchronization_event",
+      "ProvisionEndpoint_command",
+      "FindEndpoint_command",
+      "RemoveEndpoint_command",
+      "time_check_validation",
+      "root_cert_validation",
+      "client_cert_validation",
+      "branch_decision",
+      "capacity_check",
+      "duplicate_check",
+      "allocate_endpoint",
+      "existence_check",
+      "fabric_check",
+      "modify_endpoint",
+      "empty_list_check",
+      "retrieve_data",
+      "reference_count_check",
+      "delete_endpoint",
+      "response_sent",
+      "error_response_sent"
+    ],
+    
+    "all_functions_used": [
+      "has_administer_privilege",
+      "has_fabric_privilege",
+      "has_operate_privilege",
+      "store_command_params",
+      "store_accessing_fabric",
+      "lookup_root_certificate",
+      "get_certificate_fabric",
+      "lookup_client_certificate",
+      "get_client_certificate_fabric",
+      "count_fabric_endpoints",
+      "exists_endpoint_with_hostname_port",
+      "generate_unique_endpoint_id",
+      "create_endpoint_struct",
+      "set_reference_count",
+      "add_to_provisioned_endpoints",
+      "store_to_persistence",
+      "lookup_endpoint",
+      "get_endpoint_fabric",
+      "get_endpoint",
+      "update_endpoint_hostname",
+      "update_endpoint_port",
+      "update_endpoint_caid",
+      "update_endpoint_ccdid",
+      "count_endpoints",
+      "get_endpoint_reference_count",
+      "remove_endpoint_from_list",
+      "clear_command_data",
+      "authenticate_tls_server",
+      "present_client_certificate",
+      "check_server_requires_client_auth",
+      "recompute_reference_count"
+    ],
+
+    "cryptographic_operations": [
+      {
+        "operation": "TLS_Server_Authentication",
+        "algorithm": "X.509 certificate chain validation with specified root CA",
+        "inputs": ["server_certificate_chain", "TLSRCAC (from endpoint.CAID)"],
+        "output": "boolean (valid/invalid)",
+        "assumptions": [
+          "TLSRCAC is trusted root certificate",
+          "Certificate chain is well-formed X.509",
+          "Signature verification uses correct public keys",
+          "Time synchronization allows NotBefore/NotAfter validation",
+          "CRL/OCSP checking may be performed (not specified)"
+        ]
+      },
+      {
+        "operation": "TLS_Client_Authentication",
+        "algorithm": "X.509 client certificate presentation with private key signature",
+        "inputs": ["client_certificate (from CCDID)", "client_private_key", "TLS_handshake_data"],
+        "output": "signature proving possession of private key",
+        "assumptions": [
+          "Client private key is securely stored and not compromised",
+          "Client certificate is valid and not revoked",
+          "Server validates client certificate chain",
+          "Mutual TLS enforcement prevents downgrade attacks"
+        ]
+      }
+    ],
+
+    "security_assumptions": [
+      {
+        "assumption": "Fabric isolation is enforced at system level. Fabric IDs cannot be spoofed or manipulated.",
+        "type": "implicit",
+        "if_violated": "All fabric isolation properties fail. Attacker can access any fabric's resources by spoofing fabric ID. PROP_001, PROP_015, PROP_016 from security properties analysis are violated."
+      },
+      {
+        "assumption": "Access control system correctly enforces Administer and Operate privileges. Privilege escalation is not possible.",
+        "type": "implicit",
+        "if_violated": "Non-admin users can provision/remove endpoints (DoS, traffic redirection). Non-authorized users can query endpoints (information disclosure). PROP_023, PROP_024 violated."
+      },
+      {
+        "assumption": "Time Synchronization cluster provides accurate, tamper-resistant time. UTCTime cannot be manipulated.",
+        "type": "implicit",
+        "if_violated": "Certificate temporal validation bypassed. Expired or not-yet-valid certificates accepted. PROP_005, PROP_039 violated."
+      },
+      {
+        "assumption": "Certificate storage (ProvisionedRootCertificates, ProvisionedClientCertificates) is managed securely with fabric isolation.",
+        "type": "implicit",
+        "if_violated": "Attacker directly modifies certificate storage bypassing validation. Can add malicious certificates or remove legitimate ones. PROP_002, PROP_003, PROP_036 violated."
+      },
+      {
+        "assumption": "TLS implementation uses provided certificate parameters correctly and fails securely on validation errors.",
+        "type": "implicit",
+        "if_violated": "TLS connections proceed with wrong credentials or insecure fallback. Man-in-the-middle attacks possible. PROP_006, PROP_007, PROP_004 violated."
+      },
+      {
+        "assumption": "Reference counting mechanism is implemented atomically and correctly by all components that use endpoints.",
+        "type": "implicit",
+        "if_violated": "Race conditions cause incorrect reference counts. Premature removal crashes active connections or memory leaks prevent removal. PROP_009, PROP_012 violated."
+      },
+      {
+        "assumption": "Storage layer provides atomic write semantics and crash consistency.",
+        "type": "implicit",
+        "if_violated": "Partial writes corrupt endpoint list after crash. Parse errors, memory corruption, or inaccessible endpoints. PROP_013, PROP_014, PROP_042 violated."
+      },
+      {
+        "assumption": "No privileged administrator is compromised. All admin actions are legitimate.",
+        "type": "explicit",
+        "if_violated": "Attacker with admin privileges bypasses all access control. Can create malicious endpoints, exhaust resources, or remove critical endpoints. Detection relies on audit logging."
+      },
+      {
+        "assumption": "Large Message qualifier buffer handling is consistent across all commands.",
+        "type": "explicit",
+        "if_violated": "Buffer overflow vulnerabilities from size mismatches. Long hostnames may overflow small message buffers. PROP_025, PROP_027 violated."
+      },
+      {
+        "assumption": "MaxProvisioned value is correctly configured (5-254) and enforced per fabric.",
+        "type": "explicit",
+        "if_violated": "Resource exhaustion DoS attacks possible. Malicious admin allocates unlimited endpoints until memory exhausted. PROP_011, PROP_031 violated."
+      }
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": false,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true,
+      "fabric_isolation_enforced": true,
+      "access_control_modeled": true,
+      "reference_counting_included": true,
+      "atomic_operations_specified": true,
+      "certificate_validation_complete": true,
+      "all_commands_covered": true
+    }
+  }
+}

@@ -1,0 +1,1117 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Window Covering",
+    "cluster_id": "0x0102",
+    "pics_code": "WNCV",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 5.3, Pages 477-493",
+    "revision": 7,
+
+    "features": [
+      {
+        "bit": 0,
+        "code": "LF",
+        "name": "Lift",
+        "conformance": "O.a+",
+        "description": "Lift control and behavior for lifting/sliding window coverings. At least one of LF or TL must be supported.",
+        "affects_states": ["Moving_Opening", "Moving_Closing", "Stopped_Operational"],
+        "affects_transitions": ["T001", "T005", "T009", "T010", "T012", "T013", "T014", "T015", "T016", "T017", "T018", "T019", "T021", "T023"]
+      },
+      {
+        "bit": 1,
+        "code": "TL",
+        "name": "Tilt",
+        "conformance": "O.a+",
+        "description": "Tilt control and behavior for tilting window coverings. At least one of LF or TL must be supported.",
+        "affects_states": ["Moving_Opening", "Moving_Closing", "Stopped_Operational"],
+        "affects_transitions": ["T001", "T005", "T009", "T010", "T012", "T013", "T014", "T020", "T021", "T022", "T023", "T024", "T025", "T026"]
+      },
+      {
+        "bit": 2,
+        "code": "PA_LF",
+        "name": "PositionAwareLift",
+        "conformance": "[LF]",
+        "description": "Position aware lift control is supported. Enables TargetPositionLiftPercent100ths and CurrentPositionLiftPercent100ths attributes.",
+        "affects_states": ["Moving_Opening", "Moving_Closing", "Stopped_Operational"],
+        "affects_transitions": ["T001", "T005", "T009", "T010", "T012", "T013", "T014", "T015", "T016", "T017", "T018"]
+      },
+      {
+        "bit": 4,
+        "code": "PA_TL",
+        "name": "PositionAwareTilt",
+        "conformance": "[TL]",
+        "description": "Position aware tilt control is supported. Enables TargetPositionTiltPercent100ths and CurrentPositionTiltPercent100ths attributes.",
+        "affects_states": ["Moving_Opening", "Moving_Closing", "Stopped_Operational"],
+        "affects_transitions": ["T001", "T005", "T009", "T010", "T012", "T013", "T014", "T020", "T021", "T022", "T023", "T024"]
+      }
+    ],
+
+    "dependencies": [],
+
+    "states": [
+      {
+        "name": "Stopped_Operational",
+        "description": "Window covering is operational, stationary, and not in any special mode. This is the normal resting state.",
+        "is_initial": true,
+        "invariants": [
+          "OperationalStatus.Global == 00b",
+          "Mode.MaintenanceMode == 0",
+          "Mode.CalibrationMode == 0",
+          "ConfigStatus.Operational == 1"
+        ],
+        "state_attributes": {
+          "OperationalStatus.Global": "00b (not moving)",
+          "OperationalStatus.Lift": "00b (not moving) [LF]",
+          "OperationalStatus.Tilt": "00b (not moving) [TL]",
+          "Mode.MaintenanceMode": "0",
+          "Mode.CalibrationMode": "0",
+          "ConfigStatus.Operational": "1"
+        },
+        "feature_requirements": [],
+        "safety_implications": "No active motion. SafetyStatus bits may be non-zero indicating latched safety conditions preventing future movement."
+      },
+      {
+        "name": "Moving_Opening",
+        "description": "Window covering is physically moving towards the open position (0.00% for lift/tilt). OperationalStatus reflects current direction.",
+        "is_initial": false,
+        "invariants": [
+          "OperationalStatus.Global == 01b",
+          "Mode.MaintenanceMode == 0"
+        ],
+        "state_attributes": {
+          "OperationalStatus.Global": "01b (opening)",
+          "OperationalStatus.Lift": "01b (opening) [LF]",
+          "OperationalStatus.Tilt": "01b (opening) [TL]",
+          "TargetPositionLiftPercent100ths": "set to target (0 for UpOrOpen) [PA_LF]",
+          "TargetPositionTiltPercent100ths": "set to target (0 for UpOrOpen) [PA_TL]"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Motorized movement active. Obstacle detection (SafetyStatus.ObstacleDetected) and thermal protection (SafetyStatus.ThermalProtection) are relevant safety concerns during motion."
+      },
+      {
+        "name": "Moving_Closing",
+        "description": "Window covering is physically moving towards the closed position (100.00% for lift/tilt). OperationalStatus reflects current direction.",
+        "is_initial": false,
+        "invariants": [
+          "OperationalStatus.Global == 10b",
+          "Mode.MaintenanceMode == 0"
+        ],
+        "state_attributes": {
+          "OperationalStatus.Global": "10b (closing)",
+          "OperationalStatus.Lift": "10b (closing) [LF]",
+          "OperationalStatus.Tilt": "10b (closing) [TL]",
+          "TargetPositionLiftPercent100ths": "set to target (10000 for DownOrClose) [PA_LF]",
+          "TargetPositionTiltPercent100ths": "set to target (10000 for DownOrClose) [PA_TL]"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Motorized movement active. Obstacle detection and thermal protection are relevant. Closing motion can entrap objects or persons."
+      },
+      {
+        "name": "CalibrationMode_Idle",
+        "description": "Window covering is in calibration mode (Mode.CalibrationMode = 1) and stationary. Movement commands may trigger self-calibration before execution.",
+        "is_initial": false,
+        "invariants": [
+          "Mode.CalibrationMode == 1",
+          "OperationalStatus.Global == 00b"
+        ],
+        "state_attributes": {
+          "Mode.CalibrationMode": "1",
+          "OperationalStatus.Global": "00b (not moving)",
+          "ConfigStatus.Operational": "0 or 1 (vendor-specific during calibration)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Calibration mode may allow motor movement outside normal operational bounds. Writing CalibrationMode=0 directly while in this state is forbidden (returns FAILURE); exit requires completing the calibration routine."
+      },
+      {
+        "name": "MaintenanceMode",
+        "description": "Window covering is in maintenance mode (Mode.MaintenanceMode = 1). All movement commands and local inputs are blocked. Device is not operational.",
+        "is_initial": false,
+        "invariants": [
+          "Mode.MaintenanceMode == 1",
+          "ConfigStatus.Operational == 0"
+        ],
+        "state_attributes": {
+          "Mode.MaintenanceMode": "1",
+          "OperationalStatus.Global": "00b (not moving)",
+          "ConfigStatus.Operational": "0 (should be set to not operational)"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Device is physically disabled for maintenance. All remote and local movement disabled. ConfigStatus.Operational should reflect non-operational status to inform clients."
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T001",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Opening",
+        "trigger": {
+          "type": "command",
+          "name": "UpOrOpen",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0",
+        "actions": [
+          "TargetPositionLiftPercent100ths := 0 [guard: Feature_PA_LF == true]",
+          "TargetPositionTiltPercent100ths := 0 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 01b",
+          "OperationalStatus.Lift := 01b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 01b [guard: Feature_TL == true]"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.1 'UpOrOpen Command'"
+      },
+      {
+        "id": "T002",
+        "from_state": "Moving_Closing",
+        "to_state": "Moving_Opening",
+        "trigger": {
+          "type": "command",
+          "name": "UpOrOpen",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0",
+        "actions": [
+          "TargetPositionLiftPercent100ths := 0 [guard: Feature_PA_LF == true]",
+          "TargetPositionTiltPercent100ths := 0 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 01b",
+          "OperationalStatus.Lift := 01b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 01b [guard: Feature_TL == true]"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.1 'UpOrOpen Command'"
+      },
+      {
+        "id": "T003",
+        "from_state": "MaintenanceMode",
+        "to_state": "MaintenanceMode",
+        "trigger": {
+          "type": "command",
+          "name": "UpOrOpen",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 1",
+        "actions": [
+          "return BUSY"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Mode.MaintenanceMode == 1",
+            "status_code": "BUSY",
+            "description": "All movement commands and local inputs must be ignored and respond with BUSY when in maintenance mode"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.3 'MaintenanceMode Bit'"
+      },
+      {
+        "id": "T004",
+        "from_state": "CalibrationMode_Idle",
+        "to_state": "Moving_Opening",
+        "trigger": {
+          "type": "command",
+          "name": "UpOrOpen",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Mode.CalibrationMode == 1 && device_supports_self_calibration == true",
+        "actions": [
+          "call_function(initiate_self_calibration)",
+          "TargetPositionLiftPercent100ths := 0 [guard: Feature_PA_LF == true]",
+          "TargetPositionTiltPercent100ths := 0 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 01b",
+          "OperationalStatus.Lift := 01b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 01b [guard: Feature_TL == true]"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.6.13.2 'CalibrationMode Bit'; Section 5.3.7.1 'UpOrOpen Command'"
+      },
+      {
+        "id": "T005",
+        "from_state": "CalibrationMode_Idle",
+        "to_state": "CalibrationMode_Idle",
+        "trigger": {
+          "type": "command",
+          "name": "UpOrOpen",
+          "command_id": "0x00"
+        },
+        "guard_condition": "Mode.CalibrationMode == 1 && device_supports_self_calibration == false",
+        "actions": [
+          "return FAILURE"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Device does not support or cannot perform self-calibration",
+            "status_code": "FAILURE",
+            "description": "Command SHOULD be ignored and FAILURE status returned when device cannot self-calibrate"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.2 'CalibrationMode Bit'"
+      },
+      {
+        "id": "T006",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Closing",
+        "trigger": {
+          "type": "command",
+          "name": "DownOrClose",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0",
+        "actions": [
+          "TargetPositionLiftPercent100ths := 10000 [guard: Feature_PA_LF == true]",
+          "TargetPositionTiltPercent100ths := 10000 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 10b",
+          "OperationalStatus.Lift := 10b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 10b [guard: Feature_TL == true]"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.2 'DownOrClose Command'"
+      },
+      {
+        "id": "T007",
+        "from_state": "Moving_Opening",
+        "to_state": "Moving_Closing",
+        "trigger": {
+          "type": "command",
+          "name": "DownOrClose",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0",
+        "actions": [
+          "TargetPositionLiftPercent100ths := 10000 [guard: Feature_PA_LF == true]",
+          "TargetPositionTiltPercent100ths := 10000 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 10b",
+          "OperationalStatus.Lift := 10b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 10b [guard: Feature_TL == true]"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.2 'DownOrClose Command'"
+      },
+      {
+        "id": "T008",
+        "from_state": "MaintenanceMode",
+        "to_state": "MaintenanceMode",
+        "trigger": {
+          "type": "command",
+          "name": "DownOrClose",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 1",
+        "actions": [
+          "return BUSY"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Mode.MaintenanceMode == 1",
+            "status_code": "BUSY",
+            "description": "All movement commands must be ignored and respond with BUSY when in maintenance mode"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.3 'MaintenanceMode Bit'"
+      },
+      {
+        "id": "T009",
+        "from_state": "CalibrationMode_Idle",
+        "to_state": "Moving_Closing",
+        "trigger": {
+          "type": "command",
+          "name": "DownOrClose",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Mode.CalibrationMode == 1 && device_supports_self_calibration == true",
+        "actions": [
+          "call_function(initiate_self_calibration)",
+          "TargetPositionLiftPercent100ths := 10000 [guard: Feature_PA_LF == true]",
+          "TargetPositionTiltPercent100ths := 10000 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 10b",
+          "OperationalStatus.Lift := 10b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 10b [guard: Feature_TL == true]"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.6.13.2 'CalibrationMode Bit'; Section 5.3.7.2 'DownOrClose Command'"
+      },
+      {
+        "id": "T010",
+        "from_state": "CalibrationMode_Idle",
+        "to_state": "CalibrationMode_Idle",
+        "trigger": {
+          "type": "command",
+          "name": "DownOrClose",
+          "command_id": "0x01"
+        },
+        "guard_condition": "Mode.CalibrationMode == 1 && device_supports_self_calibration == false",
+        "actions": [
+          "return FAILURE"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Device does not support or cannot perform self-calibration",
+            "status_code": "FAILURE",
+            "description": "Command SHOULD be ignored and FAILURE returned when device cannot self-calibrate"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.2 'CalibrationMode Bit'"
+      },
+      {
+        "id": "T011",
+        "from_state": "Moving_Opening",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "command",
+          "name": "StopMotion",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 0",
+        "actions": [
+          "TargetPositionLiftPercent100ths := CurrentPositionLiftPercent100ths [guard: Feature_PA_LF == true]",
+          "TargetPositionTiltPercent100ths := CurrentPositionTiltPercent100ths [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 00b",
+          "OperationalStatus.Lift := 00b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 00b [guard: Feature_TL == true]"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.3 'StopMotion Command'"
+      },
+      {
+        "id": "T012",
+        "from_state": "Moving_Closing",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "command",
+          "name": "StopMotion",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 0",
+        "actions": [
+          "TargetPositionLiftPercent100ths := CurrentPositionLiftPercent100ths [guard: Feature_PA_LF == true]",
+          "TargetPositionTiltPercent100ths := CurrentPositionTiltPercent100ths [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 00b",
+          "OperationalStatus.Lift := 00b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 00b [guard: Feature_TL == true]"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.3 'StopMotion Command'"
+      },
+      {
+        "id": "T013",
+        "from_state": "MaintenanceMode",
+        "to_state": "MaintenanceMode",
+        "trigger": {
+          "type": "command",
+          "name": "StopMotion",
+          "command_id": "0x02"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 1",
+        "actions": [
+          "return BUSY"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Mode.MaintenanceMode == 1",
+            "status_code": "BUSY",
+            "description": "All movement commands must respond with BUSY in maintenance mode"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.3 'MaintenanceMode Bit'"
+      },
+      {
+        "id": "T014",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Opening",
+        "trigger": {
+          "type": "command",
+          "name": "GoToLiftPercentage",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_LF == true && Feature_PA_LF == true && Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0 && LiftPercent100thsValue < CurrentPositionLiftPercent100ths",
+        "actions": [
+          "TargetPositionLiftPercent100ths := LiftPercent100thsValue",
+          "OperationalStatus.Lift := 01b",
+          "OperationalStatus.Global := 01b"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.4 'GoToLiftPercentage Command'"
+      },
+      {
+        "id": "T015",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Closing",
+        "trigger": {
+          "type": "command",
+          "name": "GoToLiftPercentage",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_LF == true && Feature_PA_LF == true && Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0 && LiftPercent100thsValue > CurrentPositionLiftPercent100ths",
+        "actions": [
+          "TargetPositionLiftPercent100ths := LiftPercent100thsValue",
+          "OperationalStatus.Lift := 10b",
+          "OperationalStatus.Global := 10b"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.4 'GoToLiftPercentage Command'"
+      },
+      {
+        "id": "T016",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Opening",
+        "trigger": {
+          "type": "command",
+          "name": "GoToLiftPercentage",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_LF == true && Feature_PA_LF == false && Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0 && LiftPercent100thsValue == 0",
+        "actions": [
+          "OperationalStatus.Global := 01b",
+          "OperationalStatus.Lift := 01b"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.4 'GoToLiftPercentage Command' — zero percentage treated as UpOrOpen when PA_LF not supported"
+      },
+      {
+        "id": "T017",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Closing",
+        "trigger": {
+          "type": "command",
+          "name": "GoToLiftPercentage",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_LF == true && Feature_PA_LF == false && Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0 && LiftPercent100thsValue > 0",
+        "actions": [
+          "OperationalStatus.Global := 10b",
+          "OperationalStatus.Lift := 10b"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.4 'GoToLiftPercentage Command' — non-zero percentage treated as DownOrClose when PA_LF not supported"
+      },
+      {
+        "id": "T018",
+        "from_state": "Stopped_Operational",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "command",
+          "name": "GoToLiftPercentage",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Feature_LF == false && Feature_TL == true",
+        "actions": [
+          "return UNSUPPORTED_COMMAND"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Device is tilt-only (Feature_LF == false && Feature_TL == true)",
+            "status_code": "UNSUPPORTED_COMMAND",
+            "description": "GoToLiftPercentage SHOULD be ignored on a tilt-only device"
+          }
+        ],
+        "spec_reference": "Section 5.3.7.4 'GoToLiftPercentage Command'"
+      },
+      {
+        "id": "T019",
+        "from_state": "MaintenanceMode",
+        "to_state": "MaintenanceMode",
+        "trigger": {
+          "type": "command",
+          "name": "GoToLiftPercentage",
+          "command_id": "0x05"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 1",
+        "actions": [
+          "return BUSY"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Mode.MaintenanceMode == 1",
+            "status_code": "BUSY",
+            "description": "All movement commands must respond with BUSY in maintenance mode"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.3 'MaintenanceMode Bit'"
+      },
+      {
+        "id": "T020",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Opening",
+        "trigger": {
+          "type": "command",
+          "name": "GoToTiltPercentage",
+          "command_id": "0x08"
+        },
+        "guard_condition": "Feature_TL == true && Feature_PA_TL == true && Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0 && TiltPercent100thsValue < CurrentPositionTiltPercent100ths",
+        "actions": [
+          "TargetPositionTiltPercent100ths := TiltPercent100thsValue",
+          "OperationalStatus.Tilt := 01b",
+          "OperationalStatus.Global := 01b"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.5 'GoToTiltPercentage Command'"
+      },
+      {
+        "id": "T021",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Closing",
+        "trigger": {
+          "type": "command",
+          "name": "GoToTiltPercentage",
+          "command_id": "0x08"
+        },
+        "guard_condition": "Feature_TL == true && Feature_PA_TL == true && Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0 && TiltPercent100thsValue > CurrentPositionTiltPercent100ths",
+        "actions": [
+          "TargetPositionTiltPercent100ths := TiltPercent100thsValue",
+          "OperationalStatus.Tilt := 10b",
+          "OperationalStatus.Global := 10b"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.5 'GoToTiltPercentage Command'"
+      },
+      {
+        "id": "T022",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Opening",
+        "trigger": {
+          "type": "command",
+          "name": "GoToTiltPercentage",
+          "command_id": "0x08"
+        },
+        "guard_condition": "Feature_TL == true && Feature_PA_TL == false && Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0 && TiltPercent100thsValue == 0",
+        "actions": [
+          "OperationalStatus.Global := 01b",
+          "OperationalStatus.Tilt := 01b"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.5 'GoToTiltPercentage Command' — zero percentage treated as UpOrOpen when PA_TL not supported"
+      },
+      {
+        "id": "T023",
+        "from_state": "Stopped_Operational",
+        "to_state": "Moving_Closing",
+        "trigger": {
+          "type": "command",
+          "name": "GoToTiltPercentage",
+          "command_id": "0x08"
+        },
+        "guard_condition": "Feature_TL == true && Feature_PA_TL == false && Mode.MaintenanceMode == 0 && Mode.CalibrationMode == 0 && TiltPercent100thsValue > 0",
+        "actions": [
+          "OperationalStatus.Global := 10b",
+          "OperationalStatus.Tilt := 10b"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.5 'GoToTiltPercentage Command' — non-zero percentage treated as DownOrClose when PA_TL not supported"
+      },
+      {
+        "id": "T024",
+        "from_state": "Stopped_Operational",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "command",
+          "name": "GoToTiltPercentage",
+          "command_id": "0x08"
+        },
+        "guard_condition": "Feature_LF == true && Feature_TL == false",
+        "actions": [
+          "return UNSUPPORTED_COMMAND"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Device is lift-only (Feature_LF == true && Feature_TL == false)",
+            "status_code": "UNSUPPORTED_COMMAND",
+            "description": "GoToTiltPercentage SHOULD be ignored on a lift-only device (symmetric behavior to GoToLiftPercentage on tilt-only)"
+          }
+        ],
+        "spec_reference": "Section 5.3.7.5 'GoToTiltPercentage Command'; Section 5.3.7.4 pattern for symmetric behavior"
+      },
+      {
+        "id": "T025",
+        "from_state": "MaintenanceMode",
+        "to_state": "MaintenanceMode",
+        "trigger": {
+          "type": "command",
+          "name": "GoToTiltPercentage",
+          "command_id": "0x08"
+        },
+        "guard_condition": "Mode.MaintenanceMode == 1",
+        "actions": [
+          "return BUSY"
+        ],
+        "access_required": "O",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Mode.MaintenanceMode == 1",
+            "status_code": "BUSY",
+            "description": "All movement commands must respond with BUSY in maintenance mode"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.3 'MaintenanceMode Bit'"
+      },
+      {
+        "id": "T026",
+        "from_state": "Moving_Opening",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "event",
+          "name": "movement_complete_open",
+          "command_id": null
+        },
+        "guard_condition": "physical_position_reached == true && TargetPositionLiftPercent100ths == 0",
+        "actions": [
+          "CurrentPositionLiftPercent100ths := 0 [guard: Feature_PA_LF == true]",
+          "CurrentPositionLiftPercentage := 0 [guard: Feature_PA_LF == true]",
+          "CurrentPositionTiltPercent100ths := 0 [guard: Feature_PA_TL == true]",
+          "CurrentPositionTiltPercentage := 0 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 00b",
+          "OperationalStatus.Lift := 00b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 00b [guard: Feature_TL == true]"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.1 'UpOrOpen Command' — server attributes updated once movement successfully finished"
+      },
+      {
+        "id": "T027",
+        "from_state": "Moving_Closing",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "event",
+          "name": "movement_complete_closed",
+          "command_id": null
+        },
+        "guard_condition": "physical_position_reached == true && TargetPositionLiftPercent100ths == 10000",
+        "actions": [
+          "CurrentPositionLiftPercent100ths := 10000 [guard: Feature_PA_LF == true]",
+          "CurrentPositionLiftPercentage := 100 [guard: Feature_PA_LF == true]",
+          "CurrentPositionTiltPercent100ths := 10000 [guard: Feature_PA_TL == true]",
+          "CurrentPositionTiltPercentage := 100 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 00b",
+          "OperationalStatus.Lift := 00b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 00b [guard: Feature_TL == true]"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.2 'DownOrClose Command' — server attributes updated once movement successfully finished"
+      },
+      {
+        "id": "T028",
+        "from_state": "Moving_Opening",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "event",
+          "name": "movement_complete_arbitrary",
+          "command_id": null
+        },
+        "guard_condition": "physical_position_reached == true && TargetPositionLiftPercent100ths > 0",
+        "actions": [
+          "CurrentPositionLiftPercent100ths := TargetPositionLiftPercent100ths [guard: Feature_PA_LF == true]",
+          "CurrentPositionLiftPercentage := TargetPositionLiftPercent100ths / 100 [guard: Feature_PA_LF == true]",
+          "CurrentPositionTiltPercent100ths := TargetPositionTiltPercent100ths [guard: Feature_PA_TL == true]",
+          "CurrentPositionTiltPercentage := TargetPositionTiltPercent100ths / 100 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 00b",
+          "OperationalStatus.Lift := 00b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 00b [guard: Feature_TL == true]"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.4 'GoToLiftPercentage Command'; Section 5.3.7.5 'GoToTiltPercentage Command'"
+      },
+      {
+        "id": "T029",
+        "from_state": "Moving_Closing",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "event",
+          "name": "movement_complete_arbitrary",
+          "command_id": null
+        },
+        "guard_condition": "physical_position_reached == true && TargetPositionLiftPercent100ths < 10000",
+        "actions": [
+          "CurrentPositionLiftPercent100ths := TargetPositionLiftPercent100ths [guard: Feature_PA_LF == true]",
+          "CurrentPositionLiftPercentage := TargetPositionLiftPercent100ths / 100 [guard: Feature_PA_LF == true]",
+          "CurrentPositionTiltPercent100ths := TargetPositionTiltPercent100ths [guard: Feature_PA_TL == true]",
+          "CurrentPositionTiltPercentage := TargetPositionTiltPercent100ths / 100 [guard: Feature_PA_TL == true]",
+          "OperationalStatus.Global := 00b",
+          "OperationalStatus.Lift := 00b [guard: Feature_LF == true]",
+          "OperationalStatus.Tilt := 00b [guard: Feature_TL == true]"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.7.4 'GoToLiftPercentage Command'; Section 5.3.7.5 'GoToTiltPercentage Command'"
+      },
+      {
+        "id": "T030",
+        "from_state": "Stopped_Operational",
+        "to_state": "CalibrationMode_Idle",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "WriteAttribute_Mode_CalibrationMode",
+          "command_id": null
+        },
+        "guard_condition": "new_Mode.CalibrationMode == 1 && Mode.CalibrationMode == 0 && new_Mode_bits_all_supported == true",
+        "actions": [
+          "Mode.CalibrationMode := 1"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Any unsupported mode bit or out-of-bounds bit is set in the write",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Write with unsupported mode bit must be ignored and CONSTRAINT_ERROR returned"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13 'Mode Attribute'"
+      },
+      {
+        "id": "T031",
+        "from_state": "CalibrationMode_Idle",
+        "to_state": "CalibrationMode_Idle",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "WriteAttribute_Mode_CalibrationMode_clear",
+          "command_id": null
+        },
+        "guard_condition": "Mode.CalibrationMode == 1 && new_Mode.CalibrationMode == 0",
+        "actions": [
+          "return FAILURE"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Attempting to write CalibrationMode=0 while device is in calibration mode",
+            "status_code": "FAILURE",
+            "description": "Setting CalibrationMode bit to 0 while in calibration mode is not allowed. Device must complete its calibration routine to exit calibration mode."
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.2 'CalibrationMode Bit'"
+      },
+      {
+        "id": "T032",
+        "from_state": "CalibrationMode_Idle",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "event",
+          "name": "calibration_routine_complete",
+          "command_id": null
+        },
+        "guard_condition": "calibration_routine_finished == true",
+        "actions": [
+          "Mode.CalibrationMode := 0"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 5.3.6.13.2 'CalibrationMode Bit' — device must complete calibration routine to exit mode"
+      },
+      {
+        "id": "T033",
+        "from_state": "Stopped_Operational",
+        "to_state": "MaintenanceMode",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "WriteAttribute_Mode_MaintenanceMode",
+          "command_id": null
+        },
+        "guard_condition": "new_Mode.MaintenanceMode == 1 && new_Mode_bits_all_supported == true",
+        "actions": [
+          "Mode.MaintenanceMode := 1",
+          "ConfigStatus.Operational := 0"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Any unsupported mode bit or out-of-bounds bit is set",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Write with unsupported bit must be ignored and CONSTRAINT_ERROR returned"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.3 'MaintenanceMode Bit'; Section 5.3.6.13 'Mode Attribute'"
+      },
+      {
+        "id": "T034",
+        "from_state": "MaintenanceMode",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "WriteAttribute_Mode_MaintenanceMode_clear",
+          "command_id": null
+        },
+        "guard_condition": "Mode.MaintenanceMode == 1 && new_Mode.MaintenanceMode == 0 && new_Mode_bits_all_supported == true",
+        "actions": [
+          "Mode.MaintenanceMode := 0",
+          "ConfigStatus.Operational := 1"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Any unsupported mode bit or out-of-bounds bit is set",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Write with unsupported bit must be ignored and CONSTRAINT_ERROR returned"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.3 'MaintenanceMode Bit'; Section 5.3.6.13 'Mode Attribute'"
+      },
+      {
+        "id": "T035",
+        "from_state": "Stopped_Operational",
+        "to_state": "Stopped_Operational",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "WriteAttribute_Mode_MotorDirectionReversed",
+          "command_id": null
+        },
+        "guard_condition": "new_Mode_bits_all_supported == true",
+        "actions": [
+          "Mode.MotorDirectionReversed := new_Mode.MotorDirectionReversed",
+          "ConfigStatus.LiftMovementReversed := new_Mode.MotorDirectionReversed"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [
+          {
+            "condition": "Any unsupported mode bit or out-of-bounds bit is set",
+            "status_code": "CONSTRAINT_ERROR",
+            "description": "Write with unsupported bit must be ignored and CONSTRAINT_ERROR returned"
+          }
+        ],
+        "spec_reference": "Section 5.3.6.13.1 'MotorDirectionReversed Bit'; Section 5.3.6.4.2 'LiftMovementReversed Bit'"
+      }
+    ],
+
+    "events": [],
+
+    "timers": [],
+
+    "functions": [
+      {
+        "name": "initiate_self_calibration",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Initiates the device's self-calibration routine before executing the movement command. The exact calibration procedure is vendor-specific. If the device cannot perform self-calibration, this function is not called and FAILURE is returned instead.",
+        "usage_in_fsm": "T004, T009"
+      },
+      {
+        "name": "update_current_position",
+        "parameters": [
+          {"name": "liftPercent100ths", "type": "percent100ths", "description": "New lift position in 0.01% units (0-10000)"},
+          {"name": "tiltPercent100ths", "type": "percent100ths", "description": "New tilt position in 0.01% units (0-10000)"}
+        ],
+        "return_type": "void",
+        "description": "Updates the CurrentPositionLiftPercent100ths, CurrentPositionLiftPercentage, CurrentPositionTiltPercent100ths, and CurrentPositionTiltPercentage attributes to reflect the actual physical position of the window covering as movement progresses. Called continuously during motion and upon movement completion.",
+        "usage_in_fsm": "T026, T027, T028, T029 (final update on movement completion)"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": ["UpOrOpen", "DownOrClose", "StopMotion", "GoToLiftPercentage", "GoToTiltPercentage"],
+      "manage_commands": ["WriteAttribute_Mode"],
+      "administer_commands": [],
+      "timed_commands": []
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "state",
+        "element_id": "Moving_Closing",
+        "safety_concern": "Motorized closing motion can entrap persons, animals, or objects between the covering and the frame. No mandatory obstacle detection response is defined beyond the SafetyStatus.ObstacleDetected bit.",
+        "mitigation_in_spec": "SafetyStatus.ObstacleDetected bit (bit 5) exists but is optional (O conformance). No mandatory abort behavior is specified when ObstacleDetected is set."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "SafetyStatus.RemoteLockout (bit 0)",
+        "safety_concern": "RemoteLockout bit indicates authorization or time/date range lockout, but the exact command rejection mechanism and error code when this bit is set are not specified in the cluster spec. An attacker who cannot set this bit via another path could potentially bypass lockout by exploiting the undefined behavior.",
+        "mitigation_in_spec": "NONE — bit is defined as informational but no SHALL-level command rejection tied to it is specified in the cluster spec."
+      },
+      {
+        "element_type": "state",
+        "element_id": "CalibrationMode_Idle",
+        "safety_concern": "In calibration mode, the window covering may move beyond normal operational limits as part of self-calibration. The extent of movement and any physical end-stop handling are vendor-specific with no normative constraints.",
+        "mitigation_in_spec": "NONE — calibration behavior is fully vendor-specific; spec only states mode entry/exit rules."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T033",
+        "safety_concern": "Entering MaintenanceMode requires only M-level (Manage) privilege. If an attacker gains Manage access, they can disable all physical movement capability of the covering, preventing automation-controlled opening/closing (e.g., blocking emergency exit scenarios where automated blinds must open).",
+        "mitigation_in_spec": "Mode attribute write requires M privilege (RW VM). Physical access control to the fabric/endpoint is the primary mitigation."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "Mode (0x0017)",
+        "safety_concern": "The Mode attribute has RW VM access (Write requires Manage privilege). A node with Manage access can simultaneously set CalibrationMode and MaintenanceMode bits or configure MotorDirectionReversed, directly affecting physical actuator behavior and potentially disorienting safety systems relying on known movement direction.",
+        "mitigation_in_spec": "CONSTRAINT_ERROR returned for unsupported bits. No additional write validation is mandated."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "location": "Section 5.3.5.4 'SafetyStatusBitmap Type'",
+        "gap_type": "undefined_behavior",
+        "description": "SafetyStatus.RemoteLockout (bit 0) is described as causing movement commands to be 'ignored (locked out)' but no normative SHALL-level command handling or error code is specified in the cluster when this bit is set. The cluster commands section (5.3.7) contains no reference to RemoteLockout checks.",
+        "security_impact": "An authorized operator may not receive a clear error response when commands are blocked by RemoteLockout, and implementations may vary in whether they reject or silently drop commands, masking lockout conditions from clients."
+      },
+      {
+        "location": "Section 5.3.7.1 / 5.3.7.2",
+        "gap_type": "undefined_behavior",
+        "description": "No behavior is defined for UpOrOpen or DownOrClose received while the device is already Moving_Opening or Moving_Closing in the same direction (e.g., UpOrOpen while Moving_Opening). The spec only specifies the target attribute updates, not whether the motor is restarted, ignored, or direction-reversed.",
+        "security_impact": "Inconsistent implementations may allow command flooding to destabilize motor control or cause unexpected re-initialization of position tracking."
+      },
+      {
+        "location": "Section 5.3.6.13.2 'CalibrationMode Bit'",
+        "gap_type": "weak_normative",
+        "description": "Exit from CalibrationMode is vendor-specific ('device must perform its calibration routine, either as a self-calibration or assisted by external tool(s)'). There is no SHALL-level timeout, maximum calibration duration, or forced exit mechanism defined.",
+        "security_impact": "An attacker with Manage access could set CalibrationMode=1 and leave the device permanently in calibration mode since CalibrationMode=0 write is rejected. No watchdog or forced exit is mandated."
+      },
+      {
+        "location": "Section 5.3.6.13.3 'MaintenanceMode Bit'",
+        "gap_type": "weak_normative",
+        "description": "Setting ConfigStatus.Operational to 0 during maintenance mode uses 'should' (lowercase, non-normative) rather than SHALL. Implementations may legitimately leave ConfigStatus.Operational=1 while in maintenance mode, misleading clients about device availability.",
+        "security_impact": "Clients relying on ConfigStatus.Operational to determine if the device is controllable may incorrectly send movement commands, receiving BUSY responses with no clear cause."
+      },
+      {
+        "location": "Section 5.3.7.4 / 5.3.7.5",
+        "gap_type": "weak_normative",
+        "description": "GoToLiftPercentage on a tilt-only device: 'the command SHOULD be ignored and a UNSUPPORTED_COMMAND status SHOULD be returned'. Both the ignore and the status return use SHOULD rather than SHALL. For GoToTiltPercentage on a lift-only device, no symmetric rule is stated at all.",
+        "security_impact": "Ambiguous behavior on feature mismatch allows varied implementations. A malicious client could probe feature support by sending cross-feature commands and observing varied responses, inferring device capabilities."
+      },
+      {
+        "location": "Section 5.3.6 (Attributes)",
+        "gap_type": "missing_constraint",
+        "description": "No events are defined in the Window Covering cluster. There is no standardized notification mechanism when OperationalStatus, SafetyStatus, or Mode attributes change. Clients must poll these attributes to detect state changes.",
+        "security_impact": "Without events, safety-critical state changes (e.g., SafetyStatus.ObstacleDetected becoming set, or device entering MaintenanceMode) are not proactively reported. Polling introduces latency in safety response."
+      },
+      {
+        "location": "Section 5.3.5.4 'SafetyStatusBitmap Type'",
+        "gap_type": "missing_constraint",
+        "description": "No normative behavior is defined for any of the 12 SafetyStatus bits except as informational indicators. There is no SHALL-level requirement to halt or reject movement commands when ThermalProtection, MotorJammed, HardwareFailure, or ObstacleDetected bits are set.",
+        "security_impact": "A device with a jammed motor or detected obstacle may continue to accept movement commands (provided other mode conditions are met), potentially causing physical damage or injury."
+      },
+      {
+        "location": "Section 5.3.6.13 'Mode Attribute'",
+        "gap_type": "ambiguous",
+        "description": "The spec does not define whether CalibrationMode and MaintenanceMode can be set simultaneously. Writing both bits in a single Mode attribute write is not prohibited, and the resulting behavior is undefined.",
+        "security_impact": "Simultaneous MaintenanceMode and CalibrationMode could create an inconsistent state where the device is in maintenance (blocking movement) yet in calibration (expecting movement). Vendor-specific handling creates interoperability fragility."
+      }
+    ],
+
+    "initial_state": "Stopped_Operational",
+    "all_states": [
+      "Stopped_Operational",
+      "Moving_Opening",
+      "Moving_Closing",
+      "CalibrationMode_Idle",
+      "MaintenanceMode"
+    ],
+    "all_triggers": [
+      "UpOrOpen",
+      "DownOrClose",
+      "StopMotion",
+      "GoToLiftPercentage",
+      "GoToTiltPercentage",
+      "WriteAttribute_Mode_CalibrationMode",
+      "WriteAttribute_Mode_MaintenanceMode",
+      "WriteAttribute_Mode_MotorDirectionReversed",
+      "movement_complete_open",
+      "movement_complete_closed",
+      "movement_complete_arbitrary",
+      "calibration_routine_complete"
+    ],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true
+    }
+  }
+}

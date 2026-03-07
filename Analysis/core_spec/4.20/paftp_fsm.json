@@ -1,0 +1,2252 @@
+{
+  "fsm_model": {
+    "section_name": "4.20 Public Action Frame Transport Protocol (PAFTP)",
+    "section_ref": "Matter Core Specification v1.5, Section 4.20",
+    "description": "PAFTP provides TCP-like reliable, connection-oriented data transfer of Matter commissioning messages over Wi-Fi Public Action Frames via WFA-USD SDF Follow-up messages. This FSM model combines three spec-defined state machines (Commissioner lifecycle, Device lifecycle, post-establishment session maintenance) plus an implicit data transmission state machine derived from behavioral requirements in Sections 4.20.3.4-4.20.3.8.",
+    "sub_models": [
+      "Commissioner Lifecycle (Figure 33, Section 4.20.3.11)",
+      "Commissionable Device Lifecycle (Figure 34, Section 4.20.3.11)",
+      "Post-Establishment Session Maintenance (Figure 35, Section 4.20.3.11)",
+      "Data Transmission and Segmentation (Sections 4.20.3.4-4.20.3.8, derived)"
+    ],
+    "states": [
+      {
+        "name": "CL_Disconnected",
+        "description": "Commissioner is disconnected. No WFA-USD connection exists. Commissioner lifecycle initial state per Figure 33.",
+        "is_initial": true,
+        "invariants": [
+          "wfa_usd_connected == false",
+          "paftp_session_active == false",
+          "conn_rsp_timer_running == false",
+          "ack_rx_timer_running == false",
+          "ack_tx_timer_running == false"
+        ],
+        "state_variables": {
+          "role": "commissioner"
+        }
+      },
+      {
+        "name": "CL_WFA_USD_Connected",
+        "description": "Commissioner has established a WFA-USD connection to a Commissionable Device. Ready to initiate PAFTP handshake. Per Figure 33: 'WFA-USD connection formed'.",
+        "is_initial": false,
+        "invariants": [
+          "wfa_usd_connected == true",
+          "paftp_session_active == false"
+        ],
+        "state_variables": {
+          "role": "commissioner",
+          "wfa_usd_connected": "boolean = true"
+        }
+      },
+      {
+        "name": "CL_Handshake_Request_Sent",
+        "description": "Commissioner has sent PAFTP handshake request containing supported versions (sorted descending), Supported Maximum Service Specific Info Length, and maximum window size. Per Figure 33: 'Capabilities request sent'.",
+        "is_initial": false,
+        "invariants": [
+          "wfa_usd_connected == true",
+          "handshake_request_sent == true",
+          "paftp_session_active == false"
+        ],
+        "state_variables": {
+          "role": "commissioner",
+          "supported_versions": "uint4[8], sorted descending, unused=0",
+          "supported_max_ssi_length": "uint16",
+          "commissioner_max_window_size": "uint8"
+        }
+      },
+      {
+        "name": "CL_Awaiting_Response",
+        "description": "Commissioner is waiting for PAFTP handshake response from Commissionable Device. Connection response timer is running. Per Figure 33: 'wait on capabilities response'.",
+        "is_initial": false,
+        "invariants": [
+          "wfa_usd_connected == true",
+          "handshake_request_sent == true",
+          "conn_rsp_timer_running == true",
+          "conn_rsp_timer_remaining > 0",
+          "paftp_session_active == false"
+        ],
+        "state_variables": {
+          "role": "commissioner",
+          "conn_rsp_timer": "duration, max PAFTP_CONN_RSP_TIMEOUT (5 seconds)"
+        }
+      },
+      {
+        "name": "CL_Connected",
+        "description": "Commissioner PAFTP session is established after receiving valid handshake response. Session parameters negotiated. Transitions into post-establishment sub-state PE_AckRx_Stopped_AckTx_Ticking. Per Figure 33: 'Connected'.",
+        "is_initial": false,
+        "invariants": [
+          "wfa_usd_connected == true",
+          "paftp_session_active == true",
+          "negotiated_version > 0",
+          "negotiated_max_packet_size > 0",
+          "negotiated_window_size > 0",
+          "conn_rsp_timer_running == false"
+        ],
+        "state_variables": {
+          "role": "commissioner",
+          "negotiated_version": "uint4",
+          "negotiated_max_packet_size": "uint16 (Selected Max SSI Length)",
+          "negotiated_window_size": "uint8",
+          "local_seq_number": "uint8, initialized to 0",
+          "expected_remote_seq": "uint8, initialized to 1 (device first data = 1)",
+          "remote_window_counter": "uint8, initialized to negotiated_window_size",
+          "own_window_counter": "uint8, initialized to negotiated_window_size",
+          "pending_ack_value": "uint8, initialized to 0 (handshake response implicit seq 0)",
+          "outstanding_unacked_seqs": "list of uint8"
+        }
+      },
+      {
+        "name": "DL_Disconnected_Advertising",
+        "description": "Commissionable Device is disconnected and advertising via WFA-USD. Device lifecycle initial state per Figure 34: 'Disconnected, advertising'.",
+        "is_initial": true,
+        "invariants": [
+          "wfa_usd_connected == false",
+          "paftp_session_active == false",
+          "advertising == true"
+        ],
+        "state_variables": {
+          "role": "commissionable_device"
+        }
+      },
+      {
+        "name": "DL_WFA_USD_Connected",
+        "description": "Commissionable Device has accepted WFA-USD connection from Commissioner. Per Figure 34: 'WFA-USD connection formed'.",
+        "is_initial": false,
+        "invariants": [
+          "wfa_usd_connected == true",
+          "paftp_session_active == false"
+        ],
+        "state_variables": {
+          "role": "commissionable_device",
+          "wfa_usd_connected": "boolean = true"
+        }
+      },
+      {
+        "name": "DL_Awaiting_Handshake_Request",
+        "description": "Commissionable Device is waiting to receive PAFTP handshake request from Commissioner. Per Figure 34: 'Wait on capabilities request'.",
+        "is_initial": false,
+        "invariants": [
+          "wfa_usd_connected == true",
+          "handshake_request_received == false",
+          "paftp_session_active == false"
+        ],
+        "state_variables": {
+          "role": "commissionable_device"
+        }
+      },
+      {
+        "name": "DL_Handshake_Request_Received",
+        "description": "Commissionable Device has received handshake request and is preparing response. Must negotiate version, window size, and max packet size. Per Figure 34: 'Prepared capabilities response'.",
+        "is_initial": false,
+        "invariants": [
+          "wfa_usd_connected == true",
+          "handshake_request_received == true",
+          "paftp_session_active == false"
+        ],
+        "state_variables": {
+          "role": "commissionable_device",
+          "received_commissioner_versions": "uint4[8]",
+          "received_commissioner_max_ssi_length": "uint16",
+          "received_commissioner_window_size": "uint8",
+          "local_supported_versions": "uint4[8]",
+          "local_max_ssi_length": "uint16",
+          "local_max_window_size": "uint8"
+        }
+      },
+      {
+        "name": "DL_Connected",
+        "description": "Commissionable Device PAFTP session established after sending valid handshake response. Transitions into post-establishment sub-state PE_AckRx_Ticking_AckTx_Stopped. Per Figure 34: 'Connected'.",
+        "is_initial": false,
+        "invariants": [
+          "wfa_usd_connected == true",
+          "paftp_session_active == true",
+          "negotiated_version > 0",
+          "negotiated_max_packet_size > 0",
+          "negotiated_window_size > 0",
+          "ack_rx_timer_running == true"
+        ],
+        "state_variables": {
+          "role": "commissionable_device",
+          "negotiated_version": "uint4",
+          "negotiated_max_packet_size": "uint16 (Selected Max SSI Length)",
+          "negotiated_window_size": "uint8",
+          "local_seq_number": "uint8, initialized to 1 (first data packet; handshake response = implicit seq 0)",
+          "expected_remote_seq": "uint8, initialized to 0 (commissioner first packet = 0)",
+          "remote_window_counter": "uint8, initialized to negotiated_window_size - 1 (handshake response occupies 1 slot)",
+          "own_window_counter": "uint8, initialized to negotiated_window_size",
+          "pending_ack_value": "int8, none initially",
+          "outstanding_unacked_seqs": "list of uint8, contains implicit seq 0 from handshake response"
+        }
+      },
+      {
+        "name": "DL_Version_Incompatible",
+        "description": "Commissionable Device determined no common supported PAFTP protocol version with Commissioner. Must close WFA-USD connection. Derived from Section 4.20.3.3 SHALL requirement: 'If the Commissionable Device determines that it and the Commissioner do not share a supported PAFTP protocol version, the Commissionable Device SHALL close its WFA-USD connection'.",
+        "is_initial": false,
+        "invariants": [
+          "common_versions_count == 0",
+          "wfa_usd_connected == true"
+        ],
+        "state_variables": {
+          "role": "commissionable_device",
+          "common_versions_count": "int = 0"
+        }
+      },
+      {
+        "name": "PE_AckRx_Stopped_AckTx_Ticking",
+        "description": "Post-establishment state where ack-received timer is stopped and send-ack timer is ticking. This is the Commissioner's initial post-handshake state per Figure 35: 'ack-rx timer stopped, ack-tx timer ticking, Commissioner state post handshake'. Commissioner received handshake response (needs to ack it, hence ack-tx ticking) but has not yet sent data packets (no outstanding sent packets, hence ack-rx stopped).",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "ack_rx_timer_running == false",
+          "ack_tx_timer_running == true",
+          "has_pending_ack == true"
+        ],
+        "state_variables": {
+          "ack_tx_timer": "duration, < PAFTP_ACK_TIMEOUT / 2",
+          "pending_ack_value": "uint8"
+        }
+      },
+      {
+        "name": "PE_AckRx_Ticking_AckTx_Stopped",
+        "description": "Post-establishment state where ack-received timer is ticking and send-ack timer is stopped. This is the Commissionable Device's initial post-handshake state per Figure 35: 'ack-rx timer ticking, ack-tx timer stopped, Commissionable Device state post handshake'. Device sent handshake response (waiting for ack, hence ack-rx ticking) but has not received data packets yet (no pending acks to send, hence ack-tx stopped).",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "ack_rx_timer_running == true",
+          "ack_tx_timer_running == false",
+          "has_outstanding_unacked_sent_packets == true"
+        ],
+        "state_variables": {
+          "ack_rx_timer": "duration, PAFTP_ACK_TIMEOUT (15 seconds)"
+        }
+      },
+      {
+        "name": "PE_Both_Ticking",
+        "description": "Post-establishment state where both ack-received timer and send-ack timer are ticking. Both peers have outstanding obligations: waiting for ack of sent packets AND have pending acks to send. Per Figure 35: 'ack-rx timer ticking, ack-tx timer ticking'.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "ack_rx_timer_running == true",
+          "ack_tx_timer_running == true",
+          "has_outstanding_unacked_sent_packets == true",
+          "has_pending_ack == true"
+        ],
+        "state_variables": {
+          "ack_rx_timer": "duration, PAFTP_ACK_TIMEOUT (15 seconds)",
+          "ack_tx_timer": "duration, < PAFTP_ACK_TIMEOUT / 2"
+        }
+      },
+      {
+        "name": "PE_Closing",
+        "description": "PAFTP connection is being closed. Reached when ack-rx timer fires (timeout), invalid ack received, app closes connection, or protocol error detected. Per Figure 35: 'Closing PAFTP connection'.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_closing == true"
+        ],
+        "state_variables": {
+          "close_reason": "string (timeout | invalid_ack | app_close | protocol_error | version_incompatible | reassembly_error | sequence_error)"
+        }
+      },
+      {
+        "name": "PE_Closed",
+        "description": "PAFTP connection fully closed. Terminal state. Per Figure 35 Final state. Transitions back to CL_Disconnected or DL_Disconnected_Advertising depending on role.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == false"
+        ],
+        "state_variables": {}
+      },
+      {
+        "name": "DT_TX_Idle",
+        "description": "No SDU transmission in progress for this direction. Ready to accept new SDU from application. Derived from Section 4.20.3.5 behavioral requirements.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "sdu_transmission_in_progress == false",
+          "sdu_queue_may_be_nonempty == true"
+        ],
+        "state_variables": {
+          "sdu_fifo_queue": "queue of SDU messages"
+        }
+      },
+      {
+        "name": "DT_TX_Sending_Beginning",
+        "description": "Sending the first segment of an SDU with Beginning flag (B=1, C=0) set and Message Length field present. If SDU fits in single segment, both B and E flags set. Derived from Section 4.20.3.5.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "sdu_transmission_in_progress == true",
+          "beginning_segment_sent == false",
+          "current_sdu != null",
+          "current_sdu_size <= 65535"
+        ],
+        "state_variables": {
+          "current_sdu": "bitstring, the SDU being transmitted",
+          "current_sdu_size": "uint16, total SDU length in bytes",
+          "bytes_sent": "uint16, initialized to 0",
+          "segment_count": "uint16, initialized to 0"
+        }
+      },
+      {
+        "name": "DT_TX_Sending_Continuation",
+        "description": "Sending middle segments of a multi-segment SDU with Continuing flag (C=1) set, Beginning cleared (B=0). Payload length = max_packet_size - header_size. Derived from Section 4.20.3.5.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "sdu_transmission_in_progress == true",
+          "beginning_segment_sent == true",
+          "bytes_sent < current_sdu_size",
+          "remaining_bytes > (negotiated_max_packet_size - header_size)"
+        ],
+        "state_variables": {
+          "current_sdu": "bitstring",
+          "current_sdu_size": "uint16",
+          "bytes_sent": "uint16",
+          "remaining_bytes": "uint16 = current_sdu_size - bytes_sent"
+        }
+      },
+      {
+        "name": "DT_TX_Sending_Ending",
+        "description": "Sending the last segment of an SDU with Ending flag (E=1) set. Payload length = current_sdu_size - bytes_already_sent. Derived from Section 4.20.3.5.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "sdu_transmission_in_progress == true",
+          "beginning_segment_sent == true",
+          "remaining_bytes <= (negotiated_max_packet_size - header_size)",
+          "remaining_bytes > 0"
+        ],
+        "state_variables": {
+          "current_sdu": "bitstring",
+          "current_sdu_size": "uint16",
+          "bytes_sent": "uint16",
+          "remaining_bytes": "uint16"
+        }
+      },
+      {
+        "name": "DT_TX_Complete",
+        "description": "All segments of current SDU have been transmitted and acknowledged by peer. Ready to dequeue next SDU from FIFO or return to idle. Derived from Section 4.20.3.5: 'once all PAFTP segments of the current PAFTP SDU have been transmitted and received by the peer'.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "sdu_transmission_in_progress == false",
+          "all_segments_acked == true"
+        ],
+        "state_variables": {}
+      },
+      {
+        "name": "DT_RX_Idle",
+        "description": "No SDU reception/reassembly in progress for this direction. Waiting for Beginning segment. Derived from Section 4.20.3.5.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "reassembly_in_progress == false"
+        ],
+        "state_variables": {}
+      },
+      {
+        "name": "DT_RX_Reassembling",
+        "description": "Beginning segment received. Accumulating subsequent segments in sequence order. Reassembly buffer allocated with size = Message Length. Derived from Section 4.20.3.5.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "reassembly_in_progress == true",
+          "beginning_received == true",
+          "declared_message_length > 0",
+          "bytes_received < declared_message_length"
+        ],
+        "state_variables": {
+          "declared_message_length": "uint16, from Beginning segment Message Length field",
+          "reassembly_buffer": "bitstring, length = declared_message_length",
+          "bytes_received": "uint16",
+          "m_bit_value": "uint1, M bit from first segment (all segments must match)"
+        }
+      },
+      {
+        "name": "DT_RX_Verification",
+        "description": "All segments received (Ending segment received). Verifying reassembled SDU length matches declared Message Length. Derived from Section 4.20.3.5: 'it SHALL verify that the reassembled PAFTP SDU's total length matches'.",
+        "is_initial": false,
+        "invariants": [
+          "paftp_session_active == true",
+          "reassembly_in_progress == true",
+          "ending_received == true"
+        ],
+        "state_variables": {
+          "declared_message_length": "uint16",
+          "actual_reassembled_length": "uint16"
+        }
+      },
+      {
+        "name": "DT_RX_Error",
+        "description": "Reassembly error detected. Must close session and report error. Reached on: length mismatch, oversized segment, Ending without Beginning, Beginning during in-progress SDU. Derived from Section 4.20.3.5.",
+        "is_initial": false,
+        "invariants": [
+          "reassembly_error == true"
+        ],
+        "state_variables": {
+          "error_type": "string (length_mismatch | oversized_segment | ending_without_beginning | beginning_during_transmission | sequence_error)"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "id": "T_CL_01",
+        "from_state": "CL_Disconnected",
+        "to_state": "CL_WFA_USD_Connected",
+        "trigger": "wfa_usd_discovery_completed",
+        "guard_condition": "wfa_usd_connection_established == true",
+        "actions": [
+          "wfa_usd_connected := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.3, Figure 33: 'WFA-USD discovery issued'"
+      },
+      {
+        "id": "T_CL_02",
+        "from_state": "CL_WFA_USD_Connected",
+        "to_state": "CL_Handshake_Request_Sent",
+        "trigger": "initiate_paftp_session",
+        "guard_condition": "wfa_usd_connected == true",
+        "actions": [
+          "supported_versions := get_local_supported_versions()",
+          "supported_max_ssi_length := get_local_max_ssi_length()",
+          "commissioner_max_window_size := get_local_max_window_size()",
+          "handshake_request := build_handshake_request(supported_versions, supported_max_ssi_length, commissioner_max_window_size)",
+          "send_paftp_packet(handshake_request)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.3, Figure 33: 'Send PAFTP capabilities request'. S06, S07, S08, S18"
+      },
+      {
+        "id": "T_CL_03",
+        "from_state": "CL_Handshake_Request_Sent",
+        "to_state": "CL_Awaiting_Response",
+        "trigger": "handshake_request_transmission_complete",
+        "guard_condition": "handshake_request_sent == true",
+        "actions": [
+          "conn_rsp_timer := PAFTP_CONN_RSP_TIMEOUT",
+          "start_timer(conn_rsp_timer, PAFTP_CONN_RSP_TIMEOUT)"
+        ],
+        "timing_requirement": "conn_rsp_timer starts with duration PAFTP_CONN_RSP_TIMEOUT (5 seconds)",
+        "spec_ref": "Section 4.20.3.3, Figure 33: 'PAFTP capabilities response wait initiated'. S16"
+      },
+      {
+        "id": "T_CL_04",
+        "from_state": "CL_Awaiting_Response",
+        "to_state": "CL_Connected",
+        "trigger": "paftp_handshake_response_received",
+        "guard_condition": "conn_rsp_timer_running == true && conn_rsp_timer_remaining > 0 && valid_handshake_response(response) == true",
+        "actions": [
+          "stop_timer(conn_rsp_timer)",
+          "negotiated_version := parse_final_version(response)",
+          "negotiated_max_packet_size := parse_selected_max_ssi_length(response)",
+          "negotiated_window_size := parse_selected_window_size(response)",
+          "local_seq_number := 0",
+          "expected_remote_seq := 1",
+          "remote_window_counter := negotiated_window_size",
+          "pending_ack_value := 0",
+          "start_timer(ack_tx_timer, send_ack_timer_duration)",
+          "generate_event(paftp_session_established)"
+        ],
+        "timing_requirement": "Must occur within PAFTP_CONN_RSP_TIMEOUT (5 seconds) of handshake request. Send-ack timer started with duration < PAFTP_ACK_TIMEOUT / 2.",
+        "spec_ref": "Section 4.20.3.3, Figure 33: 'PAFTP capabilities response received'. S47, S60, S82. Section 4.20.3.6, 4.20.3.7, 4.20.3.8"
+      },
+      {
+        "id": "T_CL_05",
+        "from_state": "CL_Awaiting_Response",
+        "to_state": "CL_Disconnected",
+        "trigger": "conn_rsp_timer_expired",
+        "guard_condition": "conn_rsp_timer_remaining == 0",
+        "actions": [
+          "close_paftp_session(timeout)",
+          "close_wfa_usd_connection()",
+          "report_error(handshake_response_timeout)",
+          "generate_event(paftp_connection_timeout)"
+        ],
+        "timing_requirement": "Timer expired after PAFTP_CONN_RSP_TIMEOUT (5 seconds)",
+        "spec_ref": "Section 4.20.3.3, Figure 33: 'PAFTP connection response timed out'. S17"
+      },
+      {
+        "id": "T_CL_06",
+        "from_state": "CL_Connected",
+        "to_state": "CL_Disconnected",
+        "trigger": "close_connection_requested",
+        "guard_condition": "true",
+        "actions": [
+          "close_paftp_session(app_requested)",
+          "close_wfa_usd_connection()",
+          "stop_timer(ack_rx_timer)",
+          "stop_timer(ack_tx_timer)",
+          "generate_event(paftp_session_closed)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.10, Figure 33: 'Close WFA-USD connection'. Commissioner MAY terminate subscribe instance."
+      },
+      {
+        "id": "T_DL_01",
+        "from_state": "DL_Disconnected_Advertising",
+        "to_state": "DL_WFA_USD_Connected",
+        "trigger": "wfa_usd_discovery_completed",
+        "guard_condition": "wfa_usd_connection_established == true",
+        "actions": [
+          "wfa_usd_connected := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Figure 34: 'WFA-USD discovery issued'"
+      },
+      {
+        "id": "T_DL_02",
+        "from_state": "DL_WFA_USD_Connected",
+        "to_state": "DL_Awaiting_Handshake_Request",
+        "trigger": "ready_for_paftp_handshake",
+        "guard_condition": "wfa_usd_connected == true",
+        "actions": [],
+        "timing_requirement": null,
+        "spec_ref": "Figure 34: 'PAFTP capabilities request wait initiated'"
+      },
+      {
+        "id": "T_DL_03",
+        "from_state": "DL_Awaiting_Handshake_Request",
+        "to_state": "DL_Handshake_Request_Received",
+        "trigger": "paftp_handshake_request_received",
+        "guard_condition": "valid_handshake_request(request) == true",
+        "actions": [
+          "received_commissioner_versions := parse_version_list(request)",
+          "received_commissioner_max_ssi_length := parse_supported_max_ssi_length(request)",
+          "received_commissioner_window_size := parse_commissioner_window_size(request)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Figure 34: 'PAFTP capabilities request received'. S09"
+      },
+      {
+        "id": "T_DL_04",
+        "from_state": "DL_Handshake_Request_Received",
+        "to_state": "DL_Connected",
+        "trigger": "send_handshake_response",
+        "guard_condition": "common_version_exists(local_supported_versions, received_commissioner_versions) == true",
+        "actions": [
+          "negotiated_version := select_newest_common_version(local_supported_versions, received_commissioner_versions)",
+          "negotiated_max_packet_size := select_min_ssi_length(local_max_ssi_length, received_commissioner_max_ssi_length)",
+          "negotiated_window_size := select_min_window_size(local_max_window_size, received_commissioner_window_size)",
+          "handshake_response := build_handshake_response(negotiated_version, negotiated_max_packet_size, negotiated_window_size)",
+          "send_paftp_packet(handshake_response)",
+          "local_seq_number := 1",
+          "expected_remote_seq := 0",
+          "remote_window_counter := negotiated_window_size - 1",
+          "start_timer(ack_rx_timer, PAFTP_ACK_TIMEOUT)",
+          "generate_event(paftp_session_established)"
+        ],
+        "timing_requirement": "Device starts ack-rx timer upon sending handshake response (Section 4.20.3.8). Handshake response bears implicit seq 0.",
+        "spec_ref": "Section 4.20.3.3, Figure 34: 'PAFTP capabilities response sent'. S09-S14, S19, S48, S59, S72"
+      },
+      {
+        "id": "T_DL_05",
+        "from_state": "DL_Handshake_Request_Received",
+        "to_state": "DL_Version_Incompatible",
+        "trigger": "send_handshake_response",
+        "guard_condition": "common_version_exists(local_supported_versions, received_commissioner_versions) == false",
+        "actions": [
+          "generate_event(version_incompatible)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.3: 'If the Commissionable Device determines that it and the Commissioner do not share a supported PAFTP protocol version'. S15"
+      },
+      {
+        "id": "T_DL_06",
+        "from_state": "DL_Version_Incompatible",
+        "to_state": "DL_Disconnected_Advertising",
+        "trigger": "close_connection_on_version_mismatch",
+        "guard_condition": "common_versions_count == 0",
+        "actions": [
+          "close_wfa_usd_connection()",
+          "generate_event(paftp_version_mismatch_closed)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.3: 'the Commissionable Device SHALL close its WFA-USD connection to the Commissioner'. S15"
+      },
+      {
+        "id": "T_DL_07",
+        "from_state": "DL_Handshake_Request_Received",
+        "to_state": "DL_Disconnected_Advertising",
+        "trigger": "handshake_processing_timeout",
+        "guard_condition": "response_preparation_timed_out == true",
+        "actions": [
+          "close_wfa_usd_connection()",
+          "report_error(handshake_timeout)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Figure 34: 'PAFTP connection response timed out'"
+      },
+      {
+        "id": "T_DL_08",
+        "from_state": "DL_Connected",
+        "to_state": "DL_Disconnected_Advertising",
+        "trigger": "close_connection_requested",
+        "guard_condition": "true",
+        "actions": [
+          "close_paftp_session(app_requested)",
+          "close_wfa_usd_connection()",
+          "stop_timer(ack_rx_timer)",
+          "stop_timer(ack_tx_timer)",
+          "generate_event(paftp_session_closed)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.10, Figure 34: 'Close WFA-USD connection'. Device MAY terminate publish instance."
+      },
+      {
+        "id": "T_PE_01",
+        "from_state": "CL_Connected",
+        "to_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "trigger": "paftp_session_established_commissioner",
+        "guard_condition": "role == commissioner && paftp_session_active == true",
+        "actions": [],
+        "timing_requirement": "Send-ack timer (ack-tx) already started in T_CL_04 with pending_ack = 0 for handshake response",
+        "spec_ref": "Figure 35: '[*] --> StartCommissioner --> CommissionerState'. S82"
+      },
+      {
+        "id": "T_PE_02",
+        "from_state": "DL_Connected",
+        "to_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "trigger": "paftp_session_established_device",
+        "guard_condition": "role == commissionable_device && paftp_session_active == true",
+        "actions": [],
+        "timing_requirement": "Ack-rx timer already started in T_DL_04 when sending handshake response",
+        "spec_ref": "Figure 35: '[*] --> StartDevice --> DeviceState'. S72"
+      },
+      {
+        "id": "T_PE_03",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "trigger": "packet_received",
+        "guard_condition": "valid_sequence_number(received_packet) == true && ack_rx_timer_running == false",
+        "actions": [
+          "validate_sequence_increment(received_packet)",
+          "pending_ack_value := compute_contiguous_ack_number(received_seqs)",
+          "restart_timer(ack_tx_timer, send_ack_timer_duration)",
+          "update_own_window_counter()",
+          "process_segment_payload(received_packet)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Figure 35: 'CommissionerState --> CommissionerState: Any packet received'. S49, S74"
+      },
+      {
+        "id": "T_PE_04",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "trigger": "send_packet_with_ack",
+        "guard_condition": "has_pending_ack == true && remote_window_counter > 0 && !(remote_window_counter == 1 && has_pending_ack == false)",
+        "actions": [
+          "packet := build_data_packet_with_piggybacked_ack(local_seq_number, pending_ack_value, segment_payload)",
+          "send_paftp_packet(packet)",
+          "add_to_outstanding(local_seq_number)",
+          "local_seq_number := (local_seq_number + 1) % 256",
+          "remote_window_counter := remote_window_counter - 1",
+          "start_timer(ack_rx_timer, PAFTP_ACK_TIMEOUT)",
+          "stop_timer(ack_tx_timer)",
+          "pending_ack_value := null"
+        ],
+        "timing_requirement": "Ack-rx timer starts on send. Ack-tx timer stops because pending ack was sent for largest received.",
+        "spec_ref": "Figure 35: 'CommissionerState --> DeviceState: standalone ack-tx OR piggyback ack-tx on msg segment'. S54, S56, S58, S66, S77, S80"
+      },
+      {
+        "id": "T_PE_05",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "trigger": "ack_tx_timer_expired",
+        "guard_condition": "has_pending_ack == true && remote_window_counter > 0 && !(remote_window_counter == 1 && has_pending_ack == false)",
+        "actions": [
+          "standalone_ack := build_standalone_ack(local_seq_number, pending_ack_value)",
+          "send_paftp_packet(standalone_ack)",
+          "add_to_outstanding(local_seq_number)",
+          "local_seq_number := (local_seq_number + 1) % 256",
+          "remote_window_counter := remote_window_counter - 1",
+          "start_timer(ack_rx_timer, PAFTP_ACK_TIMEOUT)",
+          "stop_timer(ack_tx_timer)",
+          "pending_ack_value := null"
+        ],
+        "timing_requirement": "Send-ack timer expired; must immediately send pending ack per S78",
+        "spec_ref": "Section 4.20.3.8: 'If this timer expires and the peer has a pending acknowledgement, the peer SHALL immediately send that acknowledgement'. S78, S79. Note: this also transitions to a state where ack-rx is ticking (we sent a packet) but represented as self-loop because immediate ack receipt may stop ack-rx again. Functionally transitions through PE_AckRx_Ticking_AckTx_Stopped."
+      },
+      {
+        "id": "T_PE_06",
+        "from_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "to_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "trigger": "ack_received_for_most_recent",
+        "guard_condition": "is_valid_ack(received_ack) == true && received_ack == most_recent_sent_seq",
+        "actions": [
+          "acknowledge_cumulative(received_ack)",
+          "remote_window_counter := remote_window_counter + count_newly_acked(received_ack)",
+          "stop_timer(ack_rx_timer)",
+          "pending_ack_value := compute_contiguous_ack_number(received_seqs)",
+          "start_timer(ack_tx_timer, send_ack_timer_duration)"
+        ],
+        "timing_requirement": "Ack-rx stops because all outstanding sent packets acknowledged. Ack-tx starts because received packet needs acknowledgement.",
+        "spec_ref": "Figure 35: 'DeviceState --> CommissionerState: standalone ack-rx OR piggyback ack-rx for most recent segment'. S55, S69, S74"
+      },
+      {
+        "id": "T_PE_07",
+        "from_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "to_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "trigger": "send_standalone_ack_or_data_with_ack",
+        "guard_condition": "has_data_to_send == true && remote_window_counter > 0 && !(remote_window_counter == 1 && has_pending_ack == false)",
+        "actions": [
+          "packet := build_data_packet(local_seq_number, segment_payload)",
+          "send_paftp_packet(packet)",
+          "add_to_outstanding(local_seq_number)",
+          "local_seq_number := (local_seq_number + 1) % 256",
+          "remote_window_counter := remote_window_counter - 1",
+          "restart_timer(ack_rx_timer, PAFTP_ACK_TIMEOUT)"
+        ],
+        "timing_requirement": "Ack-rx timer restarted because new packet sent, extending outstanding set",
+        "spec_ref": "Figure 35: 'DeviceState --> DeviceState: standalone ack-tx OR piggyback ack-tx on msg segment'. S54, S56, S58, S66"
+      },
+      {
+        "id": "T_PE_08",
+        "from_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "to_state": "PE_Both_Ticking",
+        "trigger": "packet_received_without_ack_for_most_recent",
+        "guard_condition": "valid_sequence_number(received_packet) == true && (has_ack_field(received_packet) == false || received_ack != most_recent_sent_seq)",
+        "actions": [
+          "validate_sequence_increment(received_packet)",
+          "pending_ack_value := compute_contiguous_ack_number(received_seqs)",
+          "start_timer(ack_tx_timer, send_ack_timer_duration)",
+          "update_own_window_counter()",
+          "process_segment_payload(received_packet)"
+        ],
+        "timing_requirement": "Ack-rx still ticking (outstanding sent packets remain); ack-tx now starts (received packet needs ack)",
+        "spec_ref": "Figure 35: 'DeviceState --> BothTicking: packet-rx without ack'. S49, S68, S74"
+      },
+      {
+        "id": "T_PE_08b",
+        "from_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "to_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "trigger": "ack_received_for_non_most_recent",
+        "guard_condition": "is_valid_ack(received_ack) == true && received_ack != most_recent_sent_seq",
+        "actions": [
+          "acknowledge_cumulative(received_ack)",
+          "remote_window_counter := remote_window_counter + count_newly_acked(received_ack)",
+          "restart_timer(ack_rx_timer, PAFTP_ACK_TIMEOUT)",
+          "pending_ack_value := compute_contiguous_ack_number(received_seqs)",
+          "start_timer(ack_tx_timer, send_ack_timer_duration)"
+        ],
+        "timing_requirement": "Ack-rx restarted (not stopped) because outstanding packets remain. Ack-tx starts for the received packet.",
+        "spec_ref": "Section 4.20.3.8: 'A peer SHALL restart its acknowledgement-received timer when a valid acknowledgement is received for any but its most recently sent unacknowledged packet'. S55, S68"
+      },
+      {
+        "id": "T_PE_09",
+        "from_state": "PE_Both_Ticking",
+        "to_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "trigger": "ack_received_for_most_recent",
+        "guard_condition": "is_valid_ack(received_ack) == true && received_ack == most_recent_sent_seq",
+        "actions": [
+          "acknowledge_cumulative(received_ack)",
+          "remote_window_counter := remote_window_counter + count_newly_acked(received_ack)",
+          "stop_timer(ack_rx_timer)",
+          "pending_ack_value := compute_contiguous_ack_number(received_seqs)",
+          "restart_timer(ack_tx_timer, send_ack_timer_duration)"
+        ],
+        "timing_requirement": "Ack-rx stops (all outstanding acked). Ack-tx remains (pending ack to send).",
+        "spec_ref": "Figure 35: 'BothTicking --> DeviceState: standalone ack-rx OR piggyback ack-rx for most recent segment'. S55, S69"
+      },
+      {
+        "id": "T_PE_10",
+        "from_state": "PE_Both_Ticking",
+        "to_state": "PE_Both_Ticking",
+        "trigger": "packet_received_or_sent_without_resolving_acks",
+        "guard_condition": "ack_rx_timer_running == true && ack_tx_timer_running == true && !(received_ack == most_recent_sent_seq)",
+        "actions": [
+          "process_packet_event()",
+          "update_own_window_counter()",
+          "pending_ack_value := compute_contiguous_ack_number(received_seqs)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Figure 35: 'BothTicking --> BothTicking: Any packet without ack either tx or rx'"
+      },
+      {
+        "id": "T_PE_11",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_Both_Ticking",
+        "trigger": "sent_packet_then_received_non_final_ack",
+        "guard_condition": "ack_rx_timer_running == true && has_pending_ack == true",
+        "actions": [
+          "acknowledge_cumulative(received_ack)",
+          "remote_window_counter := remote_window_counter + count_newly_acked(received_ack)",
+          "restart_timer(ack_rx_timer, PAFTP_ACK_TIMEOUT)",
+          "restart_timer(ack_tx_timer, send_ack_timer_duration)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Figure 35: 'CommissionerState --> BothTicking: standalone ack-rx OR piggyback ack-rx for most recent segment'. NOTE: This transition label in spec diagram is ambiguous. Interpreted as: after sending a packet (causing ack-rx to start), receiving an ack that does not clear all outstanding packets, while still having pending acks to send."
+      },
+      {
+        "id": "T_PE_12",
+        "from_state": "PE_Both_Ticking",
+        "to_state": "PE_Closing",
+        "trigger": "ack_rx_timer_expired",
+        "guard_condition": "ack_rx_timer_remaining == 0",
+        "actions": [
+          "close_reason := timeout",
+          "generate_event(ack_timeout_session_close)"
+        ],
+        "timing_requirement": "Ack-rx timer expired after PAFTP_ACK_TIMEOUT (15 seconds) without valid ack for most recent sent packet",
+        "spec_ref": "Figure 35: 'BothTicking --> Closing: ack-rx timer fires'. S70"
+      },
+      {
+        "id": "T_PE_13",
+        "from_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "to_state": "PE_Closing",
+        "trigger": "ack_rx_timer_expired",
+        "guard_condition": "ack_rx_timer_remaining == 0",
+        "actions": [
+          "close_reason := timeout",
+          "generate_event(ack_timeout_session_close)"
+        ],
+        "timing_requirement": "Ack-rx timer expired after PAFTP_ACK_TIMEOUT (15 seconds)",
+        "spec_ref": "Figure 35: 'DeviceState --> Closing: ack-rx timer fires OR app closes PAFTP connection'. S70"
+      },
+      {
+        "id": "T_PE_14",
+        "from_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "to_state": "PE_Closing",
+        "trigger": "app_close_paftp_connection",
+        "guard_condition": "true",
+        "actions": [
+          "close_reason := app_close",
+          "generate_event(app_initiated_session_close)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Figure 35: 'DeviceState --> Closing: ack-rx timer fires OR app closes PAFTP connection'. Section 4.20.3.10"
+      },
+      {
+        "id": "T_PE_15",
+        "from_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "to_state": "PE_Closing",
+        "trigger": "invalid_ack_received",
+        "guard_condition": "is_valid_ack(received_ack) == false",
+        "actions": [
+          "close_reason := invalid_ack",
+          "generate_event(invalid_ack_session_close)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.8: 'if a peer receives an invalid acknowledgement, the peer SHALL close the PAFTP session'. S71. Figure 35: 'DeviceState --> Closing: standalone ack-tx OR piggyback ack-tx on msg segment' (interpreted as error path when ack is invalid)."
+      },
+      {
+        "id": "T_PE_16",
+        "from_state": "PE_Both_Ticking",
+        "to_state": "PE_Closing",
+        "trigger": "invalid_ack_received",
+        "guard_condition": "is_valid_ack(received_ack) == false",
+        "actions": [
+          "close_reason := invalid_ack",
+          "generate_event(invalid_ack_session_close)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.8: S71. Applies to any state where ack can be received."
+      },
+      {
+        "id": "T_PE_17",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_Closing",
+        "trigger": "invalid_ack_received",
+        "guard_condition": "is_valid_ack(received_ack) == false",
+        "actions": [
+          "close_reason := invalid_ack",
+          "generate_event(invalid_ack_session_close)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.8: S71. Applies to any state where ack can be received."
+      },
+      {
+        "id": "T_PE_18",
+        "from_state": "PE_Closing",
+        "to_state": "PE_Closed",
+        "trigger": "connection_closure_complete",
+        "guard_condition": "true",
+        "actions": [
+          "close_paftp_session(close_reason)",
+          "close_wfa_usd_connection()",
+          "stop_timer(ack_rx_timer)",
+          "stop_timer(ack_tx_timer)",
+          "report_error(close_reason)",
+          "generate_event(paftp_connection_closed)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Figure 35: 'Closing --> Final: PAFTP connection closed'"
+      },
+      {
+        "id": "T_PE_19",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_Closing",
+        "trigger": "sequence_number_check_failed",
+        "guard_condition": "valid_sequence_number(received_packet) == false",
+        "actions": [
+          "close_reason := sequence_error",
+          "generate_event(sequence_error_session_close)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.6: 'If this check fails, the peer SHALL close the PAFTP session and report an error'. S50"
+      },
+      {
+        "id": "T_PE_20",
+        "from_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "to_state": "PE_Closing",
+        "trigger": "sequence_number_check_failed",
+        "guard_condition": "valid_sequence_number(received_packet) == false",
+        "actions": [
+          "close_reason := sequence_error",
+          "generate_event(sequence_error_session_close)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.6: S50"
+      },
+      {
+        "id": "T_PE_21",
+        "from_state": "PE_Both_Ticking",
+        "to_state": "PE_Closing",
+        "trigger": "sequence_number_check_failed",
+        "guard_condition": "valid_sequence_number(received_packet) == false",
+        "actions": [
+          "close_reason := sequence_error",
+          "generate_event(sequence_error_session_close)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.6: S50"
+      },
+      {
+        "id": "T_PE_22",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_Closing",
+        "trigger": "idle_timeout_expired",
+        "guard_condition": "idle_timer_remaining == 0 && role == commissioner",
+        "actions": [
+          "close_reason := idle_timeout",
+          "generate_event(idle_timeout_session_close)"
+        ],
+        "timing_requirement": "PAFTP_CONN_IDLE_TIMEOUT (30 seconds) with no unique data sent",
+        "spec_ref": "Table 42: PAFTP_CONN_IDLE_TIMEOUT. Commissioner must close if no unique data for 30 seconds."
+      },
+      {
+        "id": "T_PE_23",
+        "from_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "to_state": "PE_Closing",
+        "trigger": "idle_timeout_expired",
+        "guard_condition": "idle_timer_remaining == 0 && role == commissioner",
+        "actions": [
+          "close_reason := idle_timeout",
+          "generate_event(idle_timeout_session_close)"
+        ],
+        "timing_requirement": "PAFTP_CONN_IDLE_TIMEOUT (30 seconds)",
+        "spec_ref": "Table 42: PAFTP_CONN_IDLE_TIMEOUT"
+      },
+      {
+        "id": "T_PE_24",
+        "from_state": "PE_Both_Ticking",
+        "to_state": "PE_Closing",
+        "trigger": "idle_timeout_expired",
+        "guard_condition": "idle_timer_remaining == 0 && role == commissioner",
+        "actions": [
+          "close_reason := idle_timeout",
+          "generate_event(idle_timeout_session_close)"
+        ],
+        "timing_requirement": "PAFTP_CONN_IDLE_TIMEOUT (30 seconds)",
+        "spec_ref": "Table 42: PAFTP_CONN_IDLE_TIMEOUT"
+      },
+      {
+        "id": "T_PE_25_early_ack",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_AckRx_Ticking_AckTx_Stopped",
+        "trigger": "own_window_critical",
+        "guard_condition": "own_window_free_slots <= 2 && has_pending_ack == true && remote_window_counter > 0",
+        "actions": [
+          "standalone_ack := build_standalone_ack(local_seq_number, pending_ack_value)",
+          "send_paftp_packet(standalone_ack)",
+          "add_to_outstanding(local_seq_number)",
+          "local_seq_number := (local_seq_number + 1) % 256",
+          "remote_window_counter := remote_window_counter - 1",
+          "start_timer(ack_rx_timer, PAFTP_ACK_TIMEOUT)",
+          "stop_timer(ack_tx_timer)",
+          "pending_ack_value := null"
+        ],
+        "timing_requirement": "Immediate send, overrides normal send-ack timer wait",
+        "spec_ref": "Section 4.20.3.8: 'If a peer detects that its receive window has shrunk to two or fewer free slots, it SHALL immediately send any pending acknowledgement'. S83"
+      },
+      {
+        "id": "T_PE_26_early_ack",
+        "from_state": "PE_Both_Ticking",
+        "to_state": "PE_Both_Ticking",
+        "trigger": "own_window_critical",
+        "guard_condition": "own_window_free_slots <= 2 && has_pending_ack == true && remote_window_counter > 0",
+        "actions": [
+          "standalone_ack := build_standalone_ack(local_seq_number, pending_ack_value)",
+          "send_paftp_packet(standalone_ack)",
+          "add_to_outstanding(local_seq_number)",
+          "local_seq_number := (local_seq_number + 1) % 256",
+          "remote_window_counter := remote_window_counter - 1",
+          "restart_timer(ack_rx_timer, PAFTP_ACK_TIMEOUT)",
+          "pending_ack_value := null"
+        ],
+        "timing_requirement": "Immediate send, overrides normal send-ack timer wait. Ack-rx restarts (new packet sent).",
+        "spec_ref": "Section 4.20.3.8: S83, S84"
+      },
+      {
+        "id": "T_PE_27_window_closed_block",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "trigger": "attempt_send_packet",
+        "guard_condition": "remote_window_counter == 0",
+        "actions": [
+          "generate_event(send_blocked_window_closed)"
+        ],
+        "timing_requirement": "Peer SHALL NOT send until window reopens (S56). Packet queued internally.",
+        "spec_ref": "Section 4.20.3.7: 'the local peer SHALL NOT send packets until the window reopens'. S56"
+      },
+      {
+        "id": "T_PE_28_window_one_slot_block",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "trigger": "attempt_send_packet",
+        "guard_condition": "remote_window_counter == 1 && has_pending_ack == false",
+        "actions": [
+          "generate_event(send_blocked_deadlock_prevention)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.7: 'A local peer SHALL also not send packets if the remote peer's receive window has one slot open and the local peer does not have a pending packet acknowledgement'. S58"
+      },
+      {
+        "id": "T_PE_29_window_reopen_resume",
+        "from_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "to_state": "PE_AckRx_Stopped_AckTx_Ticking",
+        "trigger": "window_reopened",
+        "guard_condition": "remote_window_counter > 0 && previously_blocked == true",
+        "actions": [
+          "resume_pending_transmission()",
+          "previously_blocked := false"
+        ],
+        "timing_requirement": "SHALL immediately resume pending PAFTP packet transmission (S57)",
+        "spec_ref": "Section 4.20.3.7: 'When a closed window reopens, a local peer SHALL immediately resume any pending PAFTP packet transmission'. S57"
+      },
+      {
+        "id": "T_DT_01",
+        "from_state": "DT_TX_Idle",
+        "to_state": "DT_TX_Sending_Beginning",
+        "trigger": "app_send_sdu",
+        "guard_condition": "paftp_session_active == true && sdu_transmission_in_progress == false && sdu_size <= 65535",
+        "actions": [
+          "current_sdu := sdu",
+          "current_sdu_size := length(sdu)",
+          "bytes_sent := 0",
+          "segment_count := 0",
+          "sdu_transmission_in_progress := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: SDU transmission initiation. S24, S25"
+      },
+      {
+        "id": "T_DT_02",
+        "from_state": "DT_TX_Idle",
+        "to_state": "DT_TX_Idle",
+        "trigger": "app_send_sdu",
+        "guard_condition": "sdu_transmission_in_progress == true",
+        "actions": [
+          "enqueue_sdu(sdu, sdu_fifo_queue)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'the new PAFTP SDU SHALL be appended to a first-in, first-out queue'. S28"
+      },
+      {
+        "id": "T_DT_03",
+        "from_state": "DT_TX_Sending_Beginning",
+        "to_state": "DT_TX_Sending_Continuation",
+        "trigger": "send_beginning_segment",
+        "guard_condition": "current_sdu_size > (negotiated_max_packet_size - header_size_with_message_length) && remote_window_counter > 0 && !(remote_window_counter == 1 && has_pending_ack == false)",
+        "actions": [
+          "payload_size := negotiated_max_packet_size - header_size_with_message_length",
+          "segment := extract_segment(current_sdu, 0, payload_size)",
+          "packet := build_beginning_segment_packet(local_seq_number, current_sdu_size, segment, pending_ack_value)",
+          "send_paftp_packet(packet)",
+          "bytes_sent := payload_size",
+          "segment_count := 1",
+          "add_to_outstanding(local_seq_number)",
+          "local_seq_number := (local_seq_number + 1) % 256",
+          "remote_window_counter := remote_window_counter - 1"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'The first PAFTP segment...SHALL have its Beginning Segment header flag set'. Multi-segment SDU: B=1, C=0, E=0. S26, S30, S31, S34"
+      },
+      {
+        "id": "T_DT_04",
+        "from_state": "DT_TX_Sending_Beginning",
+        "to_state": "DT_TX_Complete",
+        "trigger": "send_single_segment_sdu",
+        "guard_condition": "current_sdu_size <= (negotiated_max_packet_size - header_size_with_message_length) && remote_window_counter > 0 && !(remote_window_counter == 1 && has_pending_ack == false)",
+        "actions": [
+          "segment := extract_segment(current_sdu, 0, current_sdu_size)",
+          "packet := build_single_segment_packet(local_seq_number, current_sdu_size, segment, pending_ack_value)",
+          "send_paftp_packet(packet)",
+          "bytes_sent := current_sdu_size",
+          "segment_count := 1",
+          "add_to_outstanding(local_seq_number)",
+          "local_seq_number := (local_seq_number + 1) % 256",
+          "remote_window_counter := remote_window_counter - 1",
+          "sdu_transmission_in_progress := false"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'A PAFTP packet that bears an unsegmented PAFTP SDU...SHALL have both its Beginning Segment and Ending Segment flags set'. B=1, E=1. S33"
+      },
+      {
+        "id": "T_DT_05",
+        "from_state": "DT_TX_Sending_Continuation",
+        "to_state": "DT_TX_Sending_Continuation",
+        "trigger": "send_continuation_segment",
+        "guard_condition": "(current_sdu_size - bytes_sent) > (negotiated_max_packet_size - header_size_continuation) && remote_window_counter > 0 && !(remote_window_counter == 1 && has_pending_ack == false)",
+        "actions": [
+          "payload_size := negotiated_max_packet_size - header_size_continuation",
+          "segment := extract_segment(current_sdu, bytes_sent, payload_size)",
+          "packet := build_continuation_segment_packet(local_seq_number, segment, pending_ack_value)",
+          "send_paftp_packet(packet)",
+          "bytes_sent := bytes_sent + payload_size",
+          "segment_count := segment_count + 1",
+          "add_to_outstanding(local_seq_number)",
+          "local_seq_number := (local_seq_number + 1) % 256",
+          "remote_window_counter := remote_window_counter - 1"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: Continuation segments with C=1, B=0, E=0. S26, S34"
+      },
+      {
+        "id": "T_DT_06",
+        "from_state": "DT_TX_Sending_Continuation",
+        "to_state": "DT_TX_Sending_Ending",
+        "trigger": "send_continuation_segment",
+        "guard_condition": "(current_sdu_size - bytes_sent) <= (negotiated_max_packet_size - header_size_continuation) && (current_sdu_size - bytes_sent) > 0",
+        "actions": [],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: Remaining data fits in one segment, prepare ending segment. Derived transition."
+      },
+      {
+        "id": "T_DT_07",
+        "from_state": "DT_TX_Sending_Ending",
+        "to_state": "DT_TX_Complete",
+        "trigger": "send_ending_segment",
+        "guard_condition": "remote_window_counter > 0 && !(remote_window_counter == 1 && has_pending_ack == false)",
+        "actions": [
+          "remaining := current_sdu_size - bytes_sent",
+          "segment := extract_segment(current_sdu, bytes_sent, remaining)",
+          "packet := build_ending_segment_packet(local_seq_number, segment, pending_ack_value)",
+          "send_paftp_packet(packet)",
+          "bytes_sent := bytes_sent + remaining",
+          "segment_count := segment_count + 1",
+          "add_to_outstanding(local_seq_number)",
+          "local_seq_number := (local_seq_number + 1) % 256",
+          "remote_window_counter := remote_window_counter - 1",
+          "sdu_transmission_in_progress := false"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'The last PAFTP segment...SHALL have its Ending Segment flag set'. E=1, C=1, B=0. S32, S35"
+      },
+      {
+        "id": "T_DT_08",
+        "from_state": "DT_TX_Complete",
+        "to_state": "DT_TX_Sending_Beginning",
+        "trigger": "dequeue_next_sdu",
+        "guard_condition": "queue_nonempty(sdu_fifo_queue) == true",
+        "actions": [
+          "current_sdu := dequeue_sdu(sdu_fifo_queue)",
+          "current_sdu_size := length(current_sdu)",
+          "bytes_sent := 0",
+          "segment_count := 0",
+          "sdu_transmission_in_progress := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'The next PAFTP SDU SHALL be dequeued from this queue and transmitted once transmission of the current PAFTP SDU completes'. S29"
+      },
+      {
+        "id": "T_DT_09",
+        "from_state": "DT_TX_Complete",
+        "to_state": "DT_TX_Idle",
+        "trigger": "no_queued_sdus",
+        "guard_condition": "queue_nonempty(sdu_fifo_queue) == false",
+        "actions": [
+          "sdu_transmission_in_progress := false"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: No more SDUs to send, return to idle."
+      },
+      {
+        "id": "T_DT_10",
+        "from_state": "DT_RX_Idle",
+        "to_state": "DT_RX_Reassembling",
+        "trigger": "beginning_segment_received",
+        "guard_condition": "beginning_flag(received_segment) == 1 && reassembly_in_progress == false && segment_payload_size(received_segment) <= negotiated_max_packet_size",
+        "actions": [
+          "declared_message_length := parse_message_length(received_segment)",
+          "reassembly_buffer := allocate_buffer(declared_message_length)",
+          "bytes_received := copy_to_buffer(reassembly_buffer, segment_payload(received_segment))",
+          "m_bit_value := get_m_bit(received_segment)",
+          "reassembly_in_progress := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: First segment with B=1 triggers reassembly. S30, S31, S36"
+      },
+      {
+        "id": "T_DT_11",
+        "from_state": "DT_RX_Idle",
+        "to_state": "DT_RX_Idle",
+        "trigger": "single_segment_sdu_received",
+        "guard_condition": "beginning_flag(received_segment) == 1 && ending_flag(received_segment) == 1 && reassembly_in_progress == false && segment_payload_size(received_segment) <= negotiated_max_packet_size",
+        "actions": [
+          "declared_message_length := parse_message_length(received_segment)",
+          "reassembled_sdu := segment_payload(received_segment)",
+          "verify_length(reassembled_sdu, declared_message_length)",
+          "deliver_sdu_to_application(reassembled_sdu)",
+          "generate_event(sdu_received)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: Single-segment SDU with both B=1 and E=1. S33, S37, S38"
+      },
+      {
+        "id": "T_DT_12",
+        "from_state": "DT_RX_Reassembling",
+        "to_state": "DT_RX_Reassembling",
+        "trigger": "continuation_segment_received",
+        "guard_condition": "continuing_flag(received_segment) == 1 && ending_flag(received_segment) == 0 && beginning_flag(received_segment) == 0 && get_m_bit(received_segment) == m_bit_value && segment_payload_size(received_segment) <= negotiated_max_packet_size && bytes_received + segment_payload_size(received_segment) < declared_message_length",
+        "actions": [
+          "bytes_received := bytes_received + copy_to_buffer(reassembly_buffer, segment_payload(received_segment))"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: Continuation segment (C=1, B=0, E=0). S36. S04 (M bit consistency check)."
+      },
+      {
+        "id": "T_DT_13",
+        "from_state": "DT_RX_Reassembling",
+        "to_state": "DT_RX_Verification",
+        "trigger": "ending_segment_received",
+        "guard_condition": "ending_flag(received_segment) == 1 && beginning_flag(received_segment) == 0 && get_m_bit(received_segment) == m_bit_value && segment_payload_size(received_segment) <= negotiated_max_packet_size",
+        "actions": [
+          "bytes_received := bytes_received + copy_to_buffer(reassembly_buffer, segment_payload(received_segment))",
+          "actual_reassembled_length := bytes_received"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: Ending segment (E=1). S32, S35"
+      },
+      {
+        "id": "T_DT_14",
+        "from_state": "DT_RX_Verification",
+        "to_state": "DT_RX_Idle",
+        "trigger": "verify_reassembly",
+        "guard_condition": "actual_reassembled_length == declared_message_length",
+        "actions": [
+          "reassembled_sdu := finalize_reassembly(reassembly_buffer)",
+          "deliver_sdu_to_application(reassembled_sdu)",
+          "reassembly_in_progress := false",
+          "generate_event(sdu_received)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'If they match, the receiver SHALL pass the reassembled PAFTP SDU up to the next-higher-layer'. S37, S38"
+      },
+      {
+        "id": "T_DT_15",
+        "from_state": "DT_RX_Verification",
+        "to_state": "DT_RX_Error",
+        "trigger": "verify_reassembly",
+        "guard_condition": "actual_reassembled_length != declared_message_length",
+        "actions": [
+          "error_type := length_mismatch",
+          "reassembly_error := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'If the reassembled buffer's length does not match that specified by the sender...the receiver PAFTP SHALL close the PAFTP session'. S39"
+      },
+      {
+        "id": "T_DT_16",
+        "from_state": "DT_RX_Idle",
+        "to_state": "DT_RX_Error",
+        "trigger": "ending_segment_received_without_beginning",
+        "guard_condition": "ending_flag(received_segment) == 1 && beginning_flag(received_segment) == 0 && reassembly_in_progress == false",
+        "actions": [
+          "error_type := ending_without_beginning",
+          "reassembly_error := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'receiver receives an Ending Segment without the presence of a previous Beginning Segment...SHALL close'. S41"
+      },
+      {
+        "id": "T_DT_17",
+        "from_state": "DT_RX_Reassembling",
+        "to_state": "DT_RX_Error",
+        "trigger": "beginning_segment_received_during_reassembly",
+        "guard_condition": "beginning_flag(received_segment) == 1 && reassembly_in_progress == true",
+        "actions": [
+          "error_type := beginning_during_transmission",
+          "reassembly_error := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'a Beginning Segment when another PAFTP SDU's transmission is already in progress...SHALL close'. S42"
+      },
+      {
+        "id": "T_DT_18",
+        "from_state": "DT_RX_Reassembling",
+        "to_state": "DT_RX_Error",
+        "trigger": "oversized_segment_received",
+        "guard_condition": "segment_payload_size(received_segment) > negotiated_max_packet_size",
+        "actions": [
+          "error_type := oversized_segment",
+          "reassembly_error := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'received PAFTP segment payload size would exceed the maximum PAFTP packet size...SHALL close'. S40"
+      },
+      {
+        "id": "T_DT_19",
+        "from_state": "DT_RX_Error",
+        "to_state": "PE_Closing",
+        "trigger": "reassembly_error_detected",
+        "guard_condition": "reassembly_error == true",
+        "actions": [
+          "close_reason := error_type",
+          "generate_event(reassembly_error_session_close)"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: 'the receiver PAFTP SHALL close the PAFTP session and report an error to the application'. S39, S40, S41, S42"
+      },
+      {
+        "id": "T_DT_20",
+        "from_state": "DT_RX_Idle",
+        "to_state": "DT_RX_Error",
+        "trigger": "oversized_segment_received",
+        "guard_condition": "segment_payload_size(received_segment) > negotiated_max_packet_size",
+        "actions": [
+          "error_type := oversized_segment",
+          "reassembly_error := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.3.5: S40. Applies even to first segment."
+      },
+      {
+        "id": "T_DT_21",
+        "from_state": "DT_RX_Reassembling",
+        "to_state": "DT_RX_Error",
+        "trigger": "m_bit_inconsistency",
+        "guard_condition": "get_m_bit(received_segment) != m_bit_value",
+        "actions": [
+          "error_type := m_bit_mismatch",
+          "reassembly_error := true"
+        ],
+        "timing_requirement": null,
+        "spec_ref": "Section 4.20.2.1: 'All segments of a message SHALL set this bit to the same value'. S04. Violation causes protocol error."
+      }
+    ],
+    "functions": [
+      {
+        "name": "build_handshake_request",
+        "parameters": [
+          {"name": "supported_versions", "type": "uint4[8]", "description": "List of supported PAFTP protocol versions, sorted descending, unused entries = 0. Defined values: 0=unused, 4=PAFTP v1.5."},
+          {"name": "supported_max_ssi_length", "type": "uint16", "description": "Maximum size of service information transmittable in Service Specific Info field in SDEA in WFA-USD SDF Follow-up message. Default 350 if unknown."},
+          {"name": "max_window_size", "type": "uint8", "description": "Maximum receive window size in units of PAFTP packets. Max value 255."}
+        ],
+        "return_type": "paftp_packet",
+        "description": "Constructs a PAFTP handshake request packet with Control Flags = 0x65 (H=1, M=1, B=1, E=1), Management Opcode = 0x6C, version nibbles, Supported Maximum Service Specific Info length (16-bit little-endian), and Commissioner Window Size (8-bit). Version list is 8 nibbles (4 bits each), sorted newest first in descending numerical order.",
+        "algorithm_detail": "Byte layout: [0x65][0x6C][Ver0|Ver1][Ver2|Ver3][Ver4|Ver5][Ver6|Ver7][SSI_low][SSI_high][WinSize]. Little-endian for multi-byte fields (SSI Length). No cryptographic operations.",
+        "usage_in_fsm": "Called in T_CL_02 (Commissioner initiating PAFTP session)"
+      },
+      {
+        "name": "build_handshake_response",
+        "parameters": [
+          {"name": "final_version", "type": "uint4", "description": "Selected PAFTP protocol version (newest common between peers)"},
+          {"name": "selected_max_ssi_length", "type": "uint16", "description": "Selected Maximum Service Specific Info Length = min(local, commissioner's). Default 350 if unknown."},
+          {"name": "selected_window_size", "type": "uint8", "description": "Selected receive window size = min(local_max, commissioner_max). Max 255."}
+        ],
+        "return_type": "paftp_packet",
+        "description": "Constructs PAFTP handshake response packet with Control Flags = 0x65, Management Opcode = 0x6C, Final Protocol Version (4 bits), Reserved (4 bits, must be 0), Selected Max SSI Length (16-bit little-endian), and Selected Window Size (8-bit). This response bears an implicit sequence number of zero.",
+        "algorithm_detail": "Byte layout: [0x65][0x6C][FinalVer|0x0_reserved][SSI_low][SSI_high][WinSize]. Little-endian for 16-bit field. Reserved nibble SHALL be zero.",
+        "usage_in_fsm": "Called in T_DL_04 (Device sending handshake response after version/parameter negotiation)"
+      },
+      {
+        "name": "select_newest_common_version",
+        "parameters": [
+          {"name": "local_versions", "type": "uint4[8]", "description": "Local supported versions, sorted descending"},
+          {"name": "remote_versions", "type": "uint4[8]", "description": "Remote supported versions from handshake request, sorted descending"}
+        ],
+        "return_type": "uint4",
+        "description": "Finds the newest (numerically largest) PAFTP protocol version supported by both peers. Iterates through both version lists to find the maximum value present in both. Returns 0 if no common version exists.",
+        "algorithm_detail": "Compute intersection of non-zero entries in both version arrays. Return max value from intersection. Newer versions have strictly larger numbers than older versions.",
+        "usage_in_fsm": "Called in T_DL_04 guard (to check common_version_exists) and action (to determine negotiated_version). Per S13."
+      },
+      {
+        "name": "common_version_exists",
+        "parameters": [
+          {"name": "local_versions", "type": "uint4[8]", "description": "Local supported versions"},
+          {"name": "remote_versions", "type": "uint4[8]", "description": "Remote supported versions"}
+        ],
+        "return_type": "boolean",
+        "description": "Determines whether there is at least one non-zero PAFTP protocol version value present in both version arrays.",
+        "algorithm_detail": "Returns true if intersection of non-zero entries in both arrays is non-empty, false otherwise.",
+        "usage_in_fsm": "Called in T_DL_04 and T_DL_05 guard conditions to determine if handshake can proceed or must close connection"
+      },
+      {
+        "name": "select_min_ssi_length",
+        "parameters": [
+          {"name": "local_max", "type": "uint16", "description": "Local Supported Maximum Service Specific Info Length. Default 350 if unknown."},
+          {"name": "remote_max", "type": "uint16", "description": "Commissioner's Supported Maximum Service Specific Info Length from handshake request. Default 350 if unknown."}
+        ],
+        "return_type": "uint16",
+        "description": "Selects the negotiated maximum PAFTP packet size (equals Selected Maximum Service Specific Info Length) by taking the minimum of local and remote supported lengths. If either value is unknown, it defaults to 350.",
+        "algorithm_detail": "result = min(local_max, remote_max). Both values default to 350 if PAFTP is not aware of the Supported Maximum Service Specific Info Length.",
+        "usage_in_fsm": "Called in T_DL_04 action to compute negotiated_max_packet_size. Per S12, S19."
+      },
+      {
+        "name": "select_min_window_size",
+        "parameters": [
+          {"name": "local_max", "type": "uint8", "description": "Local maximum receive window size"},
+          {"name": "remote_max", "type": "uint8", "description": "Commissioner's maximum receive window size from handshake request"}
+        ],
+        "return_type": "uint8",
+        "description": "Selects the negotiated window size by taking the minimum of local and remote maximum window sizes. Maximum allowed value is 255 to prevent sequence number wraparound.",
+        "algorithm_detail": "result = min(local_max, remote_max). Constraint: result <= 255.",
+        "usage_in_fsm": "Called in T_DL_04 action to compute negotiated_window_size. Per S11."
+      },
+      {
+        "name": "get_local_supported_versions",
+        "parameters": [],
+        "return_type": "uint4[8]",
+        "description": "Returns the list of PAFTP protocol versions supported by this device, sorted in descending numerical order. Unused entries filled with 0. For Matter v1.5, the defined value is 4.",
+        "algorithm_detail": "Returns locally configured version list. Must be sorted descending per S08.",
+        "usage_in_fsm": "Called in T_CL_02 action when Commissioner builds handshake request"
+      },
+      {
+        "name": "get_local_max_ssi_length",
+        "parameters": [],
+        "return_type": "uint16",
+        "description": "Queries WFA-USD layer locally to determine Supported Maximum Service Specific Info Length. Returns 350 if PAFTP is not aware of this value.",
+        "algorithm_detail": "Query WFA-USD layer for local max SSI length. If unavailable, return 350 (default per S18, S19).",
+        "usage_in_fsm": "Called in T_CL_02, T_DL_04"
+      },
+      {
+        "name": "get_local_max_window_size",
+        "parameters": [],
+        "return_type": "uint8",
+        "description": "Returns the maximum receive window size supported by this device. Maximum 255.",
+        "algorithm_detail": "Returns locally configured max window size. Must satisfy: 1 <= result <= 255.",
+        "usage_in_fsm": "Called in T_CL_02, T_DL_04"
+      },
+      {
+        "name": "build_data_packet_with_piggybacked_ack",
+        "parameters": [
+          {"name": "seq_number", "type": "uint8", "description": "Sequence number for this packet"},
+          {"name": "ack_number", "type": "uint8", "description": "Acknowledgement number to piggyback (contiguous seq of which all previous are received)"},
+          {"name": "segment_payload", "type": "bitstring", "description": "Segment data payload"}
+        ],
+        "return_type": "paftp_packet",
+        "description": "Constructs a PAFTP data packet with A (Acknowledgement) bit set, containing both segment payload and piggybacked ack number. Control flags set based on segment position (B, C, E flags). Header uses little-endian encoding for multi-byte fields.",
+        "algorithm_detail": "Set A=1 in control flags. Include [ControlFlags][AckNumber][SeqNumber][optional MessageLength][Payload]. B/C/E flags set per segment position.",
+        "usage_in_fsm": "Called in T_PE_04, T_DT_03, T_DT_04, T_DT_05, T_DT_07 when sending data with pending ack. Per S80."
+      },
+      {
+        "name": "build_standalone_ack",
+        "parameters": [
+          {"name": "seq_number", "type": "uint8", "description": "Sequence number for this standalone ack packet"},
+          {"name": "ack_number", "type": "uint8", "description": "Acknowledgement number (contiguous seq of which all previous are received)"}
+        ],
+        "return_type": "paftp_packet",
+        "description": "Constructs a standalone acknowledgement PAFTP packet with no segment payload. Contains only control flags, ack number, and sequence number. Stand-alone acks consume a slot in remote peer's receive window and SHALL be acknowledged by remote peer.",
+        "algorithm_detail": "Set A=1, B=0, C=0, E=0, H=0, M=0 in control flags. Packet = [ControlFlags][AckNumber][SeqNumber]. No Message Length or Payload fields.",
+        "usage_in_fsm": "Called in T_PE_05, T_PE_25_early_ack, T_PE_26_early_ack when sending standalone ack. Per S64, S78, S83."
+      },
+      {
+        "name": "build_beginning_segment_packet",
+        "parameters": [
+          {"name": "seq_number", "type": "uint8", "description": "Sequence number"},
+          {"name": "message_length", "type": "uint16", "description": "Total SDU length in bytes"},
+          {"name": "segment_payload", "type": "bitstring", "description": "First segment data"},
+          {"name": "ack_number", "type": "uint8 or null", "description": "Optional piggybacked ack"}
+        ],
+        "return_type": "paftp_packet",
+        "description": "Constructs the first segment of a multi-segment SDU. B=1, C=0, E=0. Includes Message Length field (16-bit, little-endian). Payload length = max_packet_size - header_size. If ack piggybacked, A=1.",
+        "algorithm_detail": "ControlFlags: B=1, C=0, E=0, A=(1 if ack else 0), H=0, M=(per message type). Fields: [Flags][opt Ack][Seq][MessageLength_LE][Payload].",
+        "usage_in_fsm": "Called in T_DT_03 when sending first segment of multi-segment SDU. Per S30, S31."
+      },
+      {
+        "name": "build_continuation_segment_packet",
+        "parameters": [
+          {"name": "seq_number", "type": "uint8", "description": "Sequence number"},
+          {"name": "segment_payload", "type": "bitstring", "description": "Continuation segment data"},
+          {"name": "ack_number", "type": "uint8 or null", "description": "Optional piggybacked ack"}
+        ],
+        "return_type": "paftp_packet",
+        "description": "Constructs a middle segment of a multi-segment SDU. B=0, C=1, E=0. No Message Length field. Payload length SHALL equal max_packet_size - header_size.",
+        "algorithm_detail": "ControlFlags: B=0, C=1, E=0, A=(1 if ack else 0), H=0, M=(per message type). Fields: [Flags][opt Ack][Seq][Payload].",
+        "usage_in_fsm": "Called in T_DT_05 when sending middle segments. Per S34."
+      },
+      {
+        "name": "build_ending_segment_packet",
+        "parameters": [
+          {"name": "seq_number", "type": "uint8", "description": "Sequence number"},
+          {"name": "segment_payload", "type": "bitstring", "description": "Final segment data"},
+          {"name": "ack_number", "type": "uint8 or null", "description": "Optional piggybacked ack"}
+        ],
+        "return_type": "paftp_packet",
+        "description": "Constructs the last segment of a multi-segment SDU. B=0, C=1, E=1. No Message Length field. Payload length SHALL equal SDU_size - sum(previous_segment_sizes).",
+        "algorithm_detail": "ControlFlags: B=0, C=1, E=1, A=(1 if ack else 0), H=0, M=(per message type). Fields: [Flags][opt Ack][Seq][Payload].",
+        "usage_in_fsm": "Called in T_DT_07 when sending last segment. Per S32, S35."
+      },
+      {
+        "name": "build_single_segment_packet",
+        "parameters": [
+          {"name": "seq_number", "type": "uint8", "description": "Sequence number"},
+          {"name": "message_length", "type": "uint16", "description": "Total SDU length"},
+          {"name": "segment_payload", "type": "bitstring", "description": "Complete SDU data"},
+          {"name": "ack_number", "type": "uint8 or null", "description": "Optional piggybacked ack"}
+        ],
+        "return_type": "paftp_packet",
+        "description": "Constructs a packet containing a complete unsegmented SDU. B=1, E=1, C=0. Includes Message Length field.",
+        "algorithm_detail": "ControlFlags: B=1, C=0, E=1, A=(1 if ack else 0), H=0, M=(per message type). Fields: [Flags][opt Ack][Seq][MessageLength_LE][Payload].",
+        "usage_in_fsm": "Called in T_DT_04 when entire SDU fits in single segment. Per S33."
+      },
+      {
+        "name": "send_paftp_packet",
+        "parameters": [
+          {"name": "packet", "type": "paftp_packet", "description": "Constructed PAFTP packet to transmit"}
+        ],
+        "return_type": "void",
+        "description": "Transmits a PAFTP packet via the Service Specific Info field inside the Service Descriptor Extension Attribute inside a single WFA-USD SDF Follow-up message, which is transmitted via a single Wi-Fi Public Action Frame.",
+        "algorithm_detail": "Encapsulate packet into Service Specific Info field in SDEA in WFA-USD SDF Follow-up message. Transmit as Wi-Fi Public Action Frame.",
+        "usage_in_fsm": "Called in every packet-sending transition (T_CL_02, T_DL_04, T_PE_04, T_PE_05, T_PE_07, T_PE_25, T_PE_26, T_DT_03-T_DT_07)"
+      },
+      {
+        "name": "validate_sequence_increment",
+        "parameters": [
+          {"name": "received_packet", "type": "paftp_packet", "description": "Received PAFTP packet to validate"}
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that the received packet's sequence number equals (previous_remote_seq + 1) mod 256. Peers SHALL check proper increment by 1. Returns true if valid, false if sequence is unexpected.",
+        "algorithm_detail": "Check: seq(received_packet) == (expected_remote_seq) mod 256. If true, update expected_remote_seq := (expected_remote_seq + 1) mod 256. If false, return false (triggers session close).",
+        "usage_in_fsm": "Called in T_PE_03, T_PE_08. Failure triggers T_PE_19/T_PE_20/T_PE_21 (sequence error → close). Per S44, S45, S49."
+      },
+      {
+        "name": "is_valid_ack",
+        "parameters": [
+          {"name": "ack_number", "type": "uint8", "description": "Received acknowledgement number"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if acknowledgement number corresponds to an outstanding, unacknowledged PAFTP packet sequence number. An ack is invalid if the acknowledged sequence number does not match any outstanding sent packet.",
+        "algorithm_detail": "Check: ack_number ∈ outstanding_unacked_seqs. If yes, return true. If no, return false (triggers session close per S71).",
+        "usage_in_fsm": "Called in guard conditions of T_PE_06, T_PE_08b, T_PE_09, T_PE_15, T_PE_16, T_PE_17. Per S71."
+      },
+      {
+        "name": "acknowledge_cumulative",
+        "parameters": [
+          {"name": "ack_number", "type": "uint8", "description": "Acknowledgement number received"}
+        ],
+        "return_type": "void",
+        "description": "Processes cumulative acknowledgement. Acknowledging sequence N implies acknowledgement of all previously unacknowledged packets with sequence numbers prior to N on the same session. Removes acknowledged sequences from outstanding set.",
+        "algorithm_detail": "For all seq in outstanding_unacked_seqs where seq <= ack_number (accounting for wraparound): remove seq from outstanding_unacked_seqs. Cumulative ack by induction.",
+        "usage_in_fsm": "Called in T_PE_06, T_PE_08b, T_PE_09, T_PE_11. Per Section 4.20.3.8 cumulative ack semantics."
+      },
+      {
+        "name": "compute_contiguous_ack_number",
+        "parameters": [
+          {"name": "received_seqs", "type": "list of uint8", "description": "List of received packet sequence numbers"}
+        ],
+        "return_type": "uint8",
+        "description": "Computes the acknowledgement number as the PAFTP packet sequence number of which all previous contiguous PAFTP packet sequence numbers are already received. This is the highest seq such that all seq numbers from the initial received to this value have been received without gaps.",
+        "algorithm_detail": "Find max seq N in received_seqs such that for all integers M in [first_received..N], M is in received_seqs. Return N.",
+        "usage_in_fsm": "Called in T_PE_03, T_PE_05, T_PE_06, T_PE_08, T_PE_08b, T_PE_09, T_PE_10, T_PE_25, T_PE_26. Per S79, S81, S84."
+      },
+      {
+        "name": "count_newly_acked",
+        "parameters": [
+          {"name": "ack_number", "type": "uint8", "description": "Received ack number"}
+        ],
+        "return_type": "uint8",
+        "description": "Counts how many previously outstanding packets are now acknowledged by the cumulative ack. Used to increment remote window counter.",
+        "algorithm_detail": "Count entries in outstanding_unacked_seqs that are <= ack_number (accounting for wraparound).",
+        "usage_in_fsm": "Called in T_PE_06, T_PE_08b, T_PE_09, T_PE_11 to increment remote_window_counter. Per S55."
+      },
+      {
+        "name": "add_to_outstanding",
+        "parameters": [
+          {"name": "seq_number", "type": "uint8", "description": "Sequence number of sent packet"}
+        ],
+        "return_type": "void",
+        "description": "Adds the sequence number of a sent packet to the list of outstanding unacknowledged packets.",
+        "algorithm_detail": "Append seq_number to outstanding_unacked_seqs list.",
+        "usage_in_fsm": "Called in all packet sending transitions."
+      },
+      {
+        "name": "start_timer",
+        "parameters": [
+          {"name": "timer_name", "type": "string", "description": "Name of timer (conn_rsp_timer, ack_rx_timer, ack_tx_timer)"},
+          {"name": "duration", "type": "duration_ms", "description": "Timer duration in milliseconds"}
+        ],
+        "return_type": "void",
+        "description": "Starts a timer with the specified duration if it is not already running. Timer counts down and fires an expiry event when reaching zero.",
+        "algorithm_detail": "Set timer_remaining := duration. Set timer_running := true. On expiry (remaining == 0), generate timer_expired event.",
+        "usage_in_fsm": "Called in T_CL_03, T_CL_04, T_DL_04, T_PE_04, T_PE_05, T_PE_06, T_PE_07, T_PE_08, T_PE_08b, T_PE_25, T_PE_26. Per S16, S66, S72, S74."
+      },
+      {
+        "name": "stop_timer",
+        "parameters": [
+          {"name": "timer_name", "type": "string", "description": "Name of timer to stop"}
+        ],
+        "return_type": "void",
+        "description": "Stops a running timer, preventing it from firing. Sets timer_running to false.",
+        "algorithm_detail": "Set timer_running := false. Timer no longer decrements.",
+        "usage_in_fsm": "Called in T_CL_04, T_CL_06, T_DL_08, T_PE_04, T_PE_05, T_PE_06, T_PE_09, T_PE_18, T_PE_25. Per S69, S77."
+      },
+      {
+        "name": "restart_timer",
+        "parameters": [
+          {"name": "timer_name", "type": "string", "description": "Name of timer to restart"},
+          {"name": "duration", "type": "duration_ms", "description": "New timer duration"}
+        ],
+        "return_type": "void",
+        "description": "Restarts a timer by resetting it to the specified duration. Used when valid ack received for non-most-recent packet (restart ack-rx) or when pending ack sent for non-largest received (restart ack-tx).",
+        "algorithm_detail": "Set timer_remaining := duration. Set timer_running := true.",
+        "usage_in_fsm": "Called in T_PE_03, T_PE_07, T_PE_08b, T_PE_09, T_PE_11, T_PE_26. Per S68, S76."
+      },
+      {
+        "name": "close_paftp_session",
+        "parameters": [
+          {"name": "reason", "type": "string", "description": "Reason for closure (timeout, invalid_ack, protocol_error, app_requested, etc.)"}
+        ],
+        "return_type": "void",
+        "description": "Closes the PAFTP session and releases all session resources. Either Commissioner or Device may initiate closure.",
+        "algorithm_detail": "Set paftp_session_active := false. Release reassembly buffers, clear outstanding ack lists, clear queues.",
+        "usage_in_fsm": "Called in T_CL_05, T_CL_06, T_DL_08, T_PE_18. Per Section 4.20.3.10."
+      },
+      {
+        "name": "close_wfa_usd_connection",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Closes the underlying WFA-USD connection. Either peer may close the WFA-USD connection to signal end of PAFTP session.",
+        "algorithm_detail": "Terminate WFA-USD subscribe or publish instance. Set wfa_usd_connected := false.",
+        "usage_in_fsm": "Called in T_CL_05, T_CL_06, T_DL_06, T_DL_07, T_DL_08, T_PE_18. Per Section 4.20.3.10."
+      },
+      {
+        "name": "report_error",
+        "parameters": [
+          {"name": "error_description", "type": "string", "description": "Description of the error condition"}
+        ],
+        "return_type": "void",
+        "description": "Reports an error to the next-higher-layer application. Called when session is closed due to timer expiry, invalid ack, sequence error, or reassembly error.",
+        "algorithm_detail": "Pass error description to application callback.",
+        "usage_in_fsm": "Called in T_CL_05, T_DL_07, T_PE_18."
+      },
+      {
+        "name": "enqueue_sdu",
+        "parameters": [
+          {"name": "sdu", "type": "bitstring", "description": "SDU message to queue"},
+          {"name": "fifo_queue", "type": "queue", "description": "FIFO queue for pending SDUs"}
+        ],
+        "return_type": "void",
+        "description": "Appends an SDU to the end of the first-in, first-out transmission queue when another SDU transmission is already in progress.",
+        "algorithm_detail": "Append sdu to tail of fifo_queue.",
+        "usage_in_fsm": "Called in T_DT_02. Per S28."
+      },
+      {
+        "name": "dequeue_sdu",
+        "parameters": [
+          {"name": "fifo_queue", "type": "queue", "description": "FIFO queue for pending SDUs"}
+        ],
+        "return_type": "bitstring",
+        "description": "Removes and returns the SDU at the head of the FIFO queue for transmission.",
+        "algorithm_detail": "Remove and return element from head of fifo_queue.",
+        "usage_in_fsm": "Called in T_DT_08. Per S29."
+      },
+      {
+        "name": "extract_segment",
+        "parameters": [
+          {"name": "sdu", "type": "bitstring", "description": "Source SDU"},
+          {"name": "offset", "type": "uint16", "description": "Byte offset into SDU"},
+          {"name": "length", "type": "uint16", "description": "Number of bytes to extract"}
+        ],
+        "return_type": "bitstring",
+        "description": "Extracts a contiguous segment of the SDU starting at offset for the given length.",
+        "algorithm_detail": "Return sdu[offset .. offset+length-1].",
+        "usage_in_fsm": "Called in T_DT_03, T_DT_04, T_DT_05, T_DT_07."
+      },
+      {
+        "name": "deliver_sdu_to_application",
+        "parameters": [
+          {"name": "reassembled_sdu", "type": "bitstring", "description": "Fully reassembled and verified PAFTP SDU"}
+        ],
+        "return_type": "void",
+        "description": "Passes the reassembled PAFTP SDU (Matter commissioning message) up to the next-higher session layer.",
+        "algorithm_detail": "Callback to MATTERoPAF session layer with the complete SDU.",
+        "usage_in_fsm": "Called in T_DT_11, T_DT_14. Per S38."
+      },
+      {
+        "name": "verify_length",
+        "parameters": [
+          {"name": "reassembled_sdu", "type": "bitstring", "description": "Reassembled data"},
+          {"name": "declared_length", "type": "uint16", "description": "Message Length from Beginning segment"}
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that reassembled SDU total length matches the declared Message Length from the Beginning segment.",
+        "algorithm_detail": "Return length(reassembled_sdu) == declared_length.",
+        "usage_in_fsm": "Called in T_DT_11, T_DT_14 (implicit). Per S37."
+      },
+      {
+        "name": "update_own_window_counter",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Updates the local peer's own receive window counter based on the sequence number difference between the last packet received and the last packet acknowledged. Used to detect when window is nearing closure for proactive early acknowledgement.",
+        "algorithm_detail": "own_window_free_slots = negotiated_window_size - (last_received_seq - last_acked_seq) accounting for wraparound.",
+        "usage_in_fsm": "Called in T_PE_03, T_PE_08, T_PE_10. Per S61."
+      },
+      {
+        "name": "process_segment_payload",
+        "parameters": [
+          {"name": "received_packet", "type": "paftp_packet", "description": "Received packet potentially containing segment payload"}
+        ],
+        "return_type": "void",
+        "description": "Processes the segment payload of a received packet, passing it to the appropriate data transmission state (DT_RX) for reassembly if present.",
+        "algorithm_detail": "If packet contains segment payload, extract and pass to reassembly logic. If standalone ack (no payload), no reassembly action needed.",
+        "usage_in_fsm": "Called in T_PE_03, T_PE_08."
+      },
+      {
+        "name": "resume_pending_transmission",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Immediately resumes any pending PAFTP packet transmission that was blocked due to a closed receive window.",
+        "algorithm_detail": "Dequeue and send the next pending segment or standalone ack that was blocked by window closure.",
+        "usage_in_fsm": "Called in T_PE_29_window_reopen_resume. Per S57."
+      },
+      {
+        "name": "valid_handshake_request",
+        "parameters": [
+          {"name": "request", "type": "paftp_packet", "description": "Received handshake request packet"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates that a received packet is a valid PAFTP handshake request with Control Flags = 0x65, Management Opcode = 0x6C, and properly formatted version, SSI length, and window size fields.",
+        "algorithm_detail": "Check: control_flags == 0x65 && management_opcode == 0x6C && version_list_sorted_descending && ssi_length > 0 && window_size > 0 && window_size <= 255.",
+        "usage_in_fsm": "Called in T_DL_03 guard."
+      },
+      {
+        "name": "valid_handshake_response",
+        "parameters": [
+          {"name": "response", "type": "paftp_packet", "description": "Received handshake response packet"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates that a received packet is a valid PAFTP handshake response with Control Flags = 0x65, Management Opcode = 0x6C, valid final version, reserved bits = 0, and properly formatted fields.",
+        "algorithm_detail": "Check: control_flags == 0x65 && management_opcode == 0x6C && reserved_nibble == 0 && final_version > 0 && ssi_length > 0 && window_size > 0 && window_size <= 255.",
+        "usage_in_fsm": "Called in T_CL_04 guard."
+      },
+      {
+        "name": "parse_version_list",
+        "parameters": [
+          {"name": "request", "type": "paftp_packet", "description": "Handshake request packet"}
+        ],
+        "return_type": "uint4[8]",
+        "description": "Extracts the 8 version nibbles (4 bits each) from the handshake request packet.",
+        "algorithm_detail": "Extract bytes 2-3 (Ver[0]-Ver[3]) and bytes 4-5 (Ver[4]-Ver[7]) from packet, each nibble is 4 bits.",
+        "usage_in_fsm": "Called in T_DL_03."
+      },
+      {
+        "name": "parse_supported_max_ssi_length",
+        "parameters": [
+          {"name": "request", "type": "paftp_packet", "description": "Handshake request packet"}
+        ],
+        "return_type": "uint16",
+        "description": "Extracts the 16-bit Supported Maximum Service Specific Info Length from handshake request packet. Little-endian encoded.",
+        "algorithm_detail": "Read 2 bytes at offset for SSI length field, interpret as little-endian uint16.",
+        "usage_in_fsm": "Called in T_DL_03."
+      },
+      {
+        "name": "parse_commissioner_window_size",
+        "parameters": [
+          {"name": "request", "type": "paftp_packet", "description": "Handshake request packet"}
+        ],
+        "return_type": "uint8",
+        "description": "Extracts the 8-bit Commissioner Window Size from handshake request packet.",
+        "algorithm_detail": "Read 1 byte at window size field offset.",
+        "usage_in_fsm": "Called in T_DL_03."
+      },
+      {
+        "name": "parse_final_version",
+        "parameters": [
+          {"name": "response", "type": "paftp_packet", "description": "Handshake response packet"}
+        ],
+        "return_type": "uint4",
+        "description": "Extracts the 4-bit Final Protocol Version from handshake response packet.",
+        "algorithm_detail": "Read high nibble of byte at version/reserved field offset.",
+        "usage_in_fsm": "Called in T_CL_04."
+      },
+      {
+        "name": "parse_selected_max_ssi_length",
+        "parameters": [
+          {"name": "response", "type": "paftp_packet", "description": "Handshake response packet"}
+        ],
+        "return_type": "uint16",
+        "description": "Extracts the 16-bit Selected Maximum Service Specific Info Length from handshake response. Little-endian encoded.",
+        "algorithm_detail": "Read 2 bytes at SSI field offset, interpret as little-endian uint16.",
+        "usage_in_fsm": "Called in T_CL_04."
+      },
+      {
+        "name": "parse_selected_window_size",
+        "parameters": [
+          {"name": "response", "type": "paftp_packet", "description": "Handshake response packet"}
+        ],
+        "return_type": "uint8",
+        "description": "Extracts the 8-bit Selected Window Size from handshake response packet.",
+        "algorithm_detail": "Read 1 byte at window size field offset.",
+        "usage_in_fsm": "Called in T_CL_04."
+      },
+      {
+        "name": "generate_event",
+        "parameters": [
+          {"name": "event_name", "type": "string", "description": "Name of the event to generate"}
+        ],
+        "return_type": "void",
+        "description": "Generates a named event that can be observed by higher layers or used for logging and debugging.",
+        "algorithm_detail": "Emit event to event bus / callback system.",
+        "usage_in_fsm": "Called in most transitions for observability."
+      },
+      {
+        "name": "process_packet_event",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Generic handler for processing a received or sent packet event that does not resolve either timer (both remain ticking).",
+        "algorithm_detail": "Process packet per applicable rules (segment handling, ack processing) without changing timer states.",
+        "usage_in_fsm": "Called in T_PE_10 (BothTicking self-loop)."
+      }
+    ],
+    "definitions": [
+      {
+        "term": "PAFTP",
+        "definition": "Public Action Frame Transport Protocol. Provides TCP-like reliable, connection-oriented data transfer of Matter commissioning messages over Wi-Fi Public Action Frames via WFA-USD SDF Follow-up messages.",
+        "security_relevance": "PAFTP is the transport layer for Matter commissioning over Wi-Fi. Compromise of PAFTP enables disruption of commissioning process."
+      },
+      {
+        "term": "MATTERoPAF",
+        "definition": "Matter-over-PAF (Public Action Frame) Interface. A MATTERoPAF Interface SHALL implement PAFTP and SHALL only transport Matter messages as PAFTP SDU.",
+        "security_relevance": "Restriction to Matter messages only prevents protocol tunneling and misuse of the transport channel."
+      },
+      {
+        "term": "WFA-USD",
+        "definition": "Wi-Fi Alliance Unsynchronized Service Discovery. The lower layer providing point-to-point connectivity over which PAFTP operates. WFA-USD SDF Follow-up messages carry PAFTP segments.",
+        "security_relevance": "PAFTP relies on WFA-USD for delivery. WFA-USD connection forms the basis for PAFTP session establishment."
+      },
+      {
+        "term": "PAFTP SDU",
+        "definition": "PAFTP Service Data Unit. A complete Matter message to be transported over PAFTP. Limited to 64KB (16-bit Message Length field). Split into PAFTP segments for transmission.",
+        "security_relevance": "SDU integrity depends on correct segmentation, sequence numbering, and reassembly verification."
+      },
+      {
+        "term": "PAFTP Segment",
+        "definition": "A portion of a PAFTP SDU prepended with a PAFTP header and sent in a single WFA-USD SDF Follow-up message. Segments are ordered, non-overlapping, and reassembled by receiver.",
+        "security_relevance": "Segment ordering and non-overlap are security-critical. Violation of these properties can lead to message corruption or injection."
+      },
+      {
+        "term": "Receive Window",
+        "definition": "Flow control mechanism. The number of PAFTP segments a peer can reliably receive and store without session-layer acknowledgment. Maximum 255 to prevent sequence number wraparound.",
+        "security_relevance": "Window management prevents buffer overflow on resource-constrained devices. Violations enable denial of service or memory corruption."
+      },
+      {
+        "term": "Stand-alone ACK",
+        "definition": "A PAFTP packet containing only an acknowledgement number and sequence number, with no segment payload. Unlike TCP, PAFTP stand-alone acks consume a slot in the remote peer's receive window and SHALL be acknowledged.",
+        "security_relevance": "Window-consuming acks create deadlock risk if not properly managed. The one-slot-remaining deadlock prevention rule (S58) mitigates this."
+      },
+      {
+        "term": "Cumulative Acknowledgement",
+        "definition": "Acknowledgement of sequence number N implies acknowledgement of all previously unacknowledged packets with sequence numbers prior to N on the same session.",
+        "security_relevance": "Critical for correct window management. Incorrect cumulative ack semantics cause window accounting errors leading to deadlock or flow control bypass."
+      },
+      {
+        "term": "Contiguous Acknowledgement Number",
+        "definition": "The acknowledgement number SHALL be the PAFTP packet sequence number of which all previous contiguous PAFTP packet sequence numbers are already received. Acknowledges up to and including this sequence with no gaps.",
+        "security_relevance": "Ensures ack only confirms packets that have been continuously received, preventing premature ack of packets with gaps."
+      },
+      {
+        "term": "Acknowledgement-Received Timer (ack-rx timer)",
+        "definition": "Timer started when peer sends any packet (if not running). Duration = PAFTP_ACK_TIMEOUT (15 seconds). Restarted on valid ack for non-most-recent. Stopped on ack for most recent. Expiry = close session.",
+        "security_relevance": "Prevents zombie sessions and provides keep-alive mechanism. Expiry indicates unresponsive peer, enabling automatic teardown."
+      },
+      {
+        "term": "Send-Acknowledgement Timer (ack-tx timer)",
+        "definition": "Timer started when peer receives any packet (if not running). Duration < PAFTP_ACK_TIMEOUT / 2 (< 7.5 seconds). On expiry, immediately send pending ack. Ensures timely ack delivery.",
+        "security_relevance": "Timer relationship (< half of ack-rx) ensures healthy connections never timeout. Violation causes false positive session closures."
+      },
+      {
+        "term": "PAFTP_CONN_RSP_TIMEOUT",
+        "definition": "Maximum time (5 seconds) to wait for PAFTP handshake response after sending request. Commissioner closes session on expiry.",
+        "security_relevance": "Prevents resource exhaustion from unresponsive devices during handshake."
+      },
+      {
+        "term": "PAFTP_ACK_TIMEOUT",
+        "definition": "Maximum time (15 seconds) to wait for acknowledgement of sent packet. Session closed on expiry.",
+        "security_relevance": "Prevents zombie sessions. Provides upper bound on failure detection latency."
+      },
+      {
+        "term": "PAFTP_CONN_IDLE_TIMEOUT",
+        "definition": "Maximum time (30 seconds) with no unique data sent before Commissioner must close session.",
+        "security_relevance": "Limits duration of idle sessions, reducing resource exhaustion attack surface."
+      },
+      {
+        "term": "Implicit Sequence Number Zero",
+        "definition": "The Commissionable Device's handshake response bears an implied sequence number of zero because it occupies a slot in the Commissioner's receive window. Causes Device's first data packet to be sequence 1 and Device's Commissioner window counter to be initialized at (negotiated_max - 1).",
+        "security_relevance": "Asymmetric initialization is source of potential implementation errors. Incorrect accounting causes immediate sequence check failure or window deadlock."
+      },
+      {
+        "term": "Control Flags 0x65",
+        "definition": "Binary 01100101: bit 6 (H=1 Handshake), bit 5 (M=1 Management), bit 2 (E=1 Ending), bit 0 (B=1 Beginning). Used for both handshake request and response packets.",
+        "security_relevance": "Fixed flag value for handshake packets enables packet type identification and format validation."
+      },
+      {
+        "term": "Management Opcode 0x6C",
+        "definition": "The only defined Management Opcode for PAFTP Control Frames. Used for Handshake request and response.",
+        "security_relevance": "Single defined opcode limits attack surface. Unknown opcodes should be rejected."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "VERSION_DOWNGRADE_PREVENTION",
+        "type": "authenticity",
+        "description": "Device SHALL select newest common protocol version, preventing downgrade to older vulnerable versions.",
+        "fsm_states_involved": ["DL_Handshake_Request_Received", "DL_Connected"],
+        "critical_transitions": ["T_DL_04"]
+      },
+      {
+        "property_name": "VERSION_INCOMPATIBILITY_DISCONNECT",
+        "type": "access_control",
+        "description": "If no common version exists, Device SHALL close WFA-USD connection immediately, preventing operation on incompatible protocol.",
+        "fsm_states_involved": ["DL_Handshake_Request_Received", "DL_Version_Incompatible", "DL_Disconnected_Advertising"],
+        "critical_transitions": ["T_DL_05", "T_DL_06"]
+      },
+      {
+        "property_name": "SEQUENCE_NUMBER_INTEGRITY",
+        "type": "authenticity",
+        "description": "All packets have monotonically incrementing sequence numbers verified by receiver. Failure closes session. Prevents replay and injection attacks.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking", "PE_AckRx_Ticking_AckTx_Stopped", "PE_Both_Ticking", "PE_Closing"],
+        "critical_transitions": ["T_PE_19", "T_PE_20", "T_PE_21"]
+      },
+      {
+        "property_name": "ACKNOWLEDGEMENT_VALIDITY",
+        "type": "consistency",
+        "description": "Invalid acknowledgements (seq not corresponding to outstanding packet) cause immediate session closure. Prevents state corruption.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking", "PE_AckRx_Ticking_AckTx_Stopped", "PE_Both_Ticking", "PE_Closing"],
+        "critical_transitions": ["T_PE_15", "T_PE_16", "T_PE_17"]
+      },
+      {
+        "property_name": "FLOW_CONTROL_WINDOW_ENFORCEMENT",
+        "type": "consistency",
+        "description": "Peers SHALL NOT send when remote window is closed (counter=0). Prevents receiver buffer overflow on resource-constrained devices.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking"],
+        "critical_transitions": ["T_PE_27_window_closed_block"]
+      },
+      {
+        "property_name": "DEADLOCK_PREVENTION",
+        "type": "consistency",
+        "description": "Peers SHALL NOT send if remote window has one slot and no pending ack. Prevents mutual deadlock where neither can send acknowledgements.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking"],
+        "critical_transitions": ["T_PE_28_window_one_slot_block"]
+      },
+      {
+        "property_name": "HANDSHAKE_TIMEOUT_ENFORCEMENT",
+        "type": "timing",
+        "description": "Commissioner closes session if handshake response not received within PAFTP_CONN_RSP_TIMEOUT (5s). Prevents resource exhaustion.",
+        "fsm_states_involved": ["CL_Awaiting_Response", "CL_Disconnected"],
+        "critical_transitions": ["T_CL_05"]
+      },
+      {
+        "property_name": "ACK_TIMEOUT_ENFORCEMENT",
+        "type": "timing",
+        "description": "Session closed if ack-rx timer expires (15s without valid ack for most recent). Provides keep-alive and zombie detection.",
+        "fsm_states_involved": ["PE_AckRx_Ticking_AckTx_Stopped", "PE_Both_Ticking", "PE_Closing"],
+        "critical_transitions": ["T_PE_12", "T_PE_13"]
+      },
+      {
+        "property_name": "SDU_TRANSMISSION_ATOMICITY",
+        "type": "consistency",
+        "description": "Only one SDU per direction at a time. Segments of two SDUs SHALL NOT overlap. Prevents interleaving attacks and reassembly corruption.",
+        "fsm_states_involved": ["DT_TX_Idle", "DT_TX_Sending_Beginning", "DT_TX_Sending_Continuation", "DT_TX_Sending_Ending", "DT_TX_Complete"],
+        "critical_transitions": ["T_DT_01", "T_DT_02"]
+      },
+      {
+        "property_name": "REASSEMBLY_LENGTH_VERIFICATION",
+        "type": "authenticity",
+        "description": "Reassembled SDU length must match declared Message Length. Mismatch closes session. Prevents buffer overflow and data corruption.",
+        "fsm_states_involved": ["DT_RX_Verification", "DT_RX_Idle", "DT_RX_Error"],
+        "critical_transitions": ["T_DT_14", "T_DT_15"]
+      },
+      {
+        "property_name": "SEGMENT_ORDERING_ENFORCEMENT",
+        "type": "correctness",
+        "description": "Beginning must precede Ending. Ending without Beginning or Beginning during transmission closes session.",
+        "fsm_states_involved": ["DT_RX_Idle", "DT_RX_Reassembling", "DT_RX_Error"],
+        "critical_transitions": ["T_DT_16", "T_DT_17"]
+      },
+      {
+        "property_name": "OVERSIZED_SEGMENT_REJECTION",
+        "type": "confidentiality",
+        "description": "Segments exceeding negotiated max packet size cause session closure. Prevents buffer overflow on receiver.",
+        "fsm_states_involved": ["DT_RX_Idle", "DT_RX_Reassembling", "DT_RX_Error"],
+        "critical_transitions": ["T_DT_18", "T_DT_20"]
+      },
+      {
+        "property_name": "SESSION_ISOLATION",
+        "type": "confidentiality",
+        "description": "Concurrent PAFTP sessions maintain separate and independent timers, sequence numbers, and receive windows. Prevents cross-session interference.",
+        "fsm_states_involved": ["CL_Connected", "DL_Connected"],
+        "critical_transitions": []
+      },
+      {
+        "property_name": "MATTER_ONLY_TRANSPORT",
+        "type": "access_control",
+        "description": "MATTERoPAF Interface SHALL only transport Matter messages as PAFTP SDU. Prevents protocol tunneling.",
+        "fsm_states_involved": ["DT_TX_Idle", "DT_TX_Sending_Beginning"],
+        "critical_transitions": ["T_DT_01"]
+      },
+      {
+        "property_name": "IDLE_TIMEOUT_ENFORCEMENT",
+        "type": "timing",
+        "description": "Commissioner must close session after PAFTP_CONN_IDLE_TIMEOUT (30s) with no unique data. Limits idle resource consumption.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking", "PE_AckRx_Ticking_AckTx_Stopped", "PE_Both_Ticking", "PE_Closing"],
+        "critical_transitions": ["T_PE_22", "T_PE_23", "T_PE_24"]
+      },
+      {
+        "property_name": "EARLY_ACK_ON_WINDOW_PRESSURE",
+        "type": "consistency",
+        "description": "If receive window shrinks to 2 or fewer free slots, immediately send pending ack to prevent window stall.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking", "PE_Both_Ticking"],
+        "critical_transitions": ["T_PE_25_early_ack", "T_PE_26_early_ack"]
+      },
+      {
+        "property_name": "CUMULATIVE_ACKNOWLEDGEMENT_CORRECTNESS",
+        "type": "correctness",
+        "description": "Acknowledging sequence N implies acknowledgement of all previously unacknowledged packets with sequence numbers prior to N on same session (by induction). Ack number SHALL be the contiguous sequence of which all previous contiguous sequences are already received. Prevents premature acknowledgement of packets with gaps.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking", "PE_AckRx_Ticking_AckTx_Stopped", "PE_Both_Ticking"],
+        "critical_transitions": ["T_PE_03", "T_PE_04", "T_PE_05", "T_PE_06", "T_PE_08b", "T_PE_09", "T_PE_11", "T_PE_25_early_ack", "T_PE_26_early_ack"]
+      },
+      {
+        "property_name": "TIMER_RELATIONSHIP_CONSTRAINT",
+        "type": "timing",
+        "description": "Send-acknowledgement timer duration SHALL be less than one-half the acknowledgement-received timer duration (< PAFTP_ACK_TIMEOUT / 2 = < 7.5s). This ensures that on healthy connections, peers always receive acknowledgements before ack-rx timer expires, preventing false positive timeouts.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking", "PE_AckRx_Ticking_AckTx_Stopped", "PE_Both_Ticking"],
+        "critical_transitions": ["T_PE_03", "T_PE_04", "T_PE_05", "T_PE_06", "T_PE_08", "T_PE_08b", "T_PE_25_early_ack", "T_PE_26_early_ack"]
+      },
+      {
+        "property_name": "ASYMMETRIC_INITIALIZATION_CORRECTNESS",
+        "type": "correctness",
+        "description": "Device's handshake response bears implicit sequence number 0 and occupies a slot in Commissioner's receive window. Consequence: Device's first data packet SHALL be seq 1 (not 0), and Device SHALL initialize Commissioner window counter at (negotiated_window_size - 1). Commissioner's first packet SHALL be seq 0, and Commissioner SHALL initialize Device window counter at negotiated_window_size. Violation causes immediate sequence check failure or window accounting deadlock.",
+        "fsm_states_involved": ["CL_Connected", "DL_Connected"],
+        "critical_transitions": ["T_CL_04", "T_DL_04"]
+      },
+      {
+        "property_name": "MANDATORY_PIGGYBACKING",
+        "type": "correctness",
+        "description": "If peer sends any packet before send-ack timer expires and has pending acknowledgement, it SHALL piggyback that pending ack on the outgoing packet. Ack number SHALL be the contiguous sequence. Reduces standalone ack overhead and prevents window slot exhaustion.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking", "PE_Both_Ticking", "DT_TX_Sending_Beginning", "DT_TX_Sending_Continuation", "DT_TX_Sending_Ending"],
+        "critical_transitions": ["T_PE_04", "T_DT_03", "T_DT_04", "T_DT_05", "T_DT_07"]
+      },
+      {
+        "property_name": "WINDOW_COUNTER_CONSISTENCY",
+        "type": "consistency",
+        "description": "Local peer's counter of remote window must match remote peer's actual window state. Counter decrements on each send (window slot consumed), increments on each ack received (window slot freed). Own window counter based on last_received_seq - last_acked_seq. Inconsistency causes send blocking when window actually open or sending when window actually closed, leading to packet loss or deadlock.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking", "PE_AckRx_Ticking_AckTx_Stopped", "PE_Both_Ticking"],
+        "critical_transitions": ["T_PE_03", "T_PE_04", "T_PE_05", "T_PE_06", "T_PE_07", "T_PE_08b", "T_PE_09", "T_PE_11", "T_PE_25_early_ack", "T_PE_26_early_ack", "T_DT_03", "T_DT_04", "T_DT_05", "T_DT_07"]
+      },
+      {
+        "property_name": "STANDALONE_ACK_ACKNOWLEDGEMENT",
+        "type": "correctness",
+        "description": "Unlike TCP, PAFTP standalone acknowledgement packets (ack-only, no payload) consume a slot in remote peer's receive window and SHALL be acknowledged by remote peer. Failure to acknowledge standalone acks violates window accounting and can cause deadlock or premature timeout.",
+        "fsm_states_involved": ["PE_AckRx_Stopped_AckTx_Ticking", "PE_AckRx_Ticking_AckTx_Stopped", "PE_Both_Ticking"],
+        "critical_transitions": ["T_PE_03", "T_PE_05", "T_PE_06", "T_PE_08", "T_PE_08b", "T_PE_25_early_ack", "T_PE_26_early_ack"]
+      },
+      {
+        "property_name": "M_BIT_CONSISTENCY_ACROSS_SEGMENTS",
+        "type": "correctness",
+        "description": "All segments of a single SDU transmission SHALL set the M (Management Message) bit to the same value. Inconsistency indicates protocol violation or segment corruption. Receiver SHALL close session on M bit mismatch.",
+        "fsm_states_involved": ["DT_RX_Reassembling", "DT_RX_Error"],
+        "critical_transitions": ["T_DT_21"]
+      },
+      {
+        "property_name": "RESERVED_BITS_ZERO",
+        "type": "correctness",
+        "description": "Reserved bits in PAFTP packet headers (bit 4 and bit 7 of Control Flags, reserved nibble in handshake response) SHALL be set to 0. Non-zero reserved bits indicate protocol version mismatch or implementation error.",
+        "fsm_states_involved": ["CL_Awaiting_Response", "DL_Handshake_Request_Received"],
+        "critical_transitions": ["T_CL_04", "T_DL_03"]
+      },
+      {
+        "property_name": "FIFO_ORDERING_FOR_QUEUED_SDUS",
+        "type": "correctness",
+        "description": "When multiple SDUs are queued for transmission (because application sends new SDU while previous SDU transmission in progress), they SHALL be transmitted in first-in, first-out order. Reordering violates application-layer message ordering expectations.",
+        "fsm_states_involved": ["DT_TX_Idle", "DT_TX_Complete"],
+        "critical_transitions": ["T_DT_02", "T_DT_08"]
+      }
+    ],
+    "initial_state": "CL_Disconnected (Commissioner) / DL_Disconnected_Advertising (Device)",
+    "all_states": [
+      "CL_Disconnected",
+      "CL_WFA_USD_Connected",
+      "CL_Handshake_Request_Sent",
+      "CL_Awaiting_Response",
+      "CL_Connected",
+      "DL_Disconnected_Advertising",
+      "DL_WFA_USD_Connected",
+      "DL_Awaiting_Handshake_Request",
+      "DL_Handshake_Request_Received",
+      "DL_Connected",
+      "DL_Version_Incompatible",
+      "PE_AckRx_Stopped_AckTx_Ticking",
+      "PE_AckRx_Ticking_AckTx_Stopped",
+      "PE_Both_Ticking",
+      "PE_Closing",
+      "PE_Closed",
+      "DT_TX_Idle",
+      "DT_TX_Sending_Beginning",
+      "DT_TX_Sending_Continuation",
+      "DT_TX_Sending_Ending",
+      "DT_TX_Complete",
+      "DT_RX_Idle",
+      "DT_RX_Reassembling",
+      "DT_RX_Verification",
+      "DT_RX_Error"
+    ],
+    "all_triggers": [
+      "wfa_usd_discovery_completed",
+      "initiate_paftp_session",
+      "handshake_request_transmission_complete",
+      "paftp_handshake_response_received",
+      "conn_rsp_timer_expired",
+      "close_connection_requested",
+      "ready_for_paftp_handshake",
+      "paftp_handshake_request_received",
+      "send_handshake_response",
+      "close_connection_on_version_mismatch",
+      "handshake_processing_timeout",
+      "paftp_session_established_commissioner",
+      "paftp_session_established_device",
+      "packet_received",
+      "send_packet_with_ack",
+      "ack_tx_timer_expired",
+      "ack_received_for_most_recent",
+      "send_standalone_ack_or_data_with_ack",
+      "packet_received_without_ack_for_most_recent",
+      "ack_received_for_non_most_recent",
+      "packet_received_or_sent_without_resolving_acks",
+      "sent_packet_then_received_non_final_ack",
+      "ack_rx_timer_expired",
+      "app_close_paftp_connection",
+      "invalid_ack_received",
+      "connection_closure_complete",
+      "sequence_number_check_failed",
+      "idle_timeout_expired",
+      "own_window_critical",
+      "attempt_send_packet",
+      "window_reopened",
+      "app_send_sdu",
+      "send_beginning_segment",
+      "send_single_segment_sdu",
+      "send_continuation_segment",
+      "send_ending_segment",
+      "dequeue_next_sdu",
+      "no_queued_sdus",
+      "beginning_segment_received",
+      "single_segment_sdu_received",
+      "continuation_segment_received",
+      "ending_segment_received",
+      "verify_reassembly",
+      "ending_segment_received_without_beginning",
+      "beginning_segment_received_during_reassembly",
+      "oversized_segment_received",
+      "reassembly_error_detected",
+      "m_bit_inconsistency"
+    ],
+    "all_functions_used": [
+      "build_handshake_request",
+      "build_handshake_response",
+      "select_newest_common_version",
+      "common_version_exists",
+      "select_min_ssi_length",
+      "select_min_window_size",
+      "get_local_supported_versions",
+      "get_local_max_ssi_length",
+      "get_local_max_window_size",
+      "build_data_packet_with_piggybacked_ack",
+      "build_standalone_ack",
+      "build_beginning_segment_packet",
+      "build_continuation_segment_packet",
+      "build_ending_segment_packet",
+      "build_single_segment_packet",
+      "send_paftp_packet",
+      "validate_sequence_increment",
+      "is_valid_ack",
+      "acknowledge_cumulative",
+      "compute_contiguous_ack_number",
+      "count_newly_acked",
+      "add_to_outstanding",
+      "start_timer",
+      "stop_timer",
+      "restart_timer",
+      "close_paftp_session",
+      "close_wfa_usd_connection",
+      "report_error",
+      "enqueue_sdu",
+      "dequeue_sdu",
+      "extract_segment",
+      "deliver_sdu_to_application",
+      "verify_length",
+      "update_own_window_counter",
+      "process_segment_payload",
+      "resume_pending_transmission",
+      "valid_handshake_request",
+      "valid_handshake_response",
+      "parse_version_list",
+      "parse_supported_max_ssi_length",
+      "parse_commissioner_window_size",
+      "parse_final_version",
+      "parse_selected_max_ssi_length",
+      "parse_selected_window_size",
+      "generate_event",
+      "process_packet_event"
+    ],
+    "cryptographic_operations": [],
+    "security_assumptions": [
+      {
+        "assumption": "WFA-USD layer provides reliable point-to-point delivery without packet loss, duplication, or reordering within its delivery guarantees. PAFTP does not implement retransmission.",
+        "type": "implicit",
+        "if_violated": "Packet loss causes sequence number gaps, failing validation checks and closing sessions. PAFTP provides no retransmission mechanism—sequence check failure is terminal for the session."
+      },
+      {
+        "assumption": "WFA-USD layer and/or Matter layer above PAFTP provide message authentication and confidentiality. PAFTP itself specifies no cryptographic protection (no encryption, MAC, or signatures).",
+        "type": "implicit",
+        "if_violated": "Active attacker on Wi-Fi can inject, modify, or replay PAFTP packets. Can forge handshake responses, manipulate version negotiation, inject segments, send invalid acks, or eavesdrop on all commissioning traffic. All security properties depend on lower/upper layer protection."
+      },
+      {
+        "assumption": "System clocks on Commissioner and Commissionable Device do not drift significantly relative to timeout durations (PAFTP_CONN_RSP_TIMEOUT, PAFTP_ACK_TIMEOUT, send-ack timer).",
+        "type": "implicit",
+        "if_violated": "Timer coordination breaks. Send-ack timer must fire before half of ack-rx timer. If clocks drift, healthy connections may timeout (false positive) or failed connections may not timeout (resource leak). Particularly critical for the ratio constraint: send_ack_duration < PAFTP_ACK_TIMEOUT / 2."
+      },
+      {
+        "assumption": "Implementations correctly parse PAFTP packet headers and validate all field sizes, types, and ranges as specified in the PDU format.",
+        "type": "implicit",
+        "if_violated": "Parser vulnerabilities enable buffer overflows from malformed packets, integer overflows in size calculations, or memory corruption from invalid field values. Protocol security properties are only as strong as their implementation."
+      },
+      {
+        "assumption": "Sufficient memory is available on both peers to maintain negotiated receive window buffers, reassembly buffers up to 64KB, and FIFO queues for pending SDUs.",
+        "type": "implicit",
+        "if_violated": "Memory exhaustion prevents correct operation. Receive window cannot be maintained, reassembly buffers cannot be allocated. Leads to dropped packets, failed reassembly, or out-of-memory crashes. Enables denial of service through resource exhaustion."
+      },
+      {
+        "assumption": "Matter messages transported as PAFTP SDU are properly authenticated and encrypted at the Matter session layer. PAFTP provides transport reliability only, not security.",
+        "type": "implicit",
+        "if_violated": "Commissioning messages travel without confidentiality or integrity at transport level. If Matter layer does not protect messages, credentials and provisioning data are exposed to eavesdropping and manipulation."
+      },
+      {
+        "assumption": "Each WFA-USD SDF Follow-up message is delivered as a single atomic unit without fragmentation or partial delivery at the WFA-USD layer.",
+        "type": "implicit",
+        "if_violated": "Partial WFA-USD message delivery could result in truncated PAFTP packets, causing parse errors, incomplete segments, or header-only packets without payload. PAFTP assumes each Follow-up message contains exactly one complete PAFTP packet."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true,
+      "notes": "PAFTP has no cryptographic operations (transport layer only). Three spec-defined timers fully modeled (conn_rsp_timer, ack_rx_timer, ack_tx_timer) plus idle timer reference. All error paths from Section 4.20.3.5-4.20.3.8 (sequence error, invalid ack, reassembly errors, timeout) represented. Figure 35 contains one ambiguous transition (DeviceState-->Closing on same trigger as DeviceState self-loop) resolved via guard conditions distinguishing normal vs error paths."
+    }
+  }
+}

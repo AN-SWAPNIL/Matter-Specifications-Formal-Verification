@@ -1,0 +1,1225 @@
+{
+  "fsm_model": {
+    "section_name": "11.25 Joint Fabric PKI Cluster",
+    "section_ref": "Matter Specification R1.4, Document 23-27349, Section 11.25",
+    "cluster_id": "0x0753",
+    "conformance": "Provisional",
+    "scope": "Node-level, applies only to Joint Fabric Administrator nodes fulfilling Anchor CA role",
+    "states": [
+      {
+        "name": "Idle_AnchorCA",
+        "description": "Anchor CA ready to receive commands, no operations in progress",
+        "is_initial": true,
+        "invariants": [
+          "current_role == AnchorCA",
+          "anchor_transfer_active == false",
+          "icacsr_pending == false"
+        ],
+        "state_variables": {
+          "current_role": "enum {NotAnchor, AnchorCA}",
+          "anchor_transfer_active": "boolean",
+          "icacsr_pending": "boolean",
+          "user_consent_given": "boolean"
+        }
+      },
+      {
+        "name": "Idle_NotAnchor",
+        "description": "Node is not Anchor CA, cannot process PKI commands",
+        "is_initial": false,
+        "invariants": [
+          "current_role == NotAnchor"
+        ],
+        "state_variables": {
+          "current_role": "enum {NotAnchor, AnchorCA}"
+        }
+      },
+      {
+        "name": "Processing_ICACSR",
+        "description": "ICACSR request received, initiating validation pipeline",
+        "is_initial": false,
+        "invariants": [
+          "icacsr_pending == true",
+          "commissioning_phase == true",
+          "anchor_transfer_active == false"
+        ],
+        "state_variables": {
+          "stored_csr": "octstr (max 400 bytes)",
+          "icacsr_pending": "boolean"
+        }
+      },
+      {
+        "name": "Validating_PKCS10",
+        "description": "Validating CSR conforms to PKCS #10 format per RFC 2986",
+        "is_initial": false,
+        "invariants": [
+          "icacsr_pending == true",
+          "validation_step == PKCS10_FORMAT"
+        ],
+        "state_variables": {
+          "stored_csr": "octstr",
+          "pkcs10_valid": "boolean (pending)",
+          "validation_step": "enum"
+        }
+      },
+      {
+        "name": "Validating_Signature",
+        "description": "Verifying CSR self-signature using extracted public key",
+        "is_initial": false,
+        "invariants": [
+          "icacsr_pending == true",
+          "pkcs10_valid == true",
+          "validation_step == SIGNATURE_VERIFICATION"
+        ],
+        "state_variables": {
+          "stored_csr": "octstr",
+          "extracted_public_key": "EC or RSA key",
+          "signature_valid": "boolean (pending)"
+        }
+      },
+      {
+        "name": "Validating_DCL_VendorID",
+        "description": "Validating Vendor ID against DCL (Device Certificate List)",
+        "is_initial": false,
+        "invariants": [
+          "icacsr_pending == true",
+          "signature_valid == true",
+          "validation_step == DCL_VALIDATION"
+        ],
+        "state_variables": {
+          "stored_csr": "octstr",
+          "extracted_vendor_id": "uint16",
+          "dcl_valid": "boolean (pending)"
+        }
+      },
+      {
+        "name": "Validating_Certificate_Type",
+        "description": "Verifying resulting certificate will be ICAC type",
+        "is_initial": false,
+        "invariants": [
+          "icacsr_pending == true",
+          "dcl_valid == true",
+          "validation_step == TYPE_VERIFICATION"
+        ],
+        "state_variables": {
+          "stored_csr": "octstr",
+          "certificate_type": "enum {ICAC, LeafCert, RootCA} (pending)"
+        }
+      },
+      {
+        "name": "Awaiting_User_Consent_ICACSR",
+        "description": "Waiting for administrator to consent to certificate issuance",
+        "is_initial": false,
+        "invariants": [
+          "icacsr_pending == true",
+          "all_validations_passed == true",
+          "user_consent_given == false"
+        ],
+        "state_variables": {
+          "stored_csr": "octstr",
+          "user_consent_given": "boolean",
+          "consent_request_time": "timestamp"
+        }
+      },
+      {
+        "name": "Signing_ICACSR",
+        "description": "Signing CSR to produce ICAC certificate using Anchor CA private key",
+        "is_initial": false,
+        "invariants": [
+          "icacsr_pending == true",
+          "user_consent_given == true",
+          "signing_in_progress == true"
+        ],
+        "state_variables": {
+          "stored_csr": "octstr",
+          "anchor_ca_private_key": "EC private key",
+          "signing_success": "boolean (pending)"
+        }
+      },
+      {
+        "name": "ICACSR_Complete_Success",
+        "description": "ICACSR successfully processed, certificate ready to send",
+        "is_initial": false,
+        "invariants": [
+          "status_code == OK",
+          "icac_certificate != null"
+        ],
+        "state_variables": {
+          "status_code": "IcacsrRequestStatusEnum == OK",
+          "icac_certificate": "octstr (PEM format, max 400 bytes)"
+        }
+      },
+      {
+        "name": "ICACSR_Complete_Error",
+        "description": "ICACSR processing failed, error code determined",
+        "is_initial": false,
+        "invariants": [
+          "status_code != OK"
+        ],
+        "state_variables": {
+          "status_code": "IcacsrRequestStatusEnum (non-OK value)",
+          "error_details": "string"
+        }
+      },
+      {
+        "name": "Transfer_Requested",
+        "description": "TransferAnchorRequest received, checking authorization and preconditions",
+        "is_initial": false,
+        "invariants": [
+          "current_role == AnchorCA",
+          "anchor_transfer_active == false",
+          "transfer_request_pending == true"
+        ],
+        "state_variables": {
+          "transfer_sender": "node-id",
+          "sender_verified": "boolean (pending)"
+        }
+      },
+      {
+        "name": "Awaiting_User_Consent_Transfer",
+        "description": "Waiting for administrator to consent to anchor transfer",
+        "is_initial": false,
+        "invariants": [
+          "sender_verified == true",
+          "datastore_busy == false",
+          "user_consent_given == false"
+        ],
+        "state_variables": {
+          "transfer_target": "node-id",
+          "user_consent_given": "boolean",
+          "consent_request_time": "timestamp"
+        }
+      },
+      {
+        "name": "Transfer_InProgress",
+        "description": "Anchor transfer executing, datastore locked, transferring keys and fabric data",
+        "is_initial": false,
+        "invariants": [
+          "anchor_transfer_active == true",
+          "datastore_busy == true",
+          "user_consent_given == true"
+        ],
+        "state_variables": {
+          "transfer_target": "node-id",
+          "transfer_initiated": "boolean"
+        }
+      },
+      {
+        "name": "Transfer_Finalizing",
+        "description": "Waiting for TransferAnchorComplete command to finalize transfer",
+        "is_initial": false,
+        "invariants": [
+          "anchor_transfer_active == true",
+          "transfer_data_sent == true",
+          "transfer_response_sent == true"
+        ],
+        "state_variables": {
+          "transfer_target": "node-id",
+          "awaiting_completion": "boolean"
+        }
+      },
+      {
+        "name": "Transfer_Complete",
+        "description": "Anchor transfer completed successfully, role changed to NotAnchor",
+        "is_initial": false,
+        "invariants": [
+          "transfer_finalization_valid == true",
+          "current_role == NotAnchor"
+        ],
+        "state_variables": {
+          "former_anchor": "boolean == true",
+          "transfer_timestamp": "timestamp"
+        }
+      },
+      {
+        "name": "Transfer_Rejected",
+        "description": "Anchor transfer request rejected due to precondition failure",
+        "is_initial": false,
+        "invariants": [
+          "status_code != OK"
+        ],
+        "state_variables": {
+          "status_code": "TransferAnchorResponseStatusEnum (non-OK)",
+          "rejection_reason": "string"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "id": "T1",
+        "from_state": "Idle_AnchorCA",
+        "to_state": "Processing_ICACSR",
+        "trigger": "ICACSRRequest",
+        "guard_condition": "commissioning_phase == true && anchor_transfer_active == false && length(ICACSR) <= 400",
+        "actions": [
+          "icacsr_pending := true",
+          "stored_csr := ICACSR",
+          "call store_csr(ICACSR)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T2",
+        "from_state": "Idle_AnchorCA",
+        "to_state": "ICACSR_Complete_Error",
+        "trigger": "ICACSRRequest",
+        "guard_condition": "commissioning_phase == false",
+        "actions": [
+          "status_code := InvalidIcaCsrFormat",
+          "error_details := commissioning_phase_required"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T3",
+        "from_state": "Idle_AnchorCA",
+        "to_state": "ICACSR_Complete_Error",
+        "trigger": "ICACSRRequest",
+        "guard_condition": "anchor_transfer_active == true",
+        "actions": [
+          "status_code := BusyAnchorTransfer",
+          "error_details := anchor_transfer_in_progress"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T4",
+        "from_state": "Processing_ICACSR",
+        "to_state": "Validating_PKCS10",
+        "trigger": "automatic",
+        "guard_condition": "icacsr_pending == true",
+        "actions": [
+          "validation_step := PKCS10_FORMAT",
+          "call validate_pkcs10_format(stored_csr)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T5",
+        "from_state": "Validating_PKCS10",
+        "to_state": "Validating_Signature",
+        "trigger": "validation_complete",
+        "guard_condition": "pkcs10_valid == true",
+        "actions": [
+          "extracted_public_key := call extract_public_key(stored_csr)",
+          "validation_step := SIGNATURE_VERIFICATION",
+          "call verify_csr_signature(stored_csr, extracted_public_key)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T6",
+        "from_state": "Validating_PKCS10",
+        "to_state": "ICACSR_Complete_Error",
+        "trigger": "validation_complete",
+        "guard_condition": "pkcs10_valid == false",
+        "actions": [
+          "status_code := InvalidIcaCsrFormat",
+          "icacsr_pending := false",
+          "error_details := pkcs10_validation_failed"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T7",
+        "from_state": "Validating_Signature",
+        "to_state": "Validating_DCL_VendorID",
+        "trigger": "signature_verification_complete",
+        "guard_condition": "signature_valid == true",
+        "actions": [
+          "extracted_vendor_id := call extract_vendor_id(stored_csr)",
+          "validation_step := DCL_VALIDATION",
+          "call validate_dcl_vendor_id(extracted_vendor_id)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T8",
+        "from_state": "Validating_Signature",
+        "to_state": "ICACSR_Complete_Error",
+        "trigger": "signature_verification_complete",
+        "guard_condition": "signature_valid == false",
+        "actions": [
+          "status_code := InvalidIcaCsrSignature",
+          "icacsr_pending := false",
+          "error_details := signature_verification_failed"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T9",
+        "from_state": "Validating_DCL_VendorID",
+        "to_state": "Validating_Certificate_Type",
+        "trigger": "dcl_validation_complete",
+        "guard_condition": "dcl_valid == true",
+        "actions": [
+          "validation_step := TYPE_VERIFICATION",
+          "call verify_certificate_type(stored_csr)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T10",
+        "from_state": "Validating_DCL_VendorID",
+        "to_state": "ICACSR_Complete_Error",
+        "trigger": "dcl_validation_complete",
+        "guard_condition": "dcl_valid == false",
+        "actions": [
+          "status_code := FailedDCLVendorIdValidation",
+          "icacsr_pending := false",
+          "error_details := dcl_validation_failed"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T11",
+        "from_state": "Validating_Certificate_Type",
+        "to_state": "Awaiting_User_Consent_ICACSR",
+        "trigger": "type_validation_complete",
+        "guard_condition": "certificate_type == ICAC && user_consent_given == false",
+        "actions": [
+          "consent_request_time := current_timestamp",
+          "call request_user_consent(ICACSR, stored_csr)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T12",
+        "from_state": "Validating_Certificate_Type",
+        "to_state": "ICACSR_Complete_Error",
+        "trigger": "type_validation_complete",
+        "guard_condition": "certificate_type != ICAC",
+        "actions": [
+          "status_code := NotAnIcac",
+          "icacsr_pending := false",
+          "error_details := certificate_type_not_icac"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T13",
+        "from_state": "Awaiting_User_Consent_ICACSR",
+        "to_state": "Signing_ICACSR",
+        "trigger": "user_consent_received",
+        "guard_condition": "user_consent_given == true",
+        "actions": [
+          "signing_in_progress := true",
+          "call sign_icacsr(stored_csr, anchor_ca_private_key)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T14",
+        "from_state": "Awaiting_User_Consent_ICACSR",
+        "to_state": "ICACSR_Complete_Error",
+        "trigger": "user_consent_timeout OR user_consent_denied",
+        "guard_condition": "user_consent_given == false",
+        "actions": [
+          "status_code := IcaCsrRequestNoUserConsent",
+          "icacsr_pending := false",
+          "error_details := user_consent_not_given"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T15",
+        "from_state": "Signing_ICACSR",
+        "to_state": "ICACSR_Complete_Success",
+        "trigger": "signing_complete",
+        "guard_condition": "signing_success == true",
+        "actions": [
+          "status_code := OK",
+          "icac_certificate := signed_certificate",
+          "icacsr_pending := false"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T16",
+        "from_state": "Signing_ICACSR",
+        "to_state": "ICACSR_Complete_Error",
+        "trigger": "signing_complete",
+        "guard_condition": "signing_success == false",
+        "actions": [
+          "status_code := IcaCsrSigningFailed",
+          "icacsr_pending := false",
+          "error_details := signing_operation_failed"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T17",
+        "from_state": "ICACSR_Complete_Success",
+        "to_state": "Idle_AnchorCA",
+        "trigger": "ICACSRResponse_sent",
+        "guard_condition": "true",
+        "actions": [
+          "call generate_response(ICACSRResponse, StatusCode=OK, ICAC=icac_certificate)",
+          "call clear_icacsr_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T18",
+        "from_state": "ICACSR_Complete_Error",
+        "to_state": "Idle_AnchorCA",
+        "trigger": "ICACSRResponse_sent",
+        "guard_condition": "true",
+        "actions": [
+          "call generate_response(ICACSRResponse, StatusCode=status_code)",
+          "call clear_icacsr_data()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T19",
+        "from_state": "Idle_AnchorCA",
+        "to_state": "Transfer_Requested",
+        "trigger": "TransferAnchorRequest",
+        "guard_condition": "current_role == AnchorCA && anchor_transfer_active == false",
+        "actions": [
+          "transfer_sender := sender_node_id",
+          "transfer_request_pending := true",
+          "call verify_sender_is_candidate_anchor(sender_node_id, sender_credentials)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T20",
+        "from_state": "Transfer_Requested",
+        "to_state": "Awaiting_User_Consent_Transfer",
+        "trigger": "sender_verification_complete",
+        "guard_condition": "sender_verified == true && user_consent_given == false",
+        "actions": [
+          "transfer_target := sender_node_id",
+          "consent_request_time := current_timestamp",
+          "call request_user_consent(AnchorTransfer, transfer_target)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T21",
+        "from_state": "Transfer_Requested",
+        "to_state": "Transfer_Rejected",
+        "trigger": "sender_verification_complete",
+        "guard_condition": "sender_verified == false",
+        "actions": [
+          "status_code := TransferAnchorStatusNoUserConsent",
+          "rejection_reason := sender_not_authorized_candidate"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T22",
+        "from_state": "Awaiting_User_Consent_Transfer",
+        "to_state": "Transfer_InProgress",
+        "trigger": "user_consent_received",
+        "guard_condition": "user_consent_given == true",
+        "actions": [
+          "anchor_transfer_active := true",
+          "status_code := OK",
+          "call initiate_anchor_transfer(transfer_target)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T23",
+        "from_state": "Awaiting_User_Consent_Transfer",
+        "to_state": "Transfer_Rejected",
+        "trigger": "user_consent_timeout OR user_consent_denied",
+        "guard_condition": "user_consent_given == false",
+        "actions": [
+          "status_code := TransferAnchorStatusNoUserConsent",
+          "rejection_reason := user_consent_not_given"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T24",
+        "from_state": "Transfer_InProgress",
+        "to_state": "Transfer_Finalizing",
+        "trigger": "transfer_data_sent",
+        "guard_condition": "transfer_initiated == true",
+        "actions": [
+          "transfer_data_sent := true",
+          "awaiting_completion := true",
+          "call generate_response(TransferAnchorResponse, StatusCode=OK)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T25",
+        "from_state": "Transfer_Finalizing",
+        "to_state": "Transfer_Complete",
+        "trigger": "TransferAnchorComplete",
+        "guard_condition": "transfer_finalization_valid == true",
+        "actions": [
+          "anchor_transfer_active := false",
+          "current_role := NotAnchor",
+          "former_anchor := true",
+          "transfer_timestamp := current_timestamp",
+          "call generate_response(success)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T26",
+        "from_state": "Transfer_Complete",
+        "to_state": "Idle_NotAnchor",
+        "trigger": "automatic",
+        "guard_condition": "true",
+        "actions": [],
+        "timing_requirement": null
+      },
+      {
+        "id": "T27",
+        "from_state": "Transfer_Rejected",
+        "to_state": "Idle_AnchorCA",
+        "trigger": "TransferAnchorResponse_sent",
+        "guard_condition": "true",
+        "actions": [
+          "call generate_response(TransferAnchorResponse, StatusCode=status_code)"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "store_csr",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "octstr (max 400 bytes)",
+            "description": "Certificate Signing Request in PKCS #10 format"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores CSR in temporary memory or database for validation processing. Ensures CSR is available throughout validation pipeline.",
+        "algorithm_detail": "Memory allocation or database write operation. CSR stored with timestamp and request context.",
+        "usage_in_fsm": "Called in T1 when ICACSRRequest received, stores CSR for subsequent validation steps"
+      },
+      {
+        "name": "validate_pkcs10_format",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "octstr",
+            "description": "Certificate Signing Request to validate"
+          }
+        ],
+        "return_type": "boolean (pkcs10_valid)",
+        "description": "Validates CSR conforms to PKCS #10 standard per RFC 2986. Checks DER encoding, ASN.1 structure, presence of required fields (version, subject, subjectPKInfo, attributes, signatureAlgorithm, signature).",
+        "algorithm_detail": "ASN.1 DER parser: (1) Decode DER encoding, verify no trailing bytes. (2) Parse CertificationRequestInfo structure. (3) Validate version field (must be 0). (4) Verify subject DN present. (5) Verify SubjectPublicKeyInfo present and well-formed. (6) Validate signatureAlgorithm OID is recognized. (7) Verify signature field present. Returns true if all checks pass, false otherwise.",
+        "usage_in_fsm": "Called in T4 (Processing_ICACSR → Validating_PKCS10). Result determines transition to T5 (valid) or T6 (invalid)."
+      },
+      {
+        "name": "extract_public_key",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "octstr",
+            "description": "PKCS #10 CSR"
+          }
+        ],
+        "return_type": "public_key (EC or RSA key)",
+        "description": "Extracts SubjectPublicKeyInfo from CSR for signature verification. Parses public key algorithm and key material.",
+        "algorithm_detail": "ASN.1 parsing: (1) Navigate to SubjectPublicKeyInfo field in CertificationRequestInfo. (2) Extract algorithm OID (e.g., 1.2.840.10045.2.1 for EC). (3) Extract algorithm parameters (e.g., curve OID for EC). (4) Extract public key bit string. (5) Parse key material based on algorithm (EC point, RSA modulus/exponent). Returns structured public key object.",
+        "usage_in_fsm": "Called in T5 (Validating_PKCS10 → Validating_Signature). Extracted key used for signature verification."
+      },
+      {
+        "name": "verify_csr_signature",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "octstr",
+            "description": "PKCS #10 CSR"
+          },
+          {
+            "name": "public_key",
+            "type": "EC or RSA key",
+            "description": "Public key extracted from CSR"
+          }
+        ],
+        "return_type": "boolean (signature_valid)",
+        "description": "Verifies CSR self-signature using extracted public key. Ensures CSR was signed by holder of corresponding private key, preventing submission of CSRs for keys the requester doesn't control.",
+        "algorithm_detail": "Signature verification: (1) Extract signature algorithm from CSR signatureAlgorithm field. (2) Extract signature value from signature field. (3) Compute hash of CertificationRequestInfo using algorithm specified (e.g., SHA-256 for ecdsa-with-SHA256). (4) Verify signature over hash using public_key and signature algorithm (ECDSA or RSA-PSS/PKCS1.5). (5) Return true if signature valid, false otherwise. Assumes cryptographic primitives are correct and secure.",
+        "usage_in_fsm": "Called in T5 (Validating_PKCS10 → Validating_Signature). Result determines T7 (valid) or T8 (invalid)."
+      },
+      {
+        "name": "extract_vendor_id",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "octstr",
+            "description": "PKCS #10 CSR"
+          }
+        ],
+        "return_type": "uint16 (vendor_id)",
+        "description": "Extracts Matter Vendor ID from CSR. Vendor ID may be in subject Distinguished Name (DN) as custom OID or in X.509 extension field per Matter specification.",
+        "algorithm_detail": "ASN.1 parsing: (1) Parse subject DN, search for Matter Vendor ID OID (implementation-specific). (2) If not in DN, parse attributes/extensions for Vendor ID extension. (3) Extract uint16 value. (4) Validate value is in valid range (0x0001-0xFFF4 per Matter spec). Returns vendor_id or error.",
+        "usage_in_fsm": "Called in T7 (Validating_Signature → Validating_DCL_VendorID). Extracted vendor_id passed to DCL validation."
+      },
+      {
+        "name": "validate_dcl_vendor_id",
+        "parameters": [
+          {
+            "name": "vendor_id",
+            "type": "uint16",
+            "description": "Matter Vendor ID"
+          }
+        ],
+        "return_type": "boolean (dcl_valid)",
+        "description": "Validates Vendor ID against DCL (Device Certificate List) to verify vendor is authorized for certificate issuance in this fabric. DCL is distributed ledger or trusted database of authorized vendors.",
+        "algorithm_detail": "DCL lookup: (1) Query DCL for vendor_id entry (may be network call to blockchain, database, or local cache). (2) Verify entry exists and is not revoked. (3) Check vendor authorization for Joint Fabric (may have fabric-specific permissions). (4) Verify entry signature/authenticity (if DCL is signed). (5) Return true if vendor authorized, false otherwise. Assumes DCL is available, authentic, and current.",
+        "usage_in_fsm": "Called in T7 (Validating_Signature → Validating_DCL_VendorID). Result determines T9 (valid) or T10 (invalid). Critical security function preventing unauthorized vendors from issuing certificates."
+      },
+      {
+        "name": "verify_certificate_type",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "octstr",
+            "description": "PKCS #10 CSR"
+          }
+        ],
+        "return_type": "certificate_type (enum: ICAC, LeafCert, RootCA)",
+        "description": "Determines if resulting certificate will be Intermediate CA Certificate (ICAC) based on CSR content and Anchor CA policy. Verifies BasicConstraints and KeyUsage extensions indicate CA certificate suitable for further delegation.",
+        "algorithm_detail": "Certificate type analysis: (1) Check if CSR requests BasicConstraints extension with CA=TRUE (in attributes/extensions). (2) Verify KeyUsage includes keyCertSign bit. (3) Check pathLenConstraint if present (ICAC typically has pathLen >= 0). (4) Verify certificate won't be root CA (depth check, issuer != subject). (5) Verify certificate won't be leaf (CA=FALSE). Returns ICAC if all CA properties met, LeafCert if CA=FALSE, RootCA if self-signed, or error.",
+        "usage_in_fsm": "Called in T9 (Validating_DCL_VendorID → Validating_Certificate_Type). Result determines T11 (ICAC) or T12 (not ICAC)."
+      },
+      {
+        "name": "request_user_consent",
+        "parameters": [
+          {
+            "name": "operation_type",
+            "type": "enum {ICACSR, AnchorTransfer}",
+            "description": "Type of operation requiring consent"
+          },
+          {
+            "name": "details",
+            "type": "octstr or node-id",
+            "description": "Operation-specific details (CSR for ICACSR, target node for AnchorTransfer)"
+          }
+        ],
+        "return_type": "void (async operation)",
+        "description": "Presents consent dialog to administrator, waits for user approval, denial, or timeout. Prevents automated attacks by requiring human interaction. Consent must be explicit and bound to specific operation details.",
+        "algorithm_detail": "User interaction: (1) Format consent request with operation type and details (display subject DN for ICACSR, target node for AnchorTransfer). (2) Present UI dialog to administrator with approve/deny options. (3) Wait for user input with timeout (implementation-defined, typically 30-300 seconds). (4) On approval, set user_consent_given=true and generate user_consent_received event. (5) On denial or timeout, generate user_consent_denied or user_consent_timeout event. Assumes UI is available and administrator is authenticated.",
+        "usage_in_fsm": "Called in T11 (Validating_Certificate_Type → Awaiting_User_Consent_ICACSR) and T20 (Transfer_Requested → Awaiting_User_Consent_Transfer). Results in user_consent_received, user_consent_denied, or user_consent_timeout events."
+      },
+      {
+        "name": "sign_icacsr",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "octstr",
+            "description": "Validated PKCS #10 CSR"
+          },
+          {
+            "name": "anchor_ca_key",
+            "type": "EC private key",
+            "description": "Anchor CA private signing key"
+          }
+        ],
+        "return_type": "signed_certificate (octstr, PEM format, max 400 bytes)",
+        "description": "Signs CSR to produce ICAC certificate using Anchor CA private key. Generates X.509 certificate with appropriate fields, extensions, and signature.",
+        "algorithm_detail": "Certificate generation: (1) Create X.509 TBSCertificate structure. (2) Set version=v3, serialNumber (unique), signature algorithm (e.g., ecdsa-with-SHA256). (3) Set issuer DN to Anchor CA DN. (4) Set subject DN from CSR. (5) Set validity period (notBefore=now, notAfter=now+validity_period). (6) Copy SubjectPublicKeyInfo from CSR. (7) Add extensions: BasicConstraints (CA=TRUE, pathLen), KeyUsage (keyCertSign, cRLSign), SubjectKeyIdentifier, AuthorityKeyIdentifier. (8) Sign TBSCertificate with anchor_ca_key using ECDSA. (9) Construct final Certificate structure. (10) Encode to DER, then convert to PEM format. (11) Verify output size <= 400 bytes. Returns PEM-encoded certificate or error. Assumes anchor_ca_key is securely stored and accessible.",
+        "usage_in_fsm": "Called in T13 (Awaiting_User_Consent_ICACSR → Signing_ICACSR). Result determines T15 (success) or T16 (failure). CRITICAL SECURITY FUNCTION - produces trusted certificates."
+      },
+      {
+        "name": "generate_response",
+        "parameters": [
+          {
+            "name": "command_type",
+            "type": "enum {ICACSRResponse, TransferAnchorResponse}",
+            "description": "Type of response command"
+          },
+          {
+            "name": "status_code",
+            "type": "enum (IcacsrRequestStatusEnum or TransferAnchorResponseStatusEnum)",
+            "description": "Status code for response"
+          },
+          {
+            "name": "optional_data",
+            "type": "octstr (optional)",
+            "description": "Optional data field (e.g., ICAC certificate for ICACSRResponse with StatusCode=OK)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Constructs and sends response message to client. Serializes response command per Matter protocol specification and transmits over secure channel.",
+        "algorithm_detail": "Message construction: (1) Create command structure for command_type. (2) Set mandatory fields (e.g., StatusCode). (3) Set optional fields if present (e.g., ICAC field if status_code==OK and optional_data provided). (4) Serialize to Matter protocol format (TLV encoding). (5) Encrypt and authenticate using session keys. (6) Transmit over established secure channel. Assumes secure session is established and authenticated.",
+        "usage_in_fsm": "Called in multiple transitions: T17, T18 (ICACSR responses), T25, T28 (transfer responses), T34, T38, T39, T41 (ACL responses). Sends responses to clients."
+      },
+      {
+        "name": "clear_icacsr_data",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Cleans up temporary CSR processing data from memory and storage. Ensures no sensitive data (CSR, keys, intermediate results) persists after operation completes.",
+        "algorithm_detail": "Cleanup: (1) Clear stored_csr from memory. (2) Clear extracted_public_key. (3) Clear intermediate validation results (pkcs10_valid, signature_valid, dcl_valid, certificate_type). (4) Clear signing_success flag. (5) Securely zero any cryptographic material. (6) Reset icacsr_pending flag. Memory zeroing for sensitive data.",
+        "usage_in_fsm": "Called in T17, T18 (returning to Idle_AnchorCA after ICACSR completion). Ensures clean state for next operation."
+      },
+      {
+        "name": "verify_sender_is_candidate_anchor",
+        "parameters": [
+          {
+            "name": "sender_node_id",
+            "type": "node-id",
+            "description": "Node ID of TransferAnchorRequest sender"
+          },
+          {
+            "name": "sender_credentials",
+            "type": "X.509 certificate",
+            "description": "Sender's operational certificate from secure session"
+          }
+        ],
+        "return_type": "boolean (sender_verified)",
+        "description": "Verifies sender has candidate Joint Fabric Anchor Administrator role and is authorized to request anchor transfer. Checks certificate chain, role attributes, and fabric membership.",
+        "algorithm_detail": "Authorization check: (1) Verify sender_credentials signature chain up to fabric root CA. (2) Extract role from certificate subject or extension fields. (3) Verify role includes 'candidate Joint Fabric Anchor Administrator' or equivalent privilege. (4) Check fabric ID matches current fabric. (5) Verify certificate is not revoked (CRL or OCSP check if available). (6) Verify node is registered in fabric datastore. Returns true if all checks pass, false otherwise. Assumes certificate chain validation is secure.",
+        "usage_in_fsm": "Called in T19 (Idle_AnchorCA → Transfer_Requested). Result determines T20 (authorized) or T22 (unauthorized). CRITICAL SECURITY CHECK - prevents unauthorized anchor takeover."
+      },
+      {
+        "name": "initiate_anchor_transfer",
+        "parameters": [
+          {
+            "name": "target_node",
+            "type": "node-id",
+            "description": "Node ID of candidate anchor receiving transfer"
+          }
+        ],
+        "return_type": "void (async operation)",
+        "description": "Transfers Anchor CA private key and fabric secrets to target node. Establishes secure channel, encrypts key material, transmits to target, waits for acknowledgment.",
+        "algorithm_detail": "Secure key transfer: (1) Establish secure channel to target_node (may use CASE session with target's operational certificate). (2) Retrieve Anchor CA private key from secure storage. (3) Encrypt private key using target node's public key (key encapsulation or hybrid encryption: ECIES or similar). (4) Package encrypted key with metadata (fabric ID, timestamp, current anchor identity). (5) Sign package with current anchor key for authenticity. (6) Transmit package to target node. (7) Wait for acknowledgment from target. (8) On acknowledgment, set transfer_initiated=true. (9) Keep anchor key until TransferAnchorComplete received. Assumes secure channel is authentic, target node is trusted, encryption is secure. MOST CRITICAL SECURITY OPERATION - must prevent key leakage or interception.",
+        "usage_in_fsm": "Called in T23 (Awaiting_User_Consent_Transfer → Transfer_InProgress). Initiates transfer process. Result transitions to T25 when data sent."
+      },
+
+    ],
+    "definitions": [
+      {
+        "term": "ICACSR",
+        "definition": "Intermediate CA Certificate Signing Request. A PKCS #10 formatted request for Anchor CA to issue an Intermediate CA certificate, enabling the requester to further delegate and issue certificates within the Joint Fabric.",
+        "security_relevance": "ICACSR validation is critical - improperly validated CSRs allow unauthorized certificate issuance, breaking PKI trust. All validation steps (format, signature, DCL, type) must pass before signing."
+      },
+      {
+        "term": "ICAC",
+        "definition": "Intermediate CA Certificate. X.509 certificate with CA=TRUE in BasicConstraints, signed by Anchor CA, enabling holder to issue further certificates (NOCs or delegated ICACs). Contains keyCertSign in KeyUsage.",
+        "security_relevance": "ICAC grants certificate issuance authority. Improper issuance (e.g., to non-ICAC type, unauthorized vendor) creates rogue CAs that can issue arbitrary certificates."
+      },
+      {
+        "term": "Anchor CA",
+        "definition": "Joint Fabric Anchor Certificate Authority. The root CA for Joint Fabric, responsible for issuing ICACs to authorized administrators. Only one node in fabric holds Anchor CA role at a time. Private key is most sensitive secret in fabric.",
+        "security_relevance": "Compromise of Anchor CA key means complete PKI compromise. Anchor transfer must be secure, authenticated, and atomic. User consent required for all anchor operations."
+      },
+      {
+        "term": "DCL (Device Certificate List)",
+        "definition": "Distributed ledger or trusted database of authorized vendors. Used to validate Vendor IDs in CSRs, ensuring only authorized manufacturers can obtain certificates for their devices.",
+        "security_relevance": "DCL is trust anchor for vendor authorization. Compromise or bypass of DCL validation allows unauthorized vendors to issue certificates, breaking ecosystem boundaries."
+      },
+      {
+        "term": "Joint Commissioning",
+        "definition": "Multi-fabric commissioning method where device is simultaneously commissioned onto multiple fabric ecosystems. ICACSR request only valid during Joint Commissioning phase.",
+        "security_relevance": "Restricting ICACSR to Joint Commissioning prevents certificate issuance outside controlled commissioning flow. Bypass allows unauthorized certificate requests."
+      },
+      {
+        "term": "Anchor Transfer",
+        "definition": "Process of transferring Anchor CA role from current Anchor node to candidate Anchor Administrator node. Includes secure transfer of Anchor CA private key and fabric state. Atomic operation blocking concurrent operations.",
+        "security_relevance": "Most sensitive operation. Transfer must be secure (encrypt key), authenticated (verify candidate), atomic (block concurrent ops), and consented (user approval). Failure enables anchor hijacking."
+      },
+      {
+        "term": "TransferAnchorComplete",
+        "definition": "Command indicating completion and finalization of anchor transfer. Must be sent by new anchor to finalize state transition. Without this, transfer remains in-progress indefinitely.",
+        "security_relevance": "Omission causes permanent DoS where fabric stuck in transfer state. Replay or injection can cause premature completion before transfer secure."
+      },
+      {
+        "term": "User Consent",
+        "definition": "Explicit administrator approval required for security-critical operations (ICACSR signing, Anchor Transfer). Presented via UI, requires human interaction, has timeout.",
+        "security_relevance": "Prevents automated attacks. Without consent, attacker can automate certificate issuance or anchor hijacking. Consent must be bound to operation details (CSR content, target node) to prevent reuse."
+      },
+      {
+        "term": "PKCS #10",
+        "definition": "Public Key Cryptography Standards #10 - Certification Request Syntax Standard (RFC 2986). Defines format for certificate signing requests, including self-signature proving possession of private key.",
+        "security_relevance": "PKCS #10 validation ensures CSR is well-formed and self-signed. Bypass allows submission of CSRs for keys attacker doesn't control, enabling impersonation."
+      },
+      {
+        "term": "PEM Format",
+        "definition": "Privacy-Enhanced Mail format. Base64-encoded DER certificate enclosed in BEGIN CERTIFICATE / END CERTIFICATE markers. Text-based encoding for certificates.",
+        "security_relevance": "Specification requires ICAC in PEM format (max 400 bytes). Non-PEM responses cause parsing failures or force clients to accept arbitrary formats, increasing attack surface."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "ICACSR_Authorization",
+        "type": "access_control",
+        "description": "Only nodes with Admin access level (A) can send ICACSR requests. Access control enforced before commands reach cluster logic.",
+        "fsm_states_involved": [
+          "Idle_AnchorCA",
+          "Processing_ICACSR"
+        ],
+        "critical_transitions": [
+          "T1"
+        ]
+      },
+      {
+        "property_name": "ICACSR_Validation_Chain",
+        "type": "authenticity",
+        "description": "All validation steps (PKCS10 format, signature, DCL Vendor ID, certificate type) must pass before certificate signing. Any failure returns error, no certificate issued.",
+        "fsm_states_involved": [
+          "Validating_PKCS10",
+          "Validating_Signature",
+          "Validating_DCL_VendorID",
+          "Validating_Certificate_Type",
+          "ICACSR_Complete_Error"
+        ],
+        "critical_transitions": [
+          "T4",
+          "T5",
+          "T6",
+          "T7",
+          "T8",
+          "T9",
+          "T10",
+          "T11",
+          "T12"
+        ]
+      },
+      {
+        "property_name": "User_Consent_Required_ICACSR",
+        "type": "access_control",
+        "description": "User must explicitly consent before ICACSR signing. Prevents automated certificate issuance without administrator awareness.",
+        "fsm_states_involved": [
+          "Awaiting_User_Consent_ICACSR",
+          "Signing_ICACSR",
+          "ICACSR_Complete_Error"
+        ],
+        "critical_transitions": [
+          "T11",
+          "T13",
+          "T14"
+        ]
+      },
+      {
+        "property_name": "User_Consent_Required_Transfer",
+        "type": "access_control",
+        "description": "User must explicitly consent before anchor transfer. Prevents automated anchor hijacking without administrator awareness.",
+        "fsm_states_involved": [
+          "Awaiting_User_Consent_Transfer",
+          "Transfer_InProgress",
+          "Transfer_Rejected"
+        ],
+        "critical_transitions": [
+          "T20",
+          "T23",
+          "T24"
+        ]
+      },
+      {
+        "property_name": "Anchor_Transfer_Atomicity",
+        "type": "consistency",
+        "description": "Anchor transfer is atomic operation. While transfer active, all other operations (ICACSR, ACL removal, concurrent transfers) are blocked with BusyAnchorTransfer or DatastoreBusy status.",
+        "fsm_states_involved": [
+          "Transfer_InProgress",
+          "Transfer_Finalizing",
+          "ICACSR_Complete_Error"
+        ],
+        "critical_transitions": [
+          "T3",
+          "T21",
+          "T30"
+        ]
+      },
+      {
+        "property_name": "Anchor_Transfer_Completion_Required",
+        "type": "correctness",
+        "description": "Anchor transfer must complete with TransferAnchorComplete command. Without this, transfer remains in-progress, causing permanent DoS.",
+        "fsm_states_involved": [
+          "Transfer_Finalizing",
+          "Transfer_Complete"
+        ],
+        "critical_transitions": [
+          "T26"
+        ]
+      },
+      {
+        "property_name": "Anchor_Transfer_Authorization",
+        "type": "access_control",
+        "description": "Only verified candidate Joint Fabric Anchor Administrators can request anchor transfer. Sender credentials must be validated before transfer initiated.",
+        "fsm_states_involved": [
+          "Transfer_Requested",
+          "Awaiting_User_Consent_Transfer",
+          "Transfer_Rejected"
+        ],
+        "critical_transitions": [
+          "T19",
+          "T20",
+          "T22"
+        ]
+      },
+      {
+        "property_name": "ICACSR_Size_Limit",
+        ]
+      },
+      {
+        "property_name": "ICACSR_Size_Limit",
+        "type": "security",
+        "description": "ICACSR must not exceed 400 bytes. ICAC response must not exceed 400 bytes. Prevents buffer overflow and DoS attacks.",
+        "fsm_states_involved": [
+          "Processing_ICACSR",
+          "ICACSR_Complete_Success"
+        ],
+        "critical_transitions": [
+          "T1"
+        ]
+      },
+      {
+        "property_name": "ICAC_PEM_Format",
+        "type": "correctness",
+        "description": "If ICAC field present in ICACSRResponse, it must contain certificate in PEM format. Ensures interoperability and prevents parser attacks.",
+        "fsm_states_involved": [
+          "ICACSR_Complete_Success"
+        ],
+        "critical_transitions": [
+          "T15",
+          "T17"
+        ]
+      },
+      {
+        "property_name": "Status_Code_Completeness",
+        "type": "correctness",
+        "description": "Response commands must always include StatusCode field with valid enum value. Clients rely on StatusCode to determine operation outcome.",
+        "fsm_states_involved": [
+          "ICACSR_Complete_Success",
+          "ICACSR_Complete_Error",
+          "Transfer_Rejected"
+        ],
+        "critical_transitions": [
+          "T17",
+          "T18",
+          "T28"
+        ]
+      },
+      {
+        "property_name": "ICAC_Conditional_Presence",
+        "type": "correctness",
+        "description": "ICAC field present in ICACSRResponse if and only if StatusCode is OK. Absent ICAC with OK causes commissioning failure. Present ICAC with error confuses clients.",
+        "fsm_states_involved": [
+          "ICACSR_Complete_Success",
+          "ICACSR_Complete_Error"
+        ],
+        "critical_transitions": [
+          "T15",
+          "T17",
+          "T18"
+        ]
+      },
+      {
+        "property_name": "Commissioning_Phase_Restriction",
+        "type": "correctness",
+        "description": "ICACSR requests only valid during Joint Commissioning phase. Requests outside commissioning return error, preventing unauthorized certificate requests.",
+        "fsm_states_involved": [
+          "Idle_AnchorCA",
+          "Processing_ICACSR",
+          "ICACSR_Complete_Error"
+        ],
+        "critical_transitions": [
+          "T1",
+          "T2"
+        ]
+      }
+    ],
+    "initial_state": "Idle_AnchorCA",
+    "all_states": [
+      "Idle_AnchorCA",
+      "Idle_NotAnchor",
+      "Processing_ICACSR",
+      "Validating_PKCS10",
+      "Validating_Signature",
+      "Validating_DCL_VendorID",
+      "Validating_Certificate_Type",
+      "Awaiting_User_Consent_ICACSR",
+      "Signing_ICACSR",
+      "ICACSR_Complete_Success",
+      "ICACSR_Complete_Error",
+      "Transfer_Requested",
+      "Awaiting_User_Consent_Transfer",
+      "Transfer_InProgress",
+      "Transfer_Finalizing",
+      "Transfer_Complete",
+      "Transfer_Rejected"
+    ],
+    "all_triggers": [
+      "ICACSRRequest",
+      "ICACSRResponse_sent",
+      "automatic",
+      "validation_complete",
+      "signature_verification_complete",
+      "dcl_validation_complete",
+      "type_validation_complete",
+      "user_consent_received",
+      "user_consent_timeout",
+      "user_consent_denied",
+      "signing_complete",
+      "TransferAnchorRequest",
+      "sender_verification_complete",
+      "transfer_data_sent",
+      "TransferAnchorComplete",
+      "TransferAnchorResponse_sent"
+    ],
+    "all_functions_used": [
+      "store_csr",
+      "validate_pkcs10_format",
+      "extract_public_key",
+      "verify_csr_signature",
+      "extract_vendor_id",
+      "validate_dcl_vendor_id",
+      "verify_certificate_type",
+      "request_user_consent",
+      "sign_icacsr",
+      "generate_response",
+      "clear_icacsr_data",
+      "verify_sender_is_candidate_anchor",
+      "initiate_anchor_transfer"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "PKCS #10 CSR Validation",
+        "algorithm": "ASN.1 DER parsing, PKCS #10 schema validation per RFC 2986",
+        "inputs": [
+          "CSR (octstr, max 400 bytes)"
+        ],
+        "output": "boolean (valid/invalid)",
+        "assumptions": [
+          "ASN.1 parser is correct and secure",
+          "No parser vulnerabilities (buffer overflow, injection)",
+          "PKCS #10 schema implementation matches RFC 2986"
+        ]
+      },
+      {
+        "operation": "CSR Signature Verification",
+        "algorithm": "ECDSA or RSA signature verification per algorithm in CSR signatureAlgorithm field",
+        "inputs": [
+          "CSR (octstr)",
+          "public_key (extracted from CSR SubjectPublicKeyInfo)"
+        ],
+        "output": "boolean (valid/invalid)",
+        "assumptions": [
+          "ECDSA/RSA implementation is secure",
+          "No timing attacks or side channels",
+          "Signature algorithm (e.g., ecdsa-with-SHA256) is secure",
+          "Hash function (SHA-256) is collision-resistant"
+        ]
+      },
+      {
+        "operation": "ICAC Certificate Signing",
+        "algorithm": "X.509 certificate generation, ECDSA signing with Anchor CA private key, PEM encoding",
+        "inputs": [
+          "CSR (octstr)",
+          "anchor_ca_private_key (EC private key)"
+        ],
+        "output": "ICAC certificate (octstr, PEM format, max 400 bytes)",
+        "assumptions": [
+          "Anchor CA private key is securely stored (HSM or secure enclave)",
+          "ECDSA signing implementation is secure",
+          "No key leakage during signing operation",
+          "Generated certificate serial numbers are unique and unpredictable",
+          "Validity period is appropriate (not too long)"
+        ]
+      },
+      {
+        "operation": "Anchor Transfer Key Transport",
+        "algorithm": "Secure key encapsulation or hybrid encryption using target node's public key (likely ECIES or similar)",
+        "inputs": [
+          "anchor_ca_private_key (EC private key)",
+          "target_node_public_key (from operational certificate)"
+        ],
+        "output": "encrypted_key_material (octstr)",
+        "assumptions": [
+          "Secure channel established and authenticated",
+          "Target node's public key is authentic (from verified certificate)",
+          "Encryption algorithm (ECIES, hybrid encryption) is secure",
+          "No man-in-the-middle attack on channel",
+          "Target node securely stores received key",
+          "Original anchor key deleted after successful transfer (not modeled in FSM)"
+        ]
+      },
+      {
+        "operation": "DCL Vendor ID Validation",
+        "algorithm": "DCL query (blockchain, database, or cache lookup), signature verification of DCL entry",
+        "inputs": [
+          "vendor_id (uint16)"
+        ],
+        "output": "boolean (authorized/unauthorized)",
+        "assumptions": [
+          "DCL is available and responsive",
+          "DCL data is authentic and not tampered",
+          "DCL entries are signed by trusted authority",
+          "DCL is current (not stale)",
+          "No DCL compromise or unauthorized entry injection"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "Cryptographic primitives (ECDSA, RSA, SHA-256, HKDF, ECIES) are secure and correctly implemented",
+        "type": "implicit",
+        "if_violated": "All certificate validation and signing breaks. Attacker can forge signatures, bypass validation, or extract private keys. Complete PKI compromise."
+      },
+      {
+        "assumption": "Anchor CA private key is securely stored in HSM or secure enclave, only accessible to authorized processes",
+        "type": "explicit",
+        "if_violated": "Anchor CA key compromise means attacker can issue arbitrary certificates, including malicious ICACs. Complete fabric PKI compromise."
+      },
+      {
+        "assumption": "DCL (Device Certificate List) provides authentic and untampered vendor authorization data",
+        "type": "implicit",
+        "if_violated": "Unauthorized vendors can obtain certificates for devices they don't control. Ecosystem trust boundaries broken."
+      },
+      {
+        "assumption": "User consent mechanism is secure and cannot be automated or bypassed without genuine user interaction",
+        "type": "implicit",
+        "if_violated": "Attacker can automate certificate issuance or anchor transfers without administrator awareness. Silent fabric takeover."
+      },
+      {
+        "assumption": "Access control (Admin level A) is correctly enforced at transport/session layer before commands reach cluster logic",
+        "type": "implicit",
+        "if_violated": "Non-admin nodes can send ICACSR or TransferAnchorRequest commands. Unauthorized certificate issuance and anchor hijacking."
+      },
+      {
+        "assumption": "Network transport layer prevents replay attacks, message reordering, and injection attacks",
+        "type": "implicit",
+        "if_violated": "Attacker can replay old responses, reorder request-response pairs, or inject forged certificates that appear legitimate."
+      },
+      {
+        "assumption": "Clock synchronization is sufficient for temporal ordering of events (transfer completion, user consent timeouts)",
+        "type": "implicit",
+        "if_violated": "Clock skew causes race conditions in transfer completion timing or user consent timeout handling."
+      },
+      {
+        "assumption": "Node identity and credentials cannot be spoofed. Node identifiers and operational certificates are authentic.",
+        "type": "implicit",
+        "if_violated": "Attacker can impersonate nodes, misdirect anchor transfer to malicious node."
+      },
+      {
+        "assumption": "Joint Commissioning phase is securely determined. Attacker cannot falsely claim commissioning_phase==true.",
+        "type": "implicit",
+        "if_violated": "Attacker can send ICACSR requests outside commissioning phase, bypassing flow control. Unauthorized certificate requests."
+      },
+      {
+        "assumption": "Current Joint Fabric Anchor Administrator is unambiguously identified and authenticated across fabric",
+        "type": "implicit",
+        "if_violated": "Multiple nodes believe they are current anchor (split-brain). Different certificates issued by different 'anchors'. Trust bifurcation."
+      },
+      {
+        "assumption": "Specification is provisional - may have incomplete security validation",
+        "type": "explicit",
+        "if_violated": "All properties may have unidentified vulnerabilities. Specification notes 'Support for Joint Fabric PKI Cluster is provisional'."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": false,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true,
+      "notes": "Timers (user consent timeout, transfer timeout) are not explicitly specified in specification. Modeled as async operations with timeout events (user_consent_timeout, user_consent_denied). Implementation-specific timer values not defined."
+    }
+  }
+}

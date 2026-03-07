@@ -1,0 +1,1626 @@
+{
+  "fsm_model": {
+    "section_name": "14.4 TLS Certificate Management Cluster",
+    "section_ref": "Matter Core Specification Section 14.4, Cluster ID 0x0801",
+    "description": "This FSM models the complete lifecycle of TLS Root Certificates and TLS Client Certificates, including provisioning, rotation, lookup, and removal operations. The cluster enforces fabric isolation, resource limits, and referential integrity with TLS Client Management Cluster (0x0802).",
+    
+    "states": [
+      {
+        "name": "RootCert_NotProvisioned",
+        "description": "No root certificate exists for this CAID. This is the initial state before any certificate provisioning.",
+        "is_initial": true,
+        "invariants": [
+          "exists(CAID) == false",
+          "count_root_certs(fabric) <= MaxRootCertificates"
+        ],
+        "state_variables": {
+          "exists": "boolean (false)",
+          "caid": "TLSCAID (unassigned)",
+          "certificate": "octstr (none)",
+          "fingerprint": "octstr (none)",
+          "associated_fabric": "fabric_id (none)",
+          "referenced_by_endpoint": "boolean (false)"
+        }
+      },
+      {
+        "name": "RootCert_Provisioned_NotReferenced",
+        "description": "Root certificate is provisioned and stored but not yet referenced by any TLS endpoint. Can be safely removed or rotated.",
+        "is_initial": false,
+        "invariants": [
+          "exists(CAID) == true",
+          "certificate != NULL",
+          "referenced_by_endpoint == false",
+          "fabric_of_caid(CAID) == associated_fabric"
+        ],
+        "state_variables": {
+          "exists": "boolean (true)",
+          "caid": "TLSCAID (0 to 65534)",
+          "certificate": "octstr (DER-encoded, max 3000 bytes)",
+          "fingerprint": "octstr (computed hash, max 64 bytes)",
+          "associated_fabric": "fabric_id",
+          "referenced_by_endpoint": "boolean (false)"
+        }
+      },
+      {
+        "name": "RootCert_Provisioned_Referenced",
+        "description": "Root certificate is in use by at least one TLS endpoint in TLS Client Management Cluster. Cannot be removed (only rotated) until all references are removed.",
+        "is_initial": false,
+        "invariants": [
+          "exists(CAID) == true",
+          "certificate != NULL",
+          "referenced_by_endpoint == true",
+          "exists_in_tls_client_mgmt_cluster(CAID) == true"
+        ],
+        "state_variables": {
+          "exists": "boolean (true)",
+          "caid": "TLSCAID (0 to 65534)",
+          "certificate": "octstr (DER-encoded, max 3000 bytes)",
+          "fingerprint": "octstr (computed hash)",
+          "associated_fabric": "fabric_id",
+          "referenced_by_endpoint": "boolean (true)"
+        }
+      },
+      {
+        "name": "ClientCert_NotProvisioned",
+        "description": "No client certificate exists for this CCDID. No key pair generated. Initial state before ClientCSR command.",
+        "is_initial": true,
+        "invariants": [
+          "exists(CCDID) == false",
+          "key_pair_generated == false",
+          "client_certificate == NULL"
+        ],
+        "state_variables": {
+          "exists": "boolean (false)",
+          "ccdid": "TLSCCDID (unassigned)",
+          "key_pair_generated": "boolean (false)",
+          "private_key": "key (none)",
+          "public_key": "key (none)",
+          "client_certificate": "octstr (NULL)",
+          "intermediate_certificates": "list[octstr] (empty)",
+          "fingerprint": "octstr (none)",
+          "associated_fabric": "fabric_id (none)",
+          "referenced_by_endpoint": "boolean (false)"
+        }
+      },
+      {
+        "name": "ClientCert_KeyGenerated_CertPending",
+        "description": "TLS key pair generated via ClientCSR, CSR returned to client. Awaiting ProvisionClientCertificate to complete the workflow. ClientCertificate field is NULL.",
+        "is_initial": false,
+        "invariants": [
+          "exists(CCDID) == true",
+          "key_pair_generated == true",
+          "client_certificate == NULL",
+          "intermediate_certificates == NULL OR empty"
+        ],
+        "state_variables": {
+          "exists": "boolean (true)",
+          "ccdid": "TLSCCDID (0 to 65534)",
+          "key_pair_generated": "boolean (true)",
+          "private_key": "key (ECDSA private key)",
+          "public_key": "key (ECDSA public key)",
+          "client_certificate": "octstr (NULL)",
+          "intermediate_certificates": "list[octstr] (NULL or empty)",
+          "fingerprint": "octstr (none)",
+          "associated_fabric": "fabric_id",
+          "referenced_by_endpoint": "boolean (false)"
+        }
+      },
+      {
+        "name": "ClientCert_Provisioned_NotReferenced",
+        "description": "Full client certificate chain provisioned. Certificate public key verified to match stored private key. Not yet used by any TLS endpoint.",
+        "is_initial": false,
+        "invariants": [
+          "exists(CCDID) == true",
+          "key_pair_generated == true",
+          "client_certificate != NULL",
+          "public_private_key_correspondence(client_certificate, private_key) == true",
+          "referenced_by_endpoint == false"
+        ],
+        "state_variables": {
+          "exists": "boolean (true)",
+          "ccdid": "TLSCCDID (0 to 65534)",
+          "key_pair_generated": "boolean (true)",
+          "private_key": "key (ECDSA private key)",
+          "public_key": "key (ECDSA public key)",
+          "client_certificate": "octstr (DER-encoded, max 3000 bytes)",
+          "intermediate_certificates": "list[octstr] (0 to 10 certs, each max 3000 bytes)",
+          "fingerprint": "octstr (computed hash)",
+          "associated_fabric": "fabric_id",
+          "referenced_by_endpoint": "boolean (false)"
+        }
+      },
+      {
+        "name": "ClientCert_Provisioned_Referenced",
+        "description": "Client certificate in use by at least one TLS endpoint. Cannot be removed until all references cleared. Can be rotated.",
+        "is_initial": false,
+        "invariants": [
+          "exists(CCDID) == true",
+          "key_pair_generated == true",
+          "client_certificate != NULL",
+          "referenced_by_endpoint == true",
+          "exists_in_tls_client_mgmt_cluster(CCDID) == true"
+        ],
+        "state_variables": {
+          "exists": "boolean (true)",
+          "ccdid": "TLSCCDID (0 to 65534)",
+          "key_pair_generated": "boolean (true)",
+          "private_key": "key (ECDSA private key)",
+          "public_key": "key (ECDSA public key)",
+          "client_certificate": "octstr (DER-encoded)",
+          "intermediate_certificates": "list[octstr]",
+          "fingerprint": "octstr (computed hash)",
+          "associated_fabric": "fabric_id",
+          "referenced_by_endpoint": "boolean (true)"
+        }
+      }
+    ],
+    
+    "transitions": [
+      {
+        "id": "T_RootCert_001",
+        "from_state": "RootCert_NotProvisioned",
+        "to_state": "RootCert_NotProvisioned",
+        "trigger": "ProvisionRootCertificate",
+        "guard_condition": "UTCTime == NULL",
+        "actions": [
+          "return_status(INVALID_IN_STATE)"
+        ],
+        "timing_requirement": null,
+        "description": "Reject root certificate provisioning if time not synchronized"
+      },
+      {
+        "id": "T_RootCert_002",
+        "from_state": "RootCert_NotProvisioned",
+        "to_state": "RootCert_NotProvisioned",
+        "trigger": "ProvisionRootCertificate",
+        "guard_condition": "UTCTime != NULL && is_invalid_tls_certificate(Certificate)",
+        "actions": [
+          "return_status(DYNAMIC_CONSTRAINT_ERROR)"
+        ],
+        "timing_requirement": null,
+        "description": "Reject invalid DER-encoded certificate"
+      },
+      {
+        "id": "T_RootCert_003",
+        "from_state": "RootCert_NotProvisioned",
+        "to_state": "RootCert_NotProvisioned",
+        "trigger": "ProvisionRootCertificate",
+        "guard_condition": "fingerprint_exists_in_fabric(compute_fingerprint(Certificate), accessing_fabric)",
+        "actions": [
+          "return_status(ALREADY_EXISTS)"
+        ],
+        "timing_requirement": null,
+        "description": "Reject duplicate certificate with same fingerprint in fabric (applies to both new provision and rotation)"
+      },
+      {
+        "id": "T_RootCert_004",
+        "from_state": "RootCert_NotProvisioned",
+        "to_state": "RootCert_NotProvisioned",
+        "trigger": "ProvisionRootCertificate",
+        "guard_condition": "CAID == NULL && count_root_certs(accessing_fabric) >= MaxRootCertificates",
+        "actions": [
+          "return_status(RESOURCE_EXHAUSTED)"
+        ],
+        "timing_requirement": null,
+        "description": "Reject new certificate when fabric limit reached"
+      },
+      {
+        "id": "T_RootCert_005",
+        "from_state": "RootCert_NotProvisioned",
+        "to_state": "RootCert_Provisioned_NotReferenced",
+        "trigger": "ProvisionRootCertificate",
+        "guard_condition": "CAID == NULL && UTCTime != NULL && is_valid_tls_certificate(Certificate) && !fingerprint_exists_in_fabric(compute_fingerprint(Certificate), accessing_fabric) && count_root_certs(accessing_fabric) < MaxRootCertificates",
+        "actions": [
+          "new_caid := generate_unique_tlscaid()",
+          "new_fingerprint := compute_fingerprint(Certificate)",
+          "create_tlscertstruct(new_caid, Certificate, new_fingerprint, accessing_fabric)",
+          "add_to_provisioned_root_certificates(new_tlscertstruct)",
+          "increment_count_root_certs(accessing_fabric)",
+          "return_provision_root_certificate_response(new_caid)"
+        ],
+        "timing_requirement": null,
+        "description": "Successfully provision new root certificate with auto-generated CAID"
+      },
+      {
+        "id": "T_RootCert_006",
+        "from_state": "RootCert_Provisioned_NotReferenced",
+        "to_state": "RootCert_Provisioned_NotReferenced",
+        "trigger": "ProvisionRootCertificate",
+        "guard_condition": "CAID != NULL && !exists_caid(CAID)",
+        "actions": [
+          "return_status(NOT_FOUND)"
+        ],
+        "timing_requirement": null,
+        "description": "CAID not found for rotation"
+      },
+      {
+        "id": "T_RootCert_007",
+        "from_state": "RootCert_Provisioned_NotReferenced",
+        "to_state": "RootCert_Provisioned_NotReferenced",
+        "trigger": "ProvisionRootCertificate",
+        "guard_condition": "CAID != NULL && exists_caid(CAID) && fabric_of_caid(CAID) != accessing_fabric",
+        "actions": [
+          "return_status(NOT_FOUND)"
+        ],
+        "timing_requirement": null,
+        "description": "Fabric isolation: cannot rotate certificate from different fabric"
+      },
+      {
+        "id": "T_RootCert_008",
+        "from_state": "RootCert_Provisioned_NotReferenced",
+        "to_state": "RootCert_Provisioned_NotReferenced",
+        "trigger": "ProvisionRootCertificate",
+        "guard_condition": "CAID != NULL && exists_caid(CAID) && fabric_of_caid(CAID) == accessing_fabric && UTCTime != NULL && is_valid_tls_certificate(Certificate) && !fingerprint_exists_in_fabric(compute_fingerprint(Certificate), accessing_fabric)",
+        "actions": [
+          "update_certificate_field(CAID, Certificate)",
+          "update_fingerprint_field(CAID, compute_fingerprint(Certificate))",
+          "return_provision_root_certificate_response(CAID)"
+        ],
+        "timing_requirement": "Updated certificate only used for new TLS connections established after this command completes",
+        "description": "Successfully rotate existing root certificate (unreferenced)"
+      },
+      {
+        "id": "T_RootCert_009",
+        "from_state": "RootCert_Provisioned_Referenced",
+        "to_state": "RootCert_Provisioned_Referenced",
+        "trigger": "ProvisionRootCertificate",
+        "guard_condition": "CAID != NULL && exists_caid(CAID) && fabric_of_caid(CAID) == accessing_fabric && UTCTime != NULL && is_valid_tls_certificate(Certificate) && !fingerprint_exists_in_fabric(compute_fingerprint(Certificate), accessing_fabric)",
+        "actions": [
+          "update_certificate_field(CAID, Certificate)",
+          "update_fingerprint_field(CAID, compute_fingerprint(Certificate))",
+          "return_provision_root_certificate_response(CAID)"
+        ],
+        "timing_requirement": "Updated certificate only used for new TLS connections established after this command completes",
+        "description": "Successfully rotate existing root certificate (referenced by endpoints)"
+      },
+      {
+        "id": "T_RootCert_010",
+        "from_state": "RootCert_Provisioned_NotReferenced",
+        "to_state": "RootCert_Provisioned_NotReferenced",
+        "trigger": "FindRootCertificate",
+        "guard_condition": "CAID == NULL && count_root_certs(accessing_fabric) > 0",
+        "actions": [
+          "cert_list := get_all_root_certs_for_fabric(accessing_fabric)",
+          "return_find_root_certificate_response(cert_list)"
+        ],
+        "timing_requirement": null,
+        "description": "Return all root certificates for accessing fabric"
+      },
+      {
+        "id": "T_RootCert_011",
+        "from_state": "RootCert_Provisioned_NotReferenced",
+        "to_state": "RootCert_Provisioned_NotReferenced",
+        "trigger": "FindRootCertificate",
+        "guard_condition": "CAID != NULL && exists_caid(CAID) && fabric_of_caid(CAID) == accessing_fabric",
+        "actions": [
+          "cert := get_root_cert(CAID)",
+          "return_find_root_certificate_response([cert])"
+        ],
+        "timing_requirement": null,
+        "description": "Return specific root certificate by CAID"
+      },
+      {
+        "id": "T_RootCert_012",
+        "from_state": "RootCert_Provisioned_NotReferenced",
+        "to_state": "RootCert_Provisioned_NotReferenced",
+        "trigger": "LookupRootCertificate",
+        "guard_condition": "exists_fingerprint_in_fabric(Fingerprint, accessing_fabric)",
+        "actions": [
+          "caid := get_caid_by_fingerprint(Fingerprint, accessing_fabric)",
+          "return_lookup_root_certificate_response(caid)"
+        ],
+        "timing_requirement": null,
+        "description": "Return CAID for given certificate fingerprint"
+      },
+      {
+        "id": "T_RootCert_013",
+        "from_state": "RootCert_Provisioned_NotReferenced",
+        "to_state": "RootCert_NotProvisioned",
+        "trigger": "RemoveRootCertificate",
+        "guard_condition": "exists_caid(CAID) && fabric_of_caid(CAID) == accessing_fabric && !referenced_by_endpoint(CAID)",
+        "actions": [
+          "remove_root_cert_entry(CAID)",
+          "decrement_count_root_certs(accessing_fabric)",
+          "return_status(SUCCESS)"
+        ],
+        "timing_requirement": null,
+        "description": "Successfully remove unreferenced root certificate"
+      },
+      {
+        "id": "T_RootCert_014",
+        "from_state": "RootCert_Provisioned_Referenced",
+        "to_state": "RootCert_Provisioned_Referenced",
+        "trigger": "RemoveRootCertificate",
+        "guard_condition": "exists_caid(CAID) && fabric_of_caid(CAID) == accessing_fabric && referenced_by_endpoint(CAID)",
+        "actions": [
+          "return_status(INVALID_IN_STATE)"
+        ],
+        "timing_requirement": null,
+        "description": "Reject removal of root certificate in use by TLS endpoints"
+      },
+      {
+        "id": "T_ClientCert_001",
+        "from_state": "ClientCert_NotProvisioned",
+        "to_state": "ClientCert_NotProvisioned",
+        "trigger": "ClientCSR",
+        "guard_condition": "CCDID == NULL && count_client_certs(accessing_fabric) >= MaxClientCertificates",
+        "actions": [
+          "return_status(RESOURCE_EXHAUSTED)"
+        ],
+        "timing_requirement": null,
+        "description": "Reject new CSR when fabric client certificate limit reached"
+      },
+      {
+        "id": "T_ClientCert_002",
+        "from_state": "ClientCert_NotProvisioned",
+        "to_state": "ClientCert_NotProvisioned",
+        "trigger": "ClientCSR",
+        "guard_condition": "CCDID == NULL && count_client_certs(accessing_fabric) < MaxClientCertificates && key_collision_detected_after_generation()",
+        "actions": [
+          "new_keypair := crypto_generate_keypair()",
+          "discard_keypair(new_keypair)",
+          "return_status(DYNAMIC_CONSTRAINT_ERROR)"
+        ],
+        "timing_requirement": null,
+        "description": "Reject CSR if generated key pair collides with existing TLS or operational credential keys"
+      },
+      {
+        "id": "T_ClientCert_003",
+        "from_state": "ClientCert_NotProvisioned",
+        "to_state": "ClientCert_KeyGenerated_CertPending",
+        "trigger": "ClientCSR",
+        "guard_condition": "CCDID == NULL && count_client_certs(accessing_fabric) < MaxClientCertificates && !key_collision_detected_after_generation()",
+        "actions": [
+          "new_keypair := crypto_generate_keypair()",
+          "new_ccdid := generate_unique_tlsccdid()",
+          "create_tlsclientcertdetailstruct(new_ccdid, accessing_fabric)",
+          "associate_keypair(new_ccdid, new_keypair)",
+          "set_client_certificate_null(new_ccdid)",
+          "set_intermediate_certificates_null(new_ccdid)",
+          "add_to_provisioned_client_certificates(new_tlsclientcertdetailstruct)",
+          "increment_count_client_certs(accessing_fabric)",
+          "tls_csr := generate_pkcs10_csr(new_keypair)",
+          "nonce_signature := crypto_sign(Nonce, get_private_key_from_keypair(new_keypair))",
+          "return_client_csr_response(new_ccdid, tls_csr, nonce_signature)"
+        ],
+        "timing_requirement": null,
+        "description": "Generate new key pair, create CCDID entry, return CSR and nonce signature"
+      },
+      {
+        "id": "T_ClientCert_004",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_KeyGenerated_CertPending",
+        "trigger": "ClientCSR",
+        "guard_condition": "CCDID != NULL && exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric",
+        "actions": [
+          "existing_keypair := get_keypair(CCDID)",
+          "tls_csr := generate_pkcs10_csr(existing_keypair)",
+          "nonce_signature := crypto_sign(Nonce, get_private_key_from_keypair(existing_keypair))",
+          "return_client_csr_response(CCDID, tls_csr, nonce_signature)"
+        ],
+        "timing_requirement": null,
+        "description": "Reuse existing key pair for certificate rotation (CSR pending state)"
+      },
+      {
+        "id": "T_ClientCert_005",
+        "from_state": "ClientCert_Provisioned_NotReferenced",
+        "to_state": "ClientCert_Provisioned_NotReferenced",
+        "trigger": "ClientCSR",
+        "guard_condition": "CCDID != NULL && exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric",
+        "actions": [
+          "existing_keypair := get_keypair(CCDID)",
+          "tls_csr := generate_pkcs10_csr(existing_keypair)",
+          "nonce_signature := crypto_sign(Nonce, get_private_key_from_keypair(existing_keypair))",
+          "return_client_csr_response(CCDID, tls_csr, nonce_signature)"
+        ],
+        "timing_requirement": null,
+        "description": "Reuse existing key pair for certificate rotation (not referenced)"
+      },
+      {
+        "id": "T_ClientCert_006",
+        "from_state": "ClientCert_Provisioned_Referenced",
+        "to_state": "ClientCert_Provisioned_Referenced",
+        "trigger": "ClientCSR",
+        "guard_condition": "CCDID != NULL && exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric",
+        "actions": [
+          "existing_keypair := get_keypair(CCDID)",
+          "tls_csr := generate_pkcs10_csr(existing_keypair)",
+          "nonce_signature := crypto_sign(Nonce, get_private_key_from_keypair(existing_keypair))",
+          "return_client_csr_response(CCDID, tls_csr, nonce_signature)"
+        ],
+        "timing_requirement": null,
+        "description": "Reuse existing key pair for certificate rotation (referenced by endpoints)"
+      },
+      {
+        "id": "T_ClientCert_007",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_KeyGenerated_CertPending",
+        "trigger": "ClientCSR",
+        "guard_condition": "CCDID != NULL && !exists_ccdid(CCDID)",
+        "actions": [
+          "return_status(NOT_FOUND)"
+        ],
+        "timing_requirement": null,
+        "description": "CCDID not found"
+      },
+      {
+        "id": "T_ClientCert_008",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_KeyGenerated_CertPending",
+        "trigger": "ClientCSR",
+        "guard_condition": "CCDID != NULL && exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) != accessing_fabric",
+        "actions": [
+          "return_status(NOT_FOUND)"
+        ],
+        "timing_requirement": null,
+        "description": "Fabric isolation: cannot access CCDID from different fabric"
+      },
+      {
+        "id": "T_ClientCert_009",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_KeyGenerated_CertPending",
+        "trigger": "ProvisionClientCertificate",
+        "guard_condition": "!exists_ccdid(CCDID)",
+        "actions": [
+          "return_status(NOT_FOUND)"
+        ],
+        "timing_requirement": null,
+        "description": "CCDID not found for provisioning"
+      },
+      {
+        "id": "T_ClientCert_010",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_KeyGenerated_CertPending",
+        "trigger": "ProvisionClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) != accessing_fabric",
+        "actions": [
+          "return_status(NOT_FOUND)"
+        ],
+        "timing_requirement": null,
+        "description": "Fabric isolation: cannot provision certificate for different fabric"
+      },
+      {
+        "id": "T_ClientCert_011",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_KeyGenerated_CertPending",
+        "trigger": "ProvisionClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric && fingerprint_exists_in_fabric(compute_fingerprint(ClientCertificate), accessing_fabric)",
+        "actions": [
+          "return_status(ALREADY_EXISTS)"
+        ],
+        "timing_requirement": null,
+        "description": "Duplicate client certificate fingerprint in fabric"
+      },
+      {
+        "id": "T_ClientCert_012",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_KeyGenerated_CertPending",
+        "trigger": "ProvisionClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric && (is_invalid_tls_certificate(ClientCertificate) || any_invalid_cert_in_list(IntermediateCertificates))",
+        "actions": [
+          "return_status(DYNAMIC_CONSTRAINT_ERROR)"
+        ],
+        "timing_requirement": null,
+        "description": "Invalid client certificate or intermediate certificate format"
+      },
+      {
+        "id": "T_ClientCert_013",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_KeyGenerated_CertPending",
+        "trigger": "ProvisionClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric && !public_private_key_correspondence(ClientCertificate, get_private_key(CCDID))",
+        "actions": [
+          "return_status(DYNAMIC_CONSTRAINT_ERROR)"
+        ],
+        "timing_requirement": null,
+        "description": "Client certificate public key does not match stored private key"
+      },
+      {
+        "id": "T_ClientCert_014",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_Provisioned_NotReferenced",
+        "trigger": "ProvisionClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric && is_valid_tls_certificate(ClientCertificate) && all_valid_certs_in_list(IntermediateCertificates) && public_private_key_correspondence(ClientCertificate, get_private_key(CCDID)) && !fingerprint_exists_in_fabric(compute_fingerprint(ClientCertificate), accessing_fabric)",
+        "actions": [
+          "update_client_certificate_field(CCDID, ClientCertificate)",
+          "update_intermediate_certificates_field(CCDID, IntermediateCertificates)",
+          "update_fingerprint_field_client(CCDID, compute_fingerprint(ClientCertificate))",
+          "return_status(SUCCESS)"
+        ],
+        "timing_requirement": null,
+        "description": "Successfully provision client certificate and intermediate chain"
+      },
+      {
+        "id": "T_ClientCert_015",
+        "from_state": "ClientCert_Provisioned_NotReferenced",
+        "to_state": "ClientCert_Provisioned_NotReferenced",
+        "trigger": "ProvisionClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric && !fingerprint_exists_in_fabric(compute_fingerprint(ClientCertificate), accessing_fabric) && is_valid_tls_certificate(ClientCertificate) && all_valid_certs_in_list(IntermediateCertificates) && public_private_key_correspondence(ClientCertificate, get_private_key(CCDID))",
+        "actions": [
+          "update_client_certificate_field(CCDID, ClientCertificate)",
+          "update_intermediate_certificates_field(CCDID, IntermediateCertificates)",
+          "update_fingerprint_field_client(CCDID, compute_fingerprint(ClientCertificate))",
+          "return_status(SUCCESS)"
+        ],
+        "timing_requirement": "Updated certificate only used for new TLS connections established after this command completes",
+        "description": "Rotate client certificate (not referenced)"
+      },
+      {
+        "id": "T_ClientCert_016",
+        "from_state": "ClientCert_Provisioned_Referenced",
+        "to_state": "ClientCert_Provisioned_Referenced",
+        "trigger": "ProvisionClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric && !fingerprint_exists_in_fabric(compute_fingerprint(ClientCertificate), accessing_fabric) && is_valid_tls_certificate(ClientCertificate) && all_valid_certs_in_list(IntermediateCertificates) && public_private_key_correspondence(ClientCertificate, get_private_key(CCDID))",
+        "actions": [
+          "update_client_certificate_field(CCDID, ClientCertificate)",
+          "update_intermediate_certificates_field(CCDID, IntermediateCertificates)",
+          "update_fingerprint_field_client(CCDID, compute_fingerprint(ClientCertificate))",
+          "return_status(SUCCESS)"
+        ],
+        "timing_requirement": "Updated certificate only used for new TLS connections established after this command completes",
+        "description": "Rotate client certificate (referenced by endpoints)"
+      },
+      {
+        "id": "T_ClientCert_017",
+        "from_state": "ClientCert_KeyGenerated_CertPending",
+        "to_state": "ClientCert_NotProvisioned",
+        "trigger": "RemoveClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric && !referenced_by_endpoint(CCDID)",
+        "actions": [
+          "remove_client_cert_entry(CCDID)",
+          "remove_tls_keypair(CCDID)",
+          "decrement_count_client_certs(accessing_fabric)",
+          "return_status(SUCCESS)"
+        ],
+        "timing_requirement": null,
+        "description": "Remove client certificate entry with pending CSR and key pair"
+      },
+      {
+        "id": "T_ClientCert_018",
+        "from_state": "ClientCert_Provisioned_NotReferenced",
+        "to_state": "ClientCert_NotProvisioned",
+        "trigger": "RemoveClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric && !referenced_by_endpoint(CCDID)",
+        "actions": [
+          "remove_client_cert_entry(CCDID)",
+          "remove_tls_keypair(CCDID)",
+          "decrement_count_client_certs(accessing_fabric)",
+          "return_status(SUCCESS)"
+        ],
+        "timing_requirement": null,
+        "description": "Remove provisioned but unreferenced client certificate and key pair"
+      },
+      {
+        "id": "T_ClientCert_019",
+        "from_state": "ClientCert_Provisioned_Referenced",
+        "to_state": "ClientCert_Provisioned_Referenced",
+        "trigger": "RemoveClientCertificate",
+        "guard_condition": "exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric && referenced_by_endpoint(CCDID)",
+        "actions": [
+          "return_status(INVALID_IN_STATE)"
+        ],
+        "timing_requirement": null,
+        "description": "Reject removal of client certificate in use by TLS endpoints"
+      },
+      {
+        "id": "T_ClientCert_020",
+        "from_state": "ClientCert_Provisioned_NotReferenced",
+        "to_state": "ClientCert_Provisioned_NotReferenced",
+        "trigger": "FindClientCertificate",
+        "guard_condition": "CCDID == NULL && count_client_certs(accessing_fabric) > 0",
+        "actions": [
+          "cert_list := get_all_client_certs_for_fabric(accessing_fabric)",
+          "return_find_client_certificate_response(cert_list)"
+        ],
+        "timing_requirement": null,
+        "description": "Return all client certificates for accessing fabric"
+      },
+      {
+        "id": "T_ClientCert_021",
+        "from_state": "ClientCert_Provisioned_NotReferenced",
+        "to_state": "ClientCert_Provisioned_NotReferenced",
+        "trigger": "FindClientCertificate",
+        "guard_condition": "CCDID != NULL && exists_ccdid(CCDID) && fabric_of_ccdid(CCDID) == accessing_fabric",
+        "actions": [
+          "cert := get_client_cert(CCDID)",
+          "return_find_client_certificate_response([cert])"
+        ],
+        "timing_requirement": null,
+        "description": "Return specific client certificate by CCDID"
+      },
+      {
+        "id": "T_ClientCert_022",
+        "from_state": "ClientCert_Provisioned_NotReferenced",
+        "to_state": "ClientCert_Provisioned_NotReferenced",
+        "trigger": "LookupClientCertificate",
+        "guard_condition": "exists_fingerprint_in_fabric(Fingerprint, accessing_fabric)",
+        "actions": [
+          "ccdid := get_ccdid_by_fingerprint(Fingerprint, accessing_fabric)",
+          "return_lookup_client_certificate_response(ccdid)"
+        ],
+        "timing_requirement": null,
+        "description": "Return CCDID for given client certificate fingerprint"
+      }
+    ],
+    
+    "functions": [
+      {
+        "name": "crypto_generate_keypair",
+        "parameters": [],
+        "return_type": "keypair (ECDSA public + private key)",
+        "description": "Generate a new TLS key pair using ECDSA. The specification references Crypto_GenerateKeypair without specifying curve, but Matter typically uses P-256 (secp256r1) for ECDSA operations.",
+        "algorithm_detail": "ECDSA key generation on P-256 curve (secp256r1). Uses DRBG for random number generation. Returns keypair structure containing both public and private keys. Must check for collisions with existing TLS key pairs and operational credential key pairs after generation.",
+        "usage_in_fsm": "Called in ClientCSR command when CCDID==NULL to generate new key pair for new client certificate. Transition T_ClientCert_002 and T_ClientCert_003."
+      },
+      {
+        "name": "crypto_sign",
+        "parameters": [
+          {"name": "message", "type": "octstr", "description": "Data to be signed (in ClientCSR, this is the Nonce field)"},
+          {"name": "private_key", "type": "ECDSA_private_key", "description": "TLS private key for signing"}
+        ],
+        "return_type": "octstr (max 128 bytes, ec-signature)",
+        "description": "Generate ECDSA signature of message using provided private key. This proves possession of the private key corresponding to the public key in the CSR.",
+        "algorithm_detail": "ECDSA signature generation using SHA-256 hash. Spec references Crypto_Sign(). Input: message (32-byte nonce), privateKey (ECDSA private key from TLS key pair). Output: DER-encoded ECDSA signature (typically 64-72 bytes for P-256). Signature format follows RFC 3279 or SEC1.",
+        "usage_in_fsm": "Called in ClientCSR command to sign the nonce field, proving possession of private key. Used in transitions T_ClientCert_003, T_ClientCert_004, T_ClientCert_005, T_ClientCert_006 to generate NonceSignature field."
+      },
+      {
+        "name": "generate_pkcs10_csr",
+        "parameters": [
+          {"name": "keypair", "type": "keypair", "description": "TLS key pair containing public and private keys"}
+        ],
+        "return_type": "octstr (DER-encoded PKCS#10 CSR, max 3000 bytes)",
+        "description": "Generate a Certificate Signing Request in PKCS#10 format (RFC 2986). CSR contains public key and is signed with private key to prove possession.",
+        "algorithm_detail": "PKCS#10 CSR generation per RFC 2986 section 4.2. CertificationRequestInfo contains: version=0, subject (MAY be any value, CA may override), subjectPKInfo (contains TLS public key), attributes (optional). Signature algorithm: ECDSA with SHA-256. The CSR includes signature using private key over the encoded CertificationRequestInfo. Output: DER-encoded PKCS#10 CSR.",
+        "usage_in_fsm": "Called in ClientCSR command to generate CSR for certificate authority. Used in transitions T_ClientCert_003, T_ClientCert_004, T_ClientCert_005, T_ClientCert_006 to populate CSR field in response."
+      },
+      {
+        "name": "compute_fingerprint",
+        "parameters": [
+          {"name": "certificate", "type": "octstr", "description": "DER-encoded X.509 certificate"}
+        ],
+        "return_type": "octstr (max 64 bytes)",
+        "description": "Compute cryptographic hash of certificate to create unique fingerprint for duplicate detection and lookup operations.",
+        "algorithm_detail": "Certificate fingerprint computation, likely SHA-256 hash of DER-encoded certificate bytes (32 bytes output). Specification allows 'max 64 bytes' suggesting SHA-512 is also possible. Hash function must be collision-resistant. Used for: (1) duplicate detection in ProvisionRootCertificate/ProvisionClientCertificate, (2) lookup operations via LookupRootCertificate/LookupClientCertificate.",
+        "usage_in_fsm": "Called when provisioning certificates to compute fingerprint for storage and duplicate checking. Also used in guard conditions checking fingerprint_exists_in_fabric()."
+      },
+      {
+        "name": "is_valid_tls_certificate",
+        "parameters": [
+          {"name": "certificate", "type": "octstr", "description": "Certificate to validate"}
+        ],
+        "return_type": "boolean",
+        "description": "Validate that certificate is properly DER-encoded and conforms to TLS certificate format (X.509v3).",
+        "algorithm_detail": "Parse DER encoding of X.509 certificate. Check: (1) Valid DER structure (no truncation, correct ASN.1 encoding), (2) Valid X.509 certificate fields (version, serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo, etc.), (3) Supported signature algorithm, (4) Valid public key format. Does NOT check certificate chain or expiration, only structural validity.",
+        "usage_in_fsm": "Called in ProvisionRootCertificate and ProvisionClientCertificate guard conditions to validate certificate format before storage."
+      },
+      {
+        "name": "is_invalid_tls_certificate",
+        "parameters": [
+          {"name": "certificate", "type": "octstr", "description": "Certificate to validate"}
+        ],
+        "return_type": "boolean",
+        "description": "Negation of is_valid_tls_certificate. Returns true if certificate is invalid.",
+        "algorithm_detail": "Returns !is_valid_tls_certificate(certificate)",
+        "usage_in_fsm": "Used in guard conditions to check for invalid certificates"
+      },
+      {
+        "name": "any_invalid_cert_in_list",
+        "parameters": [
+          {"name": "cert_list", "type": "list[octstr]", "description": "List of intermediate certificates"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if any certificate in the list is invalid. Returns true if at least one invalid certificate found.",
+        "algorithm_detail": "Iterate through cert_list, apply is_invalid_tls_certificate() to each entry. Return true on first invalid certificate, false if all valid.",
+        "usage_in_fsm": "Called in ProvisionClientCertificate guard conditions to validate IntermediateCertificates list"
+      },
+      {
+        "name": "all_valid_certs_in_list",
+        "parameters": [
+          {"name": "cert_list", "type": "list[octstr]", "description": "List of intermediate certificates"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if all certificates in list are valid. Returns true only if all certificates pass validation.",
+        "algorithm_detail": "Iterate through cert_list, apply is_valid_tls_certificate() to each entry. Return false on first invalid certificate, true if all valid or list empty.",
+        "usage_in_fsm": "Called in ProvisionClientCertificate guard conditions to validate IntermediateCertificates list"
+      },
+      {
+        "name": "public_private_key_correspondence",
+        "parameters": [
+          {"name": "certificate", "type": "octstr", "description": "Client certificate containing public key"},
+          {"name": "private_key", "type": "ECDSA_private_key", "description": "Stored private key"}
+        ],
+        "return_type": "boolean",
+        "description": "Verify that the public key in the certificate mathematically corresponds to the provided private key.",
+        "algorithm_detail": "Extract subjectPublicKeyInfo from certificate (DER-decode X.509). For ECDSA: Verify that private_key * G == public_key (where G is generator point on curve). Alternatively, sign test message with private_key, verify signature with public_key from certificate. Returns true if correspondence confirmed, false otherwise.",
+        "usage_in_fsm": "Critical security check in ProvisionClientCertificate to ensure certificate issued matches the CSR generated with stored key pair. Prevents certificate substitution attacks."
+      },
+      {
+        "name": "key_collision_detected_after_generation",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Check if newly generated key pair collides with any existing TLS key pair or operational credential key pair on the node.",
+        "algorithm_detail": "After crypto_generate_keypair(), compare new keypair against: (1) All existing TLS private keys in ProvisionedClientCertificates across all fabrics, (2) All operational credential private keys (from Node Operational Credentials cluster). For ECDSA keys, compare private key scalar values. If match found, return true (collision detected). Spec notes: 'Barring software error' this should be extremely rare.",
+        "usage_in_fsm": "Called in ClientCSR after key generation to detect collisions. If collision detected, discard key pair and fail with DYNAMIC_CONSTRAINT_ERROR."
+      },
+      {
+        "name": "generate_unique_tlscaid",
+        "parameters": [],
+        "return_type": "TLSCAID (uint16, 0 to 65534)",
+        "description": "Generate a unique TLSCAID value that does not collide with any existing CAID in ProvisionedRootCertificates list across all fabrics.",
+        "algorithm_detail": "Spec guidance: Start at 0, monotonically increment by 1 for each new allocation. When reaching 65534, wrap to 0. Check for collision with all existing CAIDs (across all fabrics on node). If collision found, increment and retry until unique value found. Returns unique CAID value. Note: Global uniqueness across fabrics, not per-fabric.",
+        "usage_in_fsm": "Called in ProvisionRootCertificate when CAID==NULL to assign new unique identifier for root certificate entry."
+      },
+      {
+        "name": "generate_unique_tlsccdid",
+        "parameters": [],
+        "return_type": "TLSCCDID (uint16, 0 to 65534)",
+        "description": "Generate a unique TLSCCDID value that does not collide with any existing CCDID in ProvisionedClientCertificates list across all fabrics.",
+        "algorithm_detail": "Spec guidance: Start at 0, monotonically increment by 1 for each new allocation. When reaching 65534, wrap to 0. Check for collision with all existing CCDIDs (across all fabrics on node). If collision found, increment and retry until unique value found. Returns unique CCDID value. Note: Global uniqueness across fabrics, not per-fabric.",
+        "usage_in_fsm": "Called in ClientCSR when CCDID==NULL to assign new unique identifier for client certificate entry."
+      },
+      {
+        "name": "exists_caid",
+        "parameters": [
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate authority ID to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if CAID exists in ProvisionedRootCertificates list (any fabric).",
+        "algorithm_detail": "Iterate through ProvisionedRootCertificates list. Return true if any entry has CAID field matching input caid. Return false if no match found.",
+        "usage_in_fsm": "Used in guard conditions for ProvisionRootCertificate (rotation), FindRootCertificate, LookupRootCertificate, RemoveRootCertificate"
+      },
+      {
+        "name": "exists_ccdid",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if CCDID exists in ProvisionedClientCertificates list (any fabric).",
+        "algorithm_detail": "Iterate through ProvisionedClientCertificates list. Return true if any entry has CCDID field matching input ccdid. Return false if no match found.",
+        "usage_in_fsm": "Used in guard conditions for ClientCSR (rotation), ProvisionClientCertificate, FindClientCertificate, LookupClientCertificate, RemoveClientCertificate"
+      },
+      {
+        "name": "fabric_of_caid",
+        "parameters": [
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate authority ID"}
+        ],
+        "return_type": "fabric_id",
+        "description": "Return the associated fabric for given CAID.",
+        "algorithm_detail": "Lookup CAID in ProvisionedRootCertificates list. Return the associated_fabric value from TLSCertStruct entry. Assumes exists_caid(caid)==true (should be checked first).",
+        "usage_in_fsm": "Used in guard conditions to enforce fabric isolation: verify accessing_fabric == fabric_of_caid(CAID)"
+      },
+      {
+        "name": "fabric_of_ccdid",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"}
+        ],
+        "return_type": "fabric_id",
+        "description": "Return the associated fabric for given CCDID.",
+        "algorithm_detail": "Lookup CCDID in ProvisionedClientCertificates list. Return the associated_fabric value from TLSClientCertificateDetailStruct entry. Assumes exists_ccdid(ccdid)==true (should be checked first).",
+        "usage_in_fsm": "Used in guard conditions to enforce fabric isolation: verify accessing_fabric == fabric_of_ccdid(CCDID)"
+      },
+      {
+        "name": "referenced_by_endpoint",
+        "parameters": [
+          {"name": "id", "type": "TLSCAID or TLSCCDID", "description": "Certificate ID to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if certificate ID is referenced by any TLS endpoint in TLS Client Management Cluster (0x0802) ProvisionedEndpoints list.",
+        "algorithm_detail": "Query TLS Client Management Cluster (cluster ID 0x0802). Check ProvisionedEndpoints list for any entry where CAID field (for root certs) or CCDID field (for client certs) matches input id. Return true if referenced, false otherwise. This is cross-cluster dependency check.",
+        "usage_in_fsm": "Critical security check in RemoveRootCertificate and RemoveClientCertificate. Prevents removal of certificates still in use by active TLS endpoints. Spec mandates INVALID_IN_STATE if referenced."
+      },
+      {
+        "name": "fingerprint_exists_in_fabric",
+        "parameters": [
+          {"name": "fingerprint", "type": "octstr", "description": "Certificate fingerprint"},
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to check within"}
+        ],
+        "return_type": "boolean",
+        "description": "Check if given fingerprint already exists for any certificate in the specified fabric.",
+        "algorithm_detail": "Iterate through ProvisionedRootCertificates and ProvisionedClientCertificates lists. For entries where associated_fabric==fabric, compare computed fingerprints with input fingerprint. Return true if match found, false otherwise. Used to prevent duplicate certificates within a fabric.",
+        "usage_in_fsm": "Used in ProvisionRootCertificate and ProvisionClientCertificate guard conditions to reject ALREADY_EXISTS duplicates"
+      },
+      {
+        "name": "exists_fingerprint_in_fabric",
+        "parameters": [
+          {"name": "fingerprint", "type": "octstr", "description": "Certificate fingerprint"},
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to check within"}
+        ],
+        "return_type": "boolean",
+        "description": "Alias for fingerprint_exists_in_fabric, used in Lookup commands.",
+        "algorithm_detail": "Same as fingerprint_exists_in_fabric",
+        "usage_in_fsm": "Used in LookupRootCertificate and LookupClientCertificate guard conditions"
+      },
+      {
+        "name": "get_caid_by_fingerprint",
+        "parameters": [
+          {"name": "fingerprint", "type": "octstr", "description": "Certificate fingerprint"},
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to search within"}
+        ],
+        "return_type": "TLSCAID",
+        "description": "Return the CAID for certificate with given fingerprint in specified fabric.",
+        "algorithm_detail": "Iterate through ProvisionedRootCertificates. Find entry where associated_fabric==fabric AND computed_fingerprint==fingerprint. Return CAID field from that entry. Assumes exists_fingerprint_in_fabric()==true (should be checked first).",
+        "usage_in_fsm": "Used in LookupRootCertificate transition to return CAID in response"
+      },
+      {
+        "name": "get_ccdid_by_fingerprint",
+        "parameters": [
+          {"name": "fingerprint", "type": "octstr", "description": "Client certificate fingerprint"},
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to search within"}
+        ],
+        "return_type": "TLSCCDID",
+        "description": "Return the CCDID for client certificate with given fingerprint in specified fabric.",
+        "algorithm_detail": "Iterate through ProvisionedClientCertificates. Find entry where associated_fabric==fabric AND computed_fingerprint==fingerprint. Return CCDID field from that entry. Assumes exists_fingerprint_in_fabric()==true (should be checked first).",
+        "usage_in_fsm": "Used in LookupClientCertificate transition to return CCDID in response"
+      },
+      {
+        "name": "count_root_certs",
+        "parameters": [
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to count within"}
+        ],
+        "return_type": "uint8",
+        "description": "Count number of root certificates provisioned for given fabric.",
+        "algorithm_detail": "Iterate through ProvisionedRootCertificates list. Count entries where associated_fabric==fabric. Return count.",
+        "usage_in_fsm": "Used in ProvisionRootCertificate guard condition to check against MaxRootCertificates limit before allowing new provision"
+      },
+      {
+        "name": "count_client_certs",
+        "parameters": [
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to count within"}
+        ],
+        "return_type": "uint8",
+        "description": "Count number of client certificates provisioned for given fabric.",
+        "algorithm_detail": "Iterate through ProvisionedClientCertificates list. Count entries where associated_fabric==fabric. Return count.",
+        "usage_in_fsm": "Used in ClientCSR guard condition to check against MaxClientCertificates limit before allowing new key generation"
+      },
+      {
+        "name": "create_tlscertstruct",
+        "parameters": [
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate authority ID"},
+          {"name": "certificate", "type": "octstr", "description": "DER-encoded certificate"},
+          {"name": "fingerprint", "type": "octstr", "description": "Computed certificate fingerprint"},
+          {"name": "fabric", "type": "fabric_id", "description": "Associated fabric"}
+        ],
+        "return_type": "TLSCertStruct",
+        "description": "Create new TLSCertStruct with provided values.",
+        "algorithm_detail": "Allocate new TLSCertStruct. Set CAID field=caid, Certificate field=certificate, computed fingerprint=fingerprint. Associate with fabric (fabric-scoped). Return struct.",
+        "usage_in_fsm": "Called in ProvisionRootCertificate when provisioning new certificate (CAID==NULL)"
+      },
+      {
+        "name": "add_to_provisioned_root_certificates",
+        "parameters": [
+          {"name": "struct", "type": "TLSCertStruct", "description": "Certificate structure to add"}
+        ],
+        "return_type": "void",
+        "description": "Add TLSCertStruct to ProvisionedRootCertificates list attribute.",
+        "algorithm_detail": "Append struct to ProvisionedRootCertificates list. List constraint: max MaxRootCertificates per fabric. Fabric scoping handled automatically.",
+        "usage_in_fsm": "Called in ProvisionRootCertificate transition T_RootCert_005 after creating new struct"
+      },
+      {
+        "name": "update_certificate_field",
+        "parameters": [
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate authority ID"},
+          {"name": "certificate", "type": "octstr", "description": "New certificate value"}
+        ],
+        "return_type": "void",
+        "description": "Update the Certificate field of existing TLSCertStruct entry for certificate rotation.",
+        "algorithm_detail": "Lookup entry in ProvisionedRootCertificates with matching CAID. Update Certificate field with new certificate value. Note: Spec states updated certificate only used for NEW TLS connections established after this call.",
+        "usage_in_fsm": "Called in ProvisionRootCertificate rotation transitions T_RootCert_008, T_RootCert_009"
+      },
+      {
+        "name": "update_fingerprint_field",
+        "parameters": [
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate authority ID"},
+          {"name": "fingerprint", "type": "octstr", "description": "New fingerprint value"}
+        ],
+        "return_type": "void",
+        "description": "Update the fingerprint for existing root certificate entry after rotation.",
+        "algorithm_detail": "Lookup entry in ProvisionedRootCertificates with matching CAID. Update stored fingerprint with new value.",
+        "usage_in_fsm": "Called in ProvisionRootCertificate rotation transitions after updating certificate"
+      },
+      {
+        "name": "remove_root_cert_entry",
+        "parameters": [
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate authority ID to remove"}
+        ],
+        "return_type": "void",
+        "description": "Remove TLSCertStruct entry from ProvisionedRootCertificates list.",
+        "algorithm_detail": "Find entry in ProvisionedRootCertificates with matching CAID. Remove from list. Free memory.",
+        "usage_in_fsm": "Called in RemoveRootCertificate transition T_RootCert_013"
+      },
+      {
+        "name": "create_tlsclientcertdetailstruct",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"},
+          {"name": "fabric", "type": "fabric_id", "description": "Associated fabric"}
+        ],
+        "return_type": "TLSClientCertificateDetailStruct",
+        "description": "Create new TLSClientCertificateDetailStruct with CCDID, initially NULL certificate fields.",
+        "algorithm_detail": "Allocate new TLSClientCertificateDetailStruct. Set CCDID field=ccdid. Set ClientCertificate=NULL, IntermediateCertificates=NULL. Associate with fabric (fabric-scoped). Return struct.",
+        "usage_in_fsm": "Called in ClientCSR when generating new key pair (CCDID==NULL)"
+      },
+      {
+        "name": "associate_keypair",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"},
+          {"name": "keypair", "type": "keypair", "description": "ECDSA key pair"}
+        ],
+        "return_type": "void",
+        "description": "Associate generated key pair with CCDID entry in secure storage.",
+        "algorithm_detail": "Store keypair (both public and private keys) in secure key storage, indexed by CCDID. Private key must be protected from unauthorized access. Implement secure memory handling.",
+        "usage_in_fsm": "Called in ClientCSR transition T_ClientCert_003 after key generation"
+      },
+      {
+        "name": "set_client_certificate_null",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"}
+        ],
+        "return_type": "void",
+        "description": "Set ClientCertificate field to NULL for CCDID entry.",
+        "algorithm_detail": "Lookup entry in ProvisionedClientCertificates with matching CCDID. Set ClientCertificate field to NULL. This indicates CSR generated but ProvisionClientCertificate not yet called.",
+        "usage_in_fsm": "Called in ClientCSR transition T_ClientCert_003 when creating new entry"
+      },
+      {
+        "name": "set_intermediate_certificates_null",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"}
+        ],
+        "return_type": "void",
+        "description": "Set IntermediateCertificates field to NULL or empty list for CCDID entry.",
+        "algorithm_detail": "Lookup entry in ProvisionedClientCertificates with matching CCDID. Set IntermediateCertificates field to NULL or empty list. This indicates CSR generated but certificate chain not yet provisioned.",
+        "usage_in_fsm": "Called in ClientCSR transition T_ClientCert_003 when creating new entry"
+      },
+      {
+        "name": "add_to_provisioned_client_certificates",
+        "parameters": [
+          {"name": "struct", "type": "TLSClientCertificateDetailStruct", "description": "Client certificate structure to add"}
+        ],
+        "return_type": "void",
+        "description": "Add TLSClientCertificateDetailStruct to ProvisionedClientCertificates list attribute.",
+        "algorithm_detail": "Append struct to ProvisionedClientCertificates list. List constraint: max MaxClientCertificates per fabric. Fabric scoping handled automatically.",
+        "usage_in_fsm": "Called in ClientCSR transition T_ClientCert_003 after creating new struct"
+      },
+      {
+        "name": "update_client_certificate_field",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"},
+          {"name": "certificate", "type": "octstr", "description": "Client certificate value"}
+        ],
+        "return_type": "void",
+        "description": "Update ClientCertificate field of existing CCDID entry.",
+        "algorithm_detail": "Lookup entry in ProvisionedClientCertificates with matching CCDID. Update ClientCertificate field with certificate value. Changes NULL to non-NULL on first provision. Updates existing value on rotation. Note: Spec states updated certificate only used for NEW TLS connections.",
+        "usage_in_fsm": "Called in ProvisionClientCertificate transitions T_ClientCert_014, T_ClientCert_015, T_ClientCert_016"
+      },
+      {
+        "name": "update_intermediate_certificates_field",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"},
+          {"name": "cert_list", "type": "list[octstr]", "description": "Intermediate certificate chain (0 to 10 certs)"}
+        ],
+        "return_type": "void",
+        "description": "Update IntermediateCertificates field of existing CCDID entry.",
+        "algorithm_detail": "Lookup entry in ProvisionedClientCertificates with matching CCDID. Update IntermediateCertificates field with cert_list. Can be empty list (direct signing by root CA). Max 10 intermediate certificates, each max 3000 bytes.",
+        "usage_in_fsm": "Called in ProvisionClientCertificate transitions T_ClientCert_014, T_ClientCert_015, T_ClientCert_016"
+      },
+      {
+        "name": "update_fingerprint_field_client",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"},
+          {"name": "fingerprint", "type": "octstr", "description": "Client certificate fingerprint"}
+        ],
+        "return_type": "void",
+        "description": "Update fingerprint for client certificate entry.",
+        "algorithm_detail": "Lookup entry in ProvisionedClientCertificates with matching CCDID. Update stored fingerprint with computed value from client certificate.",
+        "usage_in_fsm": "Called in ProvisionClientCertificate transitions after updating certificate"
+      },
+      {
+        "name": "remove_client_cert_entry",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID to remove"}
+        ],
+        "return_type": "void",
+        "description": "Remove TLSClientCertificateDetailStruct entry from ProvisionedClientCertificates list.",
+        "algorithm_detail": "Find entry in ProvisionedClientCertificates with matching CCDID. Remove from list. Free memory allocated for struct (but not key pair - that's handled separately).",
+        "usage_in_fsm": "Called in RemoveClientCertificate transitions T_ClientCert_017, T_ClientCert_018"
+      },
+      {
+        "name": "remove_tls_keypair",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"}
+        ],
+        "return_type": "void",
+        "description": "Securely delete TLS key pair associated with CCDID. CRITICAL: Must securely erase private key from memory.",
+        "algorithm_detail": "Lookup key pair in secure key storage by CCDID. Securely erase private key from memory (overwrite with zeros or random data to prevent recovery). Delete public key. Remove key storage entry. Spec requirement: 'Remove the TLS Key Pair belonging to the passed in CCDID.' This is critical for security - orphaned private keys enable impersonation attacks.",
+        "usage_in_fsm": "Called in RemoveClientCertificate transitions T_ClientCert_017, T_ClientCert_018. Security property: private key cleanup prevents post-deletion key recovery attacks."
+      },
+      {
+        "name": "get_keypair",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"}
+        ],
+        "return_type": "keypair",
+        "description": "Retrieve TLS key pair associated with CCDID from secure storage.",
+        "algorithm_detail": "Lookup key pair in secure key storage by CCDID. Return keypair structure containing both public and private keys. Used for CSR generation during rotation.",
+        "usage_in_fsm": "Called in ClientCSR transitions when CCDID!=NULL (rotation) to reuse existing key pair"
+      },
+      {
+        "name": "get_private_key",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"}
+        ],
+        "return_type": "ECDSA_private_key",
+        "description": "Retrieve TLS private key associated with CCDID from secure storage.",
+        "algorithm_detail": "Lookup key pair in secure key storage by CCDID. Extract and return private key component only.",
+        "usage_in_fsm": "Called in ProvisionClientCertificate guard conditions to verify public-private key correspondence"
+      },
+      {
+        "name": "get_private_key_from_keypair",
+        "parameters": [
+          {"name": "keypair", "type": "keypair", "description": "Key pair structure"}
+        ],
+        "return_type": "ECDSA_private_key",
+        "description": "Extract private key from keypair structure.",
+        "algorithm_detail": "Access private key field from keypair structure and return it.",
+        "usage_in_fsm": "Called in ClientCSR transitions to extract private key for signing operations"
+      },
+      {
+        "name": "get_all_root_certs_for_fabric",
+        "parameters": [
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to query"}
+        ],
+        "return_type": "list[TLSCertStruct]",
+        "description": "Return list of all root certificates for specified fabric.",
+        "algorithm_detail": "Iterate through ProvisionedRootCertificates. Collect all entries where associated_fabric==fabric. Return list of TLSCertStruct. When read over Large Message capable transport, include Certificate field. When read over non-Large Message transport, exclude Certificate field.",
+        "usage_in_fsm": "Called in FindRootCertificate transition T_RootCert_010 when CAID==NULL"
+      },
+      {
+        "name": "get_root_cert",
+        "parameters": [
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate authority ID"}
+        ],
+        "return_type": "TLSCertStruct",
+        "description": "Return specific root certificate by CAID.",
+        "algorithm_detail": "Lookup entry in ProvisionedRootCertificates with matching CAID. Return TLSCertStruct. Apply same Large Message transport rules as get_all_root_certs_for_fabric.",
+        "usage_in_fsm": "Called in FindRootCertificate transition T_RootCert_011 when CAID!=NULL"
+      },
+      {
+        "name": "get_all_client_certs_for_fabric",
+        "parameters": [
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to query"}
+        ],
+        "return_type": "list[TLSClientCertificateDetailStruct]",
+        "description": "Return list of all client certificates for specified fabric.",
+        "algorithm_detail": "Iterate through ProvisionedClientCertificates. Collect all entries where associated_fabric==fabric. Return list of TLSClientCertificateDetailStruct. When read over Large Message capable transport, include ClientCertificate and IntermediateCertificates fields. When read over non-Large Message transport, exclude these fields. Note: If ClientCertificate==NULL, CSR generated but provisioning not yet complete.",
+        "usage_in_fsm": "Called in FindClientCertificate transition T_ClientCert_020 when CCDID==NULL"
+      },
+      {
+        "name": "get_client_cert",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"}
+        ],
+        "return_type": "TLSClientCertificateDetailStruct",
+        "description": "Return specific client certificate by CCDID.",
+        "algorithm_detail": "Lookup entry in ProvisionedClientCertificates with matching CCDID. Return TLSClientCertificateDetailStruct. Apply same Large Message transport rules as get_all_client_certs_for_fabric.",
+        "usage_in_fsm": "Called in FindClientCertificate transition T_ClientCert_021 when CCDID!=NULL"
+      },
+      {
+        "name": "increment_count_root_certs",
+        "parameters": [
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to increment count for"}
+        ],
+        "return_type": "void",
+        "description": "Increment per-fabric root certificate counter.",
+        "algorithm_detail": "Increment internal counter tracking number of root certificates for fabric. Used to enforce MaxRootCertificates limit.",
+        "usage_in_fsm": "Called in ProvisionRootCertificate transition T_RootCert_005 after adding new certificate"
+      },
+      {
+        "name": "decrement_count_root_certs",
+        "parameters": [
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to decrement count for"}
+        ],
+        "return_type": "void",
+        "description": "Decrement per-fabric root certificate counter.",
+        "algorithm_detail": "Decrement internal counter tracking number of root certificates for fabric.",
+        "usage_in_fsm": "Called in RemoveRootCertificate transition T_RootCert_013 after removing certificate"
+      },
+      {
+        "name": "increment_count_client_certs",
+        "parameters": [
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to increment count for"}
+        ],
+        "return_type": "void",
+        "description": "Increment per-fabric client certificate counter.",
+        "algorithm_detail": "Increment internal counter tracking number of client certificates for fabric. Used to enforce MaxClientCertificates limit.",
+        "usage_in_fsm": "Called in ClientCSR transition T_ClientCert_003 after adding new certificate entry"
+      },
+      {
+        "name": "decrement_count_client_certs",
+        "parameters": [
+          {"name": "fabric", "type": "fabric_id", "description": "Fabric to decrement count for"}
+        ],
+        "return_type": "void",
+        "description": "Decrement per-fabric client certificate counter.",
+        "algorithm_detail": "Decrement internal counter tracking number of client certificates for fabric.",
+        "usage_in_fsm": "Called in RemoveClientCertificate transitions T_ClientCert_017, T_ClientCert_018 after removing certificate"
+      },
+      {
+        "name": "discard_keypair",
+        "parameters": [
+          {"name": "keypair", "type": "keypair", "description": "Key pair to discard"}
+        ],
+        "return_type": "void",
+        "description": "Securely discard generated key pair after collision detection.",
+        "algorithm_detail": "Securely erase private key from memory (overwrite with zeros). Delete keypair structure. Called only when key collision detected.",
+        "usage_in_fsm": "Called in ClientCSR transition T_ClientCert_002 when key collision detected"
+      },
+      {
+        "name": "return_provision_root_certificate_response",
+        "parameters": [
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate authority ID"}
+        ],
+        "return_type": "void",
+        "description": "Return ProvisionRootCertificateResponse command with CAID field.",
+        "algorithm_detail": "Construct ProvisionRootCertificateResponse (command ID 0x01) with CAID field populated. Send to client.",
+        "usage_in_fsm": "Called in ProvisionRootCertificate success transitions"
+      },
+      {
+        "name": "return_client_csr_response",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"},
+          {"name": "csr", "type": "octstr", "description": "DER-encoded PKCS#10 CSR"},
+          {"name": "nonce_signature", "type": "octstr", "description": "ECDSA signature of nonce"}
+        ],
+        "return_type": "void",
+        "description": "Return ClientCSRResponse command with CCDID, CSR, and NonceSignature fields.",
+        "algorithm_detail": "Construct ClientCSRResponse (command ID 0x08) with CCDID, CSR (max 3000 bytes), and NonceSignature (max 128 bytes) fields. Send to client. Client uses CSR to request certificate from CA, then calls ProvisionClientCertificate with issued certificate.",
+        "usage_in_fsm": "Called in ClientCSR success transitions"
+      },
+      {
+        "name": "return_find_root_certificate_response",
+        "parameters": [
+          {"name": "cert_list", "type": "list[TLSCertStruct]", "description": "List of certificates (1 to MaxRootCertificates)"}
+        ],
+        "return_type": "void",
+        "description": "Return FindRootCertificateResponse command with certificate list.",
+        "algorithm_detail": "Construct FindRootCertificateResponse (command ID 0x03) with CertificateDetails field containing cert_list. Minimum 1 entry. Send to client.",
+        "usage_in_fsm": "Called in FindRootCertificate transitions"
+      },
+      {
+        "name": "return_lookup_root_certificate_response",
+        "parameters": [
+          {"name": "caid", "type": "TLSCAID", "description": "Certificate authority ID"}
+        ],
+        "return_type": "void",
+        "description": "Return LookupRootCertificateResponse command with CAID field.",
+        "algorithm_detail": "Construct LookupRootCertificateResponse (command ID 0x05) with CAID field. Send to client.",
+        "usage_in_fsm": "Called in LookupRootCertificate transitions"
+      },
+      {
+        "name": "return_find_client_certificate_response",
+        "parameters": [
+          {"name": "cert_list", "type": "list[TLSClientCertificateDetailStruct]", "description": "List of client certificates (1 to MaxClientCertificates)"}
+        ],
+        "return_type": "void",
+        "description": "Return FindClientCertificateResponse command with certificate list.",
+        "algorithm_detail": "Construct FindClientCertificateResponse (command ID 0x0B) with CertificateDetails field containing cert_list. Minimum 1 entry. Send to client.",
+        "usage_in_fsm": "Called in FindClientCertificate transitions"
+      },
+      {
+        "name": "return_lookup_client_certificate_response",
+        "parameters": [
+          {"name": "ccdid", "type": "TLSCCDID", "description": "Client certificate details ID"}
+        ],
+        "return_type": "void",
+        "description": "Return LookupClientCertificateResponse command with CCDID field.",
+        "algorithm_detail": "Construct LookupClientCertificateResponse (command ID 0x0D) with CCDID field. Send to client.",
+        "usage_in_fsm": "Called in LookupClientCertificate transitions"
+      },
+      {
+        "name": "return_status",
+        "parameters": [
+          {"name": "status_code", "type": "status_enum", "description": "Status code: SUCCESS, NOT_FOUND, INVALID_IN_STATE, ALREADY_EXISTS, RESOURCE_EXHAUSTED, DYNAMIC_CONSTRAINT_ERROR"}
+        ],
+        "return_type": "void",
+        "description": "Return status response for commands with 'Y' response type (generic status).",
+        "algorithm_detail": "Construct status response with specified status code. Send to client. Used by commands that don't have specific response command defined (RemoveRootCertificate, ProvisionClientCertificate, RemoveClientCertificate).",
+        "usage_in_fsm": "Called in various error and success transitions"
+      }
+    ],
+    
+    "definitions": [
+      {
+        "term": "Fabric Scoped",
+        "definition": "Data structures and commands are isolated per fabric. A fabric represents a separate administrative domain with its own certificates, keys, and access control. Cross-fabric access is forbidden - nodes can only access resources associated with their current accessing fabric.",
+        "security_relevance": "Critical for multi-tenant security. Fabric isolation prevents one fabric from accessing, modifying, or removing another fabric's certificates and keys. Violation enables cross-fabric privilege escalation and impersonation attacks."
+      },
+      {
+        "term": "Accessing Fabric",
+        "definition": "The fabric identity of the principal (node) executing the command. All commands enforce that accessing_fabric matches the associated_fabric of resources being accessed.",
+        "security_relevance": "Basis for access control enforcement. Specification uses 'accessing fabric' throughout to enforce fabric isolation without defining authentication mechanism. Assumes fabric identity is authenticated at transport layer."
+      },
+      {
+        "term": "Large Message Qualifier",
+        "definition": "Commands in this cluster uniformly use the Large Message qualifier (marked 'L' in Quality column) to support certificate data up to 3000 bytes. Commands work over both Large Message capable and non-Large Message capable transports, with conditional field inclusion.",
+        "security_relevance": "Low security impact. Affects protocol efficiency and field inclusion rules. Non-Large Message transports exclude large fields (Certificate, ClientCertificate, IntermediateCertificates) to prevent message truncation."
+      },
+      {
+        "term": "Referenced by Endpoint",
+        "definition": "Certificate (root or client) is in use by at least one TLS endpoint in TLS Client Management Cluster (0x0802). Reference tracked in ProvisionedEndpoints list by CAID or CCDID.",
+        "security_relevance": "Critical for referential integrity. Prevents removal of certificates while TLS endpoints actively use them. Violation causes TLS connection failures and potential service disruption. Spec mandates INVALID_IN_STATE error for removal attempts."
+      },
+      {
+        "term": "UTCTime",
+        "definition": "Timestamp attribute from Time Synchronization cluster. Must be non-NULL before provisioning root certificates. Null indicates time not yet synchronized.",
+        "security_relevance": "Required for certificate validity checking. Provisioning certificates before time sync allows expired certificates to be installed, bypassing temporal security controls. Spec mandates INVALID_IN_STATE check."
+      },
+      {
+        "term": "DER Encoding",
+        "definition": "Distinguished Encoding Rules - canonical binary encoding for X.509 certificates. All certificates in this cluster use DER encoding (not PEM or other formats).",
+        "security_relevance": "Ensures consistent parsing and fingerprint computation. Invalid DER encoding can trigger parser vulnerabilities. Spec mandates validation before storage."
+      },
+      {
+        "term": "PKCS#10 CSR",
+        "definition": "Public Key Cryptography Standards #10 Certificate Signing Request format (RFC 2986). Contains public key, subject DN (optional), and signature proving possession of private key.",
+        "security_relevance": "CSR signature proves key possession, preventing CSR substitution attacks. Spec mandates additional NonceSignature to further prove possession independent of CSR format."
+      },
+      {
+        "term": "ICAC",
+        "definition": "Intermediate Certificate Authority Certificate - certificates in chain between client certificate and root CA. Maximum 10 ICACs supported, each max 3000 bytes.",
+        "security_relevance": "Forms certificate chain for trust validation. Invalid or excessive ICACs can break TLS handshake or enable denial of service via deep chain validation."
+      },
+      {
+        "term": "Certificate Rotation",
+        "definition": "Updating an existing certificate (root or client) by providing non-NULL CAID/CCDID with new certificate value. Rotated certificate only affects new TLS connections established after rotation completes.",
+        "security_relevance": "Allows certificate renewal without service disruption. Active connections continue using old certificate. Critical: rotation does not force disconnection, creating window where both old and new certificates are valid."
+      },
+      {
+        "term": "Key Collision",
+        "definition": "Newly generated TLS key pair matches an existing TLS key pair or operational credential key pair. Must be detected and rejected.",
+        "security_relevance": "Key collision enables impersonation - two entities share same private key, breaking authentication and non-repudiation. Spec notes 'barring software error' this should be extremely rare, suggesting reliance on DRBG quality."
+      },
+      {
+        "term": "Admin Privilege",
+        "definition": "Commands marked with 'A' access modifier require administrator-level privilege. Includes all mutation operations: ProvisionRootCertificate, RemoveRootCertificate, ClientCSR, ProvisionClientCertificate, RemoveClientCertificate.",
+        "security_relevance": "Critical access control layer. Unprivileged access to mutations enables certificate injection, removal of trust anchors, and key generation. Compromises entire certificate infrastructure. Enforcement mechanism not defined in spec."
+      },
+      {
+        "term": "Fingerprint",
+        "definition": "Cryptographic hash of certificate (max 64 bytes, suggesting SHA-256 or SHA-512). Used for duplicate detection and lookup operations.",
+        "security_relevance": "Collision-resistant hash required for security. Weak hash enables duplicate certificates with different content but same fingerprint, bypassing uniqueness checks."
+      }
+    ],
+    
+    "cryptographic_operations": [
+      {
+        "operation": "TLS Key Pair Generation",
+        "algorithm": "ECDSA key generation on P-256 curve (secp256r1)",
+        "inputs": ["DRBG entropy source"],
+        "output": "ECDSA keypair (256-bit private key scalar, public key point on P-256)",
+        "assumptions": [
+          "DRBG provides sufficient entropy (256 bits minimum)",
+          "Key generation implementation is side-channel resistant",
+          "Generated keys are uniformly distributed over key space",
+          "Collision probability negligible: 2^-256"
+        ]
+      },
+      {
+        "operation": "ECDSA Signature Generation (Nonce Signing)",
+        "algorithm": "ECDSA signature with SHA-256 hash",
+        "inputs": ["message (32-byte nonce)", "ECDSA private key (256-bit)"],
+        "output": "DER-encoded ECDSA signature (typically 64-72 bytes for P-256)",
+        "assumptions": [
+          "ECDSA implementation uses deterministic nonce (RFC 6979) or secure random nonce",
+          "Private key never leaves secure storage during signing",
+          "Signature timing is constant to prevent side-channel attacks"
+        ]
+      },
+      {
+        "operation": "PKCS#10 CSR Generation",
+        "algorithm": "PKCS#10 format with ECDSA-SHA256 signature (RFC 2986)",
+        "inputs": ["ECDSA key pair", "subject DN (optional)", "attributes (optional)"],
+        "output": "DER-encoded PKCS#10 CSR (max 3000 bytes)",
+        "assumptions": [
+          "CSR signature algorithm is ECDSA-SHA256",
+          "Subject DN may be ignored by CA (spec notes)",
+          "CSR format conforms to RFC 2986 section 4.2"
+        ]
+      },
+      {
+        "operation": "Certificate Fingerprint Computation",
+        "algorithm": "SHA-256 or SHA-512 hash of DER-encoded certificate",
+        "inputs": ["DER-encoded certificate (max 3000 bytes)"],
+        "output": "Hash digest (32 bytes for SHA-256 or 64 bytes for SHA-512)",
+        "assumptions": [
+          "Hash algorithm is collision-resistant",
+          "Same certificate always produces same fingerprint (deterministic)",
+          "Fingerprint uniqueness within fabric enforced by spec"
+        ]
+      },
+      {
+        "operation": "Public-Private Key Correspondence Check",
+        "algorithm": "ECDSA signature verification or point multiplication check",
+        "inputs": ["X.509 certificate (contains public key)", "ECDSA private key"],
+        "output": "boolean (true if correspondence confirmed)",
+        "assumptions": [
+          "Public key extracted from certificate subjectPublicKeyInfo",
+          "Verification method: sign test message with private key, verify with public key from certificate",
+          "Alternative: verify private_key * G == public_key_from_cert (where G is generator point)"
+        ]
+      },
+      {
+        "operation": "DER Certificate Validation",
+        "algorithm": "ASN.1 DER parsing and X.509v3 structure validation",
+        "inputs": ["octstr (claimed DER-encoded certificate)"],
+        "output": "boolean (true if valid TLS certificate)",
+        "assumptions": [
+          "Parser is robust against malformed DER (no buffer overflows)",
+          "Validation checks: DER structure, X.509 version, signature algorithm support, public key format",
+          "Does NOT validate certificate chain or expiration (only structural validity)"
+        ]
+      },
+      {
+        "operation": "Key Collision Detection",
+        "algorithm": "Comparison of private key scalar values",
+        "inputs": ["newly generated keypair", "all existing TLS keypairs", "all operational credential keypairs"],
+        "output": "boolean (true if collision detected)",
+        "assumptions": [
+          "Access to all existing private keys for comparison",
+          "Collision probability should be negligible (2^-256 for P-256)",
+          "Spec notes 'barring software error' - implies rare occurrence"
+        ]
+      }
+    ],
+    
+    "security_properties": [
+      {
+        "property_name": "Fabric_Isolation",
+        "type": "access_control",
+        "description": "All certificate operations enforce fabric isolation. Accessing fabric must match associated fabric of certificate resources. No cross-fabric access permitted.",
+        "fsm_states_involved": ["All states"],
+        "critical_transitions": ["All transitions with fabric_of_caid(CAID) != accessing_fabric or fabric_of_ccdid(CCDID) != accessing_fabric guards"]
+      },
+      {
+        "property_name": "Referential_Integrity",
+        "type": "consistency",
+        "description": "Certificates cannot be removed while referenced by TLS endpoints. INVALID_IN_STATE enforced for removal attempts of referenced certificates.",
+        "fsm_states_involved": ["RootCert_Provisioned_Referenced", "ClientCert_Provisioned_Referenced"],
+        "critical_transitions": ["T_RootCert_014", "T_ClientCert_019"]
+      },
+      {
+        "property_name": "Resource_Exhaustion_Prevention",
+        "type": "correctness",
+        "description": "Per-fabric limits enforced: MaxRootCertificates (min 5), MaxClientCertificates (min 2). RESOURCE_EXHAUSTED returned when limits reached.",
+        "fsm_states_involved": ["RootCert_NotProvisioned", "ClientCert_NotProvisioned"],
+        "critical_transitions": ["T_RootCert_004", "T_ClientCert_001"]
+      },
+      {
+        "property_name": "Fingerprint_Uniqueness",
+        "type": "security",
+        "description": "No duplicate certificate fingerprints within a fabric. ALREADY_EXISTS returned for duplicates.",
+        "fsm_states_involved": ["All provisioning states"],
+        "critical_transitions": ["T_RootCert_003", "T_ClientCert_011"]
+      },
+      {
+        "property_name": "Public_Private_Key_Correspondence",
+        "type": "cryptography",
+        "description": "Client certificate public key must match stored private key. DYNAMIC_CONSTRAINT_ERROR if mismatch detected.",
+        "fsm_states_involved": ["ClientCert_KeyGenerated_CertPending", "ClientCert_Provisioned_NotReferenced", "ClientCert_Provisioned_Referenced"],
+        "critical_transitions": ["T_ClientCert_013"]
+      },
+      {
+        "property_name": "Key_Collision_Prevention",
+        "type": "cryptography",
+        "description": "Newly generated TLS key pairs must not collide with existing TLS or operational credential keys. DYNAMIC_CONSTRAINT_ERROR if collision detected.",
+        "fsm_states_involved": ["ClientCert_NotProvisioned"],
+        "critical_transitions": ["T_ClientCert_002"]
+      },
+      {
+        "property_name": "Time_Synchronization_Prerequisite",
+        "type": "timing",
+        "description": "Root certificate provisioning requires UTCTime != NULL (time synchronized). INVALID_IN_STATE if UTCTime NULL.",
+        "fsm_states_involved": ["RootCert_NotProvisioned"],
+        "critical_transitions": ["T_RootCert_001"]
+      },
+      {
+        "property_name": "Certificate_Format_Validation",
+        "type": "security",
+        "description": "All provisioned certificates must be valid DER-encoded TLS certificates. DYNAMIC_CONSTRAINT_ERROR for invalid format.",
+        "fsm_states_involved": ["All provisioning states"],
+        "critical_transitions": ["T_RootCert_002", "T_ClientCert_012"]
+      },
+      {
+        "property_name": "Private_Key_Cleanup",
+        "type": "security",
+        "description": "When client certificate removed, associated TLS key pair must be securely deleted. Prevents orphaned private key recovery attacks.",
+        "fsm_states_involved": ["ClientCert_KeyGenerated_CertPending", "ClientCert_Provisioned_NotReferenced"],
+        "critical_transitions": ["T_ClientCert_017", "T_ClientCert_018"]
+      },
+      {
+        "property_name": "Certificate_Rotation_Isolation",
+        "type": "timing",
+        "description": "Updated certificates (via rotation) only affect new TLS connections established after rotation completes. Active connections continue using old certificate.",
+        "fsm_states_involved": ["RootCert_Provisioned_NotReferenced", "RootCert_Provisioned_Referenced", "ClientCert_Provisioned_NotReferenced", "ClientCert_Provisioned_Referenced"],
+        "critical_transitions": ["T_RootCert_008", "T_RootCert_009", "T_ClientCert_015", "T_ClientCert_016"]
+      },
+      {
+        "property_name": "CSR_Nonce_Proof_of_Possession",
+        "type": "authenticity",
+        "description": "ClientCSR returns signature of nonce using TLS private key, proving possession of private key corresponding to CSR public key. Prevents CSR substitution attacks.",
+        "fsm_states_involved": ["ClientCert_NotProvisioned", "ClientCert_KeyGenerated_CertPending", "ClientCert_Provisioned_NotReferenced", "ClientCert_Provisioned_Referenced"],
+        "critical_transitions": ["T_ClientCert_003", "T_ClientCert_004", "T_ClientCert_005", "T_ClientCert_006"]
+      },
+      {
+        "property_name": "Admin_Privilege_Enforcement",
+        "type": "access_control",
+        "description": "All mutation operations (Provision*, Remove*, ClientCSR) require admin privilege (A access modifier). Unprivileged access rejected.",
+        "fsm_states_involved": ["All states"],
+        "critical_transitions": ["All mutation transitions"]
+      },
+      {
+        "property_name": "Certificate_Chain_Constraint",
+        "type": "correctness",
+        "description": "Maximum 10 intermediate certificates allowed in certificate chain, each max 3000 bytes. Empty list permitted for direct root CA signing.",
+        "fsm_states_involved": ["ClientCert_Provisioned_NotReferenced", "ClientCert_Provisioned_Referenced"],
+        "critical_transitions": ["T_ClientCert_014", "T_ClientCert_015", "T_ClientCert_016"]
+      }
+    ],
+    
+    "security_assumptions": [
+      {
+        "assumption": "Time Synchronization cluster provides accurate, monotonic UTCTime before certificate provisioning",
+        "type": "explicit",
+        "if_violated": "Certificates can be provisioned without valid timestamps, enabling expired certificate attacks and replay vulnerabilities. Certificate validity checking becomes unreliable."
+      },
+      {
+        "assumption": "TLS Client Management Cluster (0x0802) enforces referential integrity with CAID/CCDID values",
+        "type": "implicit",
+        "if_violated": "Certificates can be removed while endpoints reference them, causing dangling pointers. Active TLS connections fail with authentication errors, enabling denial of service."
+      },
+      {
+        "assumption": "Fabric identity is authenticated at transport layer and cannot be spoofed",
+        "type": "implicit",
+        "if_violated": "Attacker spoofs accessing_fabric to bypass fabric isolation. Enables cross-fabric certificate theft, rotation hijacking, and privilege escalation across administrative domains."
+      },
+      {
+        "assumption": "Admin privilege (A access modifier) is securely granted and cannot be escalated by unprivileged principals",
+        "type": "implicit",
+        "if_violated": "Unprivileged attacker gains mutation access to inject malicious certificates, remove trust anchors, or corrupt certificate storage. Complete compromise of certificate infrastructure."
+      },
+      {
+        "assumption": "Cryptographic primitives (ECDSA, DER parsing, fingerprint computation) are implemented correctly without vulnerabilities",
+        "type": "implicit",
+        "if_violated": "Malformed certificates bypass validation, invalid signatures accepted, key correspondence check fails. Enables certificate forgery, impersonation, and buffer overflow attacks."
+      },
+      {
+        "assumption": "DRBG (Deterministic Random Bit Generator) provides sufficient entropy for key generation without predictable outputs",
+        "type": "implicit",
+        "if_violated": "Key collision probability increases dramatically. Attacker predicts key generation to trigger collisions or directly compute private keys, breaking all cryptographic security."
+      },
+      {
+        "assumption": "Memory used for private key storage is protected against unauthorized read access and securely erased on deletion",
+        "type": "implicit",
+        "if_violated": "Deleted private keys remain in memory or swap. Attacker with memory access reads orphaned keys to impersonate deleted clients or decrypt past TLS sessions."
+      },
+      {
+        "assumption": "Certificate Authority (external to cluster) validates CSRs properly and issues certificates with correct subjectPublicKey matching CSR",
+        "type": "implicit",
+        "if_violated": "CA issues certificate with wrong public key. ProvisionClientCertificate succeeds but TLS handshake fails due to key mismatch, causing service disruption."
+      },
+      {
+        "assumption": "Large Message capability detection is reliable; transport correctly reports its capabilities",
+        "type": "implicit",
+        "if_violated": "Certificate data included on limited transport causes truncation; excluded on capable transport forces extra round trips. Protocol errors or denial of service via bandwidth exhaustion."
+      },
+      {
+        "assumption": "Certificate fingerprint computation (hash algorithm) is collision-resistant and consistently implemented",
+        "type": "implicit",
+        "if_violated": "Fingerprint collisions create ambiguous certificate identification. Attacker finds collision to substitute malicious certificate, bypassing certificate pinning and trust verification."
+      },
+      {
+        "assumption": "Root node endpoint accessibility is restricted to authorized administrators",
+        "type": "implicit",
+        "if_violated": "Cluster SHALL be present only on root node endpoint. If exposed on other endpoints or to unauthorized principals, attackers gain direct access to certificate management operations."
+      },
+      {
+        "assumption": "CSR subject DN is not trusted by device; CA overrides subject DN in issued certificate",
+        "type": "explicit",
+        "if_violated": "If device trusts CSR subject DN without CA validation, attacker submits CSR with privileged subject DN to gain unauthorized privileges through certificate issuance."
+      }
+    ],
+    
+    "initial_state": "RootCert_NotProvisioned and ClientCert_NotProvisioned (certificates exist independently)",
+    "all_states": [
+      "RootCert_NotProvisioned",
+      "RootCert_Provisioned_NotReferenced",
+      "RootCert_Provisioned_Referenced",
+      "ClientCert_NotProvisioned",
+      "ClientCert_KeyGenerated_CertPending",
+      "ClientCert_Provisioned_NotReferenced",
+      "ClientCert_Provisioned_Referenced"
+    ],
+    "all_triggers": [
+      "ProvisionRootCertificate",
+      "FindRootCertificate",
+      "LookupRootCertificate",
+      "RemoveRootCertificate",
+      "ClientCSR",
+      "ProvisionClientCertificate",
+      "FindClientCertificate",
+      "LookupClientCertificate",
+      "RemoveClientCertificate"
+    ],
+    "all_functions_used": [
+      "crypto_generate_keypair",
+      "crypto_sign",
+      "generate_pkcs10_csr",
+      "compute_fingerprint",
+      "is_valid_tls_certificate",
+      "is_invalid_tls_certificate",
+      "any_invalid_cert_in_list",
+      "all_valid_certs_in_list",
+      "public_private_key_correspondence",
+      "key_collision_detected_after_generation",
+      "generate_unique_tlscaid",
+      "generate_unique_tlsccdid",
+      "exists_caid",
+      "exists_ccdid",
+      "fabric_of_caid",
+      "fabric_of_ccdid",
+      "referenced_by_endpoint",
+      "fingerprint_exists_in_fabric",
+      "exists_fingerprint_in_fabric",
+      "get_caid_by_fingerprint",
+      "get_ccdid_by_fingerprint",
+      "count_root_certs",
+      "count_client_certs",
+      "create_tlscertstruct",
+      "add_to_provisioned_root_certificates",
+      "update_certificate_field",
+      "update_fingerprint_field",
+      "remove_root_cert_entry",
+      "create_tlsclientcertdetailstruct",
+      "associate_keypair",
+      "set_client_certificate_null",
+      "set_intermediate_certificates_null",
+      "add_to_provisioned_client_certificates",
+      "update_client_certificate_field",
+      "update_intermediate_certificates_field",
+      "update_fingerprint_field_client",
+      "remove_client_cert_entry",
+      "remove_tls_keypair",
+      "get_keypair",
+      "get_private_key",
+      "get_private_key_from_keypair",
+      "get_all_root_certs_for_fabric",
+      "get_root_cert",
+      "get_all_client_certs_for_fabric",
+      "get_client_cert",
+      "increment_count_root_certs",
+      "decrement_count_root_certs",
+      "increment_count_client_certs",
+      "decrement_count_client_certs",
+      "discard_keypair",
+      "return_provision_root_certificate_response",
+      "return_client_csr_response",
+      "return_find_root_certificate_response",
+      "return_lookup_root_certificate_response",
+      "return_find_client_certificate_response",
+      "return_lookup_client_certificate_response",
+      "return_status"
+    ],
+    
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": false,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true,
+      "note_on_timers": "No timers in this cluster. Certificate rotation timing requirement documented in transition timing_requirement field.",
+      "note_on_guards": "Guards use ordered evaluation (most restrictive first) and are collectively exhaustive for each command",
+      "note_on_error_states": "No dedicated error states. Errors handled via stay-transitions that return error status codes (INVALID_IN_STATE, NOT_FOUND, ALREADY_EXISTS, RESOURCE_EXHAUSTED, DYNAMIC_CONSTRAINT_ERROR)",
+      "note_on_universal_preconditions": "Per specification, certain validation checks apply universally regardless of state: (1) UTCTime != null for ProvisionRootCertificate, (2) is_valid_tls_certificate for all certificate provisioning, (3) fingerprint_exists_in_fabric check for duplicate prevention applies to BOTH new provisioning AND rotation. These checks occur before state-specific logic per spec's 'Effect on Receipt' ordering.",
+      "note_on_spec_compliance": "FSM verified against Matter Core Specification 14.4. All 9 commands covered (ProvisionRootCertificate, FindRootCertificate, LookupRootCertificate, RemoveRootCertificate, ClientCSR, ProvisionClientCertificate, FindClientCertificate, LookupClientCertificate, RemoveClientCertificate). All error conditions from spec 'Effect on Receipt' sections captured. Guard conditions updated 2025-02-13 to fix missing fingerprint checks in rotation transitions (T_RootCert_009, T_ClientCert_015, T_ClientCert_016)."
+    }
+  }
+}

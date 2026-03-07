@@ -1,0 +1,681 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Microwave Oven Control",
+    "cluster_id": "0x005F",
+    "pics_code": "MWOCTRL",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 8.13, Pages 669-676",
+
+    "properties": [
+      {
+        "id": "PROP_001",
+        "name": "SetCookingParameters_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The SetCookingParameters command — which can immediately start microwave radiation via StartAfterSetting=true — SHALL only be invoked by a client holding at least Operate-level privilege.",
+        "formal": "∀cmd ∈ SetCookingParameters. event(invoke_SetCookingParameters(invoker, cmd)) ⟹ has_privilege(invoker, Operate)",
+        "spec_source": "Section 8.13.6 command table: 'Access: O' for SetCookingParameters (0x00).",
+        "violation": {
+          "description": "A client with only View privilege could invoke SetCookingParameters including with StartAfterSetting=true, starting microwave radiation without authorization. The View privilege is the minimum granted to any enrolled fabric member.",
+          "attack_vector": "A rogue or compromised fabric member enrolled only at View level sends a SetCookingParameters command with StartAfterSetting=true, bypassing the intended Operate-privilege gate.",
+          "physical_impact": "Unauthorized activation of microwave radiation — risk of overheating food, fire, or radiation exposure if enclosure is compromised."
+        },
+        "proverifQuery": "query invoker:principal, cmd:command ⊢ event invoke_SetCookingParameters(invoker, cmd) ==> has_privilege(invoker, Operate)"
+      },
+      {
+        "id": "PROP_002",
+        "name": "AddMoreTime_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "The AddMoreTime command — which extends active microwave cooking time while radiation is ongoing — SHALL only be invoked by a client holding at least Operate-level privilege.",
+        "formal": "∀cmd ∈ AddMoreTime. event(invoke_AddMoreTime(invoker, cmd)) ⟹ has_privilege(invoker, Operate)",
+        "spec_source": "Section 8.13.6 command table: 'Access: O' for AddMoreTime (0x01).",
+        "violation": {
+          "description": "A View-privileged client could extend the cook time while the oven is actively emitting microwave radiation. Extended cooking cycles increase the probability of food ignition or container failure.",
+          "attack_vector": "A least-privileged enrolled node sends AddMoreTime with the maximum permitted TimeToAdd value repeatedly once the oven is Running, extending cook duration to the MaxCookTime ceiling.",
+          "physical_impact": "Extended microwave combustion risk — potential for food ignition or fire if TimeToAdd calls are issued rapidly up to the MaxCookTime ceiling."
+        },
+        "proverifQuery": "query invoker:principal, cmd:command ⊢ event invoke_AddMoreTime(invoker, cmd) ==> has_privilege(invoker, Operate)"
+      },
+      {
+        "id": "PROP_003",
+        "name": "No_Timed_Interaction_Required_For_StartCooking",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "SetCookingParameters with StartAfterSetting=true immediately starts microwave radiation yet no Timed Interaction is mandated, leaving the command vulnerable to capture-and-replay attacks.",
+        "formal": "∀cmd ∈ SetCookingParameters. timed_invoke_required(cmd) == false",
+        "spec_source": "Section 8.13.6 command table — no 'T' flag in Access column. Section 8.13.6.2 and 8.13.6.2.6 do not require Timed Invoke for any case including StartAfterSetting=true.",
+        "violation": {
+          "description": "An attacker who captures a valid SetCookingParameters PDU with StartAfterSetting=true can replay it at an arbitrary later time. Matter's Timed Interaction mechanism, which enforces a bounded freshness window, is entirely absent. A replayed command restores prior cooking parameters and immediately starts the oven without the user's knowledge.",
+          "attack_vector": "Passive network observer captures a SetCookingParameters command (e.g., during a normal cooking session). Attacker replays the command when the oven is unattended with arbitrary food contents inside.",
+          "physical_impact": "Unauthorized remote start of microwave radiation without physical user presence — fire or food ignition risk."
+        },
+        "proverifQuery": "query cmd:command, t_cap:time, t_rep:time ⊢ event cooking_started(cmd, t_rep) ∧ t_rep > t_cap + delta ==> event timed_invoke_verified(cmd, t_rep)"
+      },
+      {
+        "id": "PROP_004",
+        "name": "SetCookingParameters_INVALID_IN_STATE_When_Not_Stopped",
+        "category": "StateIntegrity",
+        "importance": "CRITICAL",
+        "claim": "When the Operational State cluster reports a state in which SetCookingParameters cannot be safely serviced, the server SHALL respond with INVALID_IN_STATE and leave all attributes and device state unchanged.",
+        "formal": "∀cmd ∈ SetCookingParameters. ¬can_support_in_opstate(OperationalState) ⟹ return_status(cmd) == INVALID_IN_STATE ∧ state_unchanged()",
+        "spec_source": "Section 8.13.6.2.6 Effect on Receipt: 'If this command is received while the operational state of the server cannot support the command in that state, the server SHALL respond with an INVALID_IN_STATE response and the attributes and state SHALL remain unchanged.'",
+        "violation": {
+          "description": "If an implementation omits the state guard, SetCookingParameters could reconfigure power level, cook time, and mode while the oven is actively Running or in a fault/error state. A mid-cycle power escalation during Running state could overheat contents, and configuration changes during an Error state bypass fault isolation.",
+          "attack_vector": "Client with Operate privilege sends SetCookingParameters with maximum PowerSetting while the oven is Running, overriding the user's original power setting without stopping the cooking cycle.",
+          "physical_impact": "Power escalation mid-cycle can overheat food or packaging beyond safe limits — fire, container rupture, burn risk."
+        },
+        "proverifQuery": "query cmd:command, s:opstate ⊢ event recv_SetCookingParameters(cmd, s) ∧ ¬can_support(s) ==> event return_INVALID_IN_STATE(cmd)"
+      },
+      {
+        "id": "PROP_005",
+        "name": "AddMoreTime_INVALID_IN_STATE_When_Not_Running",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When the Operational State cluster reports a state in which AddMoreTime cannot be serviced, the server SHALL respond with INVALID_IN_STATE and leave CookTime and CountdownTime unchanged.",
+        "formal": "∀cmd ∈ AddMoreTime. ¬can_support_in_opstate(OperationalState) ⟹ return_status(cmd) == INVALID_IN_STATE ∧ CookTime_unchanged() ∧ CountdownTime_unchanged()",
+        "spec_source": "Section 8.13.6.3.2 Effect on Receipt: 'If this command is received while the operational state of the server cannot support the command in that state, the server SHALL respond with an INVALID_IN_STATE response.'",
+        "violation": {
+          "description": "If an implementation accepts AddMoreTime in Stopped or Error state, it modifies CookTime while no countdown is active, creating an inconsistency between CookTime and the CountdownTime attribute of the Operational State cluster. On the next Start, the oven may cook for a longer duration than the user configured.",
+          "attack_vector": "Client sends AddMoreTime with maximum TimeToAdd while the oven is Stopped. Server updates CookTime silently. When the user next starts the oven (expecting a 30-second default), it instead cooks for MaxCookTime seconds.",
+          "physical_impact": "Unexpectedly long cooking session — potential food ignition, fire."
+        },
+        "proverifQuery": "query cmd:command, s:opstate ⊢ event recv_AddMoreTime(cmd, s) ∧ ¬can_support(s) ==> event return_INVALID_IN_STATE(cmd)"
+      },
+      {
+        "id": "PROP_006",
+        "name": "AddMoreTime_MaxCookTime_Bound_Enforced",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "When AddMoreTime is received and the sum of TimeToAdd and the current CookTime exceeds MaxCookTime, the server SHALL respond with CONSTRAINT_ERROR and ignore the command, leaving CookTime unchanged.",
+        "formal": "∀cmd ∈ AddMoreTime. (CookTime + cmd.TimeToAdd > MaxCookTime) ⟹ return_status(cmd) == CONSTRAINT_ERROR ∧ CookTime_unchanged()",
+        "spec_source": "Section 8.13.6.3.2 Effect on Receipt: 'if the sum of the value of the TimeToAdd field and the current value of the CookTime attribute is greater than the MaxCookTime attribute, the server SHALL respond with a response of CONSTRAINT_ERROR and the command SHALL be ignored.'",
+        "violation": {
+          "description": "If the bound is not enforced, CookTime could exceed MaxCookTime. The device-defined MaxCookTime is the only normative upper limit on total cook duration. Exceeding it means the oven runs for longer than the manufacturer-certified maximum safe period, potentially causing overheating, food ignition, or appliance damage.",
+          "attack_vector": "Client sends AddMoreTime with the maximum allowed TimeToAdd (up to MaxCookTime) when CookTime is already near MaxCookTime. If the overflow check is absent (e.g., integer wrap or missing guard), CookTime is set to a very small value or overflows, causing an unexpected short or excessively long cook.",
+          "physical_impact": "Overheated food or packaging beyond certified safe duration — fire and appliance damage risk."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_AddMoreTime(cmd) ∧ (CookTime + cmd.TimeToAdd > MaxCookTime) ==> event return_CONSTRAINT_ERROR(cmd)"
+      },
+      {
+        "id": "PROP_007",
+        "name": "AddMoreTime_Updates_CountdownTime_Atomically",
+        "category": "CrossCluster",
+        "importance": "HIGH",
+        "claim": "On successful receipt of AddMoreTime, the server SHALL add TimeToAdd to both the CookTime attribute of this cluster and the CountdownTime attribute of the Operational State cluster on the same endpoint.",
+        "formal": "∀cmd ∈ AddMoreTime. success(cmd) ⟹ CookTime' == CookTime + cmd.TimeToAdd ∧ OpState.CountdownTime' == OpState.CountdownTime + cmd.TimeToAdd",
+        "spec_source": "Section 8.13.6.3.2: 'the server SHALL add the value of the TimeToAdd field to the value of the CookTime attribute of this cluster and the server SHALL add the value of the TimeToAdd field to the value of the CountdownTime attribute of the Operational State cluster if that cluster or a derivative is on the same endpoint as this cluster.'",
+        "violation": {
+          "description": "If CookTime and CountdownTime are updated non-atomically or CountdownTime is omitted, a monitoring controller subscribed to OpState.CountdownTime will see a shorter remaining time than the oven actually uses. The oven continues cooking past the displayed countdown expiry, surprising the user and safety monitors that rely on CountdownTime for timing.",
+          "attack_vector": "Exploit is indirect: if an implementation updates only CookTime but not CountdownTime, a race condition between the update and a concurrent Start or Resume command could leave CountdownTime permanently desynchronized, causing the oven to cook silently past the expected end time.",
+          "physical_impact": "Oven continues active radiation past the time displayed/expected by monitoring systems — unattended overheating."
+        },
+        "proverifQuery": "query cmd:command ⊢ event add_more_time_success(cmd) ==> event cooktime_updated(cmd.TimeToAdd) ∧ event countdown_time_updated(cmd.TimeToAdd)"
+      },
+      {
+        "id": "PROP_008",
+        "name": "PowerSetting_Without_PWRLMTS_Constrained_To_Multiples_Of_Ten",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When PWRNUM is supported and PWRLMTS is NOT supported, the PowerSetting attribute SHALL be an even multiple of 10 in the inclusive range [10, 100].",
+        "formal": "∀t. Feature_PWRNUM == true ∧ Feature_PWRLMTS == false ⟹ PowerSetting(t) ∈ {10,20,30,40,50,60,70,80,90,100}",
+        "spec_source": "Section 8.13.5.3: 'If the MinPower, MaxPower, and PowerStep attributes are not supported: The minimum value of this attribute SHALL be 10, The maximum value of this attribute SHALL be 100, The value SHALL be in even multiples of 10, The default value SHALL be 100.'",
+        "violation": {
+          "description": "An out-of-spec PowerSetting (e.g., 15 or 0) may translate to undefined or maximum magnetron duty cycles depending on implementation. Implementations that accept non-conforming values may run the oven at unintended power levels.",
+          "attack_vector": "SetCookingParameters with a PowerSetting of 0 or 5 is accepted by an implementation that only enforces a range check but not the multiple-of-10 rule, causing the oven to run at 0% power (food not cooked) or at an arbitrary power level.",
+          "physical_impact": "Incorrect power level during cooking — food undercooked (safety concern if pathogen survival) or overcooked (fire risk at high power)."
+        },
+        "proverifQuery": "query ⊢ event PowerSetting_set(v) ∧ Feature_PWRNUM ∧ ¬Feature_PWRLMTS ==> v % 10 == 0 ∧ v >= 10 ∧ v <= 100"
+      },
+      {
+        "id": "PROP_009",
+        "name": "PowerSetting_With_PWRLMTS_Satisfies_Step_Constraint",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When PWRNUM and PWRLMTS features are both supported, the PowerSetting attribute SHALL satisfy MinPower ≤ PowerSetting ≤ MaxPower AND (PowerSetting − MinPower) % PowerStep == 0 at all times.",
+        "formal": "∀t. Feature_PWRNUM == true ∧ Feature_PWRLMTS == true ⟹ PowerSetting(t) >= MinPower ∧ PowerSetting(t) <= MaxPower ∧ (PowerSetting(t) - MinPower) % PowerStep == 0",
+        "spec_source": "Section 8.13.5.3: 'If the MinPower, MaxPower, and PowerStep attributes are supported: The value of this attribute SHALL be between MinPower and MaxPower inclusive. The value of this attribute SHALL be such that (PowerSetting − MinPower) % PowerStep == 0.'",
+        "violation": {
+          "description": "An out-of-step PowerSetting may map to an unspecified magnetron duty cycle at the hardware level. The PowerStep constraint exists to ensure only manufacturer-validated power levels are used; bypassing it may trigger undefined hardware behavior.",
+          "attack_vector": "Client submits SetCookingParameters with PowerSetting=MinPower+1 when PowerStep=5, violating the step constraint. If the implementation only checks range but not step alignment, the oven operates at a non-validated power level.",
+          "physical_impact": "Undefined magnetron duty cycle — risk of component damage or unintended radiation level."
+        },
+        "proverifQuery": "query v:uint8, min:uint8, step:uint8 ⊢ event PowerSetting_accepted(v, min, step) ==> (v - min) % step == 0"
+      },
+      {
+        "id": "PROP_010",
+        "name": "PowerSetting_CONSTRAINT_ERROR_On_Violation",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "If the PowerSetting field in SetCookingParameters does not conform to the PowerSetting attribute constraints, the server SHALL return CONSTRAINT_ERROR and leave all attributes and state unchanged.",
+        "formal": "∀cmd ∈ SetCookingParameters. cmd.PowerSetting_present == true ∧ ¬valid_power_setting(cmd.PowerSetting) ⟹ return_status(cmd) == CONSTRAINT_ERROR ∧ state_unchanged()",
+        "spec_source": "Section 8.13.6.2.3: 'If the PowerSetting field does not conform to the constraints of the PowerSetting attribute, the server SHALL return a CONSTRAINT_ERROR status.' Section 8.13.6.2.6: 'the server SHALL respond with a response of CONSTRAINT_ERROR and the attributes and state SHALL remain unchanged.'",
+        "violation": {
+          "description": "If an implementation accepts and applies a non-conforming PowerSetting, it silently configures an invalid power level. The absence of an error response also makes this invisible to the client, which may believe the command succeeded with the submitted value.",
+          "attack_vector": "Client submits a PowerSetting=0 (below minimum) or a non-aligned step value. Server applies the value without error response. On next cooking cycle, oven runs at undefined power.",
+          "physical_impact": "Undefined or maximum power cooking — fire or food ignition risk."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ cmd.PowerSetting_present ∧ ¬valid_power(cmd.PowerSetting) ==> event return_CONSTRAINT_ERROR(cmd)"
+      },
+      {
+        "id": "PROP_011",
+        "name": "WattSettingIndex_CONSTRAINT_ERROR_On_OOB",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "If the WattSettingIndex field in SetCookingParameters is greater than or equal to the length of the SupportedWatts list, the server SHALL return CONSTRAINT_ERROR and the SelectedWattIndex attribute SHALL remain unchanged.",
+        "formal": "∀cmd ∈ SetCookingParameters. cmd.WattSettingIndex_present == true ∧ cmd.WattSettingIndex >= len(SupportedWatts) ⟹ return_status(cmd) == CONSTRAINT_ERROR ∧ SelectedWattIndex_unchanged()",
+        "spec_source": "Section 8.13.6.2.4: 'If the value of this field is greater than or equal to the length of the SupportedWatts attribute list, the server SHALL return a CONSTRAINT_ERROR status and the value of the SelectedWattIndex attribute SHALL be unchanged.'",
+        "violation": {
+          "description": "An out-of-bounds WattSettingIndex read against the SupportedWatts list could cause an array overrun at the implementation level, leading to selection of an uninitialized or hardware-undefined watt value. If the index is accepted and used to index the SupportedWatts list without bounds checking, the resulting watt setting may drive the magnetron at an unsafe level.",
+          "attack_vector": "Client submits WattSettingIndex equal to len(SupportedWatts) (the exact out-of-bounds position). Implementation without proper bounds checking reads adjacent memory as a watt value. Selected watt level is unpredictable.",
+          "physical_impact": "Magnetron driven at unvalidated watt level — hardware damage, potential arcing or fire."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ cmd.WattSettingIndex_present ∧ cmd.WattSettingIndex >= len(SupportedWatts) ==> event return_CONSTRAINT_ERROR(cmd) ∧ event SelectedWattIndex_unchanged()"
+      },
+      {
+        "id": "PROP_012",
+        "name": "SelectedWattIndex_Always_Valid",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The SelectedWattIndex attribute SHALL always be a valid index into the SupportedWatts list, i.e., SelectedWattIndex < len(SupportedWatts) at all times.",
+        "formal": "∀t. Feature_WATTS == true ⟹ SelectedWattIndex(t) < len(SupportedWatts)",
+        "spec_source": "Section 8.13.5.8: 'The index SHALL be a valid index into the SupportedWatts list.'",
+        "violation": {
+          "description": "If SelectedWattIndex is allowed to hold an out-of-bounds value (e.g., due to a race condition during initialization or a failed bounds check), the firmware's cooking loop may read an invalid watt value from the SupportedWatts array, resulting in undefined magnetron operation.",
+          "attack_vector": "Exploit a race condition during SetCookingParameters processing where WattSettingIndex is validated but SelectedWattIndex is written before SupportedWatts is fully initialized or after a SupportedWatts update invalidates the old index.",
+          "physical_impact": "Undefined magnetron watt setting applied to a cooking cycle — hardware damage or fire."
+        },
+        "proverifQuery": "query t:time ⊢ Feature_WATTS ==> SelectedWattIndex(t) < len(SupportedWatts)"
+      },
+      {
+        "id": "PROP_013",
+        "name": "CookTime_Always_Within_Bounds",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The CookTime attribute SHALL always be in the inclusive range [1, MaxCookTime] and SHALL NOT change during oven operation unless modified by a command or out-of-band action.",
+        "formal": "∀t. CookTime(t) >= 1 ∧ CookTime(t) <= MaxCookTime ∧ (Running(t) ∧ ¬command_recv(t) ∧ ¬oob_action(t) ⟹ CookTime(t) == CookTime(t-1))",
+        "spec_source": "Section 8.13.5.1: 'This attribute SHALL remain unchanged during the operation of the oven unless the value is changed via a command or out-of-band action.' Attribute table: CookTime constraint '1 to Max-CookTime'.",
+        "violation": {
+          "description": "If CookTime drifts during operation without a command trigger, it may become desynchronized from the Operational State cluster's CountdownTime. A CookTime that spontaneously drops could cause the oven to stop early; one that spontaneously rises extends radiation beyond the intended duration.",
+          "attack_vector": "Implementation bug or out-of-band write modifies CookTime mid-cycle without corresponding update to CountdownTime, breaking the invariant and causing unpredictable cooking duration.",
+          "physical_impact": "Extended cooking duration — overheating, packaging failure, fire."
+        },
+        "proverifQuery": "query t:time ⊢ event cooktime_value(CookTime, t) ==> CookTime >= 1 ∧ CookTime <= MaxCookTime"
+      },
+      {
+        "id": "PROP_014",
+        "name": "MaxCookTime_Fixed_Within_Spec_Bounds",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "MaxCookTime SHALL be a Fixed attribute (Quality F) with a value in [1, 86400] seconds, and SHALL NOT be writable by any client command.",
+        "formal": "∀t. MaxCookTime(t) >= 1 ∧ MaxCookTime(t) <= 86400 ∧ ¬∃cmd. write(MaxCookTime, cmd)",
+        "spec_source": "Section 8.13.5 attribute table: MaxCookTime, Type elapsed-s, Constraint '1 to 86400', Quality 'F' (Fixed), Access 'R V' (read-only, View). Section 8.13.5.2: 'This attribute SHALL indicate the maximum value to which the CookTime attribute can be set.'",
+        "violation": {
+          "description": "MaxCookTime is the only normative upper bound on total cook duration. If it were writable (e.g., via a vendor-specific command) or if a device ships with MaxCookTime=86400 (24 hours), an attacker with Operate privilege could submit a SetCookingParameters with CookTime=86400, cooking continuously for a full day.",
+          "attack_vector": "If MaxCookTime is not enforced as read-only at the implementation level, a vendor extension command could modify it. With MaxCookTime inflated to 86400, AddMoreTime attacks are also amplified.",
+          "physical_impact": "Excessively long cook cycle — food ignition, fire, serious appliance damage."
+        },
+        "proverifQuery": "query cmd:command ⊢ event MaxCookTime_write_attempted(cmd) ==> event write_rejected(cmd)"
+      },
+      {
+        "id": "PROP_015",
+        "name": "CookMode_Must_Come_From_SupportedModes",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The CookMode field of SetCookingParameters SHALL indicate a value that exists in the SupportedModes list of the Microwave Oven Mode cluster on the same endpoint; any value not in that list SHALL cause CONSTRAINT_ERROR.",
+        "formal": "∀cmd ∈ SetCookingParameters. cmd.CookMode_present == true ∧ cmd.CookMode ∉ {m.Mode : m ∈ MicrowaveOvenMode.SupportedModes} ⟹ return_status(cmd) == CONSTRAINT_ERROR ∧ state_unchanged()",
+        "spec_source": "Section 8.13.6.2.1: 'The value of this field SHALL be one from the list of SupportedModes from the Microwave Oven Mode cluster.' Section 8.13.6.2.6: constraints on any field map to CONSTRAINT_ERROR.",
+        "violation": {
+          "description": "An unsupported CookMode value could drive the MicrowaveOvenMode cluster into an undefined CurrentMode state not covered by the device's mode validation logic. Downstream behavior including watt selection defaults, cooking profiles, and safety interlocks that depend on CookMode are undefined for unrecognized mode values.",
+          "attack_vector": "Client sends SetCookingParameters with CookMode=0xFF (not in SupportedModes). Implementation that only validates range (0-255) but not list membership accepts the value, storing an invalid CurrentMode in the Microwave Oven Mode cluster.",
+          "physical_impact": "Undefined mode may bypass cooking-mode-specific safety interlocks — indirect physical risk."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ cmd.CookMode_present ∧ cmd.CookMode ∉ SupportedModes ==> event return_CONSTRAINT_ERROR(cmd)"
+      },
+      {
+        "id": "PROP_016",
+        "name": "CookTime_Field_Constrained_To_Attribute_Bounds",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The CookTime field in SetCookingParameters SHALL be in [1, MaxCookTime]; any value outside this range SHALL cause CONSTRAINT_ERROR with state unchanged.",
+        "formal": "∀cmd ∈ SetCookingParameters. cmd.CookTime_present == true ∧ (cmd.CookTime < 1 ∨ cmd.CookTime > MaxCookTime) ⟹ return_status(cmd) == CONSTRAINT_ERROR ∧ state_unchanged()",
+        "spec_source": "Section 8.13.6.2.2: 'The value of this field SHALL be subject to the constraints of the CookTime attribute of this cluster.' SetCookingParameters command field table: Constraint '1 to Max-CookTime'. Section 8.13.6.2.6: constraint violations return CONSTRAINT_ERROR with state unchanged.",
+        "violation": {
+          "description": "A CookTime of 0 could cause the oven to start and immediately complete a cook cycle (or loop), while a CookTime exceeding MaxCookTime bypasses the manufacturer's certified upper limit on cooking duration.",
+          "attack_vector": "Client sends SetCookingParameters with CookTime=0 and StartAfterSetting=true. Oven starts and CountdownTime immediately expires, triggering potential rapid-cycle behavior in the Operational State cluster.",
+          "physical_impact": "Undefined cook cycle behavior at boundary values — depends on Operational State implementation."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ cmd.CookTime_present ∧ (cmd.CookTime < 1 ∨ cmd.CookTime > MaxCookTime) ==> event return_CONSTRAINT_ERROR(cmd)"
+      },
+      {
+        "id": "PROP_017",
+        "name": "TimeToAdd_Field_Bounded_By_MaxCookTime",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The TimeToAdd field in AddMoreTime SHALL be in the range [1, MaxCookTime]; values outside this range are out-of-spec.",
+        "formal": "∀cmd ∈ AddMoreTime. cmd.TimeToAdd < 1 ∨ cmd.TimeToAdd > MaxCookTime ⟹ field_out_of_constraint(cmd)",
+        "spec_source": "Section 8.13.6.3 AddMoreTime command field table: TimeToAdd Constraint '1 to Max-CookTime'.",
+        "violation": {
+          "description": "A TimeToAdd of 0 is meaningless but could be accepted by implementations that only check for positive integers. A TimeToAdd exceeding MaxCookTime bypasses the per-call bound though the cumulative check (PROP_006) would still apply.",
+          "attack_vector": "Client sends AddMoreTime with TimeToAdd=0. An implementation that accepts 0 and adds it to CookTime performs a no-op silently, consuming quota. A TimeToAdd=MaxCookTime is always rejected on the cumulative check if CookTime>0.",
+          "physical_impact": "None directly; integrity concern for CookTime accounting."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_AddMoreTime(cmd) ==> cmd.TimeToAdd >= 1 ∧ cmd.TimeToAdd <= MaxCookTime"
+      },
+      {
+        "id": "PROP_018",
+        "name": "StartAfterSetting_True_Requires_Start_Command_Support",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "If the StartAfterSetting field is present in SetCookingParameters, the Start command of the Operational State cluster on the same endpoint MUST be supported; otherwise the server SHALL return INVALID_COMMAND with state unchanged.",
+        "formal": "∀cmd ∈ SetCookingParameters. cmd.StartAfterSetting_present == true ∧ ¬OpState.Start_supported ⟹ return_status(cmd) == INVALID_COMMAND ∧ state_unchanged()",
+        "spec_source": "Section 8.13.6.2.6 Effect on Receipt: 'If the StartAfterSetting field is present in the command but the Start command of the Operational State cluster or one of its derivatives on the same endpoint as this cluster is not supported, the server SHALL respond with a response of INVALID_COMMAND and the attributes and state SHALL remain unchanged.'",
+        "violation": {
+          "description": "If the server accepts StartAfterSetting without checking for Start command support, it applies the cooking parameters (updating CookMode, CookTime, PowerSetting) but cannot start the oven, leaving updated parameters in place silently. The client assumes the oven is now running; the oven has silently updated its configuration for the next manual start.",
+          "attack_vector": "On a device where the Operational State Start command is not supported, a client sends SetCookingParameters with StartAfterSetting=true and high power. Server updates PowerSetting to max. User manually starts the oven expecting the old settings; oven runs at attacker-chosen power.",
+          "physical_impact": "Indirect: attacker pre-configures maximum power/duration for a user-initiated cook cycle — fire risk when user starts oven manually."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ cmd.StartAfterSetting_present ∧ ¬OpState_Start_supported ==> event return_INVALID_COMMAND(cmd)"
+      },
+      {
+        "id": "PROP_019",
+        "name": "AllFieldConstraints_Checked_Before_State_Change",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "If any field in SetCookingParameters fails its constraint, the server SHALL return CONSTRAINT_ERROR and leave ALL attributes and state unchanged — no partial updates are permitted.",
+        "formal": "∀cmd ∈ SetCookingParameters. ∃field ∈ cmd.fields. ¬valid(field) ⟹ return_status(cmd) == CONSTRAINT_ERROR ∧ ∀attr. attr_unchanged(attr)",
+        "spec_source": "Section 8.13.6.2.6: 'If this command is received and any fields sent with the command do not meet the constraints of any of the associated attributes … the server SHALL respond with a response of CONSTRAINT_ERROR and the attributes and state SHALL remain unchanged.'",
+        "violation": {
+          "description": "If an implementation applies valid fields before detecting an invalid field (non-atomic validation), a partial update occurs. For example, CookTime and CookMode are applied successfully, then PowerSetting fails. The oven now has updated CookTime and CookMode but the original PowerSetting, producing an inconsistent and user-unexpected configuration.",
+          "attack_vector": "Client sends SetCookingParameters with valid CookTime=MaxCookTime, valid CookMode, and invalid PowerSetting. If applied non-atomically, CookTime is maximized while PowerSetting returns an error — user thinks command failed but CookTime has silently been maximized.",
+          "physical_impact": "Unexpectedly long cooking duration on next cook cycle — fire risk if CookTime was set near 86400 seconds."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ ∃field. ¬valid(field) ==> event no_attribute_updated() ∧ event return_CONSTRAINT_ERROR(cmd)"
+      },
+      {
+        "id": "PROP_020",
+        "name": "MissingCookMode_Defaults_To_Normal_Mode",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When the CookMode field is absent from SetCookingParameters, CurrentMode in the Microwave Oven Mode cluster SHALL be set to a mode bearing the Normal mode tag; the server SHALL NOT set CurrentMode to an undefined or arbitrary mode.",
+        "formal": "∀cmd ∈ SetCookingParameters. cmd.CookMode_present == false ∧ success(cmd) ⟹ 0x0003 ∈ MicrowaveOvenMode.SupportedModes[MicrowaveOvenMode.CurrentMode].ModeTags",
+        "spec_source": "Section 8.13.6.2.1: 'If this field is missing, the CurrentMode attribute SHALL be set to a mode having the Normal mode tag.'",
+        "violation": {
+          "description": "If no Normal-tagged mode exists in SupportedModes, the fallback behavior is undefined. An implementation may select mode index 0 (which could be a high-power or specialized mode) or leave CurrentMode unchanged. A monitoring client that observes CurrentMode could be misled about the cooking mode in use.",
+          "attack_vector": "On a device where no mode has the Normal tag (spec gap), an attacker can rely on the implementation's arbitrary default — potentially the highest-power mode — by sending SetCookingParameters without a CookMode field.",
+          "physical_impact": "Unintended mode (e.g., maximum power) applied as default — unexpected cooking profile."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ ¬cmd.CookMode_present ∧ success(cmd) ==> event CurrentMode_is_Normal_mode()"
+      },
+      {
+        "id": "PROP_021",
+        "name": "MissingCookTime_Defaults_To_30_Seconds",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When the CookTime field is absent from SetCookingParameters and the command succeeds, the server SHALL set CookTime to exactly 30 seconds.",
+        "formal": "∀cmd ∈ SetCookingParameters. cmd.CookTime_present == false ∧ success(cmd) ⟹ CookTime' == 30",
+        "spec_source": "Section 8.13.6.2.2: 'If this field is missing, the CookTime attribute SHALL be set to 30 seconds by the server.'",
+        "violation": {
+          "description": "If the default is not applied and CookTime retains whatever was last written (e.g., MaxCookTime from a previous session), the user receives an unexpectedly long cook cycle when omitting CookTime from the command.",
+          "attack_vector": "Attacker first sets CookTime to MaxCookTime via a valid SetCookingParameters. Then sends a second SetCookingParameters with CookMode only (omitting CookTime) and StartAfterSetting=true. If the default is not applied, oven starts with CookTime=MaxCookTime.",
+          "physical_impact": "Near-maximum-duration cooking cycle started without user specifying a long time — overheating, fire risk."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ ¬cmd.CookTime_present ∧ success(cmd) ==> CookTime' == 30"
+      },
+      {
+        "id": "PROP_022",
+        "name": "MissingPowerSetting_Defaults_To_Max",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When the PowerSetting field is absent from SetCookingParameters with PWRNUM active, the server SHALL set PowerSetting to MaxPower (when PWRLMTS is supported) or to 100 (when PWRLMTS is not supported).",
+        "formal": "∀cmd ∈ SetCookingParameters. Feature_PWRNUM ∧ cmd.PowerSetting_present == false ∧ success(cmd) ⟹ (Feature_PWRLMTS ⟹ PowerSetting' == MaxPower) ∧ (¬Feature_PWRLMTS ⟹ PowerSetting' == 100)",
+        "spec_source": "Section 8.13.6.2.3: 'If this field is missing, the PowerSetting attribute SHALL be set to 100 if MaxPower is not supported by the server, otherwise it SHALL be set to MaxPower if the MaxPower attribute is supported by the server.'",
+        "violation": {
+          "description": "The default of MaxPower (maximum power) when PowerSetting is omitted is the highest-risk default possible. If this default is not applied and PowerSetting retains a lower value from a prior session, the user receives less heat than expected (undercooking). If the default is applied correctly but the user is unaware, the oven runs at full power without explicit choice.",
+          "attack_vector": "A client that omits PowerSetting deliberately relies on the max-power default. Sending only CookMode and StartAfterSetting=true results in a full-power cook at the default 30-second duration. Depending on food contents, this may overheat or ignite.",
+          "physical_impact": "Maximum-power cooking without user explicitly requesting it — overheating risk for certain food types."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ Feature_PWRNUM ∧ ¬cmd.PowerSetting_present ∧ success(cmd) ==> (Feature_PWRLMTS ⟹ PowerSetting' == MaxPower) ∧ (¬Feature_PWRLMTS ⟹ PowerSetting' == 100)"
+      },
+      {
+        "id": "PROP_023",
+        "name": "PowerStep_Divides_PowerRange_Evenly",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When PWRLMTS is supported, the PowerStep attribute SHALL satisfy (MaxPower − MinPower) % PowerStep == 0 and PowerStep SHALL be in [1, MaxPower].",
+        "formal": "Feature_PWRLMTS ⟹ (MaxPower - MinPower) % PowerStep == 0 ∧ PowerStep >= 1 ∧ PowerStep <= MaxPower",
+        "spec_source": "Section 8.13.5.6: 'The value of this attribute SHALL be between 1 and MaxPower inclusive. The value of this attribute SHALL be such that (MaxPower − MinPower) % PowerStep == 0.'",
+        "violation": {
+          "description": "A PowerStep that does not evenly divide the [MinPower, MaxPower] range means that the spec-compliant PowerSetting validation (PROP_009) would reject all values between the last valid step and MaxPower, potentially rejecting MaxPower itself and making the default power setting (MaxPower) invalid.",
+          "attack_vector": "Manufacturing-time configuration error (PowerStep does not divide range). Validation logic for PowerSetting based on step check would reject MaxPower as the default, causing SetCookingParameters without PowerSetting to fail at attribute application despite passing explicit validation.",
+          "physical_impact": "None direct; may cause operational denial-of-service if no valid power step includes MaxPower."
+        },
+        "proverifQuery": "query ⊢ Feature_PWRLMTS ==> (MaxPower - MinPower) % PowerStep == 0"
+      },
+      {
+        "id": "PROP_024",
+        "name": "PWRLMTS_Requires_PWRNUM",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "The PWRLMTS feature (bit 2) SHALL only be supported when the PWRNUM feature (bit 0) is also supported. A device SHALL NOT report PWRLMTS in FeatureMap without PWRNUM.",
+        "formal": "Feature_PWRLMTS ⟹ Feature_PWRNUM",
+        "spec_source": "Section 8.13.4 feature table: PWRLMTS Conformance '[PWRNUM]', meaning PWRLMTS is only allowed when PWRNUM is enabled.",
+        "violation": {
+          "description": "If PWRLMTS is reported without PWRNUM, the MinPower, MaxPower, and PowerStep attributes are present without the PowerSetting attribute that they constrain. Clients parsing the FeatureMap may have undefined behavior when applying PWRLMTS constraint logic to an absent PowerSetting attribute.",
+          "attack_vector": "Attacker-modified device firmware reports PWRLMTS=1 and PWRNUM=0 in FeatureMap. Clients that read MinPower/MaxPower/PowerStep and attempt to derive valid power settings find no PowerSetting attribute to write, causing unexpected client-side errors.",
+          "physical_impact": "None direct; denial-of-service for power configuration."
+        },
+        "proverifQuery": "query ⊢ Feature_PWRLMTS ==> Feature_PWRNUM"
+      },
+      {
+        "id": "PROP_025",
+        "name": "PWRNUM_And_WATTS_MutuallyExclusive",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "PWRNUM and WATTS features SHALL NOT both be supported simultaneously (O.a conformance — at most one of the group may be enabled).",
+        "formal": "¬(Feature_PWRNUM ∧ Feature_WATTS)",
+        "spec_source": "Section 8.13.4: Both PWRNUM (bit 0) and WATTS (bit 1) carry conformance 'O.a', meaning at most one of the group identified by 'a' may be supported.",
+        "violation": {
+          "description": "If both features are active simultaneously, SetCookingParameters could legitimately carry both PowerSetting (PWRNUM) and WattSettingIndex (WATTS) fields with no defined precedence. The server has two conflicting power specifications with no conflict resolution defined in the spec.",
+          "attack_vector": "A rogue or misconfigured device reports both PWRNUM and WATTS in FeatureMap. A client sends SetCookingParameters with both PowerSetting=10 (low power) and WattSettingIndex pointing to the highest-watt entry. The server applies one, ignoring the other — outcome is implementation-defined.",
+          "physical_impact": "Unpredictable power level applied to the cooking cycle — may be higher than the user intended."
+        },
+        "proverifQuery": "query ⊢ ¬(Feature_PWRNUM ∧ Feature_WATTS)"
+      },
+      {
+        "id": "PROP_026",
+        "name": "Operational_And_MicrowaveMode_Clusters_On_Same_Endpoint",
+        "category": "CrossCluster",
+        "importance": "CRITICAL",
+        "claim": "The Operational State cluster (or derivative) and the Microwave Oven Mode cluster (or derivative) SHALL both appear on the same endpoint as the Microwave Oven Control cluster.",
+        "formal": "endpoint_has_cluster(Endpoint, MicrowaveOvenControl) ⟹ endpoint_has_cluster(Endpoint, OperationalState) ∧ endpoint_has_cluster(Endpoint, MicrowaveOvenMode)",
+        "spec_source": "Section 8.13 introduction: 'The Operational State cluster and the Microwave Oven Mode clusters, or derivatives of those clusters SHALL appear on the same endpoint as this cluster.'",
+        "violation": {
+          "description": "Without the Operational State cluster, the safety gate that prevents SetCookingParameters and AddMoreTime from executing in unsafe states (Running, Paused, Error) is absent. Without the Microwave Oven Mode cluster, the CookMode field validation and CurrentMode management is undefined, allowing any arbitrary mode value to be written.",
+          "attack_vector": "A device manufactured without the mandatory dependency clusters deployed on the same endpoint. Clients that discover only the MicrowaveOvenControl cluster and send commands receive no INVALID_IN_STATE protection — commands always succeed regardless of operational state.",
+          "physical_impact": "No operational state protection — commands accepted in any device state, including hardware fault conditions. Radiation may start during a fault state."
+        },
+        "proverifQuery": "query ep:endpoint ⊢ event cluster_present(ep, MicrowaveOvenControl) ==> event cluster_present(ep, OperationalState) ∧ event cluster_present(ep, MicrowaveOvenMode)"
+      },
+      {
+        "id": "PROP_027",
+        "name": "No_Mechanism_To_Reduce_CookTime_While_Running",
+        "category": "Availability",
+        "importance": "HIGH",
+        "claim": "Once the oven is in the Running state, no client-accessible command on this cluster can decrease CookTime. AddMoreTime only increases CookTime; SetCookingParameters is rejected with INVALID_IN_STATE.",
+        "formal": "∀t. Running(t) ⟹ ¬∃cmd ∈ {SetCookingParameters, AddMoreTime}. CookTime(t+1) < CookTime(t) via cmd",
+        "spec_reference_note": "Derived from: Section 8.13.6.2.6 (SetCookingParameters INVALID_IN_STATE while Running) + Section 8.13.6.3.2 (AddMoreTime only adds to CookTime). No Stop-with-new-CookTime command exists in this cluster.",
+        "spec_source": "Section 8.13.5.1: CookTime unchanged during operation unless changed by command or out-of-band action. Section 8.13.6.2.6: SetCookingParameters rejected in non-Stopped states. Section 8.13.6.3: AddMoreTime only adds.",
+        "violation": {
+          "description": "An attacker who extends CookTime via AddMoreTime while the oven is Running cannot be countered by a client attempting to reduce CookTime. The only recourse is to Stop the oven via the Operational State cluster. If the Operational State Stop command is also blocked or unavailable, the extended cook duration is irreversible via software.",
+          "attack_vector": "Client with Operate privilege issues AddMoreTime calls up to MaxCookTime ceiling while the oven is Running. The user or a monitoring system has no means to reduce CookTime via this cluster — must invoke Stop on the Operational State cluster, which may not be accessible.",
+          "physical_impact": "Forced maximum-duration cooking without ability to reduce time via this cluster's commands — overheating, fire risk."
+        },
+        "proverifQuery": "query t:time, cmd:command ⊢ event Running(t) ∧ event command_recv(cmd, t) ==> ¬event CookTime_decreased(t+1)"
+      },
+      {
+        "id": "PROP_028",
+        "name": "No_AddMoreTime_Rate_Limit",
+        "category": "Availability",
+        "importance": "HIGH",
+        "claim": "The specification defines no rate limit on successive AddMoreTime calls within a single cooking cycle, allowing a client with Operate privilege to extend cook time up to MaxCookTime via repeated small increments.",
+        "formal": "¬∃rate_limit. ∀t. count(AddMoreTime, cycle(t)) ≤ rate_limit",
+        "spec_source": "Section 8.13.6.3 and 8.13.6.3.2 — no rate-limiting clause is specified. Only the per-call cumulative MaxCookTime check is present.",
+        "violation": {
+          "description": "A compromised or rogue controller with Operate access can call AddMoreTime with TimeToAdd=1 up to (MaxCookTime - initial_CookTime) times during a cooking cycle, effectively extending a 30-second default cook to MaxCookTime seconds without the user's awareness. The spec provides no mechanism to prevent this accumulation.",
+          "attack_vector": "Automated script with Operate privilege sends AddMoreTime(TimeToAdd=MaxCookTime/2) twice (or more small increments) while the oven is Running, extending a short cooking cycle to near MaxCookTime.",
+          "physical_impact": "Extended cooking to manufacturer-certified maximum duration (up to 86400 s / 24 hours) — food ignition, appliance fire."
+        },
+        "proverifQuery": "query d:device, n:int, cycle:cookCycle ⊢ event add_more_time_count(d, n, cycle) ==> n <= max_allowed_calls_per_cycle"
+      },
+      {
+        "id": "PROP_029",
+        "name": "No_CookingStart_Event_Generated",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "The Microwave Oven Control cluster defines no events; no event is generated when cooking starts, stops, or when CookTime is modified — making unauthorized oven activation undetectable via event subscription on this cluster.",
+        "formal": "∀t. ¬∃event e ∈ MicrowaveOvenControl.events. generated(e, t)",
+        "spec_source": "Section 8.13 — no Events section exists. The cluster defines no events (contrast with Operational State which defines OperationalError event, or Door Lock which defines LockOperationEvent).",
+        "violation": {
+          "description": "A monitoring controller or security audit system cannot subscribe to event-driven notifications of cooking start, power changes, or CookTime modifications. Unauthorized activation (e.g., via SetCookingParameters with StartAfterSetting=true) is invisible to monitoring until the controller polls CookTime or observes the Operational State transition via a separate subscription.",
+          "attack_vector": "Attacker starts a cooking cycle via SetCookingParameters with StartAfterSetting=true. No event is generated on this cluster. If the monitoring system only subscribes to MicrowaveOvenControl attributes (not OperationalState), the start is undetected until the next attribute read cycle.",
+          "physical_impact": "Delayed detection of unauthorized microwave radiation — fire may occur before monitoring system detects the state transition."
+        },
+        "proverifQuery": "query d:device ⊢ event cooking_started(d) ==> event notification_sent(d, cooking_start_event)"
+      },
+      {
+        "id": "PROP_030",
+        "name": "StartAfterSetting_False_Does_Not_Start_Oven",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When StartAfterSetting is present and set to FALSE, or when StartAfterSetting is absent (defaulting to false), the oven SHALL NOT start operation after SetCookingParameters succeeds.",
+        "formal": "∀cmd ∈ SetCookingParameters. success(cmd) ∧ (cmd.StartAfterSetting == false ∨ ¬cmd.StartAfterSetting_present) ⟹ ¬oven_started()",
+        "spec_source": "Section 8.13.6.2.5 and 8.13.6.2.6: 'If the value of StartAfterSetting is FALSE, oven operation SHALL NOT start.' StartAfterSetting field table: Fallback 'false' (default when absent).",
+        "violation": {
+          "description": "If an implementation ignores StartAfterSetting=false or treats the absent field as true, it starts cooking after every successful SetCookingParameters command, regardless of user intent. This would make parameter configuration indistinguishable from a cook-start command.",
+          "attack_vector": "Client sends SetCookingParameters with StartAfterSetting=false explicitly to configure parameters without starting. Implementation ignores the flag and starts the oven, emitting microwave radiation without user intent.",
+          "physical_impact": "Unauthorized microwave activation — radiation risk, overheating, fire."
+        },
+        "proverifQuery": "query cmd:command ⊢ event recv_SetCookingParameters(cmd) ∧ (cmd.StartAfterSetting == false ∨ ¬cmd.StartAfterSetting_present) ∧ success(cmd) ==> ¬event oven_started()"
+      },
+      {
+        "id": "PROP_031",
+        "name": "WattRating_Read_Only_View_Access",
+        "category": "AccessControl",
+        "importance": "MEDIUM",
+        "claim": "All attributes in the Microwave Oven Control cluster are read-only (Access: R V) and SHALL NOT be writable via standard attribute write commands.",
+        "formal": "∀attr ∈ MicrowaveOvenControl.attributes. ¬∃cmd ∈ MatterWriteAttribute. write_target(cmd) == attr",
+        "spec_source": "Section 8.13.5 attribute table: all attributes have Access 'R V' (read-only, View access for reading). No attribute has 'W' access in the table.",
+        "violation": {
+          "description": "If any attribute were writable via Write Attribute (not via SetCookingParameters), an attacker with View-level access might bypass the Operate-privilege requirement of SetCookingParameters by writing CookTime, PowerSetting, or SelectedWattIndex directly. Direct writes have no guard for operational state.",
+          "attack_vector": "Attacker sends a Write Attribute request targeting CookTime with a maximum value. If the implementation incorrectly marks CookTime as writable, it accepts the write bypassing the INVALID_IN_STATE check that would have applied to SetCookingParameters.",
+          "physical_impact": "Direct attribute write bypasses state guards — CookTime modified while oven is Running extends cooking duration."
+        },
+        "proverifQuery": "query attr:attribute, invoker:principal ⊢ event write_attribute(attr, invoker) ∧ attr ∈ MicrowaveOvenControl_attributes ==> event write_rejected()"
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "The Operational State cluster on the same endpoint correctly tracks the device operational lifecycle (Stopped, Running, Paused, Error) and the INVALID_IN_STATE determinations used by PROP_004 and PROP_005 are based on this cluster's state, which the microwave oven firmware updates atomically with actual hardware state.",
+        "type": "Implicit",
+        "source": "Section 8.13.6.1 and 8.13.6.2.6 — reference to 'operational state of the server'",
+        "dependencies": ["PROP_004", "PROP_005", "PROP_007", "PROP_026"],
+        "impact_if_violated": "If OperationalState.OperationalState is desynchronized from actual hardware state (e.g., reports Stopped while magnetron is active), INVALID_IN_STATE guards fail to protect against mid-operation configuration changes."
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "The Matter access control layer enforces privilege levels (V, O, M, A) such that a client is permitted to invoke a command only if its ACL entry grants at minimum the required privilege. PROP_001 and PROP_002 rely on this enforcement being correct at the fabric/ACL layer.",
+        "type": "Explicit",
+        "source": "Matter Core Specification — Access Control Cluster; Section 8.13.6 command access column",
+        "dependencies": ["PROP_001", "PROP_002", "PROP_003"],
+        "impact_if_violated": "If the access control layer is bypassed or misconfigured, any enrolled node can invoke SetCookingParameters or AddMoreTime regardless of privilege, enabling unauthorized cooking starts."
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "The Microwave Oven Mode cluster's SupportedModes list is static (Fixed quality or managed by Manage-privileged clients) and is not modifiable by Operate-privileged clients during a cooking session. PROP_015 assumes the list against which CookMode is validated is consistent throughout the command's effect-on-receipt processing.",
+        "type": "Implicit",
+        "source": "Derived from mode base cluster semantics and Section 8.13.6.2.1",
+        "dependencies": ["PROP_015", "PROP_020"],
+        "impact_if_violated": "If SupportedModes can change concurrently with SetCookingParameters processing (TOCTOU), a CookMode value that is valid at validation time may be invalid when CurrentMode is written, producing an invalid mode state."
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "MaxCookTime, MinPower, MaxPower, PowerStep, and SupportedWatts are Fixed attributes (Quality F) and are not modifiable at runtime by any fabric member. The constraint validation logic in PROP_006, PROP_008, PROP_009, PROP_023 assumes these bounds are stable during the device's operational lifetime.",
+        "type": "Explicit",
+        "source": "Section 8.13.5 attribute table Quality column: all bound attributes carry 'F' (Fixed)",
+        "dependencies": ["PROP_006", "PROP_008", "PROP_009", "PROP_014", "PROP_023"],
+        "impact_if_violated": "If a vendor extension allows MaxCookTime to be modified at runtime, previously validated CookTime values become out-of-bounds, and AddMoreTime checks based on the original MaxCookTime could permit overflow."
+      },
+      {
+        "id": "ASSUM_005",
+        "statement": "The physical hardware enforces the power setting received from the cluster — if PowerSetting=10 (minimum), the magnetron duty cycle is actually reduced. The security analysis treats the cluster as authoritative; hardware fidelity to cluster state is assumed.",
+        "type": "Implicit",
+        "source": "Derived — hardware fidelity assumption",
+        "dependencies": ["PROP_008", "PROP_009", "PROP_010"],
+        "impact_if_violated": "If hardware ignores the PowerSetting and runs at max power regardless, power constraints in the spec are security theater with no physical effect."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 8.13.6.1 vs Section 8.13.6.2.6",
+        "normative_weakness": "MAY",
+        "description": "Section 8.13.6.1 uses 'MAY respond … with an INVALID_IN_STATE response' (permissive) while Section 8.13.6.2.6 uses 'SHALL respond with an INVALID_IN_STATE response' (mandatory) for SetCookingParameters specifically. The two clauses are contradictory in normative strength. Section 8.13.6.3.2 also uses SHALL for AddMoreTime. The MAY in 8.13.6.1 may be interpreted as overriding the SHALL in 8.13.6.2.6 by some implementations.",
+        "properties_affected": ["PROP_004", "PROP_005"],
+        "security_impact": "If an implementation treats the MAY in 8.13.6.1 as the governing clause, it may accept SetCookingParameters in the Running state, enabling mid-cycle power escalation without rejection. This is the highest-impact gap in the specification."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 8.13.6.2.6 and Section 8.13.6.3.2",
+        "normative_weakness": "Unspecified",
+        "description": "Neither section enumerates which specific Operational State values (Stopped, Running, Paused, Error) permit or reject SetCookingParameters and AddMoreTime. The determination is delegated to the Operational State cluster with the phrase 'operational state of the server cannot support the command in that state' — a condition that is not normatively defined in this cluster's specification.",
+        "properties_affected": ["PROP_004", "PROP_005"],
+        "security_impact": "Implementations may reach different conclusions about which operational states block which commands. An implementation that accepts SetCookingParameters in Paused state (not explicitly prohibited) allows mid-pause reconfiguration of power and mode, which takes effect upon Resume without user awareness."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 8.13.6.2.1",
+        "normative_weakness": "Unspecified",
+        "description": "When the CookMode field is absent, the server SHALL set CurrentMode to 'a mode having the Normal mode tag'. The specification does not define behavior when (a) no mode in SupportedModes carries the Normal tag, (b) multiple modes carry the Normal tag, or (c) the Normal-tagged mode is subsequently removed from SupportedModes.",
+        "properties_affected": ["PROP_015", "PROP_020"],
+        "security_impact": "If no Normal-tagged mode exists, implementations fall back to an arbitrary mode (often index 0 or last-set mode). An attacker on a device with a non-Normal default could exploit the omission of CookMode to force the highest-power available mode as the default cooking profile."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 8.13.6.2.4",
+        "normative_weakness": "Unspecified",
+        "description": "When WattSettingIndex field is absent, the default SelectedWattIndex is 'the index associated with the highest Watt setting for the selected CookMode'. The relationship between CookMode values and subsets of the SupportedWatts list — specifically, which watts are valid for which modes — is not defined in this cluster specification.",
+        "properties_affected": ["PROP_012"],
+        "security_impact": "Ambiguous default watt selection means different implementations may select different power levels when the field is omitted. An attacker who omits WattSettingIndex can predict or exploit the implementation-specific highest-watt selection, maximizing power without explicitly specifying it."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 8.13.4",
+        "normative_weakness": "Unspecified",
+        "description": "The specification uses O.a conformance to make PWRNUM and WATTS mutually exclusive but does not define normative behavior when a device reports both features simultaneously (invalid FeatureMap) or neither feature (no power control mechanism present). No error is specified for clients encountering this condition.",
+        "properties_affected": ["PROP_024", "PROP_025"],
+        "security_impact": "A device advertising both PWRNUM and WATTS allows clients to send both PowerSetting and WattSettingIndex in SetCookingParameters. With no precedence rule, the applied power is implementation-defined — an attacker submitting conflicting values can force maximum power regardless of which field the implementation honors."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 8.13.6.3",
+        "normative_weakness": "Unspecified",
+        "description": "No rate limit, per-cycle quota, or temporal spacing requirement is defined for AddMoreTime calls. The only normative bound is the per-call cumulative MaxCookTime check. An Operate-privileged client may issue AddMoreTime as frequently as the Matter messaging layer allows.",
+        "properties_affected": ["PROP_028"],
+        "security_impact": "A rogue Matter controller with Operate access can extend a cooking cycle to MaxCookTime (up to 86400 seconds) by sending successive AddMoreTime calls. No specification mechanism prevents this accumulation."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 8.13",
+        "normative_weakness": "Unspecified",
+        "description": "The cluster defines no events. State changes (cooking start, stop, power modification, CookTime extension) generate no event for subscriber monitoring. Detection of unauthorized commands requires attribute polling at a frequency chosen by the monitoring client.",
+        "properties_affected": ["PROP_029"],
+        "security_impact": "The polling interval introduces a detection latency window. An attacker who starts the oven and cancels it before the next poll cycle leaves no trace in this cluster's event log. Combined with the absence of an audit mechanism, unauthorized use is effectively undetectable through this cluster alone."
+      },
+      {
+        "id": "GAP_008",
+        "location": "Section 8.13.6.2.5 and 8.13.6.2.6",
+        "normative_weakness": "Unspecified",
+        "description": "No Timed Interaction requirement is specified for SetCookingParameters even when StartAfterSetting=true. Unlike the Door Lock cluster (which mandates Timed Invoke for unlock commands), immediately starting microwave radiation is possible without the freshness guarantee of a Timed Invoke.",
+        "properties_affected": ["PROP_003"],
+        "security_impact": "Captured SetCookingParameters PDUs with StartAfterSetting=true can be replayed at arbitrary times. A Matter replay protection window (e.g., matter_message_counter reuse prevention) may mitigate this at the transport layer but Timed Invoke provides explicit application-layer freshness that is absent here."
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": ["MicrowaveOvenControl", "OperationalState"],
+        "property": {
+          "claim": "CookTime in MicrowaveOvenControl and CountdownTime in OperationalState SHALL be synchronized: after any successful AddMoreTime, both SHALL be incremented by TimeToAdd atomically. After cooking completes (CountdownTime reaches 0), CookTime reflects the original configured value (unchanged during operation per 8.13.5.1) and OperationalState transitions to Stopped.",
+          "formal": "success(AddMoreTime(T)) ⟹ CookTime' == CookTime + T ∧ OpState.CountdownTime' == OpState.CountdownTime + T"
+        },
+        "violation_scenario": "Non-atomic update: CookTime is incremented first and then CountdownTime is updated. Between the two writes, the Operational State cluster's countdown timer fires (CountdownTime reaches 0) and transitions the oven to Stopped. CookTime is now larger than configured for the next cook cycle, while the current cycle ended early. Combined with PROP_027 (no way to reduce CookTime while running), the next cook cycle starts with an inflated CookTime."
+      },
+      {
+        "id": "XPROP_002",
+        "clusters_involved": ["MicrowaveOvenControl", "MicrowaveOvenMode"],
+        "property": {
+          "claim": "The CookMode field of SetCookingParameters writes directly to MicrowaveOvenMode.CurrentMode. The invariant that CurrentMode always points to a valid SupportedModes entry must be maintained across both clusters simultaneously.",
+          "formal": "success(SetCookingParameters(CookMode=m)) ⟹ m ∈ {e.Mode : e ∈ MicrowaveOvenMode.SupportedModes} ∧ MicrowaveOvenMode.CurrentMode' == m"
+        },
+        "violation_scenario": "TOCTOU race: CookMode is validated against SupportedModes at the time of the constraint check (valid), but SupportedModes is modified (e.g., by a concurrent Manage-privileged command to the Microwave Oven Mode cluster) before CurrentMode is written. The written CurrentMode value is now invalid relative to the updated SupportedModes, leaving the device in an ill-specified mode."
+      },
+      {
+        "id": "XPROP_003",
+        "clusters_involved": ["MicrowaveOvenControl", "OperationalState"],
+        "property": {
+          "claim": "The INVALID_IN_STATE protection of SetCookingParameters and AddMoreTime depends entirely on the operational state reported by the Operational State cluster. If that cluster's state is incorrect or can be manipulated, the guards in Section 8.13.6.2.6 and 8.13.6.3.2 fail.",
+          "formal": "¬correct(OpState.OperationalState) ⟹ ¬guaranteed(INVALID_IN_STATE_guard)"
+        },
+        "violation_scenario": "A compromised Operational State cluster implementation (or a rogue derived cluster) reports OperationalState=Stopped while the magnetron hardware is actually active. SetCookingParameters succeeds (state appears Stopped), overwriting PowerSetting to maximum mid-radiation, bypassing all operational state protections."
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_003",
+        "safety_category": "FireSafety",
+        "failure_mode": "Replayed SetCookingParameters with StartAfterSetting=true activates microwave radiation on an unattended oven. If the oven contains flammable materials or food capable of ignition at high power, fire may result.",
+        "spec_mitigation": "UNSPECIFIED — no Timed Interaction requirement on SetCookingParameters"
+      },
+      {
+        "property_id": "PROP_004",
+        "safety_category": "FireSafety",
+        "failure_mode": "SetCookingParameters accepted in Running state allows power escalation mid-cycle. High-power cooking of certain materials (e.g., metal, sealed containers) at unintended power levels can cause arcing, explosion, or fire inside the oven cavity.",
+        "spec_mitigation": "Section 8.13.6.2.6 mandates INVALID_IN_STATE if not supportable — but Section 8.13.6.1 MAY weakens this; implementation fidelity is unclear"
+      },
+      {
+        "property_id": "PROP_006",
+        "safety_category": "FireSafety",
+        "failure_mode": "Accepted AddMoreTime beyond MaxCookTime runs the oven past the manufacturer's certified maximum safe duration. Extended cooking can cause food ignition, packaging failure, or appliance overheating.",
+        "spec_mitigation": "Section 8.13.6.3.2 mandates CONSTRAINT_ERROR when sum exceeds MaxCookTime — normatively strong (SHALL)"
+      },
+      {
+        "property_id": "PROP_028",
+        "safety_category": "FireSafety",
+        "failure_mode": "Repeated AddMoreTime calls within a single cycle extend cooking to MaxCookTime. An oven running at maximum power for 86400 seconds (24 hours) will cause fire, total appliance destruction, and risk of structural building damage.",
+        "spec_mitigation": "UNSPECIFIED — no rate limit or per-cycle quota is defined"
+      },
+      {
+        "property_id": "PROP_001",
+        "safety_category": "FireSafety",
+        "failure_mode": "SetCookingParameters with StartAfterSetting=true executed by a View-privileged node (if access control is bypassed or misconfigured) starts microwave radiation without authorization.",
+        "spec_mitigation": "Section 8.13.6 mandates Operate privilege — protection depends on correct Matter ACL enforcement"
+      },
+      {
+        "property_id": "PROP_022",
+        "safety_category": "FireSafety",
+        "failure_mode": "The default power when PowerSetting is omitted is MaxPower (100%). An attacker who omits PowerSetting in a SetCookingParameters command guarantees maximum-power cooking without explicitly specifying it, potentially overheating the food type in the oven.",
+        "spec_mitigation": "Section 8.13.6.2.3 explicitly specifies this default — the spec intends max-power as the default; safety concern is by design"
+      }
+    ],
+
+    "summary": {
+      "total_properties": 31,
+      "by_importance": {
+        "CRITICAL": 5,
+        "HIGH": 18,
+        "MEDIUM": 8
+      },
+      "by_category": {
+        "AccessControl": 3,
+        "StateIntegrity": 15,
+        "PhysicalSafety": 1,
+        "Authentication": 0,
+        "SecretProtection": 0,
+        "Availability": 3,
+        "Authorization": 2,
+        "Timing": 0,
+        "EventIntegrity": 2,
+        "CrossCluster": 3,
+        "CrossCluster_xprops": 3
+      },
+      "spec_gaps_found": 8,
+      "safety_critical_count": 6,
+      "assumptions_documented": 5
+    }
+  }
+}

@@ -1,0 +1,465 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "No_MRP_Reliability_Over_TCP",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "A node using TCP as transport SHALL NOT use MRP reliability semantics on message exchanges.",
+      "formal": "∀node, session, msg. transport(session, TCP) ∧ send(node, session, msg) ⟹ ¬uses_MRP_reliability(msg)",
+      "violation": "Using MRP reliability over TCP creates redundant retransmission mechanisms that conflict with TCP's built-in reliability. This leads to message duplication, unnecessary bandwidth consumption, and potential state desynchronization where MRP and TCP timers compete. The redundant acknowledgment mechanisms can cause connection instability and incorrect failure detection.",
+      "proverifQuery": "query n:principal, s:session, m:bitstring ⊢ event send_over_tcp(n, s, m) ==> event no_mrp_reliability(m)"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Session_Unusable_After_Connection_Break",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "A secure session over TCP is unusable when its underlying TCP connection is broken or closed.",
+      "formal": "∀session. connection_broken(session) ⟹ ¬usable(session) ∧ (removed(session) ∨ marked_reconnect_required(session))",
+      "violation": "If a node attempts to use a session after connection breakage without proper marking or removal, it may send encrypted data over a non-existent or hijacked connection. An attacker could exploit this window to inject malicious messages, intercept data intended for the old connection, or cause denial-of-service by preventing proper session cleanup. The node would lack transport-layer integrity guarantees while believing the session is secure.",
+      "proverifQuery": "query s:session, m:bitstring ⊢ event send_on_session(s, m) ==> event connection_active(s)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Session_Marked_Before_Reuse",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If a session is retained after connection termination, it SHALL be marked appropriately so that the underlying connection is re-established before the session can be used again.",
+      "formal": "∀session. retained_after_disconnect(session) ⟹ (marked_reconnect_required(session) ∧ (∀msg. send(session, msg) ⟹ connection_reestablished(session)))",
+      "violation": "Without proper marking, a node may attempt to send encrypted messages over a non-existent connection, causing silent message loss. Worse, if connection identifiers are reused or an attacker establishes a connection impersonating the peer, messages could be delivered to the wrong endpoint. This breaks both availability and integrity: legitimate messages fail while potentially allowing man-in-the-middle attacks during reconnection windows.",
+      "proverifQuery": "query s:session, m:bitstring ⊢ event send_after_retention(s, m) ==> event connection_reestablished_before_send(s)"
+    },
+    {
+      "id": "PROP_004",
+      "name": "Connection_Closure_Propagation",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "When a node is notified that the peer has closed the TCP connection, it SHALL close its end of the connection and notify the application.",
+      "formal": "∀node, connection. event peer_closed(connection) ⟹ (event node_closes(node, connection) ∧ event notify_application(node, connection))",
+      "violation": "Failure to close the local end leaves half-open connections that waste system resources (file descriptors, memory). The application remains unaware of connection failure, continuing to send messages that cannot be delivered, causing unbounded message queue growth. An attacker can trigger resource exhaustion by repeatedly opening and closing connections, exploiting the accumulation of half-open states.",
+      "proverifQuery": "query c:connection ⊢ event peer_closed_connection(c) ==> event local_close(c) ∧ event app_notified(c)"
+    },
+    {
+      "id": "PROP_005",
+      "name": "Exchange_Closure_After_Connection_Close",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "All active Exchanges over a closed TCP connection SHOULD also be closed as they would be unusable.",
+      "formal": "∀connection, exchange_set. closed(connection) ∧ exchanges_over(exchange_set, connection) ⟹ ∀e ∈ exchange_set. should_close(e)",
+      "violation": "Leaving exchanges open after connection closure creates zombie state where the application believes exchanges are active but cannot send or receive. This leads to timeout-based failures instead of immediate error handling, degrading user experience. Memory leaks occur as exchange state persists indefinitely. An attacker can exploit this by forcing connection resets to cause application-layer deadlocks where exchanges wait eternally for responses that can never arrive.",
+      "proverifQuery": "query c:connection, ex:exchange ⊢ event connection_closed(c) ∧ event exchange_active(ex, c) ==> event exchange_should_close(ex)"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Backoff_Before_Reconnection",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "A node SHOULD back-off a random amount of time (typically Fibonacci sequence) after connection closure before attempting reconnection.",
+      "formal": "∀node, connection, t_close, t_retry. reconnect_attempt(node, connection, t_retry) ⟹ (t_retry ≥ t_close + backoff(fibonacci_random) ∧ is_random(backoff))",
+      "violation": "Without backoff, both peers may simultaneously attempt reconnection in an infinite collision loop, creating connection thrashing. This denial-of-service condition wastes network bandwidth, exhausts connection limits, and prevents legitimate traffic. An attacker can trigger this by repeatedly closing connections, forcing the system into a reconnection storm that appears as a SYN flood to intermediate firewalls, potentially triggering security blocks.",
+      "proverifQuery": "query n:principal, c:connection, t1:time, t2:time ⊢ event connection_closed_at(c, t1) ∧ event reconnect_attempt_at(n, c, t2) ==> t2 > t1 ∧ event backoff_applied(n, c)"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Discard_Backoff_On_Incoming_Connection",
+      "category": "Atomicity",
+      "importance": "MEDIUM",
+      "claim": "A node receiving a connection request from a peer SHOULD discard its own backed-off connection retry timer to the same peer.",
+      "formal": "∀node, peer, timer. incoming_connection_request(peer, node) ∧ active_backoff_timer(node, peer, timer) ⟹ should_discard(timer)",
+      "violation": "If the backoff timer is not discarded, the node establishes the incoming connection but then immediately retries outbound connection when the timer expires, creating duplicate connections to the same peer. This wastes resources and creates ambiguity about which connection should carry which session. Race conditions emerge where messages are sent on both connections, potentially duplicating state updates or causing message reordering that violates protocol semantics.",
+      "proverifQuery": "query n:principal, p:principal, t:timer ⊢ event incoming_request(p, n) ∧ event active_timer(n, p, t) ==> event timer_discarded(t)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Message_Size_Enforcement",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "If a node receives a message header indicating size larger than its Maximum Message Size, it SHALL close the connection and SHOULD send STATUS_REPORT with MESSAGE_TOO_LARGE before closing.",
+      "formal": "∀node, msg, max_size. received_header(node, msg) ∧ size(msg) > max_size(node) ⟹ (event close_connection(node) ∧ should_send_error(node, MESSAGE_TOO_LARGE))",
+      "violation": "Without size enforcement, an attacker can send arbitrarily large message headers claiming enormous payload sizes, forcing the receiver to allocate unbounded memory. This triggers out-of-memory crashes, enabling remote denial-of-service. If the receiver continues reading, the attacker can sustain high bandwidth consumption, exhausting network resources. The lack of error reporting prevents the sender from detecting configuration mismatches, leading to persistent retry loops.",
+      "proverifQuery": "query n:principal, m:bitstring, max:nat ⊢ event receive_header(n, m) ∧ size(m) > max ==> event connection_closed(n) ∧ event error_sent(n, MESSAGE_TOO_LARGE)"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Dynamic_Max_Message_Size_Per_Transport",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "A node using both MRP and TCP SHOULD dynamically adjust Maximum Message Size configuration based on the current Exchange's transport.",
+      "formal": "∀node, exchange, transport. active_exchange(node, exchange, transport) ⟹ should_use_max_size(node, max_size_for(transport))",
+      "violation": "If the node applies TCP's large maximum message size to MRP exchanges, it will attempt to send messages exceeding IPv6 MTU (1280 bytes), causing IP fragmentation. Fragmented datagrams are frequently dropped by routers or firewalls, leading to silent message loss and exchange timeout. Conversely, applying MRP's small limit to TCP wastes TCP's large-message capability, forcing unnecessary application-layer fragmentation and reducing throughput for operations like OTA updates.",
+      "proverifQuery": "query n:principal, ex:exchange, tr:transport ⊢ event exchange_on_transport(n, ex, tr) ==> event max_size_matches_transport(n, ex, tr)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Session_Type_Typically_Exclusive",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "With a given peer, a node SHOULD typically have either a secure session over MRP or one over TCP, but MAY have both for specific use cases like OTA.",
+      "formal": "∀node, peer. sessions(node, peer) ⟹ (typically(|sessions_MRP(node, peer)| = 1 ⊕ |sessions_TCP(node, peer)| = 1) ∨ justified_dual_transport(node, peer))",
+      "violation": "Maintaining unnecessary dual sessions wastes memory and increases attack surface by providing two distinct paths to the same node. Session state divergence can occur where keys or sequence numbers desynchronize between MRP and TCP sessions. An attacker can exploit this by sending conflicting commands over different transports, potentially bypassing rate limiting or causing state confusion where the node applies updates from one session to the context of another.",
+      "proverifQuery": "query n:principal, p:principal ⊢ event dual_sessions(n, p) ==> event justified_use_case(n, p)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "TCP_Support_Discovery_Via_DNS_SD",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Nodes that support TCP MUST communicate this capability through the TXT record key 'T' in their DNS-SD operational service records.",
+      "formal": "∀node. supports_TCP(node) ⟹ publishes_TXT_record(node, 'T', DNS_SD_operational_service)",
+      "violation": "Without proper capability advertisement, peers cannot discover TCP support and will exclusively use MRP, preventing large message transfers. This causes application-level failures for operations requiring >1280 byte payloads (like OTA firmware updates). The peer may attempt application-layer fragmentation that the receiver doesn't support, or fail to initiate data-heavy operations entirely, degrading functionality. An attacker can selectively suppress DNS-SD records to force downgrade to MRP-only communication.",
+      "proverifQuery": "query n:principal ⊢ event tcp_capability(n) ==> event dns_txt_published(n, 'T')"
+    },
+    {
+      "id": "PROP_012",
+      "name": "IPv6_MTU_Compliance_For_MRP",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Matter messages over MRP must be sized so each UDP datagram fits within IPv6 MTU limit of 1280 bytes to avoid fragmentation.",
+      "formal": "∀msg, datagram. transport(msg, MRP) ⟹ size(datagram(msg)) ≤ 1280",
+      "violation": "Violating IPv6 MTU causes IP-layer fragmentation where messages are split across multiple IP packets. Many IoT networks drop fragmented packets as a security measure, causing silent message loss. This appears as intermittent connectivity where small messages succeed but larger ones fail unpredictably. An attacker can exploit this by forcing message size inflation (e.g., via injected headers) to trigger fragmentation, then selectively drop fragments to cause targeted denial-of-service against specific exchanges.",
+      "proverifQuery": "query m:bitstring, d:datagram ⊢ event send_mrp(m) ==> size(datagram(m)) <= 1280"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Connection_Reaping_For_Resource_Conservation",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Nodes SHOULD proactively reap old unused TCP connections to conserve system resources.",
+      "formal": "∀connection, t_last_use, t_now. (t_now - t_last_use > threshold_idle) ⟹ should_close(connection)",
+      "violation": "Accumulating idle connections exhausts system resources (file descriptors, memory, connection tracking tables). Once the system reaches connection limits, legitimate connection requests are rejected, causing denial-of-service. An attacker can exploit this by establishing many connections and leaving them idle, consuming all available slots. Without reaping, the system requires manual intervention or restart to recover, amplifying the impact of resource exhaustion attacks.",
+      "proverifQuery": "query c:connection, t1:time, t2:time ⊢ event last_activity(c, t1) ∧ event current_time(t2) ∧ t2 - t1 > idle_threshold ==> event connection_reaped(c)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Session_Resumption_State_Retention",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Session resumption state MAY be retained after connection closure to expedite session establishment when reconnecting with the corresponding peer.",
+      "formal": "∀session, connection. closed(connection) ⟹ may_retain(resumption_state(session)) ∧ (reconnect(connection) ⟹ expedited_establishment(session))",
+      "violation": "If resumption state is retained without proper security controls, an attacker who compromises a node's storage can extract session keys and resumption tokens, enabling session hijacking even after the original connection ended. The attacker can impersonate the peer indefinitely. Additionally, if resumption state lacks freshness checks, replay attacks become possible where old resumption data is used to establish unauthorized sessions. Without time-bounds on retention, the attack window extends indefinitely.",
+      "proverifQuery": "query s:session, rs:resumption_state ⊢ event retain_resumption(s, rs) ==> event secure_storage(rs) ∧ event freshness_check_on_resume(rs)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "Keep_Alive_Configuration_For_Liveness",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "TCP Keep Alive messages MAY be configured with TCP_KEEP_ALIVE_TIME, TCP_KEEP_ALIVE_INTERVAL, and TCP_KEEP_ALIVE_PROBES to maintain connection liveness.",
+      "formal": "∀connection. may_configure(connection, TCP_KEEP_ALIVE_TIME, TCP_KEEP_ALIVE_INTERVAL, TCP_KEEP_ALIVE_PROBES) ∧ total_timeout = TCP_KEEP_ALIVE_TIME + (TCP_KEEP_ALIVE_INTERVAL × TCP_KEEP_ALIVE_PROBES)",
+      "violation": "Without keep-alive configuration, long-lived idle connections appear active to the application while being silently dropped by intermediate NATs or firewalls. The application continues attempting to send, but messages never reach the peer, causing unbounded timeouts. When the application finally detects failure, significant time has elapsed, degrading user experience. An attacker can exploit this by poisoning NAT state or injecting RST packets during idle periods, causing silent connection termination that the application doesn't detect.",
+      "proverifQuery": "query c:connection, t:time ⊢ event long_lived_connection(c) ==> event keep_alive_configured(c) ∧ event liveness_detected_by(c, t)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "TCP_User_Timeout_Configuration",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "The TCP User Timeout option MAY be configured to limit the time transmitted data may remain unacknowledged before forcibly closing the connection.",
+      "formal": "∀connection, data, t_send, t_timeout. sent(connection, data, t_send) ∧ ¬acknowledged(data) ∧ (t_now - t_send > tcp_user_timeout) ⟹ may_force_close(connection)",
+      "violation": "Without a user timeout, the TCP connection can remain in retransmission state indefinitely while unacknowledged data accumulates. This blocks all subsequent sends on that connection, causing application-level deadlock. Memory for unacknowledged data grows unbounded, leading to resource exhaustion. An attacker can exploit this by accepting connections but never acknowledging data, forcing the sender to accumulate unlimited retransmission buffers, eventually triggering out-of-memory crashes.",
+      "proverifQuery": "query c:connection, d:bitstring, t1:time, t2:time ⊢ event send_data(c, d, t1) ∧ event unacknowledged(d) ∧ t2 - t1 > user_timeout ==> event force_close(c)"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Connection_Establishment_Timeout",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "A node MAY configure a Connection Establishment Timeout to limit how long it waits for connection establishment before failing and notifying the application.",
+      "formal": "∀node, connection, t_start. initiate_connection(node, connection, t_start) ⟹ may_configure_timeout(node, establishment_timeout) ∧ (t_now - t_start > establishment_timeout ⟹ notify_failure(node))",
+      "violation": "Without an establishment timeout, connection attempts hang indefinitely when the peer is unreachable or under attack. The application waits eternally, appearing to freeze from the user's perspective. An attacker can trigger this by advertising an address that silently drops SYN packets, causing all connection attempts to that peer to hang. This enables targeted denial-of-service where specific nodes become unusable while the attacker doesn't need to maintain active attack traffic.",
+      "proverifQuery": "query n:principal, c:connection, t:time ⊢ event initiate_connection_at(n, c, t) ==> event timeout_configured(n, c) ∨ event establishment_succeeds(c)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Error_Report_Before_Size_Based_Closure",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When closing a connection due to oversized message, the node SHOULD send a Status Report with MESSAGE_TOO_LARGE before closing.",
+      "formal": "∀node, connection, msg. size(msg) > max_size(node) ∧ close_connection(node, connection) ⟹ should_send_before_close(node, STATUS_REPORT, MESSAGE_TOO_LARGE)",
+      "violation": "Without the error report, the sender's connection is abruptly terminated without explanation, appearing as a network failure. The sender retries indefinitely, causing persistent connection thrashing. The root cause (message size mismatch) remains undiagnosed, preventing fixes. This wastes bandwidth and creates spurious error reports. An attacker can exploit this by configuring a malicious sender to perpetually attempt oversized messages, causing target nodes to repeatedly close connections without providing diagnostic information.",
+      "proverifQuery": "query n:principal, c:connection, m:bitstring ⊢ event oversized_message(n, m) ∧ event close_connection(n, c) ==> event error_sent_before_close(n, MESSAGE_TOO_LARGE)"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Keep_Alive_Parameters_Conditional_SHALL",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If TCP Keep Alive is used, the configurable parameters SHALL be TCP_KEEP_ALIVE_TIME, TCP_KEEP_ALIVE_INTERVAL, and TCP_KEEP_ALIVE_PROBES (not alternative mechanisms).",
+      "formal": "∀connection. uses_keep_alive(connection) ⟹ (configured(connection, TCP_KEEP_ALIVE_TIME) ∧ configured(connection, TCP_KEEP_ALIVE_INTERVAL) ∧ configured(connection, TCP_KEEP_ALIVE_PROBES))",
+      "violation": "If keep-alive is implemented using non-standard parameters or alternative mechanisms, interoperability breaks. Nodes may use incompatible timeout calculations, causing premature or delayed connection death detection. One implementation might use exponential backoff while another uses fixed intervals, leading to asymmetric failure detection where one peer detects failure while the other believes connection is alive. This creates split-brain scenarios where both peers maintain inconsistent connection state.",
+      "proverifQuery": "query c:connection ⊢ event keep_alive_enabled(c) ==> event has_parameter(c, TCP_KEEP_ALIVE_TIME) ∧ event has_parameter(c, TCP_KEEP_ALIVE_INTERVAL) ∧ event has_parameter(c, TCP_KEEP_ALIVE_PROBES)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "Reconnection_To_Same_Peer",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When re-establishing a connection with retained session, the connection MUST be established with the same corresponding peer (identity verification required).",
+      "formal": "∀session, connection_old, connection_new, peer. session_over_connection(session, connection_old) ∧ peer_of_connection(connection_old, peer) ∧ session_retained(session) ∧ reconnect_session(session, connection_new) ⟹ peer_of_connection(connection_new, peer)",
+      "violation": "Without peer identity verification during reconnection, an attacker can impersonate the original peer and hijack the retained session. If the node uses resumption state to expedite re-establishment without verifying peer identity, the attacker gains access to the existing session's security context, encryption keys, and privileges. This allows complete session hijacking where the attacker can read encrypted messages, send authenticated commands, and access all resources the original session had access to. The legitimate peer is locked out while the attacker maintains the session.",
+      "proverifQuery": "query s:session, c_old:connection, c_new:connection, p:principal, p2:principal ⊢ event session_on_connection(s, c_old) ∧ event peer_is(c_old, p) ∧ event session_retained(s) ∧ event reconnect_session(s, c_new) ∧ event peer_is(c_new, p2) ==> p = p2"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Bidirectional_Keep_Alive_Configuration",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "TCP Keep Alive MAY be configured independently at both client and server to manage liveness for each half of the connection.",
+      "formal": "∀connection, client, server. connection_between(connection, client, server) ⟹ (may_configure_keep_alive(client, connection) ∧ may_configure_keep_alive(server, connection) ∧ independent_configuration(client, server, connection))",
+      "violation": "If implementations assume symmetric keep-alive configuration, they may fail to detect half-open connections where one direction is dead but the other appears alive. A client may detect server failure via keep-alive while the server's keep-alive hasn't yet expired, creating temporary state inconsistency. Without understanding that each side manages its own keep-alive, developers may incorrectly assume both sides timeout simultaneously, leading to race conditions in connection cleanup where one side closes while the other attempts to send data.",
+      "proverifQuery": "query c:connection, client:principal, server:principal ⊢ event connection_between(c, client, server) ==> event independent_keep_alive(client, c) ∧ event independent_keep_alive(server, c)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "MRP_Connection_Independence_Contrast",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Unlike MRP (which does not rely on underlying connection), a secure session over TCP is unusable when its connection is broken, highlighting the fundamental architectural difference.",
+      "formal": "∀session_tcp, session_mrp. transport(session_tcp, TCP) ∧ transport(session_mrp, MRP) ⟹ (connection_broken(session_tcp) ⟹ ¬usable(session_tcp)) ∧ (connection_broken(session_mrp) ⟹ may_be_usable(session_mrp))",
+      "violation": "If implementations fail to recognize this fundamental difference, they may apply MRP session management patterns to TCP sessions or vice versa. For example, treating a TCP session as usable after connection breakage (like MRP sessions can be) leads to silent message loss and security vulnerabilities. Conversely, over-constraining MRP sessions with TCP-style connection dependency reduces MRP's resilience to transient network failures. This architectural confusion can cause designers to implement incorrect retry logic, session recovery mechanisms, or state management strategies that violate protocol assumptions.",
+      "proverifQuery": "query s_tcp:session, s_mrp:session ⊢ event tcp_session(s_tcp) ∧ event mrp_session(s_mrp) ∧ event connection_broken(s_tcp) ==> event unusable(s_tcp) ∧ event mrp_may_recover(s_mrp)"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "TCP provides reliable, in-order delivery of bytes with built-in retransmission and flow control mechanisms.",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_001 becomes invalid - if TCP doesn't provide reliability, MRP would be needed. The entire rationale for disabling MRP over TCP collapses, potentially causing message loss or duplication if the fallback assumption is wrong."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "DNS-SD service discovery records are trusted and not subject to poisoning or man-in-the-middle attacks during capability advertisement.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_011 fails - an attacker can forge or suppress TCP capability advertisements, forcing downgrade attacks where TCP-capable nodes are limited to MRP, or causing nodes to attempt TCP connections to peers that don't support it, resulting in connection failures."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "The underlying network infrastructure properly handles IPv6 MTU and does not silently drop or fragment packets without ICMP feedback.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_012 becomes unenforceable - if network equipment silently fragments despite nodes respecting MTU limits, messages still fail. Conversely, if MTU is actually smaller than 1280 in some network segments, messages believed to be compliant will still fragment and potentially be dropped."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "System resources (memory, file descriptors, connection tracking entries) are finite and can be exhausted by malicious or buggy behavior.",
+      "type": "Explicit",
+      "impact_if_violated": "Properties PROP_004, PROP_005, PROP_008, PROP_013, and PROP_016 lose their security justification. If resources were infinite, the various closure, cleanup, and size limit requirements would be unnecessary optimizations rather than critical security controls."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Clock synchronization between peers is sufficient for timing-based mechanisms (keep-alive, timeouts, backoff) to function correctly within acceptable bounds.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_006, PROP_015, PROP_016, and PROP_017 become unreliable. Severe clock skew can cause premature or delayed timeouts, backoff mechanisms that don't prevent collisions, or keep-alive probes that incorrectly identify live connections as dead or vice versa."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Connection state machines at both endpoints are synchronized - when one side observes a state transition, the peer will eventually observe the corresponding transition or be notified.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_002, PROP_003, PROP_004, and PROP_005 break down. If connection state diverges (e.g., one side thinks connection is open while peer has closed), sessions may be used unsafely, messages sent into the void, and zombie exchanges persist indefinitely."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Session resumption state is stored securely with proper access controls and integrity protection, preventing unauthorized access or tampering.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_014 becomes a critical vulnerability. If resumption state is accessible to attackers, they can hijack sessions, impersonate peers, and decrypt historical traffic if forward secrecy is not implemented at the session layer."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Redundant retransmission loops causing message duplication, infinite retries, and connection instability due to competing reliability mechanisms",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker triggers specific timing conditions where MRP and TCP retransmissions overlap, causing exponential message amplification that floods both peers and exhausts network bandwidth"
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Use-after-free of connection state allowing session continuation on broken/hijacked connections, enabling man-in-the-middle attacks",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker terminates connection via RST injection, then establishes new connection with same 5-tuple before victim detects closure, intercepting messages intended for original peer"
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Silent message loss or delivery to wrong endpoint due to unmarked session state after disconnection",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker forces connection termination, then waits for victim to send on unmarked session. Messages are lost or attacker re-establishes connection to receive messages without proper authentication"
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Resource exhaustion via accumulation of half-open connections and unbounded message queues",
+      "severity": "HIGH",
+      "attack_vector": "Attacker opens multiple connections and closes their end, leaving victim with half-open states that consume file descriptors. Repeat until victim cannot accept legitimate connections"
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Memory leak and application deadlock from zombie exchanges waiting indefinitely for responses that can never arrive",
+      "severity": "HIGH",
+      "attack_vector": "Attacker establishes exchanges, then abruptly closes connection via network layer attack (e.g., firewall rule). Exchanges remain open, accumulating until victim exhausts memory"
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "Connection thrashing storm where peers repeatedly collide during reconnection, creating denial-of-service",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker repeatedly closes connections exactly when both peers would simultaneously reconnect, forcing infinite collision loop that prevents any successful connection establishment"
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Duplicate connections to same peer causing message duplication, state confusion, and resource waste",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker times connection closure to trigger simultaneous bidirectional reconnection attempts, establishing two connections. Messages sent on both connections cause duplicate processing and potential state corruption"
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Remote denial-of-service via memory exhaustion through arbitrarily large message size claims forcing unbounded allocation",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends message header claiming multi-gigabyte payload size, causing victim to allocate or reserve memory until out-of-memory crash occurs"
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "MRP exchanges fail due to IP fragmentation (applying TCP size limits), or TCP severely underperforms (applying MRP size limits)",
+      "severity": "HIGH",
+      "attack_vector": "Attacker triggers transport confusion by sending conflicting transport indicators, causing victim to apply wrong size limits and self-inflict message delivery failures or throughput degradation"
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Session state divergence and command injection via conflicting messages over dual transports exploiting session desynchronization",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker compromises one transport path (e.g., MRP over WiFi) and sends conflicting commands while legitimate commands arrive via TCP, causing inconsistent state where victim applies updates from attacker-controlled session to legitimate context"
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Downgrade attack forcing TCP-capable nodes to MRP-only mode, preventing large message transfers and degrading functionality",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker performs DNS spoofing or response suppression to remove TCP capability advertisement, preventing discovery. Peers fail OTA updates and other data-heavy operations"
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Silent message loss due to IP fragmentation being blocked by security-conscious network infrastructure",
+      "severity": "HIGH",
+      "attack_vector": "Attacker injects padded headers to inflate message size beyond 1280 bytes, triggering fragmentation. Network middleboxes drop fragments, causing intermittent connection failures that are difficult to diagnose"
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Resource exhaustion via accumulation of idle connections until system reaches connection limits and rejects legitimate requests",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker establishes maximum number of connections, keeps them barely active (just below idle threshold), preventing new legitimate connections while consuming minimal bandwidth"
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Session hijacking via extraction of resumption state from compromised storage, enabling persistent impersonation",
+      "severity": "HIGH",
+      "attack_vector": "Attacker gains read access to file system or memory where resumption state is stored, extracts session keys and resumption tokens, then establishes unauthorized sessions by presenting valid resumption data"
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Silent connection death via NAT timeout or firewall state expiration, causing application to believe connection is active while all sends fail",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker poisons NAT binding or firewall state during idle period (e.g., ARP spoofing), causing connection to be silently broken. Application continues sending with no error until much later timeout"
+    },
+    {
+      "property_id": "PROP_016",
+      "vulnerability": "Application deadlock and memory exhaustion from infinite retransmission buffer growth when peer stops acknowledging data",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker accepts connection but never sends ACK packets, forcing sender to buffer and retransmit all data indefinitely until memory exhaustion crashes the sender"
+    },
+    {
+      "property_id": "PROP_017",
+      "vulnerability": "Application freeze and denial-of-service via connections hanging indefinitely on unreachable targets without timeout",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker advertises unreachable addresses (e.g., blackhole routes) causing connection attempts to hang forever, blocking application threads and preventing legitimate operations"
+    },
+    {
+      "property_id": "PROP_018",
+      "vulnerability": "Persistent connection thrashing and inability to diagnose size mismatches due to missing error feedback creating perpetual retry loops",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker configures sender with mismatched size limits, causing repeated connection attempts that immediately close without explanation, consuming bandwidth and preventing communication while obscuring root cause"
+    },
+    {
+      "property_id": "PROP_019",
+      "vulnerability": "Interoperability failure and asymmetric connection state due to non-standard keep-alive parameter implementations causing split-brain scenarios",
+      "severity": "HIGH",
+      "attack_vector": "Attacker exploits implementation divergence by connecting nodes with incompatible keep-alive mechanisms, causing one peer to detect failure while other believes connection is alive, enabling state confusion attacks"
+    },
+    {
+      "property_id": "PROP_020",
+      "vulnerability": "Complete session hijacking via peer impersonation during reconnection without identity verification, allowing attacker to gain full session access",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker monitors for connection breakage, then races to establish connection to victim before legitimate peer reconnects. Victim uses resumption state without verifying peer identity, granting attacker full session access with encryption keys and privileges"
+    },
+    {
+      "property_id": "PROP_021",
+      "vulnerability": "Half-open connection failures and race conditions in cleanup due to assumption of symmetric keep-alive timeouts between client and server",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker configures asymmetric keep-alive settings exploiting client/server independence, creating scenarios where one side closes while other attempts data transmission, causing message loss and state corruption"
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Architectural confusion leading to incorrect session management where TCP sessions treated like MRP or vice versa, causing silent failures or reduced resilience",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker exploits implementation that incorrectly applies MRP patterns to TCP, using connection after breakage to cause silent message loss, or over-constrains MRP with TCP patterns reducing its resilience"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "connection_established",
+      "properties_enforcing_transitions": ["PROP_002", "PROP_003", "PROP_017"],
+      "critical_property": "PROP_002 - Connection must be actively verified before allowing session usage. Reaching 'session_active' state on a broken connection violates isolation."
+    },
+    {
+      "state_name": "connection_closed",
+      "properties_enforcing_transitions": ["PROP_004", "PROP_005", "PROP_018"],
+      "critical_property": "PROP_004 - Local connection closure must complete before state machine can reach 'cleanup_complete'. Lingering in half-closed state violates resource safety."
+    },
+    {
+      "state_name": "connection_idle",
+      "properties_enforcing_transitions": ["PROP_006", "PROP_013", "PROP_015"],
+      "critical_property": "PROP_013 - Idle connections must transition to 'reaped' state within bounded time. Indefinite idle state accumulation violates resource limits."
+    },
+    {
+      "state_name": "reconnection_backoff",
+      "properties_enforcing_transitions": ["PROP_006", "PROP_007"],
+      "critical_property": "PROP_006 - Must remain in backoff state for minimum duration before transitioning to 'reconnect_attempt'. Premature transition creates collision race."
+    },
+    {
+      "state_name": "receiving_message_header",
+      "properties_enforcing_transitions": ["PROP_008", "PROP_018"],
+      "critical_property": "PROP_008 - If header indicates oversized message, must immediately transition to 'error_report' then 'connection_closing', bypassing 'receive_payload' state."
+    },
+    {
+      "state_name": "session_retained_disconnected",
+      "properties_enforcing_transitions": ["PROP_003", "PROP_014"],
+      "critical_property": "PROP_003 - Cannot transition to 'session_active' from this state without first passing through 'connection_reestablished' state. Direct transition violates safety."
+    },
+    {
+      "state_name": "transport_selection",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_009", "PROP_010"],
+      "critical_property": "PROP_009 - Transport selection determines which max_message_size applies. Reaching 'exchange_active' without matching size config violates correctness."
+    },
+    {
+      "state_name": "exchange_active_over_closed_connection",
+      "properties_enforcing_transitions": ["PROP_005"],
+      "critical_property": "PROP_005 - This is an invalid/zombie state. Exchanges must transition to 'exchange_closed' when connection closes. Remaining in this state violates consistency."
+    }
+  ],
+  "additionalInsights": "**Race Condition in Simultaneous Bidirectional Connection:** The specification mentions that backoff and timer cancellation 'SHOULD prevent connection races for most scenarios' but does not mandate atomicity. There exists a race window where both peers simultaneously initiate connections after canceling backoff timers. This creates two active connections between the same peer pair, violating the assumption of single connection per peer. The spec does not specify which connection should be retained or how to resolve the race, creating ambiguity that implementations may handle inconsistently. This could lead to message duplication or session confusion.\n\n**Session Resumption Without Forward Secrecy:** The specification allows session resumption state retention but does not mandate forward secrecy for the resumption mechanism. If resumption state includes long-term keys rather than ephemeral session keys, compromise of stored resumption data enables decryption of all past communications over that session. This violates the security assumption that past sessions remain confidential even if storage is later compromised.\n\n**Keep-Alive Formula Missing Edge Cases:** The Total TCP Keep Alive Timeout formula (TCP_KEEP_ALIVE_TIME + TCP_KEEP_ALIVE_INTERVAL * TCP_KEEP_ALIVE_PROBES) assumes all probes are sent and all fail. However, if the connection breaks during the probe sequence (e.g., after 2 of 5 probes), the actual detection time is lower. The spec doesn't clarify if partial probe failure triggers immediate closure or waits for full probe count, creating implementation ambiguity that affects liveness detection accuracy.\n\n**No Guidance on Maximum Backoff Bound:** The Fibonacci backoff is recommended but without an upper bound. In pathological cases (repeated failures), backoff could grow to hours or days, effectively disabling reconnection. An attacker can exploit this by triggering failures repeatedly early in deployment, causing exponentially growing backoff that renders the node permanently unable to reconnect during the attack window.\n\n**Transport Confusion Attack Surface:** The specification allows dual sessions (MRP + TCP) for the same peer without specifying session binding or cryptographic separation between transports. If sessions use shared sequence numbers or keys, an attacker with access to one transport can inject replayed or reordered messages into the other transport's session, bypassing transport-specific security properties.\n\n**MESSAGE_TOO_LARGE Error Timing:** The spec says 'SHOULD send error before closing' but doesn't mandate reliable delivery of the error. If the error is sent but the connection closes before the peer receives it, the error is lost, defeating its purpose. The spec should require error to be sent and acknowledged, or at least buffered until the close completes.\n\n**No Specification of 'Marked Appropriately':** PROP_003 requires marking sessions that are retained after disconnection, but the specification does not define what 'marked appropriately' means in terms of data structure or enforcement mechanism. This creates implementation divergence risk where some implementations set a boolean flag (racey) while others use more robust state machine transitions (safe). Lack of standardization here is a vulnerability amplifier.\n\n**IPv6 MTU Assumption Brittle:** The spec assumes 1280-byte IPv6 MTU but doesn't account for tunneling overhead (e.g., IPsec, VPNs, 6to4). In tunneled networks, effective MTU can be significantly lower (e.g., 1220 bytes after IPsec ESP). Messages sized at 1279 bytes will still fragment in these networks despite being spec-compliant, causing the same fragmentation-induced failures the spec tried to prevent.",
+  "summary": {
+    "total_properties": 22,
+    "by_importance": {
+      "CRITICAL": 7,
+      "HIGH": 6,
+      "MEDIUM": 9
+    },
+    "by_category": {
+      "Security": 5,
+      "Correctness": 8,
+      "Consistency": 3,
+      "Timing": 4,
+      "Atomicity": 1,
+      "Cryptography": 0,
+      "AccessControl": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 7,
+    "vulnerabilities_identified": 22
+  }
+}

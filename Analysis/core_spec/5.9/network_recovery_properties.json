@@ -1,0 +1,692 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "CASE_Session_Required_For_Recovery",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Administrator and Recovery Node must establish a secure CASE session before exchanging any network credentials.",
+      "formal": "∀admin, node, creds. event exchange_credentials(admin, node, creds) ==> event case_session_established(admin, node)",
+      "violation": "Without CASE session establishment, credentials are exchanged over an insecure channel. Attacker can intercept new network credentials via man-in-the-middle attack, gaining unauthorized access to the operational network and all connected nodes.",
+      "proverifQuery": "query a:principal, n:principal, c:credentials ⊢ event provide_credentials(a, n, c) ==> event case_established(a, n)"
+    },
+    {
+      "id": "PROP_002",
+      "name": "All_Messages_CASE_Encrypted",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "All messages exchanged over the recovery connection must be encrypted using CASE-derived keys.",
+      "formal": "∀admin, node, msg. event send_recovery_message(admin, node, msg) ==> ∃k. has_case_key(admin, node, k) ∧ encrypted_with(msg, k)",
+      "violation": "Unencrypted recovery messages expose network credentials, RecoveryIdentifier, and network topology to passive eavesdroppers. Attacker can capture credentials and authenticate to operational network.",
+      "proverifQuery": "query a:principal, n:principal, m:bitstring ⊢ event send_message(a, n, m) ==> event encrypted(m, case_key(a, n))"
+    },
+    {
+      "id": "PROP_003",
+      "name": "User_Consent_Before_Credential_Provision",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Administrator must obtain user consent before providing new credentials to any Recovery Node.",
+      "formal": "∀admin, node, creds. event provide_credentials(admin, node, creds) ==> event user_consent_obtained(admin, node)",
+      "violation": "Without user consent, Administrator may provision credentials to attacker-controlled imposter devices advertising fake RecoveryIdentifiers. Attacker gains network access without authorization, compromising entire fabric.",
+      "proverifQuery": "query a:principal, n:principal, c:credentials ⊢ event provision(a, n, c) ==> event consent(a, n)"
+    },
+    {
+      "id": "PROP_004",
+      "name": "No_Credential_Provision_Without_Consent",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "If user consent is not granted, Administrator must terminate recovery flow and not perform credential provisioning steps.",
+      "formal": "∀admin, node. ¬event user_consent_obtained(admin, node) ==> ¬event provide_credentials(admin, node, _)",
+      "violation": "Automated recovery without consent enables attacks where Administrator inadvertently provisions credentials during temporary network outages or to malicious devices, violating user intent and creating unauthorized access.",
+      "proverifQuery": "query a:principal, n:principal, c:credentials ⊢ event provision(a, n, c) ==> event consent_granted(a, n)"
+    },
+    {
+      "id": "PROP_005",
+      "name": "CommissioningComplete_Over_Operational_Network_Only",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Recovery Node must reject CommissioningComplete command if not received over the operational network.",
+      "formal": "∀node, admin, cmd. event receive_commissioning_complete(node, admin, cmd) ∧ ¬over_operational_network(cmd) ==> event reject(node, cmd)",
+      "violation": "Accepting CommissioningComplete over recovery channel (BLE/WiFi) allows attacker to prematurely terminate recovery before node connects to legitimate operational network. Node remains on attacker-controlled network, believing recovery succeeded.",
+      "proverifQuery": "query n:principal, a:principal, cmd:bitstring ⊢ event accept_completion(n, cmd) ==> event over_op_network(cmd)"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Operational_Network_Reconnection_Minimum_Duration",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Recovery Node must continue attempting to connect to operational network using existing credentials for at least 120 seconds before entering Network Recovery mode.",
+      "formal": "∀node. event enter_recovery_mode(node) ==> ∃t. (t - t_connectivity_lost) ≥ 120s",
+      "violation": "Immediate recovery announcement after temporary network glitch creates wireless spectrum pollution and exposes RecoveryIdentifier to attackers unnecessarily. Attacker can trigger repeated recovery cycles via jamming attacks, causing denial of service.",
+      "proverifQuery": "query n:principal, t1:time, t2:time ⊢ event recovery_mode(n, t2) ==> (t2 - t1) >= 120"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Recovery_Advertisement_Contains_RecoveryIdentifier",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Network Recovery advertisements must contain the value of the RecoveryIdentifier attribute.",
+      "formal": "∀node, adv. event announce_recovery(node, adv) ==> ∃rid. contains(adv, RecoveryIdentifier(node, rid))",
+      "violation": "Without RecoveryIdentifier, Administrator cannot distinguish between legitimate recovery nodes and attacker nodes advertising recovery mode. Results in credential provisioning to wrong device or denial of service for legitimate nodes.",
+      "proverifQuery": "query n:principal, adv:advertisement ⊢ event advertise(n, adv) ==> contains(adv, recovery_id(n))"
+    },
+    {
+      "id": "PROP_008",
+      "name": "RecoveryIdentifier_Retrieved_Before_Credential_Change",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "Administrator should retrieve RecoveryIdentifier value from node before operational network credentials are changed.",
+      "formal": "∀admin, node. event provide_credentials(admin, node, new_creds) ==> event has_recovery_id(admin, node)",
+      "violation": "If RecoveryIdentifier not retrieved before credential change, Administrator cannot identify correct node during recovery. Must rely on physical proximity or other out-of-band methods, increasing risk of provisioning wrong device.",
+      "proverifQuery": "query a:principal, n:principal, c:credentials ⊢ event provision_new(a, n, c) ==> event retrieved_id(a, n)"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Recovery_Preempts_Autonomous_Reconnection",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Once CASE session is established during recovery, all autonomous network reconnection attempts by Recovery Node must be suspended and not interfere with recovery session.",
+      "formal": "∀node, admin. event case_session_established(admin, node) ==> event suspend_autonomous_reconnect(node) ∧ ¬event interfere(autonomous_reconnect, recovery_session)",
+      "violation": "Concurrent autonomous reconnection attempts during recovery create race conditions where node may partially connect using old credentials while receiving new credentials. Results in inconsistent state where node cannot communicate reliably.",
+      "proverifQuery": "query n:principal, a:principal ⊢ event case_established(a, n) ==> event suspended(autonomous_reconnect(n))"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Autonomous_Reconnection_Resumes_On_Failure",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "If network recovery procedure fails, autonomous reconnection attempts using old credentials must resume.",
+      "formal": "∀node. event recovery_failed(node) ==> event resume_autonomous_reconnect(node)",
+      "violation": "If autonomous reconnection does not resume after recovery failure, node becomes permanently disconnected despite valid old credentials. Temporary administrator errors or network issues result in permanent denial of service requiring manual intervention.",
+      "proverifQuery": "query n:principal ⊢ event recovery_failure(n) ==> event resume_reconnect(n)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "Fail_Safe_Armed_On_CASE_Session",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Upon successful CASE session establishment, Recovery Node must autonomously arm the fail-safe timer for 60 seconds.",
+      "formal": "∀node, admin. event case_session_established(admin, node) ==> event arm_failsafe(node, 60s)",
+      "violation": "Without automatic fail-safe arming, incomplete recovery procedures leave node in inconsistent state indefinitely. Node may accept partial credential updates but never complete recovery, becoming unreachable on both old and new networks.",
+      "proverifQuery": "query n:principal, a:principal ⊢ event case_established(a, n) ==> event failsafe_armed(n, 60)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Administrator_Arms_FailSafe_Within_60s",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Administrator must arm the fail-safe timer within 60 seconds of establishing CASE session.",
+      "formal": "∀admin, node, t1, t2. event case_session_established(admin, node, t1) ∧ event arm_failsafe_admin(admin, node, t2) ==> (t2 - t1) ≤ 60s",
+      "violation": "If Administrator does not arm fail-safe within 60 seconds, automatic fail-safe (from PROP_011) expires and terminates recovery session prematurely. Legitimate recovery attempts fail, requiring restart of entire recovery procedure.",
+      "proverifQuery": "query a:principal, n:principal, t1:time, t2:time ⊢ event arm_admin(a, n, t2) ==> (t2 - t1) <= 60"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Terminate_Session_If_FailSafe_Arming_Fails",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If Administrator cannot successfully arm the fail-safe timer, it must terminate the recovery session.",
+      "formal": "∀admin, node. event failsafe_arm_failed(admin, node) ==> event terminate_session(admin, node)",
+      "violation": "Continuing recovery without fail-safe protection allows indefinite session hangs if subsequent steps fail. Node remains in partial recovery state, unable to process operational traffic or complete recovery, requiring manual intervention.",
+      "proverifQuery": "query a:principal, n:principal ⊢ event arm_failed(a, n) ==> event terminate(a, n)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Administrator_Provides_New_Credentials",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Administrator must provide new operational network credentials to Recovery Node using AddOrUpdateWiFiNetwork or AddOrUpdateThreadNetwork commands.",
+      "formal": "∀admin, node. event successful_recovery(admin, node) ==> event credentials_provided(admin, node) ∧ (event add_wifi(admin, node) ∨ event add_thread(admin, node))",
+      "violation": "Without providing new credentials, recovery procedure cannot succeed. Node remains disconnected from operational network despite completing CASE session and fail-safe arming, wasting wireless resources and user effort.",
+      "proverifQuery": "query a:principal, n:principal ⊢ event recovery_success(a, n) ==> (event add_wifi_creds(a, n) | event add_thread_creds(a, n))"
+    },
+    {
+      "id": "PROP_015",
+      "name": "ConnectNetwork_Issued_After_Credential_Provision",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Administrator must instruct Recovery Node to connect to operational network using ConnectNetwork command after providing new credentials.",
+      "formal": "∀admin, node. event connect_network(admin, node) ==> event credentials_provided(admin, node)",
+      "violation": "Issuing ConnectNetwork before credential provisioning causes connection attempt with old or missing credentials, resulting in connection failure. Recovery procedure fails unnecessarily, requiring restart from beginning.",
+      "proverifQuery": "query a:principal, n:principal ⊢ event connect_cmd(a, n) ==> event creds_provisioned(a, n)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "Recovery_Node_Attempts_Connection_With_New_Credentials",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Upon receiving ConnectNetwork command, Recovery Node must attempt to connect to operational network using newly-provisioned credentials.",
+      "formal": "∀node, admin, new_creds. event receive_connect_network(node, admin) ∧ event received_credentials(node, new_creds) ==> event attempt_connect(node, new_creds)",
+      "violation": "If node attempts connection using old credentials instead of new ones, connection fails despite correct recovery procedure execution. Node remains disconnected, recovery fails, and user must retry entire process.",
+      "proverifQuery": "query n:principal, nc:credentials ⊢ event connect_attempt(n, nc) ==> event received_new_creds(n, nc)"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Subsequent_Messages_Over_Operational_Network",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Once Recovery Node connects to operational network, all remaining recovery messages between Administrator and Recovery Node must be exchanged over the operational network.",
+      "formal": "∀admin, node, msg, t. event connected_operational(node, t) ∧ event send_recovery_message(admin, node, msg, t') ∧ t' > t ==> event over_operational_network(msg)",
+      "violation": "Accepting recovery messages over commissioning channel (BLE/WiFi) after operational connection enables Man-in-the-Middle attacks. Attacker can send malicious CommissioningComplete over BLE, causing node to finalize recovery with attacker's network instead of legitimate one.",
+      "proverifQuery": "query a:principal, n:principal, m:bitstring, t:time ⊢ event send_msg_after_connect(a, n, m, t) ==> event over_op_net(m)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "CASE_Session_Over_Operational_Network_For_Final_Steps",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "CommissioningComplete and CommissioningCompleteResponse commands must be sent over a CASE session over the operational network.",
+      "formal": "∀admin, node, cmd. (event send_commissioning_complete(admin, node, cmd) ∨ event send_commissioning_complete_response(node, admin)) ==> event over_operational_network(cmd) ∧ event over_case_session(cmd)",
+      "violation": "Sending completion commands over non-operational channels allows attacker to intercept and replay them over attacker-controlled network. Node believes recovery succeeded but is actually on malicious network, exposing all future communications.",
+      "proverifQuery": "query a:principal, n:principal, cmd:bitstring ⊢ event send_complete(a, n, cmd) ==> (event over_op_net(cmd) & event case_session(cmd))"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Operational_Discovery_Before_Commissioning_Complete",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Administrator and Recovery Node must discover each other on operational network using operational discovery before sending CommissioningComplete.",
+      "formal": "∀admin, node. event send_commissioning_complete(admin, node) ==> event operational_discovery_complete(admin, node)",
+      "violation": "Without operational discovery, Administrator cannot establish operational CASE session with node. CommissioningComplete sent over recovery channel violates PROP_018, or sent without valid session results in rejection.",
+      "proverifQuery": "query a:principal, n:principal ⊢ event send_complete(a, n) ==> event discovered_op(a, n)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "Recovery_Announcement_Follows_Duration_Requirements",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Recovery Node announcements must follow announcement duration requirements and take advantage of Extended Announcement duration.",
+      "formal": "∀node, ann. event announce_recovery(node, ann) ==> satisfies_duration_requirements(ann) ∧ uses_extended_announcement(ann)",
+      "violation": "Insufficient announcement duration causes Administrator to miss recovery advertisements if scanning timing is unlucky. Recovery fails intermittently despite node and Administrator being in proximity, frustrating users.",
+      "proverifQuery": "query n:principal, a:announcement ⊢ event announce(n, a) ==> (event duration_valid(a) & event extended_duration(a))"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Continuous_Reconnection_During_Recovery_State",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "Recovery Nodes must attempt to reconnect to existing operational network while in recovery state and announcing recovery availability.",
+      "formal": "∀node. event in_recovery_state(node) ==> event attempting_reconnect(node, old_credentials)",
+      "violation": "If node stops attempting reconnection during recovery state, it cannot recover from temporary network outages autonomously. False recovery attempts occur for transient issues, wasting user effort and exposing RecoveryIdentifier unnecessarily.",
+      "proverifQuery": "query n:principal ⊢ event recovery_state(n) ==> event reconnect_attempts(n)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Recovery_Restart_On_CommissioningMode_Steps",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Recovery Node must restart Network Recovery procedure when steps enumerated in CommissioningModeInitialStepsHint are performed.",
+      "formal": "∀node. event commissioning_mode_steps_performed(node) ==> event restart_recovery_procedure(node)",
+      "violation": "Without restart capability, node continues announcing with stale RecoveryIdentifier or expired state after Extended Announcement ends. User cannot re-initiate recovery without power cycling device, poor user experience.",
+      "proverifQuery": "query n:principal ⊢ event hint_steps_done(n) ==> event restart_recovery(n)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "Administrator_Has_New_Operational_Credentials",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Administrator must have new credentials required to connect to operational network before starting recovery.",
+      "formal": "∀admin, node. event initiate_recovery(admin, node) ==> event has_new_credentials(admin)",
+      "violation": "Administrator without new credentials cannot validate recovery success or establish operational CASE session. May provision incorrect credentials, leaving node unreachable or connected to wrong network.",
+      "proverifQuery": "query a:principal, n:principal ⊢ event start_recovery(a, n) ==> event has_creds(a)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "New_Operational_Network_Present_And_Operational",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "The new operational network must be present and operational before Administrator initiates recovery procedure.",
+      "formal": "∀admin. event initiate_recovery(admin, _) ==> event network_operational(new_network)",
+      "violation": "If new network is not operational, Recovery Node connection attempt after credential provisioning fails. Node is left in inconsistent state with new credentials but no reachable network, requiring another recovery cycle.",
+      "proverifQuery": "query a:principal ⊢ event start_recovery(a) ==> event network_up(new_network)"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Recovery_Nodes_Allow_All_CASE_Transactions",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "Recovery Nodes must allow any and all transactions allowed over a CASE session during recovery, including reading device configuration and topology.",
+      "formal": "∀node, admin, transaction. event case_session_established(admin, node) ∧ valid_case_transaction(transaction) ==> event allow_transaction(node, admin, transaction)",
+      "violation": "Restricting CASE transactions during recovery prevents Administrator from verifying node identity, checking configuration, or diagnosing issues. Increases risk of provisioning wrong device and prevents proper recovery validation.",
+      "proverifQuery": "query n:principal, a:principal, tx:transaction ⊢ event case_established(a, n) & valid_case_tx(tx) ==> event permitted(n, tx)"
+    },
+    {
+      "id": "PROP_026",
+      "name": "Recovery_Channel_Advertisement_Distinguishable",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Commissioning channel definitions must provide an advertising format that distinguishes Network Recovery advertisements from commissioning advertisements.",
+      "formal": "∀channel, adv. event advertise_on_channel(channel, adv) ==> (is_recovery_advertisement(adv) ⊕ is_commissioning_advertisement(adv))",
+      "violation": "If recovery and commissioning advertisements are indistinguishable, Administrator cannot differentiate between uncommissioned devices and recovery-mode devices. May attempt commissioning flow instead of recovery, failing to restore connectivity.",
+      "proverifQuery": "query ch:channel, adv:advertisement ⊢ event advertise(ch, adv) ==> (recovery_adv(adv) xor commissioning_adv(adv))"
+    },
+    {
+      "id": "PROP_027",
+      "name": "CASE_Session_Establishes_Over_Recovery_Channel",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Commissioning channels must provide ability to establish a CASE session over the commissioning channel for recovery purposes.",
+      "formal": "∀channel. supports_recovery(channel) ==> supports_case_over_channel(channel)",
+      "violation": "Without CASE capability over commissioning channel, secure credential exchange is impossible during recovery. Must fall back to insecure methods or cannot perform recovery at all, defeating purpose of recovery mechanism.",
+      "proverifQuery": "query ch:channel ⊢ recovery_supported(ch) ==> case_supported(ch)"
+    },
+    {
+      "id": "PROP_028",
+      "name": "Recovery_CASE_Not_Used_For_Steady_State",
+      "category": "Security",
+      "importance": "MEDIUM",
+      "claim": "CASE session established over commissioning channel during recovery must be used only for network credential recovery, not for steady-state operational interaction.",
+      "formal": "∀admin, node, session. event case_session_over_commissioning(admin, node, session) ==> event used_for_recovery(session) ∧ ¬event used_for_operational(session)",
+      "violation": "Using recovery CASE sessions for operational traffic creates side channels that bypass operational network security policies. Attackers with BLE/WiFi proximity can communicate with nodes without being on operational network, violating network isolation.",
+      "proverifQuery": "query a:principal, n:principal, s:session ⊢ case_over_commissioning(s) ==> (recovery_only(s) & not(operational_use(s)))"
+    },
+    {
+      "id": "PROP_029",
+      "name": "Recovery_Advertisement_Contains_Error_Codes",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Network Recovery advertisement should contain error codes that led to the need for network recovery.",
+      "formal": "∀node, adv. event announce_recovery(node, adv) ==> likely_contains(adv, error_codes(node))",
+      "violation": "Without error codes, Administrator cannot distinguish between intentional network reconfiguration and unintentional issues (hardware failure, attack). May perform recovery when node should be replaced or investigated for tampering.",
+      "proverifQuery": "query n:principal, adv:advertisement ⊢ event announce(n, adv) ==> contains_errors(adv)"
+    },
+    {
+      "id": "PROP_030",
+      "name": "Extended_Announcement_Duration_Ends_Then_Retry",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "If Extended Announcement duration ends and Recovery Node still cannot reach operational network, it must continue attempting reconnection at manufacturer-defined intervals.",
+      "formal": "∀node, t_end. event extended_announcement_ended(node, t_end) ∧ ¬event connected_operational(node, t_end) ==> event continue_reconnection(node)",
+      "violation": "If node stops reconnection attempts after Extended Announcement, it becomes permanently disconnected requiring user intervention. Transient network issues lasting longer than Extended Announcement result in unnecessary device resets or manual recovery.",
+      "proverifQuery": "query n:principal, t:time ⊢ event announce_ended(n, t) & not(connected(n, t)) ==> event continue_attempts(n)"
+    },
+    {
+      "id": "PROP_031",
+      "name": "RecoveryIdentifier_Uniquely_Identifies_Node",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "RecoveryIdentifier must uniquely identify a specific Recovery Node to prevent credential provisioning to wrong devices (implicit).",
+      "formal": "∀node1, node2, rid. (recovery_identifier(node1, rid) ∧ recovery_identifier(node2, rid)) ==> node1 = node2",
+      "violation": "Non-unique RecoveryIdentifiers allow attacker to advertise victim node's identifier and receive credentials meant for victim. Attacker gains network access while legitimate node remains disconnected, complete fabric compromise.",
+      "proverifQuery": "query n1:principal, n2:principal, rid:identifier ⊢ (has_recovery_id(n1, rid) & has_recovery_id(n2, rid)) ==> n1 = n2"
+    },
+    {
+      "id": "PROP_032",
+      "name": "Recovery_State_And_Operational_State_Mutually_Exclusive",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Recovery Node cannot simultaneously be in full operational state and recovery state (implicit state invariant).",
+      "formal": "∀node, t. ¬(event in_recovery_state(node, t) ∧ event in_operational_state(node, t))",
+      "violation": "Simultaneous operational and recovery states create ambiguity about which credentials and network interfaces are authoritative. Node may accept commands from both old and new administrators, violating access control policies.",
+      "proverifQuery": "query n:principal, t:time ⊢ not(recovery_state(n, t) & operational_state(n, t))"
+    },
+    {
+      "id": "PROP_033",
+      "name": "Recovery_Connection_Terminated_After_Operational_Connection",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Once Recovery Node successfully connects to operational network, recovery connection over commissioning channel must be terminated (implicit atomicity).",
+      "formal": "∀node, t. event connected_operational(node, t) ==> event terminate_recovery_connection(node, t)",
+      "violation": "Maintaining both recovery and operational connections allows attacker with BLE/WiFi proximity to continue sending commands over recovery channel. Attacker can bypass operational network security and manipulate node state.",
+      "proverifQuery": "query n:principal, t:time ⊢ event op_connected(n, t) ==> event close_recovery(n, t)"
+    },
+    {
+      "id": "PROP_034",
+      "name": "Announcement_OpCode_Identifies_Recovery_Mode",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Administrator uses the Node's advertised OpCode to identify Recovery Nodes in Network Recovery mode.",
+      "formal": "∀admin, node, adv. event receive_advertisement(admin, node, adv) ∧ has_recovery_opcode(adv) ==> event identify_as_recovery_node(admin, node)",
+      "violation": "Without OpCode-based identification, Administrator cannot efficiently filter recovery nodes from commissioning nodes. May waste time attempting commissioning flows on recovery nodes or recovery flows on uncommissioned devices.",
+      "proverifQuery": "query a:principal, n:principal, adv:advertisement ⊢ receive_adv(a, n, adv) & recovery_opcode(adv) ==> identifies_recovery(a, n)"
+    },
+    {
+      "id": "PROP_035",
+      "name": "State_Transition_Ordering_Enforced",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Recovery flow must follow strict state transition ordering: connectivity_lost → wait_120s → recovery_mode → case_session → fail_safe_armed → credentials_provided → connect_network → operational_connection → operational_discovery → commissioning_complete (implicit FSM).",
+      "formal": "∀node. event(node, state_n+1) ==> event_completed(node, state_n)",
+      "violation": "Out-of-order state transitions (e.g., credentials_provided before fail_safe_armed) cause inconsistent node state. Node may accept credentials without fail-safe protection, leading to permanent misconfiguration if procedure fails mid-way.",
+      "proverifQuery": "query n:principal, s1:state, s2:state ⊢ transition(n, s2) ==> completed(n, s1) where s2 = next(s1)"
+    },
+    {
+      "id": "PROP_036",
+      "name": "Parallel_Recovery_And_Reconnection_Attempts",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "During recovery state, Recovery Node must continue autonomous reconnection attempts in parallel with recovery announcement (implicit parallelization).",
+      "formal": "∀node, t. event in_recovery_state(node, t) ==> (event announcing_recovery(node, t) ∧ event attempting_reconnect(node, t))",
+      "violation": "If reconnection stops during recovery announcement, node cannot autonomously recover from transient network issues. Wastes Administrator effort performing recovery when network comes back online naturally.",
+      "proverifQuery": "query n:principal, t:time ⊢ recovery_state(n, t) ==> (announcing(n, t) & reconnecting(n, t))"
+    },
+    {
+      "id": "PROP_037",
+      "name": "Credentials_Temporal_Validity_Window",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "Recovery procedure creates temporal window where both old and new credentials exist; new credentials supersede old credentials atomically upon successful ConnectNetwork (implicit temporal constraint).",
+      "formal": "∀node, t_provision, t_connect. event credentials_provided(node, new_creds, t_provision) ∧ event connect_network_success(node, t_connect) ==> (∀t. t < t_connect ==> uses(node, old_creds, t)) ∧ (∀t. t ≥ t_connect ==> uses(node, new_creds, t))",
+      "violation": "If node uses new credentials before ConnectNetwork success, it may attempt connection before Administrator is ready, causing race conditions. If it continues using old credentials after success, it remains on old network despite recovery completion.",
+      "proverifQuery": "query n:principal, nc:credentials, t1:time, t2:time ⊢ provision(n, nc, t1) & connect_success(n, t2) ==> uses_new_after(n, nc, t2)"
+    },
+    {
+      "id": "PROP_038",
+      "name": "Remove_Network_Optional_But_Precedes_Add",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Administrator may optionally delete Recovery Node's existing network credentials using RemoveNetwork, but if used, must occur before AddOrUpdateWiFiNetwork or AddOrUpdateThreadNetwork (implicit ordering).",
+      "formal": "∀admin, node. event remove_network(admin, node) ==> ∃t1, t2. event remove_network(admin, node, t1) ∧ event add_network(admin, node, t2) ∧ t1 < t2",
+      "violation": "Adding new credentials before removing old ones may cause node to maintain multiple network configurations. Node behavior becomes undefined when multiple credentials exist, may connect to wrong network or fail to connect at all.",
+      "proverifQuery": "query a:principal, n:principal, t1:time, t2:time ⊢ remove_net(a, n, t1) & add_net(a, n, t2) ==> t1 < t2"
+    },
+    {
+      "id": "PROP_039",
+      "name": "User_Can_Identify_Nodes_Requiring_Recovery",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "Administrator shall seek user consent to determine which Nodes would be subject to Network Recovery, as Administrator may be unable to discern user intent (implicit assumption of human-in-the-loop).",
+      "formal": "∀admin, node. event initiate_recovery(admin, node) ==> event user_identified_node(user, node)",
+      "violation": "Without user node identification, Administrator may perform recovery on nodes user intentionally disconnected (e.g., device being retired, moved to different network). Violates user intent and may reconnect devices that should remain isolated.",
+      "proverifQuery": "query a:principal, n:principal ⊢ start_recovery(a, n) ==> user_selected(n)"
+    },
+    {
+      "id": "PROP_040",
+      "name": "FailSafe_Timeout_Protects_Against_Incomplete_Recovery",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Fail-safe timer timeout causes automatic rollback if recovery procedure does not complete within timeout (implicit fail-safe semantics).",
+      "formal": "∀node, t_arm, timeout. event arm_failsafe(node, timeout, t_arm) ∧ ¬event commissioning_complete(node, t) ∧ (t_current - t_arm) > timeout ==> event rollback_state(node)",
+      "violation": "Without fail-safe timeout triggering rollback, node remains in partial recovery state indefinitely after Administrator abandons procedure. Node cannot accept operational commands or retry recovery, becoming permanently unreachable.",
+      "proverifQuery": "query n:principal, t1:time, timeout:time ⊢ failsafe_armed(n, t1, timeout) & not(completed(n)) & expired(timeout) ==> rollback(n)"
+    },
+    {
+      "id": "PROP_041",
+      "name": "BLE_And_WiFi_Service_Discovery_Include_RecoveryID",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Recovery Nodes using BLE or WiFi interfaces must include RecoveryID in their respective service discovery mechanisms (BLE Service Data or WiFi Unsynchronized Service Discovery).",
+      "formal": "∀node. (event announce_recovery_ble(node, payload) ==> contains(payload, recovery_id)) ∧ (event announce_recovery_wifi(node, payload) ==> contains(payload, recovery_id))",
+      "violation": "Without RecoveryID in service discovery, Administrator discovers recovery nodes but cannot correlate them with previously-retrieved RecoveryIdentifiers. Cannot safely provision credentials without out-of-band identification, increasing error rate.",
+      "proverifQuery": "query n:principal, p:payload ⊢ (announce_ble(n, p) | announce_wifi(n, p)) ==> contains(p, recovery_id(n))"
+    },
+    {
+      "id": "PROP_042",
+      "name": "Network_Connectivity_Loss_Detected_Reliably",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Recovery Node must be able to reliably detect operational network connectivity loss to trigger recovery procedure (implicit capability assumption).",
+      "formal": "∀node. event operational_network_unreachable(node) ==> event detect_connectivity_loss(node)",
+      "violation": "If node cannot reliably detect connectivity loss (e.g., partial connectivity, asymmetric routing), it may not enter recovery mode when needed. Users experience device unavailability without recovery option, requiring manual intervention.",
+      "proverifQuery": "query n:principal ⊢ net_unreachable(n) ==> detects_loss(n)"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "CASE protocol is secure and provides authenticated encryption with forward secrecy",
+      "type": "Implicit",
+      "impact_if_violated": "All security properties relying on CASE session secrecy (PROP_001, PROP_002, PROP_005, PROP_017, PROP_018) fail. Attacker can decrypt recovery messages and extract network credentials, compromising entire fabric."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "RecoveryIdentifier is globally unique across all nodes in all fabrics",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_031 violated. Credential provisioning to wrong nodes, attacker impersonation attacks become feasible. Administrator cannot safely identify recovery nodes."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "User can correctly identify which nodes require recovery and correctly approve recovery for intended nodes",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_003, PROP_004, PROP_039 weakened. User consent becomes ineffective security control. Wrong devices receive credentials, or legitimate devices are excluded from recovery."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Operational network credentials have been changed such that Recovery Nodes cannot connect using old credentials",
+      "type": "Explicit",
+      "impact_if_violated": "Recovery procedure becomes unnecessary overhead. If old credentials still work, 120-second reconnection attempt should succeed, preventing recovery mode entry (PROP_006)."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "New operational network is present, operational, and Administrator has correct new credentials",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_023, PROP_024 violated. Recovery procedure provisions incorrect or non-working credentials. Recovery Node becomes unreachable on both old and new networks, worse than initial state."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "No privileged node (Administrator or Recovery Node) is compromised during recovery procedure",
+      "type": "Implicit",
+      "impact_if_violated": "All security properties fail. Compromised Administrator can provision malicious credentials. Compromised Recovery Node can leak credentials to attacker or refuse to complete recovery."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "BLE and WiFi commissioning channels are available and functional on both Administrator and Recovery Node",
+      "type": "Implicit",
+      "impact_if_violated": "Recovery mechanism unavailable. Nodes cannot be recovered without physically accessing device or out-of-band recovery methods. Protocol specification becomes aspirational."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "Fail-safe timer implementation is reliable and triggers rollback on timeout",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_011, PROP_012, PROP_040 fail. Incomplete recovery leaves node in inconsistent state permanently. Manual intervention required to restore functionality."
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "Operational discovery mechanism works correctly over operational network",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_019 fails. Administrator cannot establish operational CASE session with Recovery Node. CommissioningComplete cannot be sent over operational network, violating PROP_005 and PROP_018."
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "Clock drift or lack of time synchronization does not significantly affect timeout durations",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_006 (120s wait), PROP_011, PROP_012 (60s fail-safe) become unreliable. Nodes may enter recovery too early/late, fail-safe may expire prematurely, creating race conditions."
+    },
+    {
+      "id": "ASSUM_011",
+      "statement": "No race conditions exist between autonomous reconnection attempts and recovery procedure state machine",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_009 cannot be enforced. Recovery procedure may partially complete while autonomous reconnection succeeds with old credentials, leaving node in undefined state."
+    },
+    {
+      "id": "ASSUM_012",
+      "statement": "Network connectivity loss is distinguishable from temporary network congestion or transient failures",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_042 produces false positives. Nodes unnecessarily enter recovery mode during temporary issues, wasting resources and exposing RecoveryIdentifier. False negatives prevent recovery when actually needed."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Attacker performs man-in-the-middle attack on recovery connection, intercepting network credentials in plaintext",
+      "severity": "CRITICAL",
+      "attack_vector": "Position between Administrator and Recovery Node during recovery, inject fake BLE or WiFi PSK responses without CASE authentication, capture AddOrUpdateWiFiNetwork command containing plaintext credentials"
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Passive eavesdropper on BLE or WiFi commissioning channel captures unencrypted recovery messages containing network credentials",
+      "severity": "CRITICAL",
+      "attack_vector": "Sniff BLE advertisements or WiFi Public Action Frames during recovery procedure, extract unencrypted AddOrUpdateWiFiNetwork or AddOrUpdateThreadNetwork commands"
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Attacker advertises fake RecoveryIdentifier matching legitimate node, receives network credentials without user knowledge",
+      "severity": "CRITICAL",
+      "attack_vector": "Capture legitimate node's RecoveryIdentifier from previous recovery announcement or commissioning, replay in fake recovery advertisement, automate Administrator without user consent to provision credentials"
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Automated recovery systems provision credentials to unintended devices during temporary network outages or to attacker devices",
+      "severity": "CRITICAL",
+      "attack_vector": "Trigger temporary network disruption (jamming), wait for automated recovery system to provision credentials without user confirmation, capture credentials for attacker-controlled network"
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Attacker sends CommissioningComplete over BLE/WiFi recovery channel before operational network connection, causing premature completion",
+      "severity": "CRITICAL",
+      "attack_vector": "Maintain recovery connection with node during ConnectNetwork, send malicious CommissioningComplete over BLE before legitimate one arrives over operational network, node accepts and finalizes recovery to attacker network"
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "Attacker repeatedly triggers recovery mode via network jamming, causing denial of service and exposing RecoveryIdentifier continuously",
+      "severity": "HIGH",
+      "attack_vector": "Jam operational network to trigger immediate recovery mode entry, harvest RecoveryIdentifiers from all nodes, use identifiers for targeted credential provisioning attacks"
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Administrator provisions credentials to wrong node due to inability to distinguish between multiple recovery nodes",
+      "severity": "CRITICAL",
+      "attack_vector": "Deploy multiple attacker nodes in recovery mode without RecoveryIdentifiers, rely on Administrator's inability to identify correct node, receive credentials intended for legitimate device"
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Administrator cannot identify correct recovery node without RecoveryIdentifier, may provision attacker's device",
+      "severity": "HIGH",
+      "attack_vector": "Wait for credentials to change before RecoveryIdentifier retrieval, advertise fake recovery node with same device type/name as victim, receive credentials through Administrator's trial-and-error"
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "Race condition between autonomous reconnection and recovery causes node to partially connect with old credentials while receiving new ones",
+      "severity": "HIGH",
+      "attack_vector": "Time recovery procedure to coincide with temporary old network availability, cause node to connect to old network during credential provisioning, create split-brain state with two network connections"
+    },
+    {
+      "property_id": "PROP_017",
+      "vulnerability": "Attacker maintains access to recovery channel after operational connection, sends malicious commands bypassing operational network security",
+      "severity": "CRITICAL",
+      "attack_vector": "Keep BLE connection alive after operational network connection, send unauthorized commands over BLE that should require operational network access, bypass network-level access controls"
+    },
+    {
+      "property_id": "PROP_018",
+      "vulnerability": "Attacker replays CommissioningComplete command over recovery channel, finalizing recovery to attacker-controlled network instead of legitimate one",
+      "severity": "CRITICAL",
+      "attack_vector": "Establish fake operational network with same SSID as legitimate one but under attacker control, send CommissioningComplete over CASE session on fake network, node believes recovery succeeded"
+    },
+    {
+      "property_id": "PROP_025",
+      "vulnerability": "Recovery Node restricts CASE transactions during recovery, preventing Administrator from verifying identity or configuration",
+      "severity": "HIGH",
+      "attack_vector": "Attacker recovery node mimics legitimate device but blocks identity verification transactions, Administrator provisions credentials without verifying it's the intended device"
+    },
+    {
+      "property_id": "PROP_028",
+      "vulnerability": "Attacker uses recovery CASE session for steady-state operations, bypassing operational network isolation and access controls",
+      "severity": "HIGH",
+      "attack_vector": "Establish recovery CASE session with legitimate node, maintain session indefinitely, send operational commands over BLE while being outside operational network, exfiltrate data via side channel"
+    },
+    {
+      "property_id": "PROP_031",
+      "vulnerability": "Non-unique RecoveryIdentifiers allow attacker to impersonate legitimate recovery nodes and receive their credentials",
+      "severity": "CRITICAL",
+      "attack_vector": "Generate or brute-force RecoveryIdentifier collision with target node, advertise recovery with colliding identifier, receive credentials from Administrator intended for victim node"
+    },
+    {
+      "property_id": "PROP_032",
+      "vulnerability": "Node simultaneously accepts commands from operational network and recovery channel, creating access control bypass",
+      "severity": "HIGH",
+      "attack_vector": "Maintain both operational and recovery CASE sessions, send unauthorized commands via recovery channel that would be blocked on operational network, manipulate device state inconsistently"
+    },
+    {
+      "property_id": "PROP_033",
+      "vulnerability": "Recovery connection remains open after operational connection, allowing attacker with BLE proximity to send commands bypassing network security",
+      "severity": "HIGH",
+      "attack_vector": "Wait for recovery to complete, use BLE connection to send commands after node is on operational network, manipulate device while bypassing network firewall and access control policies"
+    },
+    {
+      "property_id": "PROP_035",
+      "vulnerability": "Out-of-order state transitions cause inconsistent node configuration, leading to partial credential updates or fail-safe bypass",
+      "severity": "HIGH",
+      "attack_vector": "Send credentials before fail-safe is armed, trigger failure in subsequent steps, node retains new credentials without proper fail-safe protection, becomes misconfigured permanently"
+    },
+    {
+      "property_id": "PROP_037",
+      "vulnerability": "Race condition during credential transition causes node to use wrong credentials at wrong time",
+      "severity": "MEDIUM",
+      "attack_vector": "Trigger network events during credential provisioning window, cause node to attempt connection with new credentials before Administrator expects, or old credentials after switch should occur"
+    },
+    {
+      "property_id": "PROP_040",
+      "vulnerability": "Failed recovery leaves node in partial configuration state without fail-safe rollback, requiring manual intervention",
+      "severity": "HIGH",
+      "attack_vector": "Initiate recovery, provide credentials, prevent operational network connection within fail-safe timeout, node left with invalid configuration and no automatic rollback"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "NORMAL_OPERATION",
+      "properties_enforcing_transitions": ["PROP_042"],
+      "critical_property": "PROP_042 - Network connectivity loss must be detected to transition to WAIT_FOR_RECONNECT"
+    },
+    {
+      "state_name": "WAIT_FOR_RECONNECT",
+      "properties_enforcing_transitions": ["PROP_006", "PROP_021"],
+      "critical_property": "PROP_006 - Must wait 120s attempting reconnection before transitioning to RECOVERY_MODE"
+    },
+    {
+      "state_name": "RECOVERY_MODE",
+      "properties_enforcing_transitions": ["PROP_007", "PROP_020", "PROP_021", "PROP_026", "PROP_034", "PROP_041"],
+      "critical_property": "PROP_007 - Recovery announcement with RecoveryIdentifier enables Administrator discovery and transition to CASE_ESTABLISHMENT"
+    },
+    {
+      "state_name": "CASE_ESTABLISHMENT",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_009"],
+      "critical_property": "PROP_001 - CASE session establishment required before transitioning to FAIL_SAFE_ARMED"
+    },
+    {
+      "state_name": "FAIL_SAFE_ARMED",
+      "properties_enforcing_transitions": ["PROP_011", "PROP_012", "PROP_013"],
+      "critical_property": "PROP_011 - Automatic fail-safe arming on CASE session; PROP_012 - Administrator re-arms within 60s to transition to CREDENTIAL_PROVISIONING"
+    },
+    {
+      "state_name": "CREDENTIAL_PROVISIONING",
+      "properties_enforcing_transitions": ["PROP_014", "PROP_038"],
+      "critical_property": "PROP_014 - New credentials provided using AddOrUpdate commands before transitioning to NETWORK_CONNECT"
+    },
+    {
+      "state_name": "NETWORK_CONNECT",
+      "properties_enforcing_transitions": ["PROP_015", "PROP_016"],
+      "critical_property": "PROP_015 - ConnectNetwork command issued; PROP_016 - Node attempts connection with new credentials to transition to OPERATIONAL_CONNECTION"
+    },
+    {
+      "state_name": "OPERATIONAL_CONNECTION",
+      "properties_enforcing_transitions": ["PROP_017", "PROP_033"],
+      "critical_property": "PROP_017 - All subsequent messages over operational network; PROP_033 - Recovery connection terminated to transition to OPERATIONAL_DISCOVERY"
+    },
+    {
+      "state_name": "OPERATIONAL_DISCOVERY",
+      "properties_enforcing_transitions": ["PROP_019"],
+      "critical_property": "PROP_019 - Operational discovery completes before transitioning to COMMISSIONING_COMPLETE"
+    },
+    {
+      "state_name": "COMMISSIONING_COMPLETE",
+      "properties_enforcing_transitions": ["PROP_005", "PROP_018"],
+      "critical_property": "PROP_005 - CommissioningComplete must be over operational network and CASE session to finalize recovery and return to NORMAL_OPERATION"
+    },
+    {
+      "state_name": "RECOVERY_FAILED",
+      "properties_enforcing_transitions": ["PROP_010", "PROP_040"],
+      "critical_property": "PROP_010 - Autonomous reconnection resumes; PROP_040 - Fail-safe rollback if timeout expires"
+    }
+  ],
+  "additionalInsights": "1. **Temporal Attack Window**: Properties PROP_006 and PROP_030 create a 120+ second window where RecoveryIdentifier is exposed to attackers. Combining with non-unique RecoveryIdentifier (ASSUM_002 violation) enables credential theft attacks. Mitigation: RecoveryIdentifier should be time-bound or include nonce to prevent replay.\n\n2. **User Consent Weakness**: PROP_003 and PROP_004 rely on user correctly identifying nodes, but specification provides no mechanism for secure node identification during recovery. User may rely on RecoveryIdentifier alone, which if predictable or reusable, enables social engineering. Recommendation: Add cryptographic proof that presented RecoveryIdentifier matches stored value.\n\n3. **Fail-Safe Race Condition**: PROP_011 (automatic 60s fail-safe) and PROP_012 (Administrator re-arms within 60s) create race condition if network latency is high. Automatic fail-safe may expire before Administrator's ArmFailSafe command arrives. Mitigation: Automatic fail-safe should be longer (120s+) or disabled until Administrator re-arms.\n\n4. **Side Channel via Recovery CASE Session**: PROP_028 prohibits using recovery CASE for operational traffic, but specification doesn't define enforcement mechanism. Attacker could simply ignore prohibition. Recommendation: Recovery CASE keys should be derived differently or have restricted permissions at protocol level.\n\n5. **Atomicity Assumption Gap**: PROP_033 requires terminating recovery connection after operational connection, but doesn't specify who enforces this or failure behavior. If Recovery Node implementation error leaves both connections open, attacker can exploit. Should be enforced by protocol state machine, not implementation.\n\n6. **CommissioningModeInitialStepsHint Undefined**: PROP_022 references CommissioningModeInitialStepsHint but specification doesn't define these steps. If implementation-dependent, may create inconsistent behavior across vendors. Attacker could exploit non-standard restart mechanisms to reset recovery state at strategic times.\n\n7. **Extended Announcement Duration Unspecified**: PROP_020 and PROP_030 reference \"Extended Announcement duration\" but don't specify value. Implementations may use inconsistent durations, affecting interoperability. Short durations frustrate legitimate users; long durations expose RecoveryIdentifier longer.\n\n8. **Parallel State Vulnerability**: PROP_036 requires simultaneous recovery announcement and reconnection attempts, but doesn't address contention if both succeed simultaneously. Could cause split-brain where node thinks it's on old network (reconnection succeeded) while Administrator thinks recovery completed.\n\n9. **No Revocation Mechanism**: Specification lacks any way to revoke or invalidate RecoveryIdentifier. If RecoveryIdentifier is leaked to attacker, legitimate node cannot obtain new identifier without re-commissioning. This is a significant long-term vulnerability.\n\n10. **Error Code Information Leakage**: PROP_029 suggests including error codes in recovery advertisements (unencrypted). Error codes may leak information about internal network configuration, firmware versions, or vulnerability existence to passive attackers.",
+  "summary": {
+    "total_properties": 42,
+    "by_importance": {
+      "CRITICAL": 17,
+      "HIGH": 19,
+      "MEDIUM": 6
+    },
+    "by_category": {
+      "Security": 9,
+      "AccessControl": 5,
+      "Correctness": 13,
+      "Timing": 5,
+      "Consistency": 8,
+      "Cryptography": 0,
+      "Atomicity": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 12,
+    "vulnerabilities_identified": 19
+  }
+}

@@ -1,0 +1,2358 @@
+{
+  "fsm_model": {
+    "section_name": "11.24 Joint Fabric Datastore Cluster",
+    "section_ref": "Matter Specification R1.4, Document 23-27349, Section 11.24, Pages 1017-1047",
+    "description": "Complete Finite State Machine for Joint Fabric Datastore managing Nodes, Groups, and Group membership in Joint Fabric. Provides centralized authority for fabric topology, access control policies, and cryptographic key distribution to all fabric members. Covers all 20 commands from specification: AddAdmin, UpdateAdmin, RemoveAdmin, AddKeySet, UpdateKeySet, RemoveKeySet, AddGroup, UpdateGroup, RemoveGroup, AddPendingNode, RefreshNode, UpdateNode, RemoveNode, UpdateEndpointForNode, AddGroupIDToEndpointForNode, RemoveGroupIDFromEndpointForNode, AddACLToNode, RemoveACLFromNode, AddBindingToEndpointForNode, RemoveBindingFromEndpointForNode.",
+    "states": [
+      {
+        "name": "FabricNotFormed",
+        "description": "Joint Fabric has not been established. No administrators or anchor root CA configured.",
+        "is_initial": true,
+        "invariants": [
+          "AdminList == null || AdminList == empty",
+          "AnchorRootCA == null",
+          "GroupKeySetList == empty",
+          "NodeList == empty",
+          "GroupList == empty"
+        ],
+        "state_variables": {
+          "AdminList": "null_or_empty_list",
+          "AnchorRootCA": "null",
+          "AnchorNodeID": "undefined",
+          "AnchorVendorID": "undefined",
+          "StatusEntry": "undefined"
+        }
+      },
+      {
+        "name": "FabricPending",
+        "description": "Joint Fabric initialization in progress. Anchor administrator added but datastore not yet ready for operations.",
+        "is_initial": false,
+        "invariants": [
+          "AdminList.length >= 1",
+          "AdminList[0].index == 0",
+          "StatusEntry.State == Pending",
+          "AnchorRootCA != null"
+        ],
+        "state_variables": {
+          "AdminList": "non_empty_list",
+          "AnchorRootCA": "octstr",
+          "AnchorNodeID": "node_id",
+          "AnchorVendorID": "vendor_id",
+          "StatusEntry.State": "Pending",
+          "GroupKeySetList": "list_including_IPK"
+        }
+      },
+      {
+        "name": "FabricCommitted",
+        "description": "Joint Fabric fully operational. Datastore ready to accept node and group management commands.",
+        "is_initial": false,
+        "invariants": [
+          "AdminList.length >= 1",
+          "AdminList[0].index == 0",
+          "StatusEntry.State == Committed",
+          "AnchorRootCA != null",
+          "GroupKeySetList contains entry with GroupKeySetID == 0"
+        ],
+        "state_variables": {
+          "AdminList": "non_empty_list",
+          "AnchorRootCA": "octstr",
+          "AnchorNodeID": "node_id",
+          "AnchorVendorID": "vendor_id",
+          "StatusEntry.State": "Committed",
+          "GroupKeySetList": "list_including_IPK",
+          "GroupList": "list",
+          "NodeList": "list"
+        }
+      },
+      {
+        "name": "FabricTransferring",
+        "description": "Anchor administrator transfer in progress. Datastore being migrated to new anchor administrator.",
+        "is_initial": false,
+        "invariants": [
+          "StatusEntry.State == DeletePending",
+          "AnchorRootCA != null",
+          "AdminList.length >= 1"
+        ],
+        "state_variables": {
+          "StatusEntry.State": "DeletePending",
+          "AdminList": "non_empty_list",
+          "AnchorRootCA": "octstr"
+        }
+      },
+      {
+        "name": "NodeAbsent",
+        "description": "Node does not have entry in datastore NodeList. Not commissioned or has been removed.",
+        "is_initial": false,
+        "invariants": [
+          "NodeID not in NodeList"
+        ],
+        "state_variables": {
+          "NodeID": "node_id_value",
+          "exists_in_nodelist": "false"
+        }
+      },
+      {
+        "name": "NodePending",
+        "description": "Node entry created in datastore with Pending status. Commissioning in progress but not yet completed.",
+        "is_initial": false,
+        "invariants": [
+          "NodeID in NodeList",
+          "NodeList[NodeID].CommissioningStatusEntry.State == Pending"
+        ],
+        "state_variables": {
+          "NodeID": "node_id_value",
+          "CommissioningStatusEntry.State": "Pending",
+          "FriendlyName": "string",
+          "NodeKeySetList": "list",
+          "ACLList": "list",
+          "EndpointList": "list"
+        }
+      },
+      {
+        "name": "NodeCommitted",
+        "description": "Node successfully commissioned and synchronized. All configurations match between datastore and actual node.",
+        "is_initial": false,
+        "invariants": [
+          "NodeID in NodeList",
+          "NodeList[NodeID].CommissioningStatusEntry.State == Committed",
+          "all entries in NodeKeySetList have State == Committed",
+          "all entries in ACLList have State == Committed",
+          "all entries in EndpointList.GroupIDList have State == Committed",
+          "all entries in EndpointList.BindingList have State == Committed"
+        ],
+        "state_variables": {
+          "NodeID": "node_id_value",
+          "CommissioningStatusEntry.State": "Committed",
+          "FriendlyName": "string",
+          "NodeKeySetList": "list_all_committed",
+          "ACLList": "list_all_committed",
+          "EndpointList": "list_all_committed"
+        }
+      },
+      {
+        "name": "NodePartiallyConfigured",
+        "description": "Node commissioned but has pending or delete-pending updates. Awaiting synchronization via RefreshNode.",
+        "is_initial": false,
+        "invariants": [
+          "NodeID in NodeList",
+          "NodeList[NodeID].CommissioningStatusEntry.State == Committed",
+          "exists entry in (NodeKeySetList OR ACLList OR EndpointList.GroupIDList OR EndpointList.BindingList) with State == Pending OR State == DeletePending"
+        ],
+        "state_variables": {
+          "NodeID": "node_id_value",
+          "CommissioningStatusEntry.State": "Committed",
+          "has_pending_updates": "true",
+          "NodeKeySetList": "list_with_pending_or_delete_pending",
+          "ACLList": "list_with_pending_or_delete_pending",
+          "EndpointList": "list_with_pending_or_delete_pending"
+        }
+      },
+      {
+        "name": "GroupAbsent",
+        "description": "Group does not exist in datastore GroupList.",
+        "is_initial": false,
+        "invariants": [
+          "GroupID not in GroupList"
+        ],
+        "state_variables": {
+          "GroupID": "group_id_value",
+          "exists_in_grouplist": "false"
+        }
+      },
+      {
+        "name": "GroupActive",
+        "description": "Group exists and operational. May have zero or more member nodes, all with Committed or Pending memberships.",
+        "is_initial": false,
+        "invariants": [
+          "GroupID in GroupList",
+          "forall nodes: node.GroupIDList[GroupID].State != DeletePending"
+        ],
+        "state_variables": {
+          "GroupID": "group_id_value",
+          "FriendlyName": "string",
+          "GroupKeySetID": "uint16",
+          "GroupCAT": "uint16",
+          "GroupCATVersion": "uint16",
+          "GroupPermission": "AccessControlEntryPrivilegeEnum",
+          "member_nodes": "list"
+        }
+      },
+      {
+        "name": "GroupBeingRemoved",
+        "description": "Group exists but one or more member nodes have DeletePending status for this group. Awaiting final removal.",
+        "is_initial": false,
+        "invariants": [
+          "GroupID in GroupList",
+          "exists node: node.GroupIDList[GroupID].State == DeletePending"
+        ],
+        "state_variables": {
+          "GroupID": "group_id_value",
+          "has_delete_pending_members": "true",
+          "member_nodes_to_remove": "list"
+        }
+      },
+      {
+        "name": "KeySetAbsent",
+        "description": "KeySet does not exist in GroupKeySetList.",
+        "is_initial": false,
+        "invariants": [
+          "GroupKeySetID not in GroupKeySetList",
+          "GroupKeySetID != 0"
+        ],
+        "state_variables": {
+          "GroupKeySetID": "uint16_value",
+          "exists_in_keysetlist": "false"
+        }
+      },
+      {
+        "name": "KeySetActive",
+        "description": "KeySet exists in GroupKeySetList and may be used by groups.",
+        "is_initial": false,
+        "invariants": [
+          "GroupKeySetID in GroupKeySetList",
+          "GroupKeySetID >= 0"
+        ],
+        "state_variables": {
+          "GroupKeySetID": "uint16_value",
+          "GroupKeySet": "GroupKeySetStruct",
+          "EpochKeys": "list",
+          "used_by_groups": "list",
+          "distributed_to_nodes": "list"
+        }
+      },
+      {
+        "name": "IPKActive",
+        "description": "Identity Protection Key (IPK) with ID 0 exists. This state is mandatory and permanent.",
+        "is_initial": false,
+        "invariants": [
+          "GroupKeySetID == 0",
+          "GroupKeySetID in GroupKeySetList",
+          "cannot_be_removed == true"
+        ],
+        "state_variables": {
+          "GroupKeySetID": "0",
+          "GroupKeySet": "GroupKeySetStruct_IPK",
+          "EpochKeys": "list",
+          "is_ipk": "true"
+        }
+      },
+      {
+        "name": "EntryPending_Generic",
+        "description": "Generic state for any sub-entry (KeySet on node, ACL on node, GroupID on endpoint, Binding on endpoint) with Status Pending.",
+        "is_initial": false,
+        "invariants": [
+          "entry.StatusEntry.State == Pending",
+          "entry added to datastore list",
+          "update to node attempted or not yet attempted"
+        ],
+        "state_variables": {
+          "entry_type": "KeySet_or_ACL_or_GroupID_or_Binding",
+          "entry_id": "identifier",
+          "StatusEntry.State": "Pending",
+          "in_datastore": "true",
+          "on_node": "unknown_or_false"
+        }
+      },
+      {
+        "name": "EntryCommitted_Generic",
+        "description": "Generic state for any sub-entry with Status Committed. Entry exists in both datastore and actual node.",
+        "is_initial": false,
+        "invariants": [
+          "entry.StatusEntry.State == Committed",
+          "entry in datastore list",
+          "entry on actual node",
+          "datastore matches node"
+        ],
+        "state_variables": {
+          "entry_type": "KeySet_or_ACL_or_GroupID_or_Binding",
+          "entry_id": "identifier",
+          "StatusEntry.State": "Committed",
+          "in_datastore": "true",
+          "on_node": "true"
+        }
+      },
+      {
+        "name": "EntryDeletePending_Generic",
+        "description": "Generic state for any sub-entry with Status DeletePending. Removal from node attempted, awaiting confirmation.",
+        "is_initial": false,
+        "invariants": [
+          "entry.StatusEntry.State == DeletePending",
+          "entry still in datastore list",
+          "removal from node attempted"
+        ],
+        "state_variables": {
+          "entry_type": "KeySet_or_ACL_or_GroupID_or_Binding",
+          "entry_id": "identifier",
+          "StatusEntry.State": "DeletePending",
+          "in_datastore": "true",
+          "on_node": "unknown_possibly_false"
+        }
+      },
+      {
+        "name": "ErrorState_ConstraintViolation",
+        "description": "Operation attempted that violates datastore constraints (duplicate ID, resource in use, IPK removal).",
+        "is_initial": false,
+        "invariants": [
+          "error_type == CONSTRAINT_ERROR",
+          "operation_rejected == true"
+        ],
+        "state_variables": {
+          "error_code": "CONSTRAINT_ERROR",
+          "error_reason": "string",
+          "operation_name": "string"
+        }
+      },
+      {
+        "name": "ErrorState_NotFound",
+        "description": "Operation attempted on non-existent entity.",
+        "is_initial": false,
+        "invariants": [
+          "error_type == NOT_FOUND",
+          "referenced_entity does not exist"
+        ],
+        "state_variables": {
+          "error_code": "NOT_FOUND",
+          "entity_type": "string",
+          "entity_id": "identifier"
+        }
+      },
+      {
+        "name": "ErrorState_ResourceExhausted",
+        "description": "Storage capacity limit reached. No new entries can be added until space freed.",
+        "is_initial": false,
+        "invariants": [
+          "error_type == RESOURCE_EXHAUSTED",
+          "storage_full == true"
+        ],
+        "state_variables": {
+          "error_code": "RESOURCE_EXHAUSTED",
+          "storage_used": "number",
+          "storage_limit": "number"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "id": "T001",
+        "from_state": "FabricNotFormed",
+        "to_state": "FabricPending",
+        "trigger": "AddAdmin",
+        "guard_condition": "AdminList == null || AdminList == empty",
+        "actions": [
+          "add_admin_to_list(AdminInformationEntry)",
+          "AdminList[0].index := 0",
+          "AnchorRootCA := derive_root_ca(AdminInformationEntry)",
+          "AnchorNodeID := AdminInformationEntry.NodeID",
+          "AnchorVendorID := AdminInformationEntry.VendorID",
+          "add_ipk_to_keysetlist()",
+          "StatusEntry.State := Pending"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T002",
+        "from_state": "FabricPending",
+        "to_state": "FabricCommitted",
+        "trigger": "fabric_initialization_complete",
+        "guard_condition": "AdminList.length >= 1 && AnchorRootCA != null && GroupKeySetList contains IPK",
+        "actions": [
+          "StatusEntry.State := Committed",
+          "StatusEntry.UpdateTimestamp := current_time()",
+          "generate_event(fabric_ready)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T003",
+        "from_state": "FabricCommitted",
+        "to_state": "FabricTransferring",
+        "trigger": "initiate_anchor_transfer",
+        "guard_condition": "is_anchor_administrator(caller) && new_anchor_designated",
+        "actions": [
+          "StatusEntry.State := DeletePending",
+          "generate_event(anchor_transfer_initiated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T004",
+        "from_state": "FabricCommitted",
+        "to_state": "ErrorState_ResourceExhausted",
+        "trigger": "any_add_command",
+        "guard_condition": "storage_capacity_reached()",
+        "actions": [
+          "generate_resource_exhausted_error()",
+          "notify_user_storage_exhausted()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T005",
+        "from_state": "NodeAbsent",
+        "to_state": "NodePending",
+        "trigger": "AddPendingNode",
+        "guard_condition": "FabricCommitted && is_anchor_administrator(caller) && has_administrator_CAT(caller) && not node_exists(NodeID)",
+        "actions": [
+          "create_node_entry(NodeID, FriendlyName)",
+          "NodeList[NodeID].CommissioningStatusEntry.State := Pending",
+          "NodeList[NodeID].CommissioningStatusEntry.UpdateTimestamp := current_time()",
+          "generate_event(node_pending_added)"
+        ],
+        "timing_requirement": "Before finalizing commissioning via CASE"
+      },
+      {
+        "id": "T006",
+        "from_state": "NodeAbsent",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "AddPendingNode",
+        "guard_condition": "node_exists(NodeID)",
+        "actions": [
+          "generate_invalid_constraint_error()",
+          "error_reason := node_already_exists"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T007",
+        "from_state": "NodePending",
+        "to_state": "NodeCommitted",
+        "trigger": "RefreshNode",
+        "guard_condition": "node_exists(NodeID) && commissioning_completed_successfully(NodeID)",
+        "actions": [
+          "NodeList[NodeID].CommissioningStatusEntry.State := Pending",
+          "synchronize_endpoint_list(NodeID)",
+          "synchronize_groupkeyset_list(NodeID)",
+          "synchronize_acl_list(NodeID)",
+          "NodeList[NodeID].CommissioningStatusEntry.State := Committed",
+          "NodeList[NodeID].CommissioningStatusEntry.UpdateTimestamp := current_time()",
+          "generate_event(node_committed)"
+        ],
+        "timing_requirement": "After commissioning completion"
+      },
+      {
+        "id": "T008",
+        "from_state": "NodePending",
+        "to_state": "NodeAbsent",
+        "trigger": "RemoveNode",
+        "guard_condition": "node_exists(NodeID) && commissioning_failed(NodeID)",
+        "actions": [
+          "remove_node_from_list(NodeID)",
+          "generate_event(node_removed_after_failure)"
+        ],
+        "timing_requirement": "If commissioning finalization fails"
+      },
+      {
+        "id": "T009",
+        "from_state": "NodeCommitted",
+        "to_state": "NodePartiallyConfigured",
+        "trigger": "AddGroupIDToEndpointForNode",
+        "guard_condition": "node_exists(NodeID) && endpoint_exists(NodeID, EndpointID) && group_exists(GroupID)",
+        "actions": [
+          "ensure_node_has_keyset_for_group(NodeID, GroupID)",
+          "add_groupid_to_endpoint_groupidlist(NodeID, EndpointID, GroupID, Status=Pending)",
+          "result := push_groupid_to_endpoint(NodeID, EndpointID, GroupID)",
+          "if_result_success_set_status_committed(NodeID, EndpointID, GroupID)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T010",
+        "from_state": "NodeCommitted",
+        "to_state": "NodePartiallyConfigured",
+        "trigger": "AddACLToNode",
+        "guard_condition": "node_exists(NodeID)",
+        "actions": [
+          "add_acl_to_acllist(NodeID, ACLEntry, Status=Pending)",
+          "result := push_acl_to_node(NodeID, ACLEntry)",
+          "if_result_success_set_status_committed(NodeID, ACLEntry)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T011",
+        "from_state": "NodeCommitted",
+        "to_state": "NodePartiallyConfigured",
+        "trigger": "AddBindingToEndpointForNode",
+        "guard_condition": "node_exists(NodeID) && endpoint_exists(NodeID, EndpointID)",
+        "actions": [
+          "add_binding_to_bindinglist(NodeID, EndpointID, Binding, Status=Pending)",
+          "result := push_binding_to_endpoint(NodeID, EndpointID, Binding)",
+          "if_result_success_set_status_committed(NodeID, EndpointID, Binding)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T012",
+        "from_state": "NodeCommitted",
+        "to_state": "NodePartiallyConfigured",
+        "trigger": "RemoveGroupIDFromEndpointForNode",
+        "guard_condition": "node_exists(NodeID) && endpoint_exists(NodeID, EndpointID) && groupid_exists_in_endpoint(NodeID, EndpointID, GroupID)",
+        "actions": [
+          "set_groupid_status_delete_pending(NodeID, EndpointID, GroupID)",
+          "result := remove_groupid_from_endpoint(NodeID, EndpointID, GroupID)",
+          "if_result_success_delete_groupid_entry(NodeID, EndpointID, GroupID)",
+          "check_and_remove_unused_keyset(NodeID, GroupID)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T013",
+        "from_state": "NodeCommitted",
+        "to_state": "NodePartiallyConfigured",
+        "trigger": "RemoveACLFromNode",
+        "guard_condition": "node_exists(NodeID) && acl_exists_in_node(NodeID, ListID)",
+        "actions": [
+          "set_acl_status_delete_pending(NodeID, ListID)",
+          "result := remove_acl_from_node(NodeID, ListID)",
+          "if_result_success_delete_acl_entry(NodeID, ListID)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T014",
+        "from_state": "NodeCommitted",
+        "to_state": "NodePartiallyConfigured",
+        "trigger": "RemoveBindingFromEndpointForNode",
+        "guard_condition": "node_exists(NodeID) && endpoint_exists(NodeID, EndpointID) && binding_exists_in_endpoint(NodeID, EndpointID, ListID)",
+        "actions": [
+          "set_binding_status_delete_pending(NodeID, EndpointID, ListID)",
+          "result := remove_binding_from_endpoint(NodeID, EndpointID, ListID)",
+          "if_result_success_delete_binding_entry(NodeID, EndpointID, ListID)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T015",
+        "from_state": "NodePartiallyConfigured",
+        "to_state": "NodeCommitted",
+        "trigger": "RefreshNode",
+        "guard_condition": "node_exists(NodeID) && has_pending_or_delete_pending_entries(NodeID)",
+        "actions": [
+          "NodeList[NodeID].CommissioningStatusEntry.State := Pending",
+          "synchronize_endpoint_list(NodeID)",
+          "synchronize_groupkeyset_list(NodeID)",
+          "synchronize_acl_list(NodeID)",
+          "NodeList[NodeID].CommissioningStatusEntry.State := Committed",
+          "NodeList[NodeID].CommissioningStatusEntry.UpdateTimestamp := current_time()",
+          "generate_event(node_synchronized)"
+        ],
+        "timing_requirement": "Periodic or on-demand"
+      },
+      {
+        "id": "T016",
+        "from_state": "NodePartiallyConfigured",
+        "to_state": "NodePartiallyConfigured",
+        "trigger": "RefreshNode",
+        "guard_condition": "node_exists(NodeID) && node_unreachable(NodeID)",
+        "actions": [
+          "log_synchronization_failure(NodeID)",
+          "schedule_periodic_refresh(NodeID)",
+          "generate_event(node_sync_failed_retry_scheduled)"
+        ],
+        "timing_requirement": "Periodic retry until success"
+      },
+      {
+        "id": "T017",
+        "from_state": "NodeCommitted",
+        "to_state": "NodeAbsent",
+        "trigger": "RemoveNode",
+        "guard_condition": "node_exists(NodeID) && all_acls_removed(NodeID)",
+        "actions": [
+          "remove_node_from_list(NodeID)",
+          "generate_event(node_removed)"
+        ],
+        "timing_requirement": "After removing all access privileges"
+      },
+      {
+        "id": "T018",
+        "from_state": "NodeCommitted",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "RemoveNode",
+        "guard_condition": "node_exists(NodeID) && not all_acls_removed(NodeID)",
+        "actions": [
+          "generate_constraint_error()",
+          "error_reason := must_remove_acls_first"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T019",
+        "from_state": "NodeCommitted",
+        "to_state": "NodeCommitted",
+        "trigger": "UpdateNode",
+        "guard_condition": "node_exists(NodeID)",
+        "actions": [
+          "NodeList[NodeID].FriendlyName := new_FriendlyName"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T020",
+        "from_state": "NodeAbsent",
+        "to_state": "ErrorState_NotFound",
+        "trigger": "RefreshNode",
+        "guard_condition": "not node_exists(NodeID)",
+        "actions": [
+          "generate_not_found_error()",
+          "entity_type := Node",
+          "entity_id := NodeID"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T021",
+        "from_state": "GroupAbsent",
+        "to_state": "GroupActive",
+        "trigger": "AddGroup",
+        "guard_condition": "FabricCommitted && not group_exists(GroupID) && keyset_exists(GroupKeySetID)",
+        "actions": [
+          "create_group_entry(GroupID, FriendlyName, GroupKeySetID, GroupCAT, GroupCATVersion, GroupPermission)",
+          "add_group_to_grouplist(GroupInformationEntry)",
+          "generate_event(group_added)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T022",
+        "from_state": "GroupAbsent",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "AddGroup",
+        "guard_condition": "group_exists(GroupID)",
+        "actions": [
+          "generate_constraint_error()",
+          "error_reason := group_already_exists"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T023",
+        "from_state": "GroupActive",
+        "to_state": "GroupActive",
+        "trigger": "UpdateGroup",
+        "guard_condition": "group_exists(GroupID) && GroupKeySetID_not_changed",
+        "actions": [
+          "update_group_fields(GroupID, FriendlyName, GroupCAT, GroupCATVersion, GroupPermission)",
+          "propagate_group_update_to_members(GroupID)",
+          "generate_event(group_updated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T024",
+        "from_state": "GroupActive",
+        "to_state": "GroupActive",
+        "trigger": "UpdateGroup",
+        "guard_condition": "group_exists(GroupID) && GroupKeySetID_changed && new_keyset_exists(new_GroupKeySetID)",
+        "actions": [
+          "old_GroupKeySetID := GroupList[GroupID].GroupKeySetID",
+          "GroupList[GroupID].GroupKeySetID := new_GroupKeySetID",
+          "for_each_member_node_add_new_keyset_pending(GroupID, new_GroupKeySetID)",
+          "for_each_member_node_set_old_keyset_delete_pending(GroupID, old_GroupKeySetID)",
+          "generate_event(group_keyset_rotated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T025",
+        "from_state": "GroupActive",
+        "to_state": "GroupActive",
+        "trigger": "UpdateGroup",
+        "guard_condition": "group_exists(GroupID) && (GroupCAT_changed || GroupCATVersion_changed || GroupPermission_changed)",
+        "actions": [
+          "update_group_fields(GroupID, GroupCAT, GroupCATVersion, GroupPermission)",
+          "for_each_member_node_update_acls_pending(GroupID)",
+          "generate_event(group_cat_updated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T026",
+        "from_state": "GroupActive",
+        "to_state": "GroupBeingRemoved",
+        "trigger": "RemoveGroupIDFromEndpointForNode",
+        "guard_condition": "group_exists(GroupID) && node_is_member(NodeID, GroupID) && at_least_one_member_has_delete_pending",
+        "actions": [
+          "set_groupid_status_delete_pending_on_nodes(GroupID)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T027",
+        "from_state": "GroupBeingRemoved",
+        "to_state": "GroupActive",
+        "trigger": "RefreshNode",
+        "guard_condition": "group_exists(GroupID) && all_delete_pending_members_removed(GroupID) && still_has_active_members(GroupID)",
+        "actions": [
+          "generate_event(group_members_synchronized)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T028",
+        "from_state": "GroupBeingRemoved",
+        "to_state": "GroupActive",
+        "trigger": "RefreshNode",
+        "guard_condition": "group_exists(GroupID) && all_delete_pending_members_removed(GroupID) && no_active_members(GroupID)",
+        "actions": [
+          "generate_event(group_has_no_members)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T029",
+        "from_state": "GroupActive",
+        "to_state": "GroupAbsent",
+        "trigger": "RemoveGroup",
+        "guard_condition": "group_exists(GroupID) && not group_in_use(GroupID)",
+        "actions": [
+          "remove_group_from_grouplist(GroupID)",
+          "generate_event(group_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T030",
+        "from_state": "GroupActive",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "RemoveGroup",
+        "guard_condition": "group_exists(GroupID) && group_in_use(GroupID)",
+        "actions": [
+          "generate_constraint_error()",
+          "error_reason := group_still_in_use"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T031",
+        "from_state": "GroupAbsent",
+        "to_state": "ErrorState_NotFound",
+        "trigger": "UpdateGroup",
+        "guard_condition": "not group_exists(GroupID)",
+        "actions": [
+          "generate_not_found_error()",
+          "entity_type := Group",
+          "entity_id := GroupID"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T032",
+        "from_state": "KeySetAbsent",
+        "to_state": "KeySetActive",
+        "trigger": "AddKeySet",
+        "guard_condition": "FabricCommitted && not keyset_exists(GroupKeySetID) && GroupKeySetID != 0",
+        "actions": [
+          "add_keyset_to_keysetlist(GroupKeySet)",
+          "generate_event(keyset_added)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T033",
+        "from_state": "KeySetAbsent",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "AddKeySet",
+        "guard_condition": "keyset_exists(GroupKeySetID)",
+        "actions": [
+          "generate_constraint_error()",
+          "error_reason := keyset_already_exists"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T034",
+        "from_state": "FabricPending",
+        "to_state": "IPKActive",
+        "trigger": "fabric_initialization",
+        "guard_condition": "AdminList.length >= 1",
+        "actions": [
+          "add_ipk_to_keysetlist()",
+          "GroupKeySetList[0].GroupKeySetID := 0",
+          "generate_event(ipk_added)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T035",
+        "from_state": "KeySetActive",
+        "to_state": "KeySetActive",
+        "trigger": "UpdateKeySet",
+        "guard_condition": "keyset_exists(GroupKeySetID) && GroupKeySetID != 0",
+        "actions": [
+          "update_keyset_in_keysetlist(GroupKeySet)",
+          "for_each_node_using_keyset_set_pending(GroupKeySetID)",
+          "for_each_node_using_keyset_push_update(GroupKeySetID)",
+          "generate_event(keyset_updated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T036",
+        "from_state": "KeySetActive",
+        "to_state": "KeySetAbsent",
+        "trigger": "RemoveKeySet",
+        "guard_condition": "keyset_exists(GroupKeySetID) && GroupKeySetID != 0 && not keyset_in_use(GroupKeySetID)",
+        "actions": [
+          "remove_keyset_from_keysetlist(GroupKeySetID)",
+          "generate_event(keyset_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T037",
+        "from_state": "KeySetActive",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "RemoveKeySet",
+        "guard_condition": "keyset_exists(GroupKeySetID) && keyset_in_use(GroupKeySetID)",
+        "actions": [
+          "generate_constraint_error()",
+          "error_reason := keyset_in_use_by_groups_or_nodes"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T038",
+        "from_state": "IPKActive",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "RemoveKeySet",
+        "guard_condition": "GroupKeySetID == 0",
+        "actions": [
+          "generate_constraint_error()",
+          "error_reason := cannot_remove_ipk"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T039",
+        "from_state": "KeySetAbsent",
+        "to_state": "ErrorState_NotFound",
+        "trigger": "UpdateKeySet",
+        "guard_condition": "not keyset_exists(GroupKeySetID)",
+        "actions": [
+          "generate_not_found_error()",
+          "entity_type := KeySet",
+          "entity_id := GroupKeySetID"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T040",
+        "from_state": "EntryPending_Generic",
+        "to_state": "EntryCommitted_Generic",
+        "trigger": "node_update_success",
+        "guard_condition": "entry.StatusEntry.State == Pending && node_update_successful",
+        "actions": [
+          "entry.StatusEntry.State := Committed",
+          "entry.StatusEntry.UpdateTimestamp := current_time()",
+          "generate_event(entry_committed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T041",
+        "from_state": "EntryPending_Generic",
+        "to_state": "EntryPending_Generic",
+        "trigger": "node_update_failure",
+        "guard_condition": "entry.StatusEntry.State == Pending && node_update_failed",
+        "actions": [
+          "log_update_failure(entry)",
+          "schedule_retry_on_next_refresh(entry)",
+          "generate_event(entry_update_failed_will_retry)"
+        ],
+        "timing_requirement": "Retry on next RefreshNode"
+      },
+      {
+        "id": "T042",
+        "from_state": "EntryDeletePending_Generic",
+        "to_state": "NodeAbsent",
+        "trigger": "node_removal_success",
+        "guard_condition": "entry.StatusEntry.State == DeletePending && node_removal_successful",
+        "actions": [
+          "remove_entry_from_datastore(entry)",
+          "generate_event(entry_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T043",
+        "from_state": "EntryDeletePending_Generic",
+        "to_state": "EntryDeletePending_Generic",
+        "trigger": "node_removal_failure",
+        "guard_condition": "entry.StatusEntry.State == DeletePending && node_removal_failed",
+        "actions": [
+          "log_removal_failure(entry)",
+          "schedule_retry_on_next_refresh(entry)",
+          "generate_event(entry_removal_failed_will_retry)"
+        ],
+        "timing_requirement": "Retry on next RefreshNode"
+      },
+      {
+        "id": "T044",
+        "from_state": "FabricCommitted",
+        "to_state": "FabricCommitted",
+        "trigger": "periodic_pending_review",
+        "guard_condition": "exists entries with State == Pending || State == DeletePending",
+        "actions": [
+          "for_each_pending_entry_attempt_node_update()",
+          "for_each_delete_pending_entry_attempt_node_removal()",
+          "generate_event(periodic_review_completed)"
+        ],
+        "timing_requirement": "Periodic (implementation-defined interval)"
+      },
+      {
+        "id": "T045",
+        "from_state": "ErrorState_ResourceExhausted",
+        "to_state": "FabricCommitted",
+        "trigger": "storage_freed",
+        "guard_condition": "storage_capacity_available()",
+        "actions": [
+          "generate_event(storage_available_operations_resumed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T046",
+        "from_state": "FabricCommitted",
+        "to_state": "FabricCommitted",
+        "trigger": "UpdateAdmin",
+        "guard_condition": "admin_exists(NodeID)",
+        "actions": [
+          "update_admin_fields(NodeID, FriendlyName, ICAC)",
+          "generate_event(admin_updated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T047",
+        "from_state": "FabricCommitted",
+        "to_state": "ErrorState_NotFound",
+        "trigger": "UpdateAdmin",
+        "guard_condition": "not admin_exists(NodeID)",
+        "actions": [
+          "generate_not_found_error()",
+          "entity_type := Admin",
+          "entity_id := NodeID"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T048",
+        "from_state": "FabricCommitted",
+        "to_state": "FabricCommitted",
+        "trigger": "RemoveAdmin",
+        "guard_condition": "admin_exists(NodeID) && not is_anchor_administrator_by_nodeid(NodeID) && AdminList.length > 1",
+        "actions": [
+          "remove_admin_from_list(NodeID)",
+          "generate_event(admin_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T049",
+        "from_state": "FabricCommitted",
+        "to_state": "ErrorState_ConstraintViolation",
+        "trigger": "RemoveAdmin",
+        "guard_condition": "admin_exists(NodeID) && is_anchor_administrator_by_nodeid(NodeID)",
+        "actions": [
+          "generate_constraint_error()",
+          "error_reason := cannot_remove_anchor_administrator"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T050",
+        "from_state": "FabricCommitted",
+        "to_state": "ErrorState_NotFound",
+        "trigger": "RemoveAdmin",
+        "guard_condition": "not admin_exists(NodeID)",
+        "actions": [
+          "generate_not_found_error()",
+          "entity_type := Admin",
+          "entity_id := NodeID"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T051",
+        "from_state": "NodeCommitted",
+        "to_state": "NodeCommitted",
+        "trigger": "UpdateEndpointForNode",
+        "guard_condition": "node_exists(NodeID) && endpoint_exists(NodeID, EndpointID)",
+        "actions": [
+          "update_endpoint_friendlyname(NodeID, EndpointID, FriendlyName)",
+          "generate_event(endpoint_updated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T052",
+        "from_state": "NodeCommitted",
+        "to_state": "ErrorState_NotFound",
+        "trigger": "UpdateEndpointForNode",
+        "guard_condition": "not node_exists(NodeID) || not endpoint_exists(NodeID, EndpointID)",
+        "actions": [
+          "generate_not_found_error()",
+          "entity_type := Endpoint",
+          "entity_id := NodeID_EndpointID"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "add_admin_to_list",
+        "parameters": [
+          {"name": "AdminInformationEntry", "type": "struct", "description": "Administrator information containing NodeID, FriendlyName, VendorID, ICAC"}
+        ],
+        "return_type": "void",
+        "description": "Adds administrator entry to AdminList. First administrator added becomes anchor (index 0).",
+        "algorithm_detail": "Insert AdminInformationEntry into AdminList. If list was empty, assign index=0 and mark as anchor administrator. Otherwise assign next available index >= 1.",
+        "usage_in_fsm": "Called in transition T001 when first administrator forms fabric"
+      },
+      {
+        "name": "derive_root_ca",
+        "parameters": [
+          {"name": "AdminInformationEntry", "type": "struct", "description": "Administrator entry containing ICAC certificate"}
+        ],
+        "return_type": "octstr",
+        "description": "Extracts or derives the Root CA certificate from administrator's ICAC chain.",
+        "algorithm_detail": "Parse X.509 ICAC certificate from AdminInformationEntry.ICAC field. Extract issuer certificate or derive root CA from certificate chain. Returns root CA certificate in DER-encoded format.",
+        "usage_in_fsm": "Called in T001 to establish AnchorRootCA when fabric is formed"
+      },
+      {
+        "name": "add_ipk_to_keysetlist",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Adds Identity Protection Key (IPK) to GroupKeySetList with ID 0. This is mandatory for all fabrics.",
+        "algorithm_detail": "Create GroupKeySetStruct with GroupKeySetID=0, populate with fabric's IPK epoch key material. Insert into GroupKeySetList at index corresponding to ID 0. IPK is used for identity protection in all fabric communications.",
+        "usage_in_fsm": "Called in T001 and T034 during fabric formation to establish mandatory IPK"
+      },
+      {
+        "name": "create_node_entry",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Unique identifier for the node being added"},
+          {"name": "FriendlyName", "type": "string", "description": "Human-readable name for the node"}
+        ],
+        "return_type": "void",
+        "description": "Creates new Node Information Entry in NodeList with initial state.",
+        "algorithm_detail": "Allocate new NodeInformationEntry structure. Set NodeID, FriendlyName. Initialize empty NodeKeySetList, ACLList, EndpointList. Set CommissioningStatusEntry.State to Pending. Insert into NodeList.",
+        "usage_in_fsm": "Called in T005 when AddPendingNode command adds node to datastore"
+      },
+      {
+        "name": "synchronize_endpoint_list",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node whose endpoints are being synchronized"}
+        ],
+        "return_type": "void",
+        "description": "Synchronizes datastore's endpoint list with actual node's PartsList from Descriptor cluster.",
+        "algorithm_detail": "Read PartsList from node's Descriptor cluster using read_partslist_from_node(). For each endpoint in datastore not in PartsList: remove from datastore. For each endpoint in PartsList: ensure exists in datastore. For each endpoint's GroupIDList entries with Status=Pending: push to node, mark Committed if success. For entries with Status=DeletePending: remove from node, delete entry if success. Same process for BindingList entries.",
+        "usage_in_fsm": "Called in T007, T015 during RefreshNode to ensure endpoint consistency"
+      },
+      {
+        "name": "synchronize_groupkeyset_list",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node whose keysets are being synchronized"}
+        ],
+        "return_type": "void",
+        "description": "Synchronizes datastore's keyset list with actual node's installed group keys.",
+        "algorithm_detail": "Read group keys from node using read_keysets_from_node(). For each keyset in datastore NodeKeySetList with Status=Pending: push to node using push_keyset_to_node(), mark Committed if success. For remaining keysets: replace datastore entries with node's actual keysets to ensure consistency.",
+        "usage_in_fsm": "Called in T007, T015 during RefreshNode for cryptographic key synchronization"
+      },
+      {
+        "name": "synchronize_acl_list",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node whose ACLs are being synchronized"}
+        ],
+        "return_type": "void",
+        "description": "Synchronizes datastore's ACL list with actual node's ACL attribute.",
+        "algorithm_detail": "Read ACL attribute from node using read_acls_from_node(). For each ACL in datastore ACLList with Status=Pending: push to node using push_acl_to_node(), mark Committed if success. For remaining ACLs: replace datastore entries with node's actual ACLs to ensure access control consistency.",
+        "usage_in_fsm": "Called in T007, T015 during RefreshNode to synchronize access control policies"
+      },
+      {
+        "name": "remove_node_from_list",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to be removed from datastore"}
+        ],
+        "return_type": "void",
+        "description": "Removes Node Information Entry from NodeList.",
+        "algorithm_detail": "Locate entry in NodeList with matching NodeID. Remove entry from list, freeing associated memory. Update datastore indices if necessary.",
+        "usage_in_fsm": "Called in T008, T017 when node removed after commissioning failure or deliberate removal"
+      },
+      {
+        "name": "ensure_node_has_keyset_for_group",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node requiring keyset"},
+          {"name": "GroupID", "type": "group_id", "description": "Group whose keyset is needed"}
+        ],
+        "return_type": "void",
+        "description": "Ensures node has cryptographic keyset required for group membership.",
+        "algorithm_detail": "Look up GroupKeySetID for given GroupID in GroupList. Check if NodeKeySetList for NodeID contains entry for this GroupKeySetID. If not present: create new entry with Status=Pending, call push_keyset_to_node() to distribute key, mark Committed if successful.",
+        "usage_in_fsm": "Called in T009 when adding node to group to ensure cryptographic prerequisites"
+      },
+      {
+        "name": "add_groupid_to_endpoint_groupidlist",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node containing endpoint"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint being added to group"},
+          {"name": "GroupID", "type": "group_id", "description": "Group being joined"},
+          {"name": "Status", "type": "DatastoreStateEnum", "description": "Initial status (typically Pending)"}
+        ],
+        "return_type": "void",
+        "description": "Adds GroupID entry to endpoint's GroupIDList in datastore.",
+        "algorithm_detail": "Locate endpoint entry in NodeList[NodeID].EndpointList matching EndpointID. Create new DatastoreGroupIDEntry with GroupID and StatusEntry.State=Status. Insert into endpoint's GroupIDList. Set UpdateTimestamp to current time.",
+        "usage_in_fsm": "Called in T009 when adding endpoint to group membership"
+      },
+      {
+        "name": "push_groupid_to_endpoint",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Target node"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Target endpoint"},
+          {"name": "GroupID", "type": "group_id", "description": "Group to add"}
+        ],
+        "return_type": "boolean",
+        "description": "Pushes group membership update to actual node's Groups cluster on specified endpoint.",
+        "algorithm_detail": "Invoke AddGroup command on node's Groups cluster for specified endpoint with GroupID and associated GroupKeySet. Uses Matter Interaction Model to send command. Returns true if command succeeds (SUCCESS status), false if command fails (BUSY, FAILURE, timeout, etc.).",
+        "usage_in_fsm": "Called in T009 to propagate group membership to physical node"
+      },
+      {
+        "name": "if_result_success_set_status_committed",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node whose entry status may change"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint whose entry status may change"},
+          {"name": "GroupID", "type": "group_id", "description": "Group entry to potentially mark committed"}
+        ],
+        "return_type": "void",
+        "description": "Conditional action: if previous push operation succeeded, marks entry as Committed.",
+        "algorithm_detail": "Check result of most recent push_groupid_to_endpoint operation. If result was success (true), locate corresponding GroupIDEntry in datastore and update StatusEntry.State to Committed. If result was failure (false), leave status as Pending for future retry.",
+        "usage_in_fsm": "Called in T009 to update datastore state based on node operation outcome"
+      },
+      {
+        "name": "add_acl_to_acllist",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node receiving ACL"},
+          {"name": "ACLEntry", "type": "AccessControlEntryStruct", "description": "ACL entry to add"},
+          {"name": "Status", "type": "DatastoreStateEnum", "description": "Initial status (typically Pending)"}
+        ],
+        "return_type": "void",
+        "description": "Adds ACL entry to node's ACLList in datastore.",
+        "algorithm_detail": "Locate node entry in NodeList. Generate unique ListID for this ACL entry. Create DatastoreACLEntry with ListID, ACLEntry, and StatusEntry.State=Status. Insert into node's ACLList. Set UpdateTimestamp.",
+        "usage_in_fsm": "Called in T010 when adding access control entry to node"
+      },
+      {
+        "name": "push_acl_to_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Target node"},
+          {"name": "ACLEntry", "type": "AccessControlEntryStruct", "description": "ACL to add"}
+        ],
+        "return_type": "boolean",
+        "description": "Pushes ACL entry to actual node's Access Control cluster.",
+        "algorithm_detail": "Invoke write operation on node's Access Control cluster ACL attribute. Append ACLEntry to existing ACL list. Uses Matter Interaction Model with appropriate access control checks. Returns true if write succeeds, false otherwise.",
+        "usage_in_fsm": "Called in T010 to propagate access control policy to physical node"
+      },
+      {
+        "name": "add_binding_to_bindinglist",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node containing endpoint"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint receiving binding"},
+          {"name": "Binding", "type": "TargetStruct", "description": "Binding target structure"},
+          {"name": "Status", "type": "DatastoreStateEnum", "description": "Initial status (typically Pending)"}
+        ],
+        "return_type": "void",
+        "description": "Adds binding entry to endpoint's BindingList in datastore.",
+        "algorithm_detail": "Locate endpoint in NodeList[NodeID].EndpointList. Generate unique ListID. Create DatastoreBindingEntry with ListID, Binding, StatusEntry.State=Status. Insert into endpoint's BindingList.",
+        "usage_in_fsm": "Called in T011 when adding binding to endpoint"
+      },
+      {
+        "name": "push_binding_to_endpoint",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Target node"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Target endpoint"},
+          {"name": "Binding", "type": "TargetStruct", "description": "Binding to add"}
+        ],
+        "return_type": "boolean",
+        "description": "Pushes binding to actual node's Binding cluster on specified endpoint.",
+        "algorithm_detail": "Invoke write operation on node's Binding cluster Binding attribute for specified endpoint. Add TargetStruct to binding list. Returns true if successful, false otherwise.",
+        "usage_in_fsm": "Called in T011 to configure control relationships on physical node"
+      },
+      {
+        "name": "set_groupid_status_delete_pending",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node containing endpoint"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint with group membership"},
+          {"name": "GroupID", "type": "group_id", "description": "Group being removed"}
+        ],
+        "return_type": "void",
+        "description": "Marks GroupID entry as DeletePending in datastore, preparing for removal.",
+        "algorithm_detail": "Locate GroupIDEntry in NodeList[NodeID].EndpointList[EndpointID].GroupIDList matching GroupID. Update StatusEntry.State to DeletePending. Set UpdateTimestamp.",
+        "usage_in_fsm": "Called in T012 when initiating group membership removal"
+      },
+      {
+        "name": "remove_groupid_from_endpoint",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Target node"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Target endpoint"},
+          {"name": "GroupID", "type": "group_id", "description": "Group to remove"}
+        ],
+        "return_type": "boolean",
+        "description": "Removes group membership from actual node's Groups cluster on specified endpoint.",
+        "algorithm_detail": "Invoke RemoveGroup command on node's Groups cluster for specified endpoint with GroupID. Uses Matter Interaction Model. Returns true if removal succeeds, false otherwise.",
+        "usage_in_fsm": "Called in T012 to remove group membership from physical node"
+      },
+      {
+        "name": "if_result_success_delete_groupid_entry",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node whose entry may be deleted"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint whose entry may be deleted"},
+          {"name": "GroupID", "type": "group_id", "description": "Group entry to potentially delete"}
+        ],
+        "return_type": "void",
+        "description": "Conditional action: if previous removal succeeded, deletes entry from datastore.",
+        "algorithm_detail": "Check result of most recent remove_groupid_from_endpoint operation. If successful, locate and remove GroupIDEntry from endpoint's GroupIDList in datastore. If failed, leave entry with DeletePending status for retry.",
+        "usage_in_fsm": "Called in T012 to clean up datastore after successful node update"
+      },
+      {
+        "name": "check_and_remove_unused_keyset",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"},
+          {"name": "GroupID", "type": "group_id", "description": "Group whose keyset may be unused"}
+        ],
+        "return_type": "void",
+        "description": "Checks if keyset for removed group is still used by other endpoints on node, removes if unused.",
+        "algorithm_detail": "Look up GroupKeySetID for GroupID. Iterate through all endpoints on NodeID checking if any GroupIDList references a group using same GroupKeySetID. If no other endpoint uses this keyset: mark NodeKeySetList entry as DeletePending, call remove_keyset_from_node(), delete entry if successful.",
+        "usage_in_fsm": "Called in T012 to clean up unused cryptographic material after group removal"
+      },
+      {
+        "name": "set_acl_status_delete_pending",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node containing ACL"},
+          {"name": "ListID", "type": "uint16", "description": "Unique identifier of ACL entry"}
+        ],
+        "return_type": "void",
+        "description": "Marks ACL entry as DeletePending in datastore.",
+        "algorithm_detail": "Locate ACL entry in NodeList[NodeID].ACLList with matching ListID. Update StatusEntry.State to DeletePending.",
+        "usage_in_fsm": "Called in T013 when initiating ACL removal"
+      },
+      {
+        "name": "remove_acl_from_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Target node"},
+          {"name": "ListID", "type": "uint16", "description": "ACL entry to remove"}
+        ],
+        "return_type": "boolean",
+        "description": "Removes ACL entry from actual node's Access Control cluster.",
+        "algorithm_detail": "Invoke write operation on node's Access Control cluster to remove ACL entry with matching ListID. Returns true if removal succeeds, false otherwise.",
+        "usage_in_fsm": "Called in T013 to revoke access control from physical node"
+      },
+      {
+        "name": "if_result_success_delete_acl_entry",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node whose ACL may be deleted"},
+          {"name": "ListID", "type": "uint16", "description": "ACL to potentially delete"}
+        ],
+        "return_type": "void",
+        "description": "Conditional action: if ACL removal succeeded, deletes entry from datastore.",
+        "algorithm_detail": "Check result of most recent remove_acl_from_node operation. If successful, remove ACL entry from NodeList[NodeID].ACLList. If failed, leave as DeletePending.",
+        "usage_in_fsm": "Called in T013 to update datastore after access control revocation"
+      },
+      {
+        "name": "set_binding_status_delete_pending",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node containing endpoint"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint with binding"},
+          {"name": "ListID", "type": "uint16", "description": "Binding entry identifier"}
+        ],
+        "return_type": "void",
+        "description": "Marks binding entry as DeletePending in datastore.",
+        "algorithm_detail": "Locate binding in NodeList[NodeID].EndpointList[EndpointID].BindingList with matching ListID. Update StatusEntry.State to DeletePending.",
+        "usage_in_fsm": "Called in T014 when initiating binding removal"
+      },
+      {
+        "name": "remove_binding_from_endpoint",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Target node"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Target endpoint"},
+          {"name": "ListID", "type": "uint16", "description": "Binding to remove"}
+        ],
+        "return_type": "boolean",
+        "description": "Removes binding from actual node's Binding cluster.",
+        "algorithm_detail": "Invoke write operation on node's Binding cluster to remove binding entry with matching ListID. Returns true if successful, false otherwise.",
+        "usage_in_fsm": "Called in T014 to remove control relationship from physical node"
+      },
+      {
+        "name": "if_result_success_delete_binding_entry",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node whose binding may be deleted"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint whose binding may be deleted"},
+          {"name": "ListID", "type": "uint16", "description": "Binding to potentially delete"}
+        ],
+        "return_type": "void",
+        "description": "Conditional action: if binding removal succeeded, deletes entry from datastore.",
+        "algorithm_detail": "Check result of most recent remove_binding_from_endpoint. If successful, remove binding entry from endpoint's BindingList in datastore. If failed, leave as DeletePending.",
+        "usage_in_fsm": "Called in T014 to clean up datastore after binding removal"
+      },
+      {
+        "name": "log_synchronization_failure",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node that failed synchronization"}
+        ],
+        "return_type": "void",
+        "description": "Records synchronization failure for diagnostic and retry purposes.",
+        "algorithm_detail": "Log error indicating node unreachable or update failed. Record timestamp, failure reason (timeout, BUSY, network error), retry count. Used for diagnostics and determining retry backoff strategy.",
+        "usage_in_fsm": "Called in T016 when RefreshNode cannot reach node"
+      },
+      {
+        "name": "schedule_periodic_refresh",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to retry"}
+        ],
+        "return_type": "void",
+        "description": "Schedules future retry of RefreshNode operation for unreachable node.",
+        "algorithm_detail": "Add NodeID to pending retry queue. Set next retry time based on implementation-defined backoff strategy. Datastore will periodically process retry queue and attempt RefreshNode on queued nodes.",
+        "usage_in_fsm": "Called in T016, T041, T043 to implement eventual consistency through retries"
+      },
+      {
+        "name": "create_group_entry",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Unique group identifier"},
+          {"name": "FriendlyName", "type": "string", "description": "Human-readable group name"},
+          {"name": "GroupKeySetID", "type": "uint16", "description": "Keyset used by group"},
+          {"name": "GroupCAT", "type": "uint16", "description": "CAT tag for group access control"},
+          {"name": "GroupCATVersion", "type": "uint16", "description": "CAT version for revocation"},
+          {"name": "GroupPermission", "type": "AccessControlEntryPrivilegeEnum", "description": "Permission level for group"}
+        ],
+        "return_type": "void",
+        "description": "Creates new Group Information Entry in datastore.",
+        "algorithm_detail": "Allocate DatastoreGroupInformationEntry structure. Populate all fields with provided values. Insert into GroupList.",
+        "usage_in_fsm": "Called in T021 when AddGroup command creates new group"
+      },
+      {
+        "name": "add_group_to_grouplist",
+        "parameters": [
+          {"name": "GroupInformationEntry", "type": "DatastoreGroupInformationEntry", "description": "Complete group entry"}
+        ],
+        "return_type": "void",
+        "description": "Inserts group entry into GroupList.",
+        "algorithm_detail": "Append GroupInformationEntry to GroupList attribute. Update datastore indices.",
+        "usage_in_fsm": "Called in T021 during group creation"
+      },
+      {
+        "name": "update_group_fields",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group to update"},
+          {"name": "fields", "type": "variable", "description": "Fields to update (FriendlyName, GroupCAT, GroupCATVersion, GroupPermission)"}
+        ],
+        "return_type": "void",
+        "description": "Updates specified fields in existing group entry.",
+        "algorithm_detail": "Locate group in GroupList with matching GroupID. For each non-null field parameter, update corresponding field in GroupInformationEntry. Null parameters are ignored (not updated).",
+        "usage_in_fsm": "Called in T023, T025 when UpdateGroup modifies group properties"
+      },
+      {
+        "name": "propagate_group_update_to_members",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group whose members need updates"}
+        ],
+        "return_type": "void",
+        "description": "Distributes group property updates to all member nodes.",
+        "algorithm_detail": "Iterate through NodeList finding all nodes with GroupID in any endpoint's GroupIDList. For FriendlyName changes: update group name on each member's Groups cluster. For CAT/Permission changes: update ACL entries referencing this group. Mark entries as Pending, attempt push to nodes, mark Committed if successful.",
+        "usage_in_fsm": "Called in T023 to ensure all members see consistent group properties"
+      },
+      {
+        "name": "for_each_member_node_add_new_keyset_pending",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group being updated"},
+          {"name": "new_GroupKeySetID", "type": "uint16", "description": "New keyset to distribute"}
+        ],
+        "return_type": "void",
+        "description": "Adds new keyset with Pending status to all nodes that are members of specified group.",
+        "algorithm_detail": "Identify all nodes with GroupID in any GroupIDList. For each such node: add entry to NodeKeySetList with new_GroupKeySetID and Status=Pending. Attempt push_keyset_to_node(), mark Committed if successful. This implements first phase of group key rotation.",
+        "usage_in_fsm": "Called in T024 during group keyset rotation"
+      },
+      {
+        "name": "for_each_member_node_set_old_keyset_delete_pending",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group being updated"},
+          {"name": "old_GroupKeySetID", "type": "uint16", "description": "Old keyset to remove"}
+        ],
+        "return_type": "void",
+        "description": "Marks old keyset as DeletePending on all member nodes, preparing for removal.",
+        "algorithm_detail": "Identify all nodes that are members of GroupID. For each node: locate NodeKeySetList entry with old_GroupKeySetID, mark Status=DeletePending. Attempt remove_keyset_from_node(), delete entry if successful. This implements second phase of group key rotation.",
+        "usage_in_fsm": "Called in T024 to remove old keys after distributing new keys"
+      },
+      {
+        "name": "for_each_member_node_update_acls_pending",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group whose ACLs need updating"}
+        ],
+        "return_type": "void",
+        "description": "Updates ACL entries referencing group on all member nodes, marking as Pending.",
+        "algorithm_detail": "Identify all nodes with ACL entries referencing GroupID (via CAT or GroupID field). For each such ACL: update with new GroupCAT, GroupCATVersion, or GroupPermission values. Mark Status=Pending. Attempt push_acl_to_node(), mark Committed if successful. This ensures access control changes propagate to members.",
+        "usage_in_fsm": "Called in T025 when group's CAT properties change, implementing revocation mechanism"
+      },
+      {
+        "name": "set_groupid_status_delete_pending_on_nodes",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group being removed"}
+        ],
+        "return_type": "void",
+        "description": "Marks all occurrences of GroupID across all nodes as DeletePending.",
+        "algorithm_detail": "Iterate through all nodes in NodeList. For each endpoint's GroupIDList: if contains GroupID, mark StatusEntry.State=DeletePending. This prepares for group-wide membership removal.",
+        "usage_in_fsm": "Called in T026 when group removal process begins"
+      },
+      {
+        "name": "remove_group_from_grouplist",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group to remove"}
+        ],
+        "return_type": "void",
+        "description": "Deletes group entry from GroupList.",
+        "algorithm_detail": "Locate and remove GroupInformationEntry with matching GroupID from GroupList. Free associated memory.",
+        "usage_in_fsm": "Called in T029 when group fully removed and no longer referenced"
+      },
+      {
+        "name": "add_keyset_to_keysetlist",
+        "parameters": [
+          {"name": "GroupKeySet", "type": "GroupKeySetStruct", "description": "Keyset to add"}
+        ],
+        "return_type": "void",
+        "description": "Adds new keyset to GroupKeySetList.",
+        "algorithm_detail": "Insert GroupKeySetStruct into GroupKeySetList attribute. GroupKeySet contains GroupKeySetID, SecurityPolicy, EpochKeys with timestamps.",
+        "usage_in_fsm": "Called in T032 when AddKeySet command adds new cryptographic keyset"
+      },
+      {
+        "name": "update_keyset_in_keysetlist",
+        "parameters": [
+          {"name": "GroupKeySet", "type": "GroupKeySetStruct", "description": "Updated keyset"}
+        ],
+        "return_type": "void",
+        "description": "Updates existing keyset in GroupKeySetList.",
+        "algorithm_detail": "Locate keyset with matching GroupKeySetID in GroupKeySetList. Replace with new GroupKeySet fields (EpochKeys, SecurityPolicy, timestamps).",
+        "usage_in_fsm": "Called in T035 when UpdateKeySet modifies keyset"
+      },
+      {
+        "name": "for_each_node_using_keyset_set_pending",
+        "parameters": [
+          {"name": "GroupKeySetID", "type": "uint16", "description": "Keyset being updated"}
+        ],
+        "return_type": "void",
+        "description": "Marks keyset as Pending on all nodes that have it in NodeKeySetList.",
+        "algorithm_detail": "Iterate through NodeList. For each node with NodeKeySetList entry matching GroupKeySetID: update StatusEntry.State=Pending. This prepares for key update propagation.",
+        "usage_in_fsm": "Called in T035 to mark key distribution as pending update"
+      },
+      {
+        "name": "for_each_node_using_keyset_push_update",
+        "parameters": [
+          {"name": "GroupKeySetID", "type": "uint16", "description": "Keyset to distribute"}
+        ],
+        "return_type": "void",
+        "description": "Pushes updated keyset to all nodes that use it.",
+        "algorithm_detail": "For each node with NodeKeySetList entry for GroupKeySetID: call push_keyset_to_node() with updated keyset. If successful, mark Status=Committed. If failed, leave as Pending for retry.",
+        "usage_in_fsm": "Called in T035 to distribute key updates across fabric"
+      },
+      {
+        "name": "remove_keyset_from_keysetlist",
+        "parameters": [
+          {"name": "GroupKeySetID", "type": "uint16", "description": "Keyset to remove"}
+        ],
+        "return_type": "void",
+        "description": "Removes keyset from GroupKeySetList.",
+        "algorithm_detail": "Locate and remove GroupKeySetStruct with matching GroupKeySetID from GroupKeySetList. Free associated memory.",
+        "usage_in_fsm": "Called in T036 when keyset no longer needed"
+      },
+      {
+        "name": "push_keyset_to_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Target node"},
+          {"name": "GroupKeySet", "type": "GroupKeySetStruct", "description": "Keyset to distribute"}
+        ],
+        "return_type": "boolean",
+        "description": "Distributes cryptographic keyset to node's Group Key Management cluster.",
+        "algorithm_detail": "Invoke KeySetWrite command on node's Group Key Management cluster with GroupKeySet. This installs epoch keys on node for deriving operational group keys. Returns true if successful, false otherwise.",
+        "usage_in_fsm": "Called during keyset distribution and updates to provision cryptographic material"
+      },
+      {
+        "name": "remove_keyset_from_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Target node"},
+          {"name": "GroupKeySetID", "type": "uint16", "description": "Keyset to remove"}
+        ],
+        "return_type": "boolean",
+        "description": "Removes keyset from node's Group Key Management cluster.",
+        "algorithm_detail": "Invoke KeySetRemove command on node's Group Key Management cluster with GroupKeySetID. Returns true if removal successful, false otherwise.",
+        "usage_in_fsm": "Called when node no longer needs keyset after group removal"
+      },
+      {
+        "name": "read_partslist_from_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to query"}
+        ],
+        "return_type": "list<endpoint_id>",
+        "description": "Reads list of endpoints from node's Descriptor cluster.",
+        "algorithm_detail": "Invoke read operation on node's root endpoint (0) Descriptor cluster PartsList attribute. Returns list of endpoint IDs present on node. Used to discover actual endpoint topology.",
+        "usage_in_fsm": "Called in synchronize_endpoint_list() to determine actual endpoints"
+      },
+      {
+        "name": "read_keysets_from_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to query"}
+        ],
+        "return_type": "list<GroupKeySetStruct>",
+        "description": "Reads installed keysets from node's Group Key Management cluster.",
+        "algorithm_detail": "Read GroupKeyMap attribute from node's Group Key Management cluster. Returns list of GroupKeySetStructs currently installed on node. Used to synchronize datastore with actual node state.",
+        "usage_in_fsm": "Called in synchronize_groupkeyset_list() during RefreshNode"
+      },
+      {
+        "name": "read_acls_from_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to query"}
+        ],
+        "return_type": "list<AccessControlEntryStruct>",
+        "description": "Reads ACL entries from node's Access Control cluster.",
+        "algorithm_detail": "Read ACL attribute from node's Access Control cluster. Returns list of AccessControlEntryStruct currently enforced on node. Used to synchronize access control policies.",
+        "usage_in_fsm": "Called in synchronize_acl_list() during RefreshNode"
+      },
+      {
+        "name": "read_grouplist_from_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to query"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint to query"}
+        ],
+        "return_type": "list<group_id>",
+        "description": "Reads group memberships from endpoint's Groups cluster.",
+        "algorithm_detail": "Read GroupTable attribute from specified endpoint's Groups cluster. Returns list of GroupIDs this endpoint is a member of. Used to verify group membership synchronization.",
+        "usage_in_fsm": "Called during endpoint synchronization in RefreshNode"
+      },
+      {
+        "name": "read_bindinglist_from_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to query"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint to query"}
+        ],
+        "return_type": "list<TargetStruct>",
+        "description": "Reads bindings from endpoint's Binding cluster.",
+        "algorithm_detail": "Read Binding attribute from specified endpoint's Binding cluster. Returns list of TargetStruct representing control relationships. Used to verify binding synchronization.",
+        "usage_in_fsm": "Called during endpoint synchronization in RefreshNode"
+      },
+      {
+        "name": "generate_constraint_error",
+        "parameters": [],
+        "return_type": "error_response",
+        "description": "Generates CONSTRAINT_ERROR response for constraint violations.",
+        "algorithm_detail": "Create error response with status code CONSTRAINT_ERROR. Include error reason in response. Used when operation would violate datastore integrity constraints (duplicate ID, resource in use, IPK removal).",
+        "usage_in_fsm": "Called in error transitions T006, T018, T022, T030, T033, T037, T038 for constraint violations"
+      },
+      {
+        "name": "generate_not_found_error",
+        "parameters": [],
+        "return_type": "error_response",
+        "description": "Generates NOT_FOUND response when entity doesn't exist.",
+        "algorithm_detail": "Create error response with status code NOT_FOUND. Include entity type and ID in response. Used when operation references non-existent node, group, or keyset.",
+        "usage_in_fsm": "Called in error transitions T020, T031, T039 when entity lookup fails"
+      },
+      {
+        "name": "generate_invalid_constraint_error",
+        "parameters": [],
+        "return_type": "error_response",
+        "description": "Generates INVALID_CONSTRAINT response for invalid operations.",
+        "algorithm_detail": "Create error response with status code INVALID_CONSTRAINT. Used when operation is logically invalid (e.g., adding already-existing node).",
+        "usage_in_fsm": "Called in T006 when AddPendingNode called on existing node"
+      },
+      {
+        "name": "generate_resource_exhausted_error",
+        "parameters": [],
+        "return_type": "error_response",
+        "description": "Generates RESOURCE_EXHAUSTED response when storage full.",
+        "algorithm_detail": "Create error response with status code RESOURCE_EXHAUSTED. Indicates datastore storage capacity reached.",
+        "usage_in_fsm": "Called in T004 when add operation fails due to storage limits"
+      },
+      {
+        "name": "notify_user_storage_exhausted",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Notifies user via proprietary means that storage capacity reached.",
+        "algorithm_detail": "Trigger notification mechanism (email, screen notification, etc.) to inform user that datastore storage limit reached. User must purge unused node information to continue operations. Notification mechanism is implementation-specific, outside specification scope.",
+        "usage_in_fsm": "Called in T004 to alert user of critical storage condition"
+      },
+      {
+        "name": "current_time",
+        "parameters": [],
+        "return_type": "utc_timestamp",
+        "description": "Returns current UTC timestamp.",
+        "algorithm_detail": "Query system clock and return current time in UTC format. Used to populate UpdateTimestamp fields in status entries.",
+        "usage_in_fsm": "Called throughout FSM to timestamp state changes"
+      },
+      {
+        "name": "generate_event",
+        "parameters": [
+          {"name": "event_name", "type": "string", "description": "Name of event to generate"}
+        ],
+        "return_type": "void",
+        "description": "Generates event for logging, notification, or triggering dependent actions.",
+        "algorithm_detail": "Create event record with event_name and timestamp. Publish to event system for logging and notification. Events include: fabric_ready, node_pending_added, node_committed, node_removed, group_added, group_updated, keyset_added, etc.",
+        "usage_in_fsm": "Called throughout FSM to signal state changes and important operations"
+      },
+      {
+        "name": "is_anchor_administrator",
+        "parameters": [
+          {"name": "caller", "type": "principal", "description": "Entity attempting operation"}
+        ],
+        "return_type": "boolean",
+        "description": "Verifies caller is the anchor administrator with index 0.",
+        "algorithm_detail": "Check if caller's NodeID matches AdminList[0].NodeID. Returns true if caller is anchor administrator, false otherwise. This is primary access control check for datastore operations.",
+        "usage_in_fsm": "Used in guard conditions throughout FSM to enforce anchor-only access"
+      },
+      {
+        "name": "has_administrator_CAT",
+        "parameters": [
+          {"name": "caller", "type": "principal", "description": "Entity attempting operation"}
+        ],
+        "return_type": "boolean",
+        "description": "Verifies caller's NOC contains Administrator CAT tag.",
+        "algorithm_detail": "Parse caller's Node Operational Certificate (NOC). Extract CAT (CASE Authenticated Tags) field. Check if contains Administrator CAT value. Returns true if Administrator CAT present, false otherwise. This enforces admin-level access control.",
+        "usage_in_fsm": "Used in guard conditions to verify caller has administrative privileges"
+      },
+      {
+        "name": "node_exists",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if node entry exists in NodeList.",
+        "algorithm_detail": "Search NodeList for entry with matching NodeID. Returns true if found, false otherwise.",
+        "usage_in_fsm": "Used in guard conditions to validate node references"
+      },
+      {
+        "name": "endpoint_exists",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node containing endpoint"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if endpoint exists in node's EndpointList.",
+        "algorithm_detail": "Locate node in NodeList. Search node's EndpointList for entry with matching EndpointID. Returns true if found, false otherwise.",
+        "usage_in_fsm": "Used in guard conditions for endpoint-related operations"
+      },
+      {
+        "name": "group_exists",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if group entry exists in GroupList.",
+        "algorithm_detail": "Search GroupList for entry with matching GroupID. Returns true if found, false otherwise.",
+        "usage_in_fsm": "Used in guard conditions to validate group references"
+      },
+      {
+        "name": "keyset_exists",
+        "parameters": [
+          {"name": "GroupKeySetID", "type": "uint16", "description": "Keyset to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if keyset exists in GroupKeySetList.",
+        "algorithm_detail": "Search GroupKeySetList for entry with matching GroupKeySetID. Returns true if found, false otherwise.",
+        "usage_in_fsm": "Used in guard conditions to validate keyset references"
+      },
+      {
+        "name": "keyset_in_use",
+        "parameters": [
+          {"name": "GroupKeySetID", "type": "uint16", "description": "Keyset to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if keyset is referenced by any groups or nodes (not DeletePending).",
+        "algorithm_detail": "Search GroupList for any group with matching GroupKeySetID. Search all nodes' NodeKeySetList for entries with matching GroupKeySetID that do not have Status=DeletePending. Returns true if any references found, false if keyset unused.",
+        "usage_in_fsm": "Used in guard condition for T036, T037 to prevent removing in-use keysets"
+      },
+      {
+        "name": "group_in_use",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if group is referenced in any node's GroupIDList (not DeletePending).",
+        "algorithm_detail": "Iterate through all nodes' endpoints. For each endpoint's GroupIDList: check if contains entry with matching GroupID and Status != DeletePending. Returns true if any active references found, false if group unused.",
+        "usage_in_fsm": "Used in guard condition for T029, T030 to prevent removing in-use groups"
+      },
+      {
+        "name": "commissioning_completed_successfully",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if node commissioning completed successfully.",
+        "algorithm_detail": "Verify node has completed CASE session establishment, obtained NOC, and is reachable. Returns true if commissioning succeeded, false otherwise.",
+        "usage_in_fsm": "Used in guard condition for T007 to transition from Pending to Committed"
+      },
+      {
+        "name": "commissioning_failed",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if node commissioning failed.",
+        "algorithm_detail": "Check if CASE session failed, NOC issuance failed, or node became unreachable during commissioning. Returns true if commissioning failed, false otherwise.",
+        "usage_in_fsm": "Used in guard condition for T008 to remove failed commissioning attempts"
+      },
+      {
+        "name": "all_acls_removed",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if node has no ACL entries remaining.",
+        "algorithm_detail": "Check if NodeList[NodeID].ACLList is empty. Returns true if no ACLs, false if any ACL entries exist.",
+        "usage_in_fsm": "Used in guard conditions T017, T018 to enforce ACL-removal-before-node-removal requirement"
+      },
+      {
+        "name": "has_pending_or_delete_pending_entries",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if node has any entries with Pending or DeletePending status.",
+        "algorithm_detail": "Iterate through node's NodeKeySetList, ACLList, and all EndpointList entries (GroupIDList, BindingList). Return true if any entry has Status=Pending or Status=DeletePending, false if all Committed.",
+        "usage_in_fsm": "Used in guard condition for T015 to determine if RefreshNode needed"
+      },
+      {
+        "name": "node_unreachable",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if node is currently unreachable on network.",
+        "algorithm_detail": "Attempt to establish CASE session with node. Returns true if connection times out, node offline, or network error. Returns false if node responds.",
+        "usage_in_fsm": "Used in guard condition for T016 to handle temporary network failures"
+      },
+      {
+        "name": "storage_capacity_reached",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if datastore storage limit reached.",
+        "algorithm_detail": "Compare current datastore size (number of entries) against implementation-defined storage limit. Returns true if at or above limit, false if capacity available.",
+        "usage_in_fsm": "Used in guard condition for T004 to prevent operations when storage full"
+      },
+      {
+        "name": "storage_capacity_available",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if storage capacity now available after purge.",
+        "algorithm_detail": "Compare current datastore size against storage limit. Returns true if below limit (space available), false if still at limit.",
+        "usage_in_fsm": "Used in guard condition for T045 to resume operations after storage freed"
+      },
+      {
+        "name": "groupid_exists_in_endpoint",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint to check"},
+          {"name": "GroupID", "type": "group_id", "description": "Group to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if GroupID exists in endpoint's GroupIDList.",
+        "algorithm_detail": "Locate endpoint in node's EndpointList. Search GroupIDList for entry with matching GroupID. Returns true if found, false otherwise.",
+        "usage_in_fsm": "Used in guard condition for T012 to validate group removal operation"
+      },
+      {
+        "name": "acl_exists_in_node",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"},
+          {"name": "ListID", "type": "uint16", "description": "ACL entry to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if ACL entry with given ListID exists in node's ACLList.",
+        "algorithm_detail": "Search node's ACLList for entry with matching ListID. Returns true if found, false otherwise.",
+        "usage_in_fsm": "Used in guard condition for T013 to validate ACL removal operation"
+      },
+      {
+        "name": "binding_exists_in_endpoint",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint to check"},
+          {"name": "ListID", "type": "uint16", "description": "Binding to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if binding entry with given ListID exists in endpoint's BindingList.",
+        "algorithm_detail": "Locate endpoint in node's EndpointList. Search BindingList for entry with matching ListID. Returns true if found, false otherwise.",
+        "usage_in_fsm": "Used in guard condition for T014 to validate binding removal operation"
+      },
+      {
+        "name": "all_delete_pending_members_removed",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if all nodes with DeletePending status for this group have completed removal.",
+        "algorithm_detail": "Search all nodes' GroupIDLists for entries with matching GroupID and Status=DeletePending. Returns true if none found, false if any remain.",
+        "usage_in_fsm": "Used in guard conditions T027, T028 to determine when group removal process complete"
+      },
+      {
+        "name": "still_has_active_members",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if group still has nodes with Committed or Pending membership.",
+        "algorithm_detail": "Search all nodes' GroupIDLists for entries with matching GroupID and Status=Committed or Status=Pending. Returns true if any found, false if none.",
+        "usage_in_fsm": "Used in guard condition for T027 to determine group's continued existence"
+      },
+      {
+        "name": "no_active_members",
+        "parameters": [
+          {"name": "GroupID", "type": "group_id", "description": "Group to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if group has zero members (all removed).",
+        "algorithm_detail": "Search all nodes' GroupIDLists for entries with matching GroupID (any status). Returns true if none found, false if any members exist.",
+        "usage_in_fsm": "Used in guard condition for T028 to identify empty groups"
+      },
+      {
+        "name": "log_update_failure",
+        "parameters": [
+          {"name": "entry", "type": "generic_entry", "description": "Entry that failed update"}
+        ],
+        "return_type": "void",
+        "description": "Logs failure to update entry on node for diagnostics.",
+        "algorithm_detail": "Record entry identifier, node ID, failure reason, timestamp. Used for troubleshooting persistent synchronization failures.",
+        "usage_in_fsm": "Called in T041 when node update fails"
+      },
+      {
+        "name": "schedule_retry_on_next_refresh",
+        "parameters": [
+          {"name": "entry", "type": "generic_entry", "description": "Entry to retry"}
+        ],
+        "return_type": "void",
+        "description": "Marks entry for retry during next RefreshNode operation.",
+        "algorithm_detail": "Entry remains in Pending or DeletePending state. When RefreshNode next executes for this node, entry will be retried. This implements eventual consistency.",
+        "usage_in_fsm": "Called in T041, T043 to implement retry mechanism"
+      },
+      {
+        "name": "remove_entry_from_datastore",
+        "parameters": [
+          {"name": "entry", "type": "generic_entry", "description": "Entry to remove"}
+        ],
+        "return_type": "void",
+        "description": "Deletes entry from appropriate datastore list after successful node removal.",
+        "algorithm_detail": "Based on entry type (KeySet, ACL, GroupID, Binding), locate and remove from corresponding list in datastore. Free associated memory.",
+        "usage_in_fsm": "Called in T042 when DeletePending entry successfully removed from node"
+      },
+      {
+        "name": "log_removal_failure",
+        "parameters": [
+          {"name": "entry", "type": "generic_entry", "description": "Entry that failed removal"}
+        ],
+        "return_type": "void",
+        "description": "Logs failure to remove entry from node for diagnostics.",
+        "algorithm_detail": "Record entry identifier, node ID, failure reason, timestamp. Used for troubleshooting persistent removal failures.",
+        "usage_in_fsm": "Called in T043 when node removal operation fails"
+      },
+      {
+        "name": "for_each_pending_entry_attempt_node_update",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Periodic operation to retry all Pending entry updates across all nodes.",
+        "algorithm_detail": "Iterate through all nodes in NodeList. For each node: collect all entries (KeySets, ACLs, GroupIDs, Bindings) with Status=Pending. Attempt to push each to node. Mark Committed if successful. This implements periodic retry for temporary failures.",
+        "usage_in_fsm": "Called in T044 during periodic pending review"
+      },
+      {
+        "name": "for_each_delete_pending_entry_attempt_node_removal",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Periodic operation to retry all DeletePending entry removals across all nodes.",
+        "algorithm_detail": "Iterate through all nodes in NodeList. For each node: collect all entries with Status=DeletePending. Attempt to remove each from node. Delete from datastore if successful. This implements periodic retry for removal operations.",
+        "usage_in_fsm": "Called in T044 during periodic pending review"
+      },
+      {
+        "name": "update_admin_fields",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Administrator to update"},
+          {"name": "FriendlyName", "type": "string", "description": "New friendly name (null = no change)"},
+          {"name": "ICAC", "type": "octstr", "description": "New ICAC certificate (null = no change)"}
+        ],
+        "return_type": "void",
+        "description": "Updates administrator information in AdminList. Null parameters are ignored.",
+        "algorithm_detail": "Locate admin entry in AdminList with matching NodeID. For each non-null parameter: update corresponding field in AdministratorInformationEntry. If ICAC updated, may require updating AnchorRootCA if this is anchor administrator.",
+        "usage_in_fsm": "Called in T046 when UpdateAdmin modifies administrator information"
+      },
+      {
+        "name": "remove_admin_from_list",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Administrator to remove"}
+        ],
+        "return_type": "void",
+        "description": "Removes administrator entry from AdminList. Cannot remove anchor administrator.",
+        "algorithm_detail": "Locate and remove AdministratorInformationEntry with matching NodeID from AdminList. Update indices for remaining administrators. Free associated memory.",
+        "usage_in_fsm": "Called in T048 when RemoveAdmin removes non-anchor administrator"
+      },
+      {
+        "name": "is_anchor_administrator_by_nodeid",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if given NodeID belongs to anchor administrator (index 0).",
+        "algorithm_detail": "Check if AdminList[0].NodeID matches given NodeID. Returns true if anchor administrator, false otherwise.",
+        "usage_in_fsm": "Used in guard condition T049 to prevent anchor administrator removal"
+      },
+      {
+        "name": "admin_exists",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Administrator to check"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if administrator entry exists in AdminList.",
+        "algorithm_detail": "Search AdminList for entry with matching NodeID. Returns true if found, false otherwise.",
+        "usage_in_fsm": "Used in guard conditions T046, T047, T048, T050 to validate admin operations"
+      },
+      {
+        "name": "update_endpoint_friendlyname",
+        "parameters": [
+          {"name": "NodeID", "type": "node_id", "description": "Node containing endpoint"},
+          {"name": "EndpointID", "type": "endpoint_id", "description": "Endpoint to update"},
+          {"name": "FriendlyName", "type": "string", "description": "New friendly name"}
+        ],
+        "return_type": "void",
+        "description": "Updates FriendlyName field for endpoint in node's EndpointList.",
+        "algorithm_detail": "Locate endpoint entry in NodeList[NodeID].EndpointList matching EndpointID. Update FriendlyName field with new value.",
+        "usage_in_fsm": "Called in T051 when UpdateEndpointForNode modifies endpoint name"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "Joint Fabric",
+        "definition": "A Matter fabric shared across multiple ecosystems with multiple Joint Fabric Administrators. Enables inter-ecosystem device control and coordination.",
+        "security_relevance": "Joint Fabric extends trust across vendor boundaries, requiring careful access control and revocation mechanisms to prevent cross-ecosystem privilege escalation."
+      },
+      {
+        "term": "Anchor Administrator",
+        "definition": "The Joint Fabric Administrator at index 0 in AdminList that serves as the Anchor Root CA and controls the root of trust for the fabric.",
+        "security_relevance": "Single point of authority for fabric trust. Compromise of Anchor Administrator enables complete fabric takeover. Must be uniquely identified and protected."
+      },
+      {
+        "term": "CAT (CASE Authenticated Tag)",
+        "definition": "Identifier embedded in Node Operational Certificate used for group-based access control. Each group has unique CAT value and version number.",
+        "security_relevance": "CAT provides scalable access control without per-node ACLs. Revocation achieved by incrementing CAT version, invalidating all previous NOCs with old version."
+      },
+      {
+        "term": "CAT Version",
+        "definition": "Monotonically increasing version number associated with group's CAT. Incremented when member removed to invalidate their credentials.",
+        "security_relevance": "Core revocation mechanism. Failure to increment enables removed members to retain access indefinitely. Must be strictly monotonic to prevent replay."
+      },
+      {
+        "term": "IPK (Identity Protection Key)",
+        "definition": "Special keyset with ID 0 that must exist in all fabrics. Used to protect node identities in Matter communications.",
+        "security_relevance": "Critical for privacy. Removal exposes all node identities to eavesdroppers. Must never be deleted. Compromise enables identity tracking across fabric."
+      },
+      {
+        "term": "GroupKeySet",
+        "definition": "Structure containing epoch keys used to derive operational group keys for encrypted group communication.",
+        "security_relevance": "Cryptographic material enabling group confidentiality and authentication. Must be distributed only to authorized members. Updates must be atomic across group."
+      },
+      {
+        "term": "Pending Status",
+        "definition": "State indicating operation initiated in datastore but not yet confirmed on target node. Awaits synchronization.",
+        "security_relevance": "Asymmetric state between datastore and node creates window for security vulnerabilities. Pending ACL additions may not yet protect, pending removals may still grant access."
+      },
+      {
+        "term": "Committed Status",
+        "definition": "State indicating datastore and node are synchronized. Operation completed successfully.",
+        "security_relevance": "Only Committed state guarantees security properties are enforced. Administrators must verify Committed status before trusting security configurations."
+      },
+      {
+        "term": "DeletePending Status",
+        "definition": "State indicating removal initiated in datastore, awaiting confirmation from node.",
+        "security_relevance": "Critical for revocation. Removed credentials/keys may still be valid on node until DeletePending resolves to deletion. Creates revocation lag window."
+      },
+      {
+        "term": "RefreshNode",
+        "definition": "Command that synchronizes all pending and delete-pending entries between datastore and node. Pushes pending additions, removes delete-pending entries, validates committed entries.",
+        "security_relevance": "THE critical security synchronization point. All security updates (ACLs, keys, group memberships) reach nodes via RefreshNode. Failure blocks revocations and access grants."
+      },
+      {
+        "term": "Epoch Key",
+        "definition": "Long-term key material in GroupKeySet from which operational group keys are derived using KDF.",
+        "security_relevance": "Root secret for group cryptography. Compromise enables decryption of all group communications. Must be rotated if leaked."
+      },
+      {
+        "term": "Operational Group Key",
+        "definition": "Session keys derived from epoch keys using KDF with fabric-specific salts. Used for actual AES-CCM encryption/authentication of group messages.",
+        "security_relevance": "Derived keys enable group communication. Derivation must be deterministic so all members compute same keys. KDF must be cryptographically secure."
+      },
+      {
+        "term": "Joint Fabric Administrator",
+        "definition": "Node with administrative privileges over Joint Fabric, identified by Administrator CAT in NOC. Can access datastore to manage nodes and groups across multiple ecosystems.",
+        "security_relevance": "Administrators have privileged access. Must be carefully authenticated. Multiple administrators can coexist but anchor administrator has unique authority."
+      },
+      {
+        "term": "Administrator CAT",
+        "definition": "Special CAT value identifying nodes with Joint Fabric Administrator privileges.",
+        "security_relevance": "Grants unrestricted access to datastore. Must be carefully controlled. Only trusted administrators should receive NOCs with Administrator CAT."
+      },
+      {
+        "term": "ICAC (Intermediate Certificate Authority Certificate)",
+        "definition": "Certificate used by administrators to sign Node Operational Certificates (NOCs). Itself signed by Anchor Root CA.",
+        "security_relevance": "Establishes chain of trust from Anchor to NOCs. Compromise enables rogue NOC issuance. Must be properly validated and protected."
+      },
+      {
+        "term": "NOC (Node Operational Certificate)",
+        "definition": "X.509 certificate containing node's public key and CAT tags, signed by administrator's ICAC. Used for CASE authentication.",
+        "security_relevance": "Node's identity and access control credentials. Embedded CATs determine group memberships and privileges. Theft enables impersonation."
+      },
+      {
+        "term": "Eventual Consistency",
+        "definition": "Property that datastore and nodes will eventually synchronize despite temporary failures, through periodic retry of pending operations.",
+        "security_relevance": "Security updates may be delayed but will eventually propagate. Creates temporal windows where security policies not yet enforced. Critical that retries succeed eventually."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "Anchor_Administrator_Exclusivity",
+        "type": "access_control",
+        "description": "Only the node designated as Anchor Administrator (index 0 in AdminList) can access and modify the datastore.",
+        "fsm_states_involved": ["FabricCommitted", "FabricPending"],
+        "critical_transitions": ["All command transitions require is_anchor_administrator guard"]
+      },
+      {
+        "property_name": "Administrator_CAT_Authentication",
+        "type": "access_control",
+        "description": "All admin-level operations on datastore require caller to present valid Administrator CAT in their NOC.",
+        "fsm_states_involved": ["All operational states"],
+        "critical_transitions": ["All command transitions require has_administrator_CAT guard"]
+      },
+      {
+        "property_name": "Two_Phase_Commit_Atomicity",
+        "type": "consistency",
+        "description": "All node updates follow Pending → Committed workflow, ensuring atomicity between datastore and physical node state.",
+        "fsm_states_involved": ["EntryPending_Generic", "EntryCommitted_Generic", "NodePartiallyConfigured"],
+        "critical_transitions": ["T040 (pending to committed)", "T015 (partial to committed via RefreshNode)"]
+      },
+      {
+        "property_name": "IPK_Permanence",
+        "type": "confidentiality",
+        "description": "Identity Protection Key (GroupKeySetID 0) cannot be removed from GroupKeySetList, protecting fabric-wide identity privacy.",
+        "fsm_states_involved": ["IPKActive"],
+        "critical_transitions": ["T038 (IPK removal blocked)"]
+      },
+      {
+        "property_name": "CAT_Version_Revocation",
+        "type": "revocation",
+        "description": "When node removed from group, GroupCATVersion increments, invalidating all NOCs with old CAT version.",
+        "fsm_states_involved": ["GroupActive"],
+        "critical_transitions": ["T025 (CAT version update), T026 (member removal with CAT increment)"]
+      },
+      {
+        "property_name": "DeletePending_Cleanup",
+        "type": "revocation",
+        "description": "Entries marked DeletePending are removed from nodes during RefreshNode, ensuring revocations eventually complete.",
+        "fsm_states_involved": ["EntryDeletePending_Generic", "NodePartiallyConfigured"],
+        "critical_transitions": ["T042 (delete pending to absent)", "T015 (RefreshNode cleanup)"]
+      },
+      {
+        "property_name": "KeySet_Integrity",
+        "type": "consistency",
+        "description": "KeySets in use by groups or nodes cannot be deleted, preserving cryptographic continuity.",
+        "fsm_states_involved": ["KeySetActive"],
+        "critical_transitions": ["T037 (keyset removal blocked if in use)"]
+      },
+      {
+        "property_name": "Group_Integrity",
+        "type": "consistency",
+        "description": "Groups with active members cannot be deleted, preventing orphaned group references.",
+        "fsm_states_involved": ["GroupActive"],
+        "critical_transitions": ["T030 (group removal blocked if in use)"]
+      },
+      {
+        "property_name": "Commissioning_Atomicity",
+        "type": "correctness",
+        "description": "Nodes reach Committed state only via successful RefreshNode after commissioning completes.",
+        "fsm_states_involved": ["NodePending", "NodeCommitted"],
+        "critical_transitions": ["T007 (RefreshNode commits node)", "T008 (failed commissioning cleanup)"]
+      },
+      {
+        "property_name": "Group_Update_Propagation",
+        "type": "consistency",
+        "description": "When group properties updated, changes propagate to all member nodes (keys, ACLs, CAT versions).",
+        "fsm_states_involved": ["GroupActive", "NodePartiallyConfigured"],
+        "critical_transitions": ["T024 (keyset rotation), T025 (CAT update)", "T015 (RefreshNode propagates)"]
+      },
+      {
+        "property_name": "ACL_Before_Node_Removal",
+        "type": "security",
+        "description": "All ACLs must be removed from node before node entry can be deleted from datastore, preventing stale ACL references.",
+        "fsm_states_involved": ["NodeCommitted", "NodeAbsent"],
+        "critical_transitions": ["T017 (allowed removal)", "T018 (blocked removal)"]
+      },
+      {
+        "property_name": "Eventual_Consistency_Guarantee",
+        "type": "consistency",
+        "description": "Failed updates remain Pending and are retried periodically until success, guaranteeing eventual synchronization.",
+        "fsm_states_involved": ["NodePartiallyConfigured", "EntryPending_Generic"],
+        "critical_transitions": ["T016 (retry after failure)", "T041 (pending retry)", "T044 (periodic review)"]
+      },
+      {
+        "property_name": "Storage_Capacity_Protection",
+        "type": "availability",
+        "description": "When storage exhausted, no new entries added and user notified, preventing uncontrolled resource exhaustion.",
+        "fsm_states_involved": ["ErrorState_ResourceExhausted"],
+        "critical_transitions": ["T004 (storage exhausted error)", "T045 (recovery when freed)"]
+      }
+    ],
+    "initial_state": "FabricNotFormed",
+    "all_states": [
+      "FabricNotFormed",
+      "FabricPending",
+      "FabricCommitted",
+      "FabricTransferring",
+      "NodeAbsent",
+      "NodePending",
+      "NodeCommitted",
+      "NodePartiallyConfigured",
+      "GroupAbsent",
+      "GroupActive",
+      "GroupBeingRemoved",
+      "KeySetAbsent",
+      "KeySetActive",
+      "IPKActive",
+      "EntryPending_Generic",
+      "EntryCommitted_Generic",
+      "EntryDeletePending_Generic",
+      "ErrorState_ConstraintViolation",
+      "ErrorState_NotFound",
+      "ErrorState_ResourceExhausted"
+    ],
+    "all_triggers": [
+      "AddAdmin",
+      "UpdateAdmin",
+      "RemoveAdmin",
+      "fabric_initialization_complete",
+      "initiate_anchor_transfer",
+      "any_add_command",
+      "AddPendingNode",
+      "RefreshNode",
+      "RemoveNode",
+      "UpdateNode",
+      "UpdateEndpointForNode",
+      "AddGroupIDToEndpointForNode",
+      "RemoveGroupIDFromEndpointForNode",
+      "AddACLToNode",
+      "RemoveACLFromNode",
+      "AddBindingToEndpointForNode",
+      "RemoveBindingFromEndpointForNode",
+      "AddGroup",
+      "UpdateGroup",
+      "RemoveGroup",
+      "AddKeySet",
+      "UpdateKeySet",
+      "RemoveKeySet",
+      "fabric_initialization",
+      "node_update_success",
+      "node_update_failure",
+      "node_removal_success",
+      "node_removal_failure",
+      "periodic_pending_review",
+      "storage_freed"
+    ],
+    "all_functions_used": [
+      "add_admin_to_list",
+      "derive_root_ca",
+      "add_ipk_to_keysetlist",
+      "create_node_entry",
+      "synchronize_endpoint_list",
+      "synchronize_groupkeyset_list",
+      "synchronize_acl_list",
+      "remove_node_from_list",
+      "ensure_node_has_keyset_for_group",
+      "add_groupid_to_endpoint_groupidlist",
+      "push_groupid_to_endpoint",
+      "if_result_success_set_status_committed",
+      "add_acl_to_acllist",
+      "push_acl_to_node",
+      "add_binding_to_bindinglist",
+      "push_binding_to_endpoint",
+      "set_groupid_status_delete_pending",
+      "remove_groupid_from_endpoint",
+      "if_result_success_delete_groupid_entry",
+      "check_and_remove_unused_keyset",
+      "set_acl_status_delete_pending",
+      "remove_acl_from_node",
+      "if_result_success_delete_acl_entry",
+      "set_binding_status_delete_pending",
+      "remove_binding_from_endpoint",
+      "if_result_success_delete_binding_entry",
+      "log_synchronization_failure",
+      "schedule_periodic_refresh",
+      "create_group_entry",
+      "add_group_to_grouplist",
+      "update_group_fields",
+      "propagate_group_update_to_members",
+      "for_each_member_node_add_new_keyset_pending",
+      "for_each_member_node_set_old_keyset_delete_pending",
+      "for_each_member_node_update_acls_pending",
+      "set_groupid_status_delete_pending_on_nodes",
+      "remove_group_from_grouplist",
+      "add_keyset_to_keysetlist",
+      "update_keyset_in_keysetlist",
+      "for_each_node_using_keyset_set_pending",
+      "for_each_node_using_keyset_push_update",
+      "remove_keyset_from_keysetlist",
+      "push_keyset_to_node",
+      "remove_keyset_from_node",
+      "read_partslist_from_node",
+      "read_keysets_from_node",
+      "read_acls_from_node",
+      "read_grouplist_from_node",
+      "read_bindinglist_from_node",
+      "generate_constraint_error",
+      "generate_not_found_error",
+      "generate_invalid_constraint_error",
+      "generate_resource_exhausted_error",
+      "notify_user_storage_exhausted",
+      "current_time",
+      "generate_event",
+      "is_anchor_administrator",
+      "has_administrator_CAT",
+      "node_exists",
+      "endpoint_exists",
+      "group_exists",
+      "keyset_exists",
+      "keyset_in_use",
+      "group_in_use",
+      "commissioning_completed_successfully",
+      "commissioning_failed",
+      "all_acls_removed",
+      "has_pending_or_delete_pending_entries",
+      "node_unreachable",
+      "storage_capacity_reached",
+      "storage_capacity_available",
+      "groupid_exists_in_endpoint",
+      "acl_exists_in_node",
+      "binding_exists_in_endpoint",
+      "all_delete_pending_members_removed",
+      "still_has_active_members",
+      "no_active_members",
+      "log_update_failure",
+      "schedule_retry_on_next_refresh",
+      "remove_entry_from_datastore",
+      "log_removal_failure",
+      "for_each_pending_entry_attempt_node_update",
+      "for_each_delete_pending_entry_attempt_node_removal",
+      "update_admin_fields",
+      "remove_admin_from_list",
+      "is_anchor_administrator_by_nodeid",
+      "admin_exists",
+      "update_endpoint_friendlyname"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "IPK_Distribution",
+        "algorithm": "GroupKeySet distribution via Matter Group Key Management cluster",
+        "inputs": ["IPK epoch keys", "compressed fabric identifier"],
+        "output": "IPK installed on node for identity protection",
+        "assumptions": ["KDF used for key derivation is secure (HKDF-SHA256)", "IPK epoch keys have sufficient entropy", "Secure channel (CASE) protects IPK during distribution"]
+      },
+      {
+        "operation": "Group_KeySet_Distribution",
+        "algorithm": "GroupKeySet distribution via KeySetWrite command to Group Key Management cluster",
+        "inputs": ["GroupKeySetStruct containing epoch keys", "target NodeID"],
+        "output": "Epoch keys installed on node for group operational key derivation",
+        "assumptions": ["Epoch keys generated with cryptographically secure random number generator", "CASE session protects keys in transit", "Node stores keys securely"]
+      },
+      {
+        "operation": "Operational_Group_Key_Derivation",
+        "algorithm": "HKDF-SHA256 key derivation from epoch keys",
+        "inputs": ["Epoch key (from GroupKeySet)", "Compressed Fabric Identifier (salt)", "Info string (GroupKey v1.0)"],
+        "output": "128-bit operational group key for AES-CCM encryption",
+        "assumptions": ["All group members perform identical derivation", "HKDF is cryptographically secure", "Epoch key remains confidential"]
+      },
+      {
+        "operation": "CAT_Embedding",
+        "algorithm": "X.509 certificate generation with CAT in Subject field",
+        "inputs": ["Node public key", "GroupCAT value", "GroupCATVersion", "ICAC private key for signing"],
+        "output": "Node Operational Certificate (NOC) with embedded CAT",
+        "assumptions": ["ICAC private key secure", "Certificate validation performed on every CASE session", "CAT values unique per group"]
+      },
+      {
+        "operation": "Certificate_Chain_Validation",
+        "algorithm": "X.509 chain validation from NOC through ICAC to Anchor Root CA",
+        "inputs": ["Node's NOC", "Administrator's ICAC", "Anchor Root CA certificate"],
+        "output": "Boolean indicating chain validity",
+        "assumptions": ["Anchor Root CA is trusted", "Certificates not revoked (via CAT version check)", "Cryptographic signatures valid"]
+      },
+      {
+        "operation": "CASE_Session_Establishment",
+        "algorithm": "Certificate Authenticated Session Establishment (CASE) protocol",
+        "inputs": ["Node's NOC", "Peer's NOC", "Shared secret derived via ECDH"],
+        "output": "Secure session keys for encrypted communication",
+        "assumptions": ["ECDH provides forward secrecy", "Session keys rotated periodically", "Man-in-the-middle prevented by certificate validation"]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "Anchor Administrator node is not compromised and protects its private keys securely",
+        "type": "explicit",
+        "if_violated": "Complete fabric takeover. Attacker can sign arbitrary NOCs, create rogue administrators, modify datastore arbitrarily, and distribute malicious keys."
+      },
+      {
+        "assumption": "Administrator CAT credentials cannot be forged or stolen without detection",
+        "type": "implicit",
+        "if_violated": "Non-administrator nodes gain datastore access, enabling unauthorized topology manipulation, ACL modification, and key distribution."
+      },
+      {
+        "assumption": "Network communication between Datastore and nodes is eventually reliable (retries succeed)",
+        "type": "implicit",
+        "if_violated": "Permanent inconsistency between datastore and nodes. Security updates never reach nodes, revocations incomplete, key rotations fail."
+      },
+      {
+        "assumption": "Nodes correctly report their configuration via Matter clusters (Descriptor, Groups, ACL, Binding)",
+        "type": "implicit",
+        "if_violated": "Datastore synchronization produces incorrect state. Malicious nodes can hide unauthorized configurations or appear compliant while violating policies."
+      },
+      {
+        "assumption": "CAT versions are monotonically increasing and never reused within group lifetime",
+        "type": "implicit",
+        "if_violated": "CAT version rollover allows revoked NOCs to become valid again. Removed group members regain access after version wraps around."
+      },
+      {
+        "assumption": "NodeIDs not reused within timeframe where stale references could exist",
+        "type": "implicit",
+        "if_violated": "Newly commissioned node with recycled NodeID inherits stale ACL grants intended for previous node, gaining unauthorized access."
+      },
+      {
+        "assumption": "HKDF-SHA256 is cryptographically secure for operational key derivation",
+        "type": "explicit",
+        "if_violated": "Operational group keys predictable or derivable without epoch key. Attackers decrypt group communications or forge authenticated messages."
+      },
+      {
+        "assumption": "Epoch keys generated with sufficient entropy from secure random source",
+        "type": "implicit",
+        "if_violated": "Weak epoch keys enable brute-force attacks. Predictable keys allow non-members to derive operational group keys and access group communications."
+      },
+      {
+        "assumption": "CASE protocol secures key distribution channel against eavesdropping and tampering",
+        "type": "explicit",
+        "if_violated": "Epoch keys and IPK leaked during distribution. Attacker intercepts keys, enabling passive decryption of all group traffic."
+      },
+      {
+        "assumption": "Administrators coordinate to avoid simultaneous conflicting operations on same resources",
+        "type": "implicit",
+        "if_violated": "Race conditions produce inconsistent state. Last-write-wins causes security updates to be lost. ACL revocations overwritten, keys incorrectly distributed."
+      },
+      {
+        "assumption": "Datastore storage capacity sufficient for expected number of nodes and groups",
+        "type": "implicit",
+        "if_violated": "RESOURCE_EXHAUSTED errors block critical security operations. New nodes cannot be added, key rotations fail, revocations incomplete."
+      },
+      {
+        "assumption": "X.509 certificate validation correctly enforces signature verification and chain of trust",
+        "type": "explicit",
+        "if_violated": "Rogue NOCs accepted. Attackers with invalid certificates gain fabric access. Certificate forgery enables complete authentication bypass."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": false,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true,
+      "note": "No explicit timers in specification - periodic operations are implementation-defined. Retry mechanisms exist but no hard timing constraints specified."
+    }
+  }
+}

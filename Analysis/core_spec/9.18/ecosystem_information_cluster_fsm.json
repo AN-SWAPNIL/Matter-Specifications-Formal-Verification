@@ -1,0 +1,1693 @@
+{
+  "fsm_model": {
+    "section_name": "9.18. Ecosystem Information Cluster",
+    "section_ref": "Matter Specification R1.4, Document 23-27349, Section 9.18",
+    "cluster_id": "0x0750",
+    "description": "FSM model for Ecosystem Information Cluster managing device names and location metadata for bridged devices with conflict resolution and user consent enforcement",
+    "states": [
+      {
+        "name": "DeviceUninitialized",
+        "description": "No EcosystemDeviceStruct exists for this device yet",
+        "is_initial": true,
+        "invariants": [
+          "ecosystem_device_struct_exists == false"
+        ],
+        "state_variables": {}
+      },
+      {
+        "name": "DeviceRegisteredInaccessible",
+        "description": "Device struct created but device not accessible through bridge (no BridgedEndpoint)",
+        "is_initial": false,
+        "invariants": [
+          "ecosystem_device_struct_exists == true",
+          "device_accessible == false",
+          "bridged_endpoint == null"
+        ],
+        "state_variables": {
+          "device_types": "list[DeviceTypeStruct]",
+          "device_name": "string | null",
+          "device_name_last_edit": "epoch-us",
+          "original_endpoint": "endpoint-no | null",
+          "unique_location_ids": "list[string]",
+          "unique_location_ids_last_edit": "epoch-us"
+        }
+      },
+      {
+        "name": "DeviceRegisteredAccessible",
+        "description": "Device struct created and device is accessible through bridge (BridgedEndpoint present and valid)",
+        "is_initial": false,
+        "invariants": [
+          "ecosystem_device_struct_exists == true",
+          "device_accessible == true",
+          "bridged_endpoint != null",
+          "valid_endpoint(bridged_endpoint) == true"
+        ],
+        "state_variables": {
+          "bridged_endpoint": "endpoint-no",
+          "device_types": "list[DeviceTypeStruct]",
+          "device_name": "string | null",
+          "device_name_last_edit": "epoch-us",
+          "original_endpoint": "endpoint-no | null",
+          "unique_location_ids": "list[string]",
+          "unique_location_ids_last_edit": "epoch-us"
+        }
+      },
+      {
+        "name": "DeviceNameAbsent",
+        "description": "No device name has been set (default state, DeviceName field empty)",
+        "is_initial": true,
+        "invariants": [
+          "device_name == empty",
+          "device_name_last_edit == 0"
+        ],
+        "state_variables": {
+          "device_name": "empty_string",
+          "device_name_last_edit": "0"
+        }
+      },
+      {
+        "name": "DeviceNamePresent",
+        "description": "Device name has been set with user consent, timestamp tracks last modification",
+        "is_initial": false,
+        "invariants": [
+          "device_name != empty",
+          "length(device_name) <= 64",
+          "device_name_last_edit > 0"
+        ],
+        "state_variables": {
+          "device_name": "string",
+          "device_name_last_edit": "epoch-us"
+        }
+      },
+      {
+        "name": "LocationUnassigned",
+        "description": "Device not assigned to any locations (UniqueLocationIDs list is empty)",
+        "is_initial": true,
+        "invariants": [
+          "length(unique_location_ids) == 0",
+          "unique_location_ids_last_edit == 0"
+        ],
+        "state_variables": {
+          "unique_location_ids": "empty_list",
+          "unique_location_ids_last_edit": "0"
+        }
+      },
+      {
+        "name": "LocationAssigned",
+        "description": "Device assigned to one or more locations (1-64 location IDs)",
+        "is_initial": false,
+        "invariants": [
+          "length(unique_location_ids) >= 1",
+          "length(unique_location_ids) <= 64",
+          "forall id in unique_location_ids: length(id) <= 64",
+          "forall id in unique_location_ids: location_exists_in_directory(id) == true",
+          "unique_location_ids_last_edit > 0"
+        ],
+        "state_variables": {
+          "unique_location_ids": "list[string]",
+          "unique_location_ids_last_edit": "epoch-us"
+        }
+      },
+      {
+        "name": "LocationStable",
+        "description": "No pending location changes, system in steady state",
+        "is_initial": true,
+        "invariants": [
+          "external_change_pending == false",
+          "remote_sync_in_progress == false"
+        ],
+        "state_variables": {
+          "unique_location_id": "string",
+          "location_descriptor": "location-desc",
+          "location_descriptor_last_edit": "epoch-us"
+        }
+      },
+      {
+        "name": "LocationRelocationPending",
+        "description": "External user interaction moved device to different physical location, awaiting UniqueLocationID change",
+        "is_initial": false,
+        "invariants": [
+          "external_change_pending == true",
+          "represents_different_location == true"
+        ],
+        "state_variables": {
+          "old_location_descriptor": "location-desc",
+          "new_location_descriptor": "location-desc",
+          "pending_unique_location_id_change": "true"
+        }
+      },
+      {
+        "name": "LocationRenamePending",
+        "description": "External user interaction renamed location but same physical location, UniqueLocationID must remain unchanged",
+        "is_initial": false,
+        "invariants": [
+          "external_change_pending == true",
+          "same_physical_location == true"
+        ],
+        "state_variables": {
+          "old_location_name": "string",
+          "new_location_name": "string",
+          "pending_unique_location_id_change": "false"
+        }
+      },
+      {
+        "name": "RemoteSyncPending",
+        "description": "Receiving location data from remote server instance, determining if UniqueLocationID should change",
+        "is_initial": false,
+        "invariants": [
+          "remote_sync_in_progress == true"
+        ],
+        "state_variables": {
+          "remote_location_descriptor": "location-desc",
+          "remote_unique_location_id": "string",
+          "remote_unique_location_id_changed": "boolean"
+        }
+      },
+      {
+        "name": "ConsentNotGiven",
+        "description": "User has not consented to external ecosystem providing device names and locations",
+        "is_initial": true,
+        "invariants": [
+          "user_consent_given == false"
+        ],
+        "state_variables": {
+          "user_consent_given": "false"
+        }
+      },
+      {
+        "name": "ConsentGiven",
+        "description": "User has consented to external ecosystem providing device names and locations",
+        "is_initial": false,
+        "invariants": [
+          "user_consent_given == true"
+        ],
+        "state_variables": {
+          "user_consent_given": "true"
+        }
+      },
+      {
+        "name": "NoConflict",
+        "description": "Normal operation with no concurrent update conflicts detected",
+        "is_initial": true,
+        "invariants": [
+          "conflict_detected == false"
+        ],
+        "state_variables": {
+          "conflict_detected": "false"
+        }
+      },
+      {
+        "name": "ConcurrentUpdateDetected",
+        "description": "Multiple server instances updated UniqueLocationIDs simultaneously, conflict resolution required",
+        "is_initial": false,
+        "invariants": [
+          "conflict_detected == true",
+          "length(competing_updates) >= 2"
+        ],
+        "state_variables": {
+          "conflict_detected": "true",
+          "competing_updates": "list[UpdateRecord]"
+        }
+      },
+      {
+        "name": "LocationDirectoryEmpty",
+        "description": "LocationDirectory attribute contains no EcosystemLocationStruct entries",
+        "is_initial": true,
+        "invariants": [
+          "length(location_directory) == 0"
+        ],
+        "state_variables": {
+          "location_directory": "empty_list"
+        }
+      },
+      {
+        "name": "LocationDirectoryPopulated",
+        "description": "LocationDirectory contains one or more EcosystemLocationStruct entries defining available locations",
+        "is_initial": false,
+        "invariants": [
+          "length(location_directory) >= 1",
+          "forall loc in location_directory: length(loc.UniqueLocationID) <= 64",
+          "forall loc in location_directory: loc.LocationDescriptorLastEdit >= 0"
+        ],
+        "state_variables": {
+          "location_directory": "list[EcosystemLocationStruct]"
+        }
+      },
+      {
+        "name": "LocationDefinitionStable",
+        "description": "A specific location definition is stable with no pending changes",
+        "is_initial": true,
+        "invariants": [
+          "location_change_pending == false"
+        ],
+        "state_variables": {
+          "unique_location_id": "string",
+          "location_descriptor": "location-desc",
+          "location_descriptor_last_edit": "epoch-us"
+        }
+      },
+      {
+        "name": "LocationDescriptorUpdatePending",
+        "description": "LocationDescriptor for a location is being updated with new value",
+        "is_initial": false,
+        "invariants": [
+          "location_change_pending == true"
+        ],
+        "state_variables": {
+          "old_location_descriptor": "location-desc",
+          "new_location_descriptor": "location-desc",
+          "pending_descriptor_update": "true"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "id": "T1",
+        "from_state": "DeviceUninitialized",
+        "to_state": "DeviceRegisteredInaccessible",
+        "trigger": "register_device_command",
+        "guard_condition": "device_accessible == false",
+        "actions": [
+          "create_ecosystem_device_struct()",
+          "set_device_types(descriptor.DeviceTypeList)",
+          "initialize_timestamps_to_zero()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T2",
+        "from_state": "DeviceUninitialized",
+        "to_state": "DeviceRegisteredAccessible",
+        "trigger": "register_device_command",
+        "guard_condition": "device_accessible == true && valid_endpoint(endpoint) == true",
+        "actions": [
+          "create_ecosystem_device_struct()",
+          "set_bridged_endpoint(endpoint)",
+          "set_device_types(descriptor.DeviceTypeList)",
+          "initialize_timestamps_to_zero()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T3",
+        "from_state": "DeviceUninitialized",
+        "to_state": "DeviceRegisteredAccessible",
+        "trigger": "register_matter_device_command",
+        "guard_condition": "is_matter_device == true && valid_endpoint(original_ep) == true && valid_endpoint(bridged_ep) == true",
+        "actions": [
+          "create_ecosystem_device_struct()",
+          "set_bridged_endpoint(bridged_ep)",
+          "set_original_endpoint(original_ep)",
+          "set_device_types(descriptor.DeviceTypeList)",
+          "initialize_timestamps_to_zero()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T4",
+        "from_state": "DeviceRegisteredInaccessible",
+        "to_state": "DeviceRegisteredAccessible",
+        "trigger": "device_accessibility_change",
+        "guard_condition": "device_accessible == true && valid_endpoint(endpoint) == true",
+        "actions": [
+          "set_bridged_endpoint(endpoint)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T5",
+        "from_state": "DeviceRegisteredAccessible",
+        "to_state": "DeviceRegisteredInaccessible",
+        "trigger": "device_accessibility_change",
+        "guard_condition": "device_accessible == false",
+        "actions": [
+          "clear_bridged_endpoint()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T6",
+        "from_state": "DeviceNameAbsent",
+        "to_state": "DeviceNamePresent",
+        "trigger": "set_device_name_command",
+        "guard_condition": "user_consent_given == true && length(name) <= 64",
+        "actions": [
+          "set_device_name(name)",
+          "set_device_name_last_edit(current_timestamp())",
+          "generate_event(device_name_updated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T7",
+        "from_state": "DeviceNameAbsent",
+        "to_state": "DeviceNameAbsent",
+        "trigger": "set_device_name_command",
+        "guard_condition": "user_consent_given == false",
+        "actions": [
+          "generate_event(consent_required_error)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T8",
+        "from_state": "DeviceNamePresent",
+        "to_state": "DeviceNamePresent",
+        "trigger": "update_device_name_command",
+        "guard_condition": "user_consent_given == true && length(new_name) <= 64 && current_timestamp() > device_name_last_edit",
+        "actions": [
+          "set_device_name(new_name)",
+          "set_device_name_last_edit(current_timestamp())",
+          "generate_event(device_name_updated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T9",
+        "from_state": "DeviceNamePresent",
+        "to_state": "DeviceNameAbsent",
+        "trigger": "clear_device_name_command",
+        "guard_condition": "true",
+        "actions": [
+          "clear_device_name()",
+          "set_device_name_last_edit(0)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T10",
+        "from_state": "LocationUnassigned",
+        "to_state": "LocationAssigned",
+        "trigger": "assign_location_command",
+        "guard_condition": "user_consent_given == true && location_exists_in_directory(location_id) == true && length(unique_location_ids) < 64",
+        "actions": [
+          "add_to_unique_location_ids(location_id)",
+          "set_unique_location_ids_last_edit(current_timestamp())",
+          "generate_event(location_assigned)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T11",
+        "from_state": "LocationAssigned",
+        "to_state": "LocationAssigned",
+        "trigger": "assign_location_command",
+        "guard_condition": "user_consent_given == true && location_exists_in_directory(location_id) == true && length(unique_location_ids) < 64 && contains(unique_location_ids, location_id) == false",
+        "actions": [
+          "add_to_unique_location_ids(location_id)",
+          "set_unique_location_ids_last_edit(current_timestamp())",
+          "generate_event(location_assigned)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T12",
+        "from_state": "LocationAssigned",
+        "to_state": "LocationUnassigned",
+        "trigger": "remove_location_command",
+        "guard_condition": "contains(unique_location_ids, location_id) == true && length(unique_location_ids) == 1",
+        "actions": [
+          "remove_from_unique_location_ids(location_id)",
+          "set_unique_location_ids_last_edit(current_timestamp())",
+          "generate_event(location_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T12b",
+        "from_state": "LocationAssigned",
+        "to_state": "LocationAssigned",
+        "trigger": "remove_location_command",
+        "guard_condition": "contains(unique_location_ids, location_id) == true && length(unique_location_ids) > 1",
+        "actions": [
+          "remove_from_unique_location_ids(location_id)",
+          "set_unique_location_ids_last_edit(current_timestamp())",
+          "generate_event(location_removed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T13",
+        "from_state": "LocationStable",
+        "to_state": "LocationRelocationPending",
+        "trigger": "external_location_change_event",
+        "guard_condition": "is_external_interaction() == true && represents_different_location(old_location, new_location) == true",
+        "actions": [
+          "set_external_change_pending(true)",
+          "store_new_location_descriptor(new_location)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T14",
+        "from_state": "LocationRelocationPending",
+        "to_state": "LocationStable",
+        "trigger": "process_location_change",
+        "guard_condition": "external_change_pending == true",
+        "actions": [
+          "generate_new_unique_location_id()",
+          "set_location_descriptor(new_location)",
+          "set_location_descriptor_last_edit(current_timestamp())",
+          "set_external_change_pending(false)",
+          "generate_event(location_relocated)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T15",
+        "from_state": "LocationStable",
+        "to_state": "LocationRenamePending",
+        "trigger": "external_location_rename_event",
+        "guard_condition": "is_external_interaction() == true && same_physical_location(old_name, new_name) == true",
+        "actions": [
+          "set_external_change_pending(true)",
+          "store_new_location_name(new_name)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T16",
+        "from_state": "LocationRenamePending",
+        "to_state": "LocationStable",
+        "trigger": "process_location_change",
+        "guard_condition": "external_change_pending == true",
+        "actions": [
+          "set_location_descriptor(new_name)",
+          "keep_unique_location_id_unchanged()",
+          "set_location_descriptor_last_edit(current_timestamp())",
+          "set_external_change_pending(false)",
+          "generate_event(location_renamed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T17",
+        "from_state": "LocationStable",
+        "to_state": "RemoteSyncPending",
+        "trigger": "remote_sync_event",
+        "guard_condition": "remote_unique_location_id_changed == true",
+        "actions": [
+          "set_remote_sync_in_progress(true)",
+          "store_remote_location_data(remote_location, remote_id)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T18",
+        "from_state": "RemoteSyncPending",
+        "to_state": "LocationStable",
+        "trigger": "apply_remote_sync",
+        "guard_condition": "remote_sync_in_progress == true && remote_unique_location_id_changed == true",
+        "actions": [
+          "set_unique_location_id(remote_unique_location_id)",
+          "set_location_descriptor(remote_location_descriptor)",
+          "set_location_descriptor_last_edit(current_timestamp())",
+          "set_remote_sync_in_progress(false)",
+          "generate_event(remote_sync_completed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T19",
+        "from_state": "LocationStable",
+        "to_state": "RemoteSyncPending",
+        "trigger": "remote_sync_event",
+        "guard_condition": "remote_unique_location_id_changed == false",
+        "actions": [
+          "set_remote_sync_in_progress(true)",
+          "store_remote_location_data(remote_location, remote_id)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T20",
+        "from_state": "RemoteSyncPending",
+        "to_state": "LocationStable",
+        "trigger": "apply_remote_sync",
+        "guard_condition": "remote_sync_in_progress == true && remote_unique_location_id_changed == false",
+        "actions": [
+          "keep_unique_location_id_unchanged()",
+          "set_location_descriptor(remote_location_descriptor)",
+          "set_location_descriptor_last_edit(current_timestamp())",
+          "set_remote_sync_in_progress(false)",
+          "generate_event(remote_sync_completed)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T21",
+        "from_state": "NoConflict",
+        "to_state": "ConcurrentUpdateDetected",
+        "trigger": "concurrent_update_detected_event",
+        "guard_condition": "multiple_instances_updating_simultaneously() == true",
+        "actions": [
+          "mark_conflict_state()",
+          "store_competing_updates(update_list)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T22",
+        "from_state": "ConcurrentUpdateDetected",
+        "to_state": "NoConflict",
+        "trigger": "resolve_conflict",
+        "guard_condition": "true",
+        "actions": [
+          "apply_update_with_highest_timestamp()",
+          "drop_other_updates()",
+          "set_unique_location_ids_last_edit(winning_timestamp)",
+          "generate_event(conflict_resolved)",
+          "generate_event(updates_dropped_warning)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T23",
+        "from_state": "DeviceRegisteredAccessible",
+        "to_state": "DeviceRegisteredAccessible",
+        "trigger": "descriptor_change_event",
+        "guard_condition": "descriptor.DeviceTypeList != device_types",
+        "actions": [
+          "set_device_types(descriptor.DeviceTypeList)",
+          "generate_event(device_types_synchronized)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T23b",
+        "from_state": "DeviceRegisteredInaccessible",
+        "to_state": "DeviceRegisteredInaccessible",
+        "trigger": "descriptor_change_event",
+        "guard_condition": "descriptor.DeviceTypeList != device_types",
+        "actions": [
+          "set_device_types(descriptor.DeviceTypeList)",
+          "generate_event(device_types_synchronized)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T24",
+        "from_state": "ConsentNotGiven",
+        "to_state": "ConsentGiven",
+        "trigger": "user_consent_granted_event",
+        "guard_condition": "user_interaction_confirmed() == true",
+        "actions": [
+          "set_user_consent_given(true)",
+          "generate_event(consent_granted)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T25",
+        "from_state": "ConsentGiven",
+        "to_state": "ConsentNotGiven",
+        "trigger": "user_consent_revoked_event",
+        "guard_condition": "user_interaction_confirmed() == true",
+        "actions": [
+          "set_user_consent_given(false)",
+          "clear_external_data()",
+          "generate_event(consent_revoked)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T26",
+        "from_state": "LocationDirectoryEmpty",
+        "to_state": "LocationDirectoryPopulated",
+        "trigger": "add_location_to_directory_command",
+        "guard_condition": "user_consent_given == true && length(unique_location_id) <= 64",
+        "actions": [
+          "create_ecosystem_location_struct(unique_location_id, location_descriptor)",
+          "set_location_descriptor_last_edit_in_struct(current_timestamp())",
+          "add_to_location_directory(location_struct)",
+          "generate_event(location_added_to_directory)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T27",
+        "from_state": "LocationDirectoryPopulated",
+        "to_state": "LocationDirectoryPopulated",
+        "trigger": "add_location_to_directory_command",
+        "guard_condition": "user_consent_given == true && length(unique_location_id) <= 64 && !location_exists_in_directory(unique_location_id)",
+        "actions": [
+          "create_ecosystem_location_struct(unique_location_id, location_descriptor)",
+          "set_location_descriptor_last_edit_in_struct(current_timestamp())",
+          "add_to_location_directory(location_struct)",
+          "generate_event(location_added_to_directory)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T28",
+        "from_state": "LocationDirectoryPopulated",
+        "to_state": "LocationDirectoryEmpty",
+        "trigger": "remove_location_from_directory_command",
+        "guard_condition": "location_exists_in_directory(unique_location_id) && length(location_directory) == 1 && !location_in_use_by_devices(unique_location_id)",
+        "actions": [
+          "remove_from_location_directory(unique_location_id)",
+          "generate_event(location_removed_from_directory)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T28b",
+        "from_state": "LocationDirectoryPopulated",
+        "to_state": "LocationDirectoryPopulated",
+        "trigger": "remove_location_from_directory_command",
+        "guard_condition": "location_exists_in_directory(unique_location_id) && length(location_directory) > 1 && !location_in_use_by_devices(unique_location_id)",
+        "actions": [
+          "remove_from_location_directory(unique_location_id)",
+          "generate_event(location_removed_from_directory)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T29",
+        "from_state": "LocationDefinitionStable",
+        "to_state": "LocationDescriptorUpdatePending",
+        "trigger": "update_location_descriptor_command",
+        "guard_condition": "user_consent_given == true && location_exists_in_directory(unique_location_id)",
+        "actions": [
+          "set_location_change_pending(true)",
+          "store_new_location_descriptor(new_descriptor)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "id": "T30",
+        "from_state": "LocationDescriptorUpdatePending",
+        "to_state": "LocationDefinitionStable",
+        "trigger": "apply_location_descriptor_update",
+        "guard_condition": "location_change_pending == true && current_timestamp() > location_descriptor_last_edit",
+        "actions": [
+          "update_location_descriptor_in_directory(unique_location_id, new_descriptor)",
+          "set_location_descriptor_last_edit_in_directory(unique_location_id, current_timestamp())",
+          "set_location_change_pending(false)",
+          "generate_event(location_descriptor_updated)"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "create_ecosystem_device_struct",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Allocates and initializes a new EcosystemDeviceStruct with all mandatory fields set to defaults",
+        "algorithm_detail": "Allocates memory for struct, sets DeviceName to empty string, DeviceNameLastEdit to 0, DeviceTypes to empty list, UniqueLocationIDs to empty list, UniqueLocationIDsLastEdit to 0, BridgedEndpoint and OriginalEndpoint to null",
+        "usage_in_fsm": "Called in transitions T1, T2, T3 when registering new device"
+      },
+      {
+        "name": "set_device_types",
+        "parameters": [
+          {
+            "name": "device_type_list",
+            "type": "list[DeviceTypeStruct]",
+            "description": "List of device types from Descriptor cluster's DeviceTypeList"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sets the DeviceTypes field to match the provided list from Descriptor cluster",
+        "algorithm_detail": "Validates each device type ID in list is a valid Matter device type identifier, then performs deep copy of list to DeviceTypes field",
+        "usage_in_fsm": "Called in transitions T1, T2, T3 during device registration and T23, T23b when Descriptor changes"
+      },
+      {
+        "name": "initialize_timestamps_to_zero",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Sets all timestamp fields to 0 indicating no user modifications yet",
+        "algorithm_detail": "DeviceNameLastEdit := 0, UniqueLocationIDsLastEdit := 0. Zero timestamp indicates field has not been modified by user",
+        "usage_in_fsm": "Called in transitions T1, T2, T3 during initial device registration"
+      },
+      {
+        "name": "set_bridged_endpoint",
+        "parameters": [
+          {
+            "name": "endpoint",
+            "type": "endpoint-no",
+            "description": "Valid endpoint number on this bridge"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sets the BridgedEndpoint field to the specified valid endpoint number",
+        "algorithm_detail": "Validates endpoint exists in bridge's endpoint table and is reachable, then assigns BridgedEndpoint field to endpoint value",
+        "usage_in_fsm": "Called in transitions T2, T3, T4 when device becomes accessible through bridge"
+      },
+      {
+        "name": "set_original_endpoint",
+        "parameters": [
+          {
+            "name": "original_ep",
+            "type": "endpoint-no",
+            "description": "Valid endpoint number on the original Matter device"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sets the OriginalEndpoint field for Matter devices to preserve endpoint identity across bridge hops",
+        "algorithm_detail": "Validates endpoint is valid on original device, then assigns OriginalEndpoint field to original_ep value. This value must remain unchanged if device is bridged through multiple hops",
+        "usage_in_fsm": "Called in transition T3 when registering Matter device with known original endpoint"
+      },
+      {
+        "name": "clear_bridged_endpoint",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Removes BridgedEndpoint field when device is no longer accessible through bridge",
+        "algorithm_detail": "Sets BridgedEndpoint field to null or removes field from struct",
+        "usage_in_fsm": "Called in transition T5 when device becomes inaccessible"
+      },
+      {
+        "name": "set_device_name",
+        "parameters": [
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Device name provided by user, maximum 64 characters"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sets the DeviceName field to the provided name after validation",
+        "algorithm_detail": "Validates length(name) <= 64 characters, validates UTF-8 encoding, then assigns DeviceName field to name value",
+        "usage_in_fsm": "Called in transitions T6, T8 when user sets or updates device name"
+      },
+      {
+        "name": "set_device_name_last_edit",
+        "parameters": [
+          {
+            "name": "timestamp",
+            "type": "epoch-us",
+            "description": "Microseconds since Unix epoch when DeviceName was last modified"
+          }
+        ],
+        "return_type": "void",
+        "description": "Updates the timestamp of when DeviceName was last modified for conflict resolution",
+        "algorithm_detail": "Assigns DeviceNameLastEdit field to timestamp value. Must be monotonically increasing for conflict resolution to work correctly",
+        "usage_in_fsm": "Called in transitions T6, T8, T9 whenever DeviceName changes"
+      },
+      {
+        "name": "current_timestamp",
+        "parameters": [],
+        "return_type": "epoch-us",
+        "description": "Returns the current system time in microseconds since Unix epoch",
+        "algorithm_detail": "Queries system monotonic clock, converts to microseconds since Unix epoch (1970-01-01 00:00:00 UTC), returns as 64-bit unsigned integer",
+        "usage_in_fsm": "Called throughout FSM to generate timestamps for conflict resolution (T6, T8, T10, T11, T12, T12b, T14, T16, T18, T20, T22)"
+      },
+      {
+        "name": "generate_event",
+        "parameters": [
+          {
+            "name": "event_name",
+            "type": "string",
+            "description": "Name of event to generate for observers/clients"
+          }
+        ],
+        "return_type": "void",
+        "description": "Generates a named event for observers/clients to be notified of state changes",
+        "algorithm_detail": "Creates event object with event_name and current timestamp, publishes to Matter event notification system for subscribed clients",
+        "usage_in_fsm": "Called throughout FSM to notify clients of changes (device_name_updated, location_assigned, consent_required_error, etc.)"
+      },
+      {
+        "name": "clear_device_name",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Removes the DeviceName field, reverting to default empty state",
+        "algorithm_detail": "Sets DeviceName field to empty string (default value)",
+        "usage_in_fsm": "Called in transition T9 when device name is explicitly cleared"
+      },
+      {
+        "name": "location_exists_in_directory",
+        "parameters": [
+          {
+            "name": "location_id",
+            "type": "string",
+            "description": "UniqueLocationID to search for in LocationDirectory attribute"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if the given UniqueLocationID exists in LocationDirectory attribute to prevent dangling references",
+        "algorithm_detail": "Searches LocationDirectory attribute for EcosystemLocationStruct entry with UniqueLocationID matching location_id, returns true if found, false otherwise",
+        "usage_in_fsm": "Called in transitions T10, T11 to validate location references before assignment"
+      },
+      {
+        "name": "add_to_unique_location_ids",
+        "parameters": [
+          {
+            "name": "location_id",
+            "type": "string",
+            "description": "UniqueLocationID to add to the list, maximum 64 characters"
+          }
+        ],
+        "return_type": "void",
+        "description": "Adds a location ID to the UniqueLocationIDs list after validation",
+        "algorithm_detail": "Validates length(location_id) <= 64 and length(UniqueLocationIDs) < 64, then appends location_id to UniqueLocationIDs list",
+        "usage_in_fsm": "Called in transitions T10, T11 when assigning device to locations"
+      },
+      {
+        "name": "set_unique_location_ids_last_edit",
+        "parameters": [
+          {
+            "name": "timestamp",
+            "type": "epoch-us",
+            "description": "Microseconds since Unix epoch when UniqueLocationIDs was last modified"
+          }
+        ],
+        "return_type": "void",
+        "description": "Updates the timestamp of when UniqueLocationIDs was last modified for conflict resolution",
+        "algorithm_detail": "Assigns UniqueLocationIDsLastEdit field to timestamp value. Used for last-write-wins conflict resolution between multiple server instances",
+        "usage_in_fsm": "Called in transitions T10, T11, T12, T12b, T22 whenever UniqueLocationIDs changes"
+      },
+      {
+        "name": "contains",
+        "parameters": [
+          {
+            "name": "list",
+            "type": "list[string]",
+            "description": "List to search"
+          },
+          {
+            "name": "item",
+            "type": "string",
+            "description": "Item to search for"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if item is present in list",
+        "algorithm_detail": "Iterates through list elements, compares each with item using string equality, returns true if match found, false if iteration completes without match",
+        "usage_in_fsm": "Called in transitions T11, T12, T12b to check for duplicate locations or validate removal"
+      },
+      {
+        "name": "remove_from_unique_location_ids",
+        "parameters": [
+          {
+            "name": "location_id",
+            "type": "string",
+            "description": "UniqueLocationID to remove from the list"
+          }
+        ],
+        "return_type": "void",
+        "description": "Removes a location ID from the UniqueLocationIDs list",
+        "algorithm_detail": "Searches UniqueLocationIDs list for location_id, removes entry if found, compacts list to eliminate gap",
+        "usage_in_fsm": "Called in transitions T12, T12b when unassigning device from location"
+      },
+      {
+        "name": "is_external_interaction",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Determines if the current change originated from external user interaction vs internal/remote system change",
+        "algorithm_detail": "Checks change source context: returns true if change originated from user action in external ecosystem interface, false if originated from internal Matter system operation or remote server synchronization",
+        "usage_in_fsm": "Called in transitions T13, T15 to distinguish external user actions from system operations for UniqueLocationID change policy"
+      },
+      {
+        "name": "represents_different_location",
+        "parameters": [
+          {
+            "name": "old_location",
+            "type": "location-desc",
+            "description": "Previous location descriptor"
+          },
+          {
+            "name": "new_location",
+            "type": "location-desc",
+            "description": "New location descriptor"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Determines if two location descriptors represent different physical/logical locations vs just rename of same location",
+        "algorithm_detail": "Compares semantic meaning of locations using heuristics: different room names, area types, or location metadata indicate different locations. Case differences, whitespace, or minor formatting changes indicate same location. Returns true if semantically different, false if same location with different name",
+        "usage_in_fsm": "Called in transition T13 to determine if location change requires new UniqueLocationID (relocation) or not (rename)"
+      },
+      {
+        "name": "store_new_location_descriptor",
+        "parameters": [
+          {
+            "name": "new_location",
+            "type": "location-desc",
+            "description": "New location descriptor to store temporarily"
+          }
+        ],
+        "return_type": "void",
+        "description": "Temporarily stores new location descriptor pending processing",
+        "algorithm_detail": "Assigns pending_location temporary variable to new_location value for later processing",
+        "usage_in_fsm": "Called in transition T13 to store location during relocation pending state"
+      },
+      {
+        "name": "generate_new_unique_location_id",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Generates a new unique identifier for the location, used during relocation to different physical location",
+        "algorithm_detail": "Uses cryptographically secure random number generator (DRBG) to generate random bytes, encodes as alphanumeric string up to 64 characters. Ensures uniqueness within this server instance by checking against existing UniqueLocationIDs. Assigns generated ID to UniqueLocationID field",
+        "usage_in_fsm": "Called in transition T14 when processing relocation to ensure new location gets new ID"
+      },
+      {
+        "name": "set_location_descriptor",
+        "parameters": [
+          {
+            "name": "location",
+            "type": "location-desc",
+            "description": "Location descriptor value to set"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sets the LocationDescriptor field to the provided value",
+        "algorithm_detail": "Assigns LocationDescriptor field to location value",
+        "usage_in_fsm": "Called in transitions T14, T16, T18, T20 when updating location information"
+      },
+      {
+        "name": "set_location_descriptor_last_edit",
+        "parameters": [
+          {
+            "name": "timestamp",
+            "type": "epoch-us",
+            "description": "Microseconds since Unix epoch when LocationDescriptor was last modified"
+          }
+        ],
+        "return_type": "void",
+        "description": "Updates the timestamp of when LocationDescriptor was last modified",
+        "algorithm_detail": "Assigns LocationDescriptorLastEdit field to timestamp value",
+        "usage_in_fsm": "Called in transitions T14, T16, T18, T20 whenever LocationDescriptor changes"
+      },
+      {
+        "name": "same_physical_location",
+        "parameters": [
+          {
+            "name": "old_name",
+            "type": "string",
+            "description": "Previous location name"
+          },
+          {
+            "name": "new_name",
+            "type": "string",
+            "description": "New location name"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Determines if two location names refer to the same physical location (rename) vs different locations (relocation)",
+        "algorithm_detail": "Returns true if names are semantically equivalent (e.g., case differences, whitespace variations, formatting changes only). Returns false if names represent different physical locations (e.g., bedroom vs kitchen). Uses semantic comparison, not just string equality",
+        "usage_in_fsm": "Called in transition T15 to determine if location change is a rename (keep UniqueLocationID) or relocation (change UniqueLocationID)"
+      },
+      {
+        "name": "store_new_location_name",
+        "parameters": [
+          {
+            "name": "new_name",
+            "type": "string",
+            "description": "New location name to store temporarily"
+          }
+        ],
+        "return_type": "void",
+        "description": "Temporarily stores new location name pending processing during rename",
+        "algorithm_detail": "Assigns pending_location_name temporary variable to new_name value",
+        "usage_in_fsm": "Called in transition T15 to store name during rename pending state"
+      },
+      {
+        "name": "keep_unique_location_id_unchanged",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Explicitly maintains the current UniqueLocationID unchanged (no-op for documentation and clarity)",
+        "algorithm_detail": "No change to UniqueLocationID field. This function is explicitly called to document that UniqueLocationID is intentionally not changed during rename or remote sync scenarios",
+        "usage_in_fsm": "Called in transitions T16, T20 to explicitly document that UniqueLocationID must not change"
+      },
+      {
+        "name": "store_remote_location_data",
+        "parameters": [
+          {
+            "name": "remote_location",
+            "type": "location-desc",
+            "description": "Location descriptor from remote server instance"
+          },
+          {
+            "name": "remote_id",
+            "type": "string",
+            "description": "UniqueLocationID from remote server instance"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores location data received from remote server instance for synchronization processing",
+        "algorithm_detail": "Assigns pending_remote_location to remote_location and pending_remote_id to remote_id for later processing",
+        "usage_in_fsm": "Called in transitions T17, T19 when receiving remote sync data"
+      },
+      {
+        "name": "set_unique_location_id",
+        "parameters": [
+          {
+            "name": "location_id",
+            "type": "string",
+            "description": "UniqueLocationID value to set, maximum 64 characters"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sets the UniqueLocationID field",
+        "algorithm_detail": "Validates length(location_id) <= 64, then assigns UniqueLocationID field to location_id value",
+        "usage_in_fsm": "Called in transition T18 when applying remote sync that changed UniqueLocationID"
+      },
+      {
+        "name": "multiple_instances_updating_simultaneously",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Detects if multiple server instances are updating UniqueLocationIDs at the same time causing potential conflict",
+        "algorithm_detail": "Checks update timestamps and sources: if multiple updates from different server instances have timestamps within small time window (e.g., less than clock synchronization tolerance), returns true indicating concurrent update conflict. Otherwise returns false",
+        "usage_in_fsm": "Called in transition T21 to detect concurrent update conflicts"
+      },
+      {
+        "name": "mark_conflict_state",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Marks system as being in conflict resolution state",
+        "algorithm_detail": "Sets conflict_detected flag to true",
+        "usage_in_fsm": "Called in transition T21 when entering conflict state"
+      },
+      {
+        "name": "store_competing_updates",
+        "parameters": [
+          {
+            "name": "update_list",
+            "type": "list[UpdateRecord]",
+            "description": "List of all competing concurrent updates to be resolved"
+          }
+        ],
+        "return_type": "void",
+        "description": "Stores all competing updates for conflict resolution using last-write-wins strategy",
+        "algorithm_detail": "Assigns competing_updates list to update_list. Each UpdateRecord contains: source_instance_id, timestamp, new_unique_location_ids value",
+        "usage_in_fsm": "Called in transition T21 to store competing updates"
+      },
+      {
+        "name": "apply_update_with_highest_timestamp",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Selects and applies the update with the highest timestamp using last-write-wins conflict resolution",
+        "algorithm_detail": "Sorts competing_updates list by timestamp in descending order, selects first entry (highest timestamp), applies that update's new_unique_location_ids value to UniqueLocationIDs field",
+        "usage_in_fsm": "Called in transition T22 during conflict resolution"
+      },
+      {
+        "name": "drop_other_updates",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Discards all updates except the winning update in conflict resolution",
+        "algorithm_detail": "Removes all entries from competing_updates list except the applied update. Per spec NOTE, this may result in one or more updates being permanently lost, which is acceptable",
+        "usage_in_fsm": "Called in transition T22 to discard losing updates"
+      },
+      {
+        "name": "clear_external_data",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Removes all externally-provided data when user consent is revoked",
+        "algorithm_detail": "Sets DeviceName to empty, LocationDescriptor to empty or default, clears all fields that required user consent to be populated",
+        "usage_in_fsm": "Called in transition T25 when user revokes consent for external ecosystem data"
+      },
+      {
+        "name": "valid_endpoint",
+        "parameters": [
+          {
+            "name": "endpoint",
+            "type": "endpoint-no",
+            "description": "Endpoint number to validate"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Validates that an endpoint number is valid and reachable on this bridge or device",
+        "algorithm_detail": "Checks if endpoint exists in bridge's endpoint table, verifies endpoint is currently reachable and not in error state, returns true if valid and accessible, false otherwise",
+        "usage_in_fsm": "Called in transitions T2, T3, T4 to validate endpoints before setting BridgedEndpoint or OriginalEndpoint"
+      },
+      {
+        "name": "length",
+        "parameters": [
+          {
+            "name": "item",
+            "type": "string | list",
+            "description": "String or list to measure"
+          }
+        ],
+        "return_type": "integer",
+        "description": "Returns the length of a string (character count) or list (element count)",
+        "algorithm_detail": "For string: counts UTF-8 characters (not bytes). For list: counts number of elements",
+        "usage_in_fsm": "Called throughout FSM to validate length constraints (T6, T8, T10, T11, T12, T12b)"
+      },
+      {
+        "name": "set_external_change_pending",
+        "parameters": [
+          {
+            "name": "pending",
+            "type": "boolean",
+            "description": "Whether an external location change is pending"
+          }
+        ],
+        "return_type": "void",
+        "description": "Marks whether an external location change is pending processing",
+        "algorithm_detail": "Assigns external_change_pending flag to pending value",
+        "usage_in_fsm": "Called in transitions T13, T14, T15, T16 to track external change state"
+      },
+      {
+        "name": "set_remote_sync_in_progress",
+        "parameters": [
+          {
+            "name": "in_progress",
+            "type": "boolean",
+            "description": "Whether a remote sync operation is in progress"
+          }
+        ],
+        "return_type": "void",
+        "description": "Marks whether a remote sync operation is in progress",
+        "algorithm_detail": "Assigns remote_sync_in_progress flag to in_progress value",
+        "usage_in_fsm": "Called in transitions T17, T18, T19, T20 to track remote sync state"
+      },
+      {
+        "name": "set_user_consent_given",
+        "parameters": [
+          {
+            "name": "consent",
+            "type": "boolean",
+            "description": "Whether user consent is given"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sets the user consent flag indicating permission to receive external ecosystem data",
+        "algorithm_detail": "Assigns user_consent_given flag to consent value",
+        "usage_in_fsm": "Called in transitions T24, T25 when user grants or revokes consent"
+      },
+      {
+        "name": "user_interaction_confirmed",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Verifies that a user action was authentic and not spoofed by attacker",
+        "algorithm_detail": "Checks authentication of user action source using Matter's authentication mechanisms. Verifies action originated from authenticated user session with appropriate privileges. Returns true if verified as legitimate user input, false if authentication fails or source is untrusted",
+        "usage_in_fsm": "Called in transitions T24, T25 to validate user consent actions are authentic"
+      },
+      {
+        "name": "create_ecosystem_location_struct",
+        "parameters": [
+          {
+            "name": "unique_location_id",
+            "type": "string",
+            "description": "Unique identifier for this location, maximum 64 characters"
+          },
+          {
+            "name": "location_descriptor",
+            "type": "location-desc",
+            "description": "Location descriptor with name and metadata"
+          }
+        ],
+        "return_type": "EcosystemLocationStruct",
+        "description": "Creates a new EcosystemLocationStruct entry for LocationDirectory",
+        "algorithm_detail": "Allocates memory for struct, sets UniqueLocationID to unique_location_id, LocationDescriptor to location_descriptor, LocationDescriptorLastEdit to 0 (will be set by caller)",
+        "usage_in_fsm": "Called in transitions T26, T27 when adding location to directory"
+      },
+      {
+        "name": "set_location_descriptor_last_edit_in_struct",
+        "parameters": [
+          {
+            "name": "timestamp",
+            "type": "epoch-us",
+            "description": "Microseconds since Unix epoch"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sets LocationDescriptorLastEdit field in a newly created EcosystemLocationStruct",
+        "algorithm_detail": "Assigns LocationDescriptorLastEdit field to timestamp value in the struct being created",
+        "usage_in_fsm": "Called in transitions T26, T27 when creating new location entries"
+      },
+      {
+        "name": "add_to_location_directory",
+        "parameters": [
+          {
+            "name": "location_struct",
+            "type": "EcosystemLocationStruct",
+            "description": "Location struct to add to directory"
+          }
+        ],
+        "return_type": "void",
+        "description": "Adds an EcosystemLocationStruct to the LocationDirectory attribute",
+        "algorithm_detail": "Validates struct fields are valid, checks UniqueLocationID doesn't already exist in directory, then appends location_struct to LocationDirectory list",
+        "usage_in_fsm": "Called in transitions T26, T27 when adding new locations"
+      },
+      {
+        "name": "remove_from_location_directory",
+        "parameters": [
+          {
+            "name": "unique_location_id",
+            "type": "string",
+            "description": "UniqueLocationID of location to remove"
+          }
+        ],
+        "return_type": "void",
+        "description": "Removes an EcosystemLocationStruct from LocationDirectory attribute",
+        "algorithm_detail": "Searches LocationDirectory for entry with matching UniqueLocationID, removes entry if found, compacts list",
+        "usage_in_fsm": "Called in transitions T28, T28b when removing locations from directory"
+      },
+      {
+        "name": "location_in_use_by_devices",
+        "parameters": [
+          {
+            "name": "unique_location_id",
+            "type": "string",
+            "description": "UniqueLocationID to check"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if any device is currently assigned to this location",
+        "algorithm_detail": "Searches all EcosystemDeviceStruct entries, checks if unique_location_id appears in any UniqueLocationIDs list. Returns true if location is referenced by at least one device, false otherwise",
+        "usage_in_fsm": "Called in transitions T28, T28b to prevent removing locations that are still in use"
+      },
+      {
+        "name": "set_location_change_pending",
+        "parameters": [
+          {
+            "name": "pending",
+            "type": "boolean",
+            "description": "Whether a location descriptor change is pending"
+          }
+        ],
+        "return_type": "void",
+        "description": "Marks whether a location descriptor update is pending",
+        "algorithm_detail": "Assigns location_change_pending flag to pending value",
+        "usage_in_fsm": "Called in transitions T29, T30 to track location descriptor update state"
+      },
+      {
+        "name": "update_location_descriptor_in_directory",
+        "parameters": [
+          {
+            "name": "unique_location_id",
+            "type": "string",
+            "description": "UniqueLocationID of location to update"
+          },
+          {
+            "name": "new_descriptor",
+            "type": "location-desc",
+            "description": "New LocationDescriptor value"
+          }
+        ],
+        "return_type": "void",
+        "description": "Updates the LocationDescriptor field of a location in LocationDirectory",
+        "algorithm_detail": "Searches LocationDirectory for entry with matching UniqueLocationID, updates LocationDescriptor field to new_descriptor",
+        "usage_in_fsm": "Called in transition T30 when applying location descriptor updates"
+      },
+      {
+        "name": "set_location_descriptor_last_edit_in_directory",
+        "parameters": [
+          {
+            "name": "unique_location_id",
+            "type": "string",
+            "description": "UniqueLocationID of location to update"
+          },
+          {
+            "name": "timestamp",
+            "type": "epoch-us",
+            "description": "Timestamp of last edit"
+          }
+        ],
+        "return_type": "void",
+        "description": "Updates the LocationDescriptorLastEdit timestamp for a location in LocationDirectory",
+        "algorithm_detail": "Searches LocationDirectory for entry with matching UniqueLocationID, updates LocationDescriptorLastEdit field to timestamp",
+        "usage_in_fsm": "Called in transition T30 when applying location descriptor updates"
+      }
+    ],
+    "definitions": [
+      {
+        "term": "Fabric Scoped",
+        "definition": "Data access is restricted to principals within the same Matter fabric. Different fabrics cannot access each other's data even on the same physical device",
+        "security_relevance": "Provides isolation between different administrative domains sharing the same bridge infrastructure"
+      },
+      {
+        "term": "LocationDirectory",
+        "definition": "Attribute containing all EcosystemLocationStruct entries available on this server instance. Acts as the authoritative source of location definitions",
+        "security_relevance": "Prevents dangling location references by requiring all UniqueLocationIDs to reference existing directory entries"
+      },
+      {
+        "term": "epoch-us",
+        "definition": "Timestamp type representing microseconds since Unix epoch (1970-01-01 00:00:00 UTC) as 64-bit unsigned integer",
+        "security_relevance": "Used for conflict resolution via last-write-wins. Clock synchronization critical for security"
+      },
+      {
+        "term": "BridgedNode",
+        "definition": "Device type indicating endpoint represents a bridged device from another ecosystem or non-Matter device",
+        "security_relevance": "Required device type for endpoints hosting Ecosystem Information Cluster"
+      },
+      {
+        "term": "Descriptor Cluster",
+        "definition": "Matter cluster providing device type information via DeviceTypeList attribute",
+        "security_relevance": "Source of truth for device capabilities. Must remain consistent with DeviceTypes field"
+      },
+      {
+        "term": "External Interaction",
+        "definition": "User action originating from external ecosystem interface (e.g., companion app, cloud service) rather than Matter system internal operation",
+        "security_relevance": "Determines whether location change is relocation (UniqueLocationID changes) or rename (UniqueLocationID unchanged)"
+      },
+      {
+        "term": "Conflict Resolution",
+        "definition": "Last-write-wins strategy using timestamps to resolve concurrent updates from multiple server instances",
+        "security_relevance": "Prevents split-brain scenarios but may lose updates if clock skew is large"
+      },
+      {
+        "term": "Server Instance",
+        "definition": "Individual Ecosystem Information Cluster implementation on a specific bridge. Multiple instances may exist for same device across different bridges",
+        "security_relevance": "No guarantee of UniqueLocationID consistency across instances. Only single-instance history should be trusted"
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "SP1_Fabric_Isolation",
+        "type": "access_control",
+        "description": "Data in EcosystemDeviceStruct and EcosystemLocationStruct is fabric-scoped, preventing cross-fabric access and information leakage",
+        "fsm_states_involved": [
+          "All states"
+        ],
+        "critical_transitions": [
+          "All transitions - fabric isolation enforced at access layer"
+        ]
+      },
+      {
+        "property_name": "SP2_User_Consent_Enforcement",
+        "type": "security",
+        "description": "External data (device names, locations) can only be set or modified with explicit user consent",
+        "fsm_states_involved": [
+          "ConsentNotGiven",
+          "ConsentGiven",
+          "DeviceNameAbsent",
+          "DeviceNamePresent",
+          "LocationAssigned"
+        ],
+        "critical_transitions": [
+          "T6",
+          "T7",
+          "T10",
+          "T11",
+          "T24",
+          "T25"
+        ]
+      },
+      {
+        "property_name": "SP3_Timestamp_Conflict_Resolution",
+        "type": "consistency",
+        "description": "When multiple server instances provide conflicting data, the entry with highest timestamp wins using last-write-wins strategy",
+        "fsm_states_involved": [
+          "ConcurrentUpdateDetected",
+          "NoConflict"
+        ],
+        "critical_transitions": [
+          "T21",
+          "T22"
+        ]
+      },
+      {
+        "property_name": "SP4_Device_Type_Consistency",
+        "type": "consistency",
+        "description": "DeviceTypes field must always match Descriptor cluster's DeviceTypeList to ensure consistent device capability representation",
+        "fsm_states_involved": [
+          "DeviceRegisteredAccessible",
+          "DeviceRegisteredInaccessible"
+        ],
+        "critical_transitions": [
+          "T1",
+          "T2",
+          "T3",
+          "T23",
+          "T23b"
+        ]
+      },
+      {
+        "property_name": "SP5_Location_Reference_Integrity",
+        "type": "correctness",
+        "description": "All UniqueLocationIDs in device struct must reference existing EcosystemLocationStruct entries in LocationDirectory to prevent dangling references",
+        "fsm_states_involved": [
+          "LocationAssigned"
+        ],
+        "critical_transitions": [
+          "T10",
+          "T11"
+        ]
+      },
+      {
+        "property_name": "SP6_Endpoint_Validity",
+        "type": "correctness",
+        "description": "BridgedEndpoint field present if and only if device is accessible through bridge, ensuring correct command routing",
+        "fsm_states_involved": [
+          "DeviceRegisteredAccessible",
+          "DeviceRegisteredInaccessible"
+        ],
+        "critical_transitions": [
+          "T2",
+          "T3",
+          "T4",
+          "T5"
+        ]
+      },
+      {
+        "property_name": "SP7_Matter_Device_Endpoint_Propagation",
+        "type": "consistency",
+        "description": "OriginalEndpoint must be preserved across bridge hops for Matter devices to maintain traceability to source device",
+        "fsm_states_involved": [
+          "DeviceRegisteredAccessible"
+        ],
+        "critical_transitions": [
+          "T3"
+        ]
+      },
+      {
+        "property_name": "SP8_UniqueLocationID_Change_Semantics",
+        "type": "consistency",
+        "description": "UniqueLocationID changes when device relocated to different physical location, but remains unchanged when location is renamed",
+        "fsm_states_involved": [
+          "LocationRelocationPending",
+          "LocationRenamePending",
+          "LocationStable"
+        ],
+        "critical_transitions": [
+          "T13",
+          "T14",
+          "T15",
+          "T16"
+        ]
+      },
+      {
+        "property_name": "SP9_Remote_Sync_Consistency",
+        "type": "consistency",
+        "description": "Local UniqueLocationID change policy follows remote instance's change policy during synchronization",
+        "fsm_states_involved": [
+          "RemoteSyncPending",
+          "LocationStable"
+        ],
+        "critical_transitions": [
+          "T17",
+          "T18",
+          "T19",
+          "T20"
+        ]
+      },
+      {
+        "property_name": "SP10_Timestamp_Monotonicity",
+        "type": "timing",
+        "description": "Timestamps must increase monotonically with each modification to enable proper conflict resolution",
+        "fsm_states_involved": [
+          "All states with timestamp fields"
+        ],
+        "critical_transitions": [
+          "T6",
+          "T8",
+          "T10",
+          "T11",
+          "T12",
+          "T12b",
+          "T14",
+          "T16",
+          "T18",
+          "T20"
+        ]
+      }
+    ],
+    "initial_state": "DeviceUninitialized",
+    "all_states": [
+      "DeviceUninitialized",
+      "DeviceRegisteredInaccessible",
+      "DeviceRegisteredAccessible",
+      "DeviceNameAbsent",
+      "DeviceNamePresent",
+      "LocationUnassigned",
+      "LocationAssigned",
+      "LocationStable",
+      "LocationRelocationPending",
+      "LocationRenamePending",
+      "RemoteSyncPending",
+      "ConsentNotGiven",
+      "ConsentGiven",
+      "NoConflict",
+      "ConcurrentUpdateDetected",
+      "LocationDirectoryEmpty",
+      "LocationDirectoryPopulated",
+      "LocationDefinitionStable",
+      "LocationDescriptorUpdatePending"
+    ],
+    "all_triggers": [
+      "register_device_command",
+      "register_matter_device_command",
+      "device_accessibility_change",
+      "set_device_name_command",
+      "update_device_name_command",
+      "clear_device_name_command",
+      "assign_location_command",
+      "remove_location_command",
+      "external_location_change_event",
+      "external_location_rename_event",
+      "process_location_change",
+      "remote_sync_event",
+      "apply_remote_sync",
+      "concurrent_update_detected_event",
+      "resolve_conflict",
+      "descriptor_change_event",
+      "user_consent_granted_event",
+      "user_consent_revoked_event",
+      "add_location_to_directory_command",
+      "remove_location_from_directory_command",
+      "update_location_descriptor_command",
+      "apply_location_descriptor_update"
+    ],
+    "all_functions_used": [
+      "create_ecosystem_device_struct",
+      "set_device_types",
+      "initialize_timestamps_to_zero",
+      "set_bridged_endpoint",
+      "set_original_endpoint",
+      "clear_bridged_endpoint",
+      "set_device_name",
+      "set_device_name_last_edit",
+      "current_timestamp",
+      "generate_event",
+      "clear_device_name",
+      "location_exists_in_directory",
+      "add_to_unique_location_ids",
+      "set_unique_location_ids_last_edit",
+      "contains",
+      "remove_from_unique_location_ids",
+      "is_external_interaction",
+      "represents_different_location",
+      "store_new_location_descriptor",
+      "generate_new_unique_location_id",
+      "set_location_descriptor",
+      "set_location_descriptor_last_edit",
+      "same_physical_location",
+      "store_new_location_name",
+      "keep_unique_location_id_unchanged",
+      "store_remote_location_data",
+      "set_unique_location_id",
+      "multiple_instances_updating_simultaneously",
+      "mark_conflict_state",
+      "store_competing_updates",
+      "apply_update_with_highest_timestamp",
+      "drop_other_updates",
+      "clear_external_data",
+      "valid_endpoint",
+      "length",
+      "set_external_change_pending",
+      "set_remote_sync_in_progress",
+      "set_user_consent_given",
+      "user_interaction_confirmed",
+      "create_ecosystem_location_struct",
+      "set_location_descriptor_last_edit_in_struct",
+      "add_to_location_directory",
+      "remove_from_location_directory",
+      "location_in_use_by_devices",
+      "set_location_change_pending",
+      "update_location_descriptor_in_directory",
+      "set_location_descriptor_last_edit_in_directory"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "Fabric_Isolation_Access_Control",
+        "algorithm": "Matter Fabric Access Control (certificate-based)",
+        "inputs": [
+          "requesting_principal_fabric_id",
+          "target_resource_fabric_scope"
+        ],
+        "output": "boolean (access granted/denied)",
+        "assumptions": [
+          "Matter's fabric cryptography is secure",
+          "Fabric certificates cannot be forged",
+          "Certificate validation is performed correctly"
+        ]
+      },
+      {
+        "operation": "UniqueLocationID_Generation",
+        "algorithm": "Cryptographically secure random string generation using system DRBG",
+        "inputs": [
+          "system_entropy_source"
+        ],
+        "output": "String up to 64 characters, alphanumeric, cryptographically random",
+        "assumptions": [
+          "System DRBG is secure and properly seeded",
+          "Collision probability is negligible (< 2^-128)",
+          "Random number generator not compromised"
+        ]
+      },
+      {
+        "operation": "Timestamp_Integrity",
+        "algorithm": "System monotonic clock with microsecond resolution",
+        "inputs": [
+          "system_clock_source"
+        ],
+        "output": "epoch-us timestamp (64-bit unsigned integer)",
+        "assumptions": [
+          "System clock not manipulated by attacker",
+          "Reasonable clock synchronization across nodes (< 1 second drift)",
+          "Clock provides monotonic guarantee within single node"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "Matter's fabric-scoped access control cryptography is secure and correctly implemented at the access layer",
+        "type": "implicit",
+        "if_violated": "Cross-fabric data leakage enables reconnaissance and privacy violations (SP1 fails)"
+      },
+      {
+        "assumption": "System clocks across server instances are reasonably synchronized (clock drift < conflict resolution tolerance)",
+        "type": "implicit",
+        "if_violated": "Conflict resolution fails, stale data wins, or updates applied out of order (SP3, SP10 fail)"
+      },
+      {
+        "assumption": "User consent actions are authenticated using Matter's authentication mechanisms and cannot be spoofed by attacker",
+        "type": "implicit",
+        "if_violated": "Attacker can inject or modify device names and locations without user permission (SP2 fails)"
+      },
+      {
+        "assumption": "Multiple simultaneous updates from different server instances are unlikely in normal operation (per specification NOTE)",
+        "type": "explicit",
+        "if_violated": "More than one update may be lost during conflict resolution, causing data corruption beyond acceptable threshold"
+      },
+      {
+        "assumption": "Descriptor cluster changes propagate reliably to Ecosystem Information cluster via internal event mechanism",
+        "type": "implicit",
+        "if_violated": "DeviceTypes diverge from actual device capabilities, enabling privilege escalation (SP4 fails)"
+      },
+      {
+        "assumption": "LocationDirectory attribute is properly maintained, synchronized, and contains all referenced location entries",
+        "type": "implicit",
+        "if_violated": "Dangling location references cause client errors and device location information loss (SP5 fails)"
+      },
+      {
+        "assumption": "Endpoint validity checks accurately reflect current device accessibility and reachability status",
+        "type": "implicit",
+        "if_violated": "Commands routed to wrong or unreachable devices, causing failures or security issues (SP6 fails)"
+      },
+      {
+        "assumption": "System can reliably distinguish external user interaction from internal system changes or remote synchronization",
+        "type": "implicit",
+        "if_violated": "Relocation vs rename incorrectly determined, UniqueLocationID change policy violated (SP8 fails)"
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    },
+    "notes": {
+      "parallel_state_machines": "This FSM is actually a composition of 7 parallel state machines: (1) Device Registration, (2) Device Name, (3) Location Assignment, (4) Location Change (device-location association), (5) Consent, (6) Conflict Resolution, (7) LocationDirectory Management, (8) Location Definition (EcosystemLocationStruct). These operate independently but share state variables.",
+      "acceptable_data_loss": "Per specification NOTE, when multiple server instances update UniqueLocationIDs simultaneously, it is possible one of the updates will be missed. This is considered an acceptable limitation.",
+      "no_cross_instance_consistency": "UniqueLocationID values may differ across server instances for the same physical location. Only single-instance history should be used for change detection.",
+      "timestamp_critical": "Entire conflict resolution mechanism depends on accurate, synchronized timestamps. Clock skew is major vulnerability.",
+      "fabric_scoped_isolation": "All data structures are fabric-scoped. This FSM assumes Matter's fabric isolation is correctly enforced at access layer.",
+      "location_directory_vs_device_assignment": "The FSM models two distinct concerns: (1) LocationDirectory management - creating/updating/removing location definitions (EcosystemLocationStruct), and (2) Device-location associations - assigning devices to existing locations via UniqueLocationIDs references."
+    }
+  }
+}

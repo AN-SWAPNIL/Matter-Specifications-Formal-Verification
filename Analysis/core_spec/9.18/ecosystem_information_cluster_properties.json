@@ -1,0 +1,508 @@
+{
+  "specification": {
+    "name": "Ecosystem Information Cluster",
+    "version": "Matter Specification R1.4",
+    "cluster_id": "0x0750",
+    "document": "23-27349",
+    "date": "November 4, 2024"
+  },
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "DeviceName_Timestamp_Binding",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "DeviceNameLastEdit field SHALL be present and set whenever DeviceName field is present.",
+      "formal": "∀device, name. has_field(device, DeviceName, name) ∧ name ≠ empty ⟹ has_field(device, DeviceNameLastEdit, timestamp) ∧ timestamp ≠ 0",
+      "violation": "A device name exists without tracking when it was last modified. This breaks conflict resolution between multiple server instances, allowing stale names to overwrite newer ones. An attacker could exploit this to revert device names to older values, causing user confusion or misdirection in security-critical contexts (e.g., labeling cameras or locks).",
+      "proverifQuery": "query device:principal, name:bitstring, ts:timestamp ⊢ event has_device_name(device, name) ==> event has_timestamp(device, ts) ∧ ts > 0"
+    },
+    {
+      "id": "PROP_002",
+      "name": "BridgedEndpoint_Accessibility_Invariant",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "BridgedEndpoint field SHALL be present and set to a valid endpoint if and only if the device is accessible through the bridge.",
+      "formal": "∀device, bridge, endpoint. accessible(device, bridge) ⟺ (has_field(device, BridgedEndpoint, endpoint) ∧ valid_endpoint(endpoint))",
+      "violation": "A device is accessible through a bridge but lacks BridgedEndpoint, or has BridgedEndpoint but is inaccessible. Clients cannot route commands correctly, leading to failed operations or commands sent to wrong devices. An attacker could manipulate routing by claiming accessibility without valid endpoints, causing denial-of-service or command misdirection.",
+      "proverifQuery": "query device:principal, bridge:principal, ep:endpoint ⊢ event device_accessible(device, bridge) ⟺ event has_bridged_endpoint(device, ep) ∧ event valid_endpoint(ep)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "OriginalEndpoint_Matter_Device_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "OriginalEndpoint field SHALL be present and set to a valid endpoint on the original device if that device is a Matter device.",
+      "formal": "∀device, original_device, endpoint. is_matter_device(original_device) ∧ represents(device, original_device) ⟹ has_field(device, OriginalEndpoint, endpoint) ∧ valid_endpoint_on(endpoint, original_device)",
+      "violation": "A Matter device bridged from another bridge loses traceability to its original endpoint. This breaks multi-hop bridging scenarios where endpoint identity must be preserved. Attackers could inject fake device records without original endpoints, creating phantom devices that appear legitimate but cannot be traced to their source.",
+      "proverifQuery": "query device:principal, orig:principal, ep:endpoint ⊢ event is_matter_device(orig) ∧ event represents(device, orig) ==> event has_original_endpoint(device, ep) ∧ event valid_on(ep, orig)"
+    },
+    {
+      "id": "PROP_004",
+      "name": "OriginalEndpoint_Bridge_Propagation",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "When a bridge receives a device from another bridge, the OriginalEndpoint field value SHALL be identical on both bridges.",
+      "formal": "∀device, bridge1, bridge2, ep1, ep2. receives_from(bridge2, bridge1, device) ∧ has_field_on(device, bridge1, OriginalEndpoint, ep1) ∧ has_field_on(device, bridge2, OriginalEndpoint, ep2) ⟹ ep1 = ep2",
+      "violation": "Multi-hop bridging corrupts endpoint identity, causing different OriginalEndpoint values across the bridge chain. Clients querying different bridges receive inconsistent device information, breaking traceability. An attacker controlling an intermediate bridge could modify OriginalEndpoint to claim authority over devices from another bridge, enabling device impersonation.",
+      "proverifQuery": "query device:principal, b1:principal, b2:principal, ep1:endpoint, ep2:endpoint ⊢ event receives_from(b2, b1, device) ∧ event has_original_endpoint_on(device, b1, ep1) ∧ event has_original_endpoint_on(device, b2, ep2) ==> ep1 = ep2"
+    },
+    {
+      "id": "PROP_005",
+      "name": "DeviceTypes_Descriptor_Consistency",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "DeviceTypes field SHALL indicate all DeviceTypes within the DeviceTypeList of the Descriptor Cluster associated with this EcosystemDeviceStruct.",
+      "formal": "∀device, types_eco, types_desc. has_field(device, DeviceTypes, types_eco) ∧ has_descriptor(device, DeviceTypeList, types_desc) ⟹ types_eco = types_desc",
+      "violation": "Device type information diverges between Ecosystem Information Cluster and Descriptor Cluster. Clients using one source see different capabilities than those using the other. An attacker could manipulate DeviceTypes to claim different capabilities (e.g., presenting a simple sensor as a lock), enabling privilege escalation or unauthorized command execution.",
+      "proverifQuery": "query device:principal, types_eco:list, types_desc:list ⊢ event has_device_types(device, types_eco) ∧ event has_descriptor_types(device, types_desc) ==> types_eco = types_desc"
+    },
+    {
+      "id": "PROP_006",
+      "name": "DeviceTypes_Validity",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "DeviceTypes field SHALL contain a list of valid device type IDs.",
+      "formal": "∀device, types. has_field(device, DeviceTypes, types) ⟹ ∀type ∈ types. valid_device_type_id(type)",
+      "violation": "Invalid device type IDs are present in DeviceTypes list. Clients may fail to parse or interpret device capabilities, leading to errors or ignored devices. An attacker could inject invalid IDs to cause client crashes or bypass device type validation checks.",
+      "proverifQuery": "query device:principal, types:list, type:id ⊢ event has_device_types(device, types) ∧ event contains(types, type) ==> event valid_device_type_id(type)"
+    },
+    {
+      "id": "PROP_007",
+      "name": "UniqueLocationIDs_Reference_Integrity",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "UniqueLocationIDs field SHALL specify only EcosystemLocationStruct entries that exist in the LocationDirectory attribute.",
+      "formal": "∀device, loc_ids, loc_id. has_field(device, UniqueLocationIDs, loc_ids) ∧ loc_id ∈ loc_ids ⟹ ∃location. in_location_directory(location) ∧ location.UniqueLocationID = loc_id",
+      "violation": "A device references location IDs that don't exist in LocationDirectory. Clients attempting to resolve location information encounter dangling references, causing errors or missing location data. An attacker could inject non-existent location IDs to obfuscate device locations or trigger client failures.",
+      "proverifQuery": "query device:principal, loc_ids:list, loc_id:bitstring, location:struct ⊢ event has_location_ids(device, loc_ids) ∧ event contains(loc_ids, loc_id) ==> event in_directory(location) ∧ location.UniqueLocationID = loc_id"
+    },
+    {
+      "id": "PROP_008",
+      "name": "UniqueLocationIDs_Timestamp_Binding",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "UniqueLocationIDsLastEdit field SHALL be updated with a timestamp whenever UniqueLocationIDs is modified.",
+      "formal": "∀device, loc_ids_old, loc_ids_new, ts_old, ts_new. modify(device, UniqueLocationIDs, loc_ids_old, loc_ids_new) ∧ loc_ids_old ≠ loc_ids_new ⟹ update(device, UniqueLocationIDsLastEdit, ts_old, ts_new) ∧ ts_new > ts_old",
+      "violation": "Location assignments change without updating the timestamp. Conflict resolution fails to identify which change is more recent, allowing stale location data to persist. An attacker could manipulate devices to retain old location assignments, misdirecting users about device physical locations (critical for security devices like cameras or locks).",
+      "proverifQuery": "query device:principal, old_ids:list, new_ids:list, old_ts:timestamp, new_ts:timestamp ⊢ event modify_location_ids(device, old_ids, new_ids) ∧ old_ids ≠ new_ids ==> event update_timestamp(device, old_ts, new_ts) ∧ new_ts > old_ts"
+    },
+    {
+      "id": "PROP_009",
+      "name": "UniqueLocationID_Uniqueness_Per_Instance",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "UniqueLocationID SHALL be unique for each location within a single server instance representing different physical/logical locations.",
+      "formal": "∀server, loc1, loc2, id. on_server(server, loc1) ∧ on_server(server, loc2) ∧ loc1.UniqueLocationID = id ∧ loc2.UniqueLocationID = id ⟹ same_location(loc1, loc2)",
+      "violation": "Two distinct locations share the same UniqueLocationID on one server instance. Clients cannot distinguish between locations, merging devices from separate rooms/areas into one group. An attacker could create ID collisions to hide devices in unexpected locations or merge security zones.",
+      "proverifQuery": "query server:principal, loc1:struct, loc2:struct, id:bitstring ⊢ event on_server(server, loc1) ∧ event on_server(server, loc2) ∧ loc1.UniqueLocationID = id ∧ loc2.UniqueLocationID = id ==> event same_location(loc1, loc2)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "UniqueLocationID_Change_On_Relocation",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "UniqueLocationID SHALL be changed when LocationDescriptor changes from one existing location to another as a result of external interaction.",
+      "formal": "∀device, loc_old, loc_new, id_old, id_new. external_change(device, LocationDescriptor, loc_old, loc_new) ∧ represents_different_location(loc_old, loc_new) ⟹ change(device, UniqueLocationID, id_old, id_new) ∧ id_old ≠ id_new",
+      "violation": "A device is moved to a different location but UniqueLocationID remains unchanged. Clients tracking location history cannot detect the relocation, treating it as a simple rename. An attacker could move security-critical devices (cameras, locks) without triggering location-change alerts, enabling physical security bypasses.",
+      "proverifQuery": "query device:principal, loc_old:bitstring, loc_new:bitstring, id_old:bitstring, id_new:bitstring ⊢ event external_change_location(device, loc_old, loc_new) ∧ event different_locations(loc_old, loc_new) ==> event change_location_id(device, id_old, id_new) ∧ id_old ≠ id_new"
+    },
+    {
+      "id": "PROP_011",
+      "name": "UniqueLocationID_Stable_On_Rename",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "UniqueLocationID SHALL NOT be changed when LocationDescriptor changes name but still represents the same physical/logical location.",
+      "formal": "∀device, name_old, name_new, id. rename_location(device, name_old, name_new) ∧ same_physical_location(name_old, name_new) ⟹ unchanged(device, UniqueLocationID, id)",
+      "violation": "Renaming a location generates a new UniqueLocationID. Clients lose location history, treating the rename as a device relocation. Users may receive false alerts about devices moving, or automation rules tied to location IDs break. An attacker could trigger frequent renames to reset location-based access controls or erase audit trails.",
+      "proverifQuery": "query device:principal, name_old:bitstring, name_new:bitstring, id:bitstring ⊢ event rename_location(device, name_old, name_new) ∧ event same_physical_location(name_old, name_new) ==> event unchanged_location_id(device, id)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "UniqueLocationID_Remote_Synchronization",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "When LocationDescriptor changes due to a remote server instance change, UniqueLocationID SHALL be changed only if the remote instance's UniqueLocationID also changed.",
+      "formal": "∀device, remote_server, loc_desc_old, loc_desc_new, id_local_old, id_local_new, id_remote_old, id_remote_new. sync_from(device, remote_server) ∧ remote_change(remote_server, LocationDescriptor, loc_desc_old, loc_desc_new) ⟹ ((id_remote_old ≠ id_remote_new ⟹ id_local_old ≠ id_local_new) ∧ (id_remote_old = id_remote_new ⟹ id_local_old = id_local_new))",
+      "violation": "Local and remote UniqueLocationID change policies diverge during synchronization. A rename on the remote server triggers a relocation event locally, or vice versa. This breaks distributed consistency, causing clients to misinterpret location changes across federated ecosystems. An attacker could exploit sync inconsistencies to create aliased locations or hide device movements.",
+      "proverifQuery": "query device:principal, remote:principal, id_local_old:bitstring, id_local_new:bitstring, id_remote_old:bitstring, id_remote_new:bitstring ⊢ event sync_from(device, remote) ∧ event remote_id_changed(remote, id_remote_old, id_remote_new) ==> event local_id_changed(device, id_local_old, id_local_new)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Fabric_Scoped_Access_Isolation",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "EcosystemDeviceStruct and EcosystemLocationStruct are Fabric Scoped, ensuring data isolation between different fabrics.",
+      "formal": "∀device, fabric1, fabric2, data. fabric1 ≠ fabric2 ∧ can_access(fabric1, device, data) ⟹ ¬can_access(fabric2, device, data)",
+      "violation": "Fabric isolation is violated, allowing cross-fabric information leakage. A device in Fabric A exposes name/location data to principals in Fabric B. An attacker in a compromised or malicious fabric could enumerate devices, names, and locations across isolated ecosystems, enabling reconnaissance for physical attacks or privacy violations.",
+      "proverifQuery": "query device:principal, fabric1:principal, fabric2:principal, data:bitstring ⊢ fabric1 ≠ fabric2 ∧ event access(fabric1, device, data) ==> event cannot_access(fabric2, device, data)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "User_Consent_For_External_Data",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "DeviceName and LocationDescriptor SHALL be provided externally only if the user consents.",
+      "formal": "∀device, external_name, external_location. set_external_data(device, external_name, external_location) ⟹ user_consented(device, external_name, external_location)",
+      "violation": "External ecosystem data (names, locations) is populated without user consent. Privacy is violated as user-specific device organization leaks to unauthorized parties. An attacker in the external ecosystem could inject device names/locations into Matter without user awareness, enabling social engineering (e.g., labeling a camera as 'disabled' when active) or privacy invasion.",
+      "proverifQuery": "query device:principal, name:bitstring, location:bitstring ⊢ event set_external_data(device, name, location) ==> event user_consented(device, name, location)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "Restricted_Access_Enforcement",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "Name and location information SHALL have more restricted access to support user control over information presence.",
+      "formal": "∀client, device, data. access_request(client, device, data) ∧ is_sensitive(data) ⟹ has_restricted_privilege(client, device)",
+      "violation": "Sensitive device name/location data is accessible to clients without appropriate privileges. Unauthorized clients enumerate devices and learn user habits (e.g., when/where devices are active). An attacker with basic client access could map physical home layout, identify high-value targets (safes, security systems), or infer when users are away.",
+      "proverifQuery": "query client:principal, device:principal, data:bitstring ⊢ event access_request(client, device, data) ∧ event is_sensitive(data) ==> event has_privilege(client, device)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "Timestamp_Monotonicity",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "Timestamps in DeviceNameLastEdit, UniqueLocationIDsLastEdit, and LocationDescriptorLastEdit SHALL increase monotonically for each modification.",
+      "formal": "∀device, field, ts_old, ts_new. update_timestamp(device, field, ts_old, ts_new) ⟹ ts_new > ts_old",
+      "violation": "Timestamps decrease or remain constant across updates. Conflict resolution based on 'last-write-wins' fails, causing older data to overwrite newer data. An attacker could manipulate system time or exploit clock skew to make stale updates appear recent, reverting device configurations or locations.",
+      "proverifQuery": "query device:principal, field:bitstring, ts_old:timestamp, ts_new:timestamp ⊢ event update_timestamp(device, field, ts_old, ts_new) ==> ts_new > ts_old"
+    },
+    {
+      "id": "PROP_017",
+      "name": "ClusterRevision_Maximum",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "ClusterRevision attribute SHALL be the highest revision number supported by the implementation.",
+      "formal": "∀server, rev. has_cluster_revision(server, rev) ⟹ ∀supported_rev. supports(server, supported_rev) ⟹ supported_rev ≤ rev",
+      "violation": "ClusterRevision doesn't reflect the actual highest supported revision. Clients negotiating features based on ClusterRevision may attempt to use unsupported functionality or miss available features. An attacker could downgrade ClusterRevision to force clients into using older, potentially vulnerable code paths.",
+      "proverifQuery": "query server:principal, rev:int, supported_rev:int ⊢ event has_cluster_revision(server, rev) ∧ event supports(server, supported_rev) ==> supported_rev ≤ rev"
+    },
+    {
+      "id": "PROP_018",
+      "name": "Conflict_Resolution_Timestamp_Ordering",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "When multiple server instances provide conflicting data, the entry with the highest LastEdit timestamp SHALL take precedence.",
+      "formal": "∀device, server1, server2, data1, data2, ts1, ts2. provides(server1, device, data1, ts1) ∧ provides(server2, device, data2, ts2) ∧ ts1 > ts2 ⟹ wins(data1, data2)",
+      "violation": "Conflict resolution ignores timestamps or uses incorrect ordering. Stale data overwrites recent changes, causing devices to revert to old names/locations. An attacker could exploit this by continuously submitting old data with manipulated timestamps to prevent legitimate updates from propagating.",
+      "proverifQuery": "query device:principal, s1:principal, s2:principal, data1:bitstring, data2:bitstring, ts1:timestamp, ts2:timestamp ⊢ event provides(s1, device, data1, ts1) ∧ event provides(s2, device, data2, ts2) ∧ ts1 > ts2 ==> event wins(data1, data2)"
+    },
+    {
+      "id": "PROP_019",
+      "name": "DeviceName_Length_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "DeviceName field SHALL be constrained to a maximum of 64 characters.",
+      "formal": "∀device, name. has_field(device, DeviceName, name) ⟹ length(name) ≤ 64",
+      "violation": "Device names exceed 64 characters. Implementations with fixed buffers may truncate names inconsistently or experience buffer overflows. An attacker could inject overly long names to cause parsing errors, memory corruption, or denial-of-service in clients.",
+      "proverifQuery": "query device:principal, name:bitstring ⊢ event has_device_name(device, name) ==> event length_lte(name, 64)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "UniqueLocationID_Length_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "UniqueLocationID field SHALL be constrained to a maximum of 64 characters.",
+      "formal": "∀location, id. has_field(location, UniqueLocationID, id) ⟹ length(id) ≤ 64",
+      "violation": "Location IDs exceed 64 characters. Similar to DeviceName, this can cause buffer overflows or inconsistent truncation. An attacker could inject long IDs to cause client crashes or exploit parsing vulnerabilities.",
+      "proverifQuery": "query location:struct, id:bitstring ⊢ event has_location_id(location, id) ==> event length_lte(id, 64)"
+    },
+    {
+      "id": "PROP_021",
+      "name": "LocationDirectory_List_Length_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "UniqueLocationIDs list SHALL be constrained to a maximum of 64 entries, each up to 64 characters.",
+      "formal": "∀device, loc_ids. has_field(device, UniqueLocationIDs, loc_ids) ⟹ (length(loc_ids) ≤ 64 ∧ ∀id ∈ loc_ids. length(id) ≤ 64)",
+      "violation": "A device is assigned to more than 64 locations or location IDs exceed length constraints. Memory allocation failures or excessive resource consumption may occur. An attacker could exhaust server resources by assigning devices to excessive locations, causing denial-of-service.",
+      "proverifQuery": "query device:principal, loc_ids:list, id:bitstring ⊢ event has_location_ids(device, loc_ids) ==> event list_length_lte(loc_ids, 64) ∧ event all_lengths_lte(loc_ids, 64)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Concurrent_Update_Race_Condition",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "When multiple server instances update UniqueLocationIDs simultaneously, at most one update SHALL be lost (acceptable limitation per spec NOTE).",
+      "formal": "∀device, server1, server2, update1, update2, ts. concurrent(server1, update1, ts) ∧ concurrent(server2, update2, ts) ⟹ applied(update1) ∨ applied(update2)",
+      "violation": "Simultaneous updates cause all updates to be lost or system state corruption beyond the spec's acceptable loss of one update. Devices lose all location assignments or enter undefined state. While the spec accepts one lost update, total failure breaks the system. An attacker could trigger synchronized updates to maximize data loss.",
+      "proverifQuery": "query device:principal, s1:principal, s2:principal, u1:bitstring, u2:bitstring, ts:timestamp ⊢ event concurrent(s1, u1, ts) ∧ event concurrent(s2, u2, ts) ==> event applied(u1) ∨ event applied(u2)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "BridgedNode_DeviceType_Requirement",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Ecosystem Information Cluster SHALL be present on an endpoint with BridgedNode device type listed in the DeviceTypeList of the endpoint's Descriptor cluster.",
+      "formal": "∀endpoint, cluster. has_cluster(endpoint, EcosystemInformationCluster) ⟹ ∃descriptor. has_descriptor(endpoint, descriptor) ∧ contains(descriptor.DeviceTypeList, BridgedNode)",
+      "violation": "Ecosystem Information Cluster exists on an endpoint without BridgedNode device type. Clients expecting this correlation may fail to discover the cluster or attempt to use it in unsupported contexts. An attacker could attach the cluster to non-bridge endpoints to confuse clients or create fake device metadata.",
+      "proverifQuery": "query endpoint:principal, cluster:bitstring, descriptor:struct ⊢ event has_cluster(endpoint, cluster) ==> event has_descriptor(endpoint, descriptor) ∧ event contains(descriptor.DeviceTypeList, BridgedNode)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Timestamp_Zero_Default_Validity",
+      "category": "Consistency",
+      "importance": "MEDIUM",
+      "claim": "Timestamp fields default to 0 when no modification has occurred, indicating uninitialized or no user-provided data.",
+      "formal": "∀device, field. ¬modified(device, field) ⟹ timestamp_value(device, field) = 0",
+      "violation": "Timestamp fields have non-zero values despite no modification. Conflict resolution treats uninitialized data as having been modified, potentially preferring it over legitimate updates. An attacker could pre-populate timestamps to win conflict resolution without actual data changes.",
+      "proverifQuery": "query device:principal, field:bitstring ⊢ event not_modified(device, field) ==> event timestamp_equals(device, field, 0)"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Single_Server_Instance_History_Consistency",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Only the history from a single server instance SHALL be considered when evaluating UniqueLocationID changes (no cross-instance ID consistency guaranteed).",
+      "formal": "∀client, device, server1, server2, id1, id2. evaluating(client, device) ∧ from_server(device, server1, id1) ∧ from_server(device, server2, id2) ⟹ (uses_history(client, server1) ⊕ uses_history(client, server2))",
+      "violation": "A client attempts to correlate UniqueLocationIDs across multiple server instances, expecting consistency. Since the spec provides no such guarantee, the client misinterprets location changes or merges incompatible histories. This could lead to incorrect relocation detection or missed user intent. An attacker could exploit this by manipulating one server instance while clients mistakenly trust data from another.",
+      "proverifQuery": "query client:principal, device:principal, s1:principal, s2:principal ⊢ event evaluating(client, device) ∧ event from_server(device, s1) ∧ event from_server(device, s2) ==> (event uses_history(client, s1) ∧ ¬event uses_history(client, s2)) ∨ (¬event uses_history(client, s1) ∧ event uses_history(client, s2))"
+    },
+    {
+      "id": "PROP_026",
+      "name": "LocationDescriptor_Timestamp_Binding",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "LocationDescriptorLastEdit field SHALL be updated with timestamp whenever LocationDescriptor is modified in EcosystemLocationStruct.",
+      "formal": "∀location, desc_old, desc_new, ts_old, ts_new. modify(location, LocationDescriptor, desc_old, desc_new) ∧ desc_old ≠ desc_new ⟹ update(location, LocationDescriptorLastEdit, ts_old, ts_new) ∧ ts_new > ts_old",
+      "violation": "Location descriptor changes without timestamp update. Conflict resolution cannot determine which version is more recent when multiple server instances update same location. Stale location names persist, causing devices to display outdated location information to users.",
+      "proverifQuery": "query location:struct, desc_old:bitstring, desc_new:bitstring, ts_old:timestamp, ts_new:timestamp ⊢ event modify_descriptor(location, desc_old, desc_new) ∧ desc_old ≠ desc_new ==> event update_timestamp(location, ts_old, ts_new) ∧ ts_new > ts_old"
+    },
+    {
+      "id": "PROP_027",
+      "name": "LocationDirectory_Reference_Integrity",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "All EcosystemLocationStruct entries in LocationDirectory SHALL have unique UniqueLocationIDs within a server instance.",
+      "formal": "∀server, loc1, loc2. in_directory(server, loc1) ∧ in_directory(server, loc2) ∧ loc1.UniqueLocationID == loc2.UniqueLocationID ⟹ loc1 == loc2",
+      "violation": "Multiple location entries share same UniqueLocationID in directory. Devices referencing that ID cannot distinguish which location is intended. Causes ambiguous location assignments, breaking device organization. Attacker could create duplicate IDs to merge distinct locations or hide devices.",
+      "proverifQuery": "query server:principal, loc1:struct, loc2:struct, id:bitstring ⊢ event in_directory(server, loc1) ∧ event in_directory(server, loc2) ∧ loc1.UniqueLocationID == id ∧ loc2.UniqueLocationID == id ==> loc1 == loc2"
+    },
+    {
+      "id": "PROP_028",
+      "name": "LocationDirectory_Remove_Safety",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "A location SHALL NOT be removed from LocationDirectory while any device references that UniqueLocationID.",
+      "formal": "∀location, device. in_directory(location) ∧ references(device, location.UniqueLocationID) ⟹ ¬can_remove(location)",
+      "violation": "Location removed while devices still reference it. Creates dangling references in device UniqueLocationIDs lists. Clients attempting to resolve location encounter missing entries, causing errors or displaying incorrect information. Breaks location-based automation and security policies.",
+      "proverifQuery": "query location:struct, device:principal, id:bitstring ⊢ event in_directory(location) ∧ event references(device, id) ∧ location.UniqueLocationID == id ==> event cannot_remove(location)"
+    },
+    {
+      "id": "PROP_029",
+      "name": "LocationDescriptor_User_Consent",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "LocationDescriptor SHALL be provided externally only if user consents.",
+      "formal": "∀location, descriptor. set_external_location_descriptor(location, descriptor) ⟹ user_consented_location(location, descriptor)",
+      "violation": "External ecosystem populates location descriptors without user consent. Privacy violation as user's room/area organization leaks to unauthorized parties. Attacker in external ecosystem injects location names revealing home layout (e.g., 'master bedroom', 'safe room', 'office').",
+      "proverifQuery": "query location:struct, descriptor:bitstring ⊢ event set_external_location_descriptor(location, descriptor) ==> event user_consented_location(location, descriptor)"
+    },
+    {
+      "id": "PROP_030",
+      "name": "LocationDescriptor_Length_Constraint",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "LocationDescriptor SHALL conform to location-desc type constraints (implementation-defined but typically bounded).",
+      "formal": "∀location, descriptor. has_field(location, LocationDescriptor, descriptor) ⟹ valid_location_desc_format(descriptor)",
+      "violation": "LocationDescriptor exceeds format constraints. Implementation buffer overflows or parsing errors. Attacker injects malformed descriptors to crash clients or exploit memory corruption vulnerabilities.",
+      "proverifQuery": "query location:struct, descriptor:bitstring ⊢ event has_location_descriptor(location, descriptor) ==> event valid_format(descriptor)"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "User provides consent before external ecosystem data (device names, locations) is shared with Matter cluster",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_014 fails; privacy violation as user device organization leaks without permission. Attacker in external ecosystem can inject arbitrary names/locations."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "System clocks across server instances are reasonably synchronized (within acceptable drift for timestamp-based conflict resolution)",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_008, PROP_016, PROP_018 fail; conflict resolution breaks as timestamps from unsynchronized clocks cannot be meaningfully compared. Attacker could exploit clock skew to make old updates win."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "Multiple simultaneous updates to UniqueLocationIDs are rare (per spec NOTE: 'unlikely these signals would be happening at one time')",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_022 becomes insufficient; frequent concurrent updates exceed acceptable loss threshold, causing significant data loss. Attacker could trigger synchronized updates to maximize data corruption."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Fabric isolation mechanisms are correctly implemented at the Matter stack level",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_013 fails; cross-fabric data leakage enables reconnaissance and privacy violations across isolated ecosystems."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "Access control policies (Fabric Scoped, restricted access) are enforced by the Matter Access Control cluster and not bypassed",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_013, PROP_015 fail; unauthorized clients gain access to sensitive name/location data, enabling physical security attacks and privacy violations."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Server instances correctly implement timestamp update logic (no rollback, no stale timestamp reuse)",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_001, PROP_008, PROP_016 fail; timestamps become unreliable for conflict resolution, allowing stale data to persist or overwrite recent changes."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Bridged devices accessible through a bridge remain accessible for the lifetime of the BridgedEndpoint field presence",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_002 becomes inconsistent; clients attempt to communicate with inaccessible devices, causing failures or security issues if commands reach unintended targets."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "DeviceTypeList in Descriptor Cluster is authoritative and synchronized with DeviceTypes in Ecosystem Information Cluster",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_005 fails; clients see inconsistent device capabilities, potentially granting inappropriate privileges or executing unsupported commands."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Stale device names overwrite recent updates in multi-source environments",
+      "severity": "HIGH",
+      "attack_vector": "Attacker controls one server instance and delays timestamp updates. When syncing with other instances, attacker's stale names win conflict resolution, reverting user's recent name changes for security devices (cameras, locks), causing user confusion or failure to identify critical devices."
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Command misdirection or denial-of-service through incorrect endpoint routing",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sets BridgedEndpoint on an inaccessible device or leaves it unset on accessible device. Client commands are routed to wrong device (e.g., lock command sent to light) or fail entirely (DoS). In multi-tenant environments, could enable cross-tenant command injection."
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Device relocation goes undetected, disabling location-based security policies",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker physically moves a security camera from 'backyard' to 'bedroom' but manipulates Ecosystem Information Cluster to not update UniqueLocationID. User's location-based privacy rules (e.g., 'disable cameras in bedroom') don't apply to the relocated device. Enables unauthorized surveillance."
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Cross-fabric information leakage exposes device inventory and locations",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker compromises a low-privilege fabric or joins a separate fabric on the same physical network. Fabric isolation failure allows attacker to enumerate all devices, names, and locations across isolated ecosystems. Enables physical reconnaissance for targeted attacks (identifying when users are away, locating valuables)."
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Privacy violation through non-consensual data injection",
+      "severity": "HIGH",
+      "attack_vector": "Attacker in external ecosystem (e.g., compromised smart home app) injects device names and locations into Matter without user consent. Could be used for social engineering (e.g., labeling camera as 'offline' when active) or to leak user habits (e.g., 'master bedroom camera' reveals room layout)."
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Unauthorized device enumeration and physical layout reconnaissance",
+      "severity": "HIGH",
+      "attack_vector": "Attacker with basic client credentials bypasses restricted access controls. Enumerates all device names and locations, maps physical home layout, identifies high-value targets (safes, master bedroom, home office). Uses this for burglary planning or targeted physical attacks."
+    },
+    {
+      "property_id": "PROP_018",
+      "vulnerability": "Timestamp manipulation forces stale data to persist",
+      "severity": "HIGH",
+      "attack_vector": "Attacker manipulates system time on compromised server instance or exploits clock skew. Submits old device names/locations with future timestamps, causing them to win conflict resolution. Legitimate user updates are ignored, device metadata locked to attacker-controlled values."
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Denial-of-service through synchronized update flooding",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker controls multiple server instances and triggers simultaneous UniqueLocationIDs updates. While spec accepts one lost update, coordinated attack maximizes loss rate, causing frequent data corruption. Devices lose location assignments, breaking automation and security policies."
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Device impersonation in multi-hop bridge scenarios",
+      "severity": "HIGH",
+      "attack_vector": "Attacker controls intermediate bridge in multi-hop topology. Modifies OriginalEndpoint when propagating device information from upstream bridge. Downstream clients cannot trace device to true origin, enabling attacker to claim authority over devices from other bridges and inject fake device metadata."
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Privilege escalation through device type mismatch",
+      "severity": "HIGH",
+      "attack_vector": "Attacker manipulates DeviceTypes in Ecosystem Information Cluster to claim higher privileges than actual device (e.g., presenting sensor as lock). Clients trusting DeviceTypes grant inappropriate access. Attacker then sends commands expecting elevated privileges, potentially executing unauthorized operations."
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Client errors or crashes through dangling location references",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker injects non-existent UniqueLocationIDs into device records. Clients attempting to resolve location information encounter null references or missing data, causing exceptions, crashes, or logic errors. Could be used for DoS or to hide device locations from security monitoring."
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Location-based access control bypass through ID reset",
+      "severity": "HIGH",
+      "attack_vector": "Attacker triggers repeated location renames, causing UniqueLocationID to change (violating property). Location-based security policies tied to old ID no longer apply. For example, 'restrict camera access in bedroom' policy tied to ID 'bedroom_1' becomes ineffective when rename generates new ID 'bedroom_2'."
+    },
+    {
+      "property_id": "PROP_027",
+      "vulnerability": "Location ambiguity through duplicate IDs in directory",
+      "severity": "HIGH",
+      "attack_vector": "Attacker creates multiple location entries with same UniqueLocationID. Devices referencing that ID become ambiguously located. Client queries return arbitrary location from duplicates. Enables hiding devices in unexpected locations or merging security zones."
+    },
+    {
+      "property_id": "PROP_028",
+      "vulnerability": "Dangling references through premature location removal",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker removes location from directory while devices still reference it. Device location information becomes unresolvable. Clients display errors or blank location data. Location-based automation breaks. Attacker could systematically remove all locations to disable location-based security policies."
+    },
+    {
+      "property_id": "PROP_029",
+      "vulnerability": "Privacy violation through non-consensual location descriptor injection",
+      "severity": "HIGH",
+      "attack_vector": "Attacker in external ecosystem injects location descriptors without user consent. Reveals sensitive home layout information ('gun safe', 'jewelry box', 'nursery'). Enables targeted physical attacks or social engineering by understanding home organization."
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "DeviceRegistration",
+      "properties_enforcing_transitions": ["PROP_002", "PROP_003", "PROP_023"],
+      "critical_property": "PROP_002 - Device cannot transition from 'inaccessible' to 'accessible' state without valid BridgedEndpoint being set."
+    },
+    {
+      "state_name": "LocationAssignment",
+      "properties_enforcing_transitions": ["PROP_010", "PROP_011", "PROP_012"],
+      "critical_property": "PROP_010 - Transition from location A to location B must change UniqueLocationID, but rename within same location must not."
+    },
+    {
+      "state_name": "ConflictResolution",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_008", "PROP_018"],
+      "critical_property": "PROP_018 - When multiple conflicting updates exist, system must transition to state representing data with highest timestamp."
+    },
+    {
+      "state_name": "DataSynchronization",
+      "properties_enforcing_transitions": ["PROP_004", "PROP_012", "PROP_025"],
+      "critical_property": "PROP_004 - When device data propagates across bridges (multi-hop), OriginalEndpoint must remain invariant across all state transitions."
+    },
+    {
+      "state_name": "AccessControl",
+      "properties_enforcing_transitions": ["PROP_013", "PROP_015"],
+      "critical_property": "PROP_013 - Any state transition involving data access must enforce fabric isolation; cross-fabric state transitions are forbidden."
+    },
+    {
+      "state_name": "LocationDirectoryManagement",
+      "properties_enforcing_transitions": ["PROP_027", "PROP_028", "PROP_029"],
+      "critical_property": "PROP_027 - LocationDirectory must maintain unique UniqueLocationIDs; duplicate IDs break device-location resolution."
+    }
+  ],
+  "additionalInsights": "**Emergent Vulnerabilities:**\n\n1. **Clock Skew Amplification Attack**: While individual properties address timestamp monotonicity (PROP_016) and conflict resolution (PROP_018), the combination creates a vulnerability. An attacker exploiting clock skew across multiple server instances can create a 'time warp' effect where data oscillates between conflicting states as clients query different instances. This is worse than simple stale data - it creates persistent inconsistency.\n\n2. **Location ID Collision Through Cross-Instance Ambiguity**: PROP_009 ensures uniqueness within a single instance, and PROP_025 states no cross-instance consistency is guaranteed. However, when devices sync across instances, location ID collisions between instances can cause silent data corruption. Device A on Instance 1 with location ID 'X' and Device B on Instance 2 with location ID 'X' (different physical locations) will be incorrectly merged when synced. This is not explicitly addressed.\n\n3. **Cascading Consent Bypass**: PROP_014 requires user consent for external data. However, once data enters one server instance with consent, it propagates to other instances (PROP_004, PROP_012) without re-verification. A compromised instance could claim consent was given, injecting malicious data that propagates ecosystem-wide. No per-instance consent verification is specified.\n\n4. **Timestamp Wraparound Vulnerability**: epoch-us timestamps will overflow in ~292,000 years, but implementation bugs or intentional rollback attacks could cause premature wraparound. No overflow handling is specified. An attacker causing timestamp overflow could break all conflict resolution (PROP_018), reverting system to undefined behavior.\n\n5. **Resource Exhaustion Through Location List Explosion**: PROP_021 limits location list to 64 entries, but if each device has 64 locations and each location has 64-character IDs, a single device struct requires 4KB just for location IDs. An attacker registering thousands of such devices could exhaust memory on resource-constrained bridges. No aggregate resource limits specified.\n\n6. **Semantic Inconsistency in 'Valid' Endpoint**: PROP_002 and PROP_003 reference 'valid endpoint' but don't define validation criteria. Is it syntactic (well-formed endpoint number) or semantic (actually reachable/functioning)? A compromised bridge could set syntactically valid but semantically incorrect endpoints, causing systematic command misdirection without violating the formal property.\n\n7. **Race Condition in Timestamp Update**: PROP_001 and PROP_008 require timestamps to be set when fields are present/modified, but don't specify atomicity. A race between field update and timestamp update could leave windows where field is new but timestamp is old, or vice versa. This breaks conflict resolution and could be exploited by timing attacks.\n\n8. **Implicit Trust in External Interaction Detection**: PROP_010 requires UniqueLocationID change 'as a result of external interaction', but how is 'external' vs 'internal' determined? A malicious bridge could claim all changes are 'internal' renames (triggering PROP_011 instead), preventing location change detection. No authentication mechanism for interaction source specified.\n\n**Design Recommendations:**\n1. Add explicit clock skew tolerance bounds and require Precision Time Protocol or similar for timestamp synchronization\n2. Specify cross-instance location ID namespace separation (e.g., include server instance ID in location ID generation)\n3. Require per-instance consent re-verification before accepting synchronized data\n4. Define timestamp overflow handling and maximum timestamp drift policies\n5. Add aggregate resource limits for total device/location data per bridge\n6. Define 'valid endpoint' precisely with both syntactic and reachability requirements\n7. Require atomic field+timestamp updates (e.g., through compare-and-swap or transactional guarantees)\n8. Add cryptographic proof of external interaction source (e.g., signed user intent tokens)",
+  "summary": {
+    "total_properties": 30,
+    "by_importance": {
+      "CRITICAL": 6,
+      "HIGH": 17,
+      "MEDIUM": 7
+    },
+    "by_category": {
+      "Security": 3,
+      "Consistency": 10,
+      "Cryptography": 0,
+      "Timing": 1,
+      "Atomicity": 1,
+      "Correctness": 11,
+      "AccessControl": 2,
+      "Revocation": 0
+    },
+    "total_assumptions": 8,
+    "vulnerabilities_identified": 15,
+    "critical_vulnerabilities": 6,
+    "high_severity_vulnerabilities": 9
+  }
+}

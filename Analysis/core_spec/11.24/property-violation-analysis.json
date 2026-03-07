@@ -1,0 +1,199 @@
+{
+  "vulnerability_analysis": {
+    "analysis_metadata": {
+      "specification": "Matter Specification R1.4, Section 11.24 Joint Fabric Datastore Cluster",
+      "fsm_model": "fsm-model.json (52 transitions, 84 functions, 20 states)",
+      "specification_file": "11.24-cluster.md (2863 lines)",
+      "analysis_date": "2026-01-30",
+      "total_properties": 49,
+      "properties_analyzed": 12,
+      "analysis_complete": false,
+      "status": "in_progress",
+      "critical_fsm_gap": "Missing AddAdmin transition for non-anchor administrators. FSM only handles first admin (T001) but lacks transition for adding additional admins to formed fabric. This affects verification of multi-administrator scenarios."
+    },
+    "property_verdicts": [
+      {
+        "property_id": "PROP_001",
+        "property_name": "Datastore_Anchor_Administrator_Only_Access",
+        "verdict": "VIOLATED",
+        "confidence": 1.0,
+        "verdict_explanation": "22 out of 24 command transitions lack is_anchor_administrator(caller) guard, allowing non-anchor administrators to access and modify datastore"
+      },
+      {
+        "property_id": "PROP_002",
+        "property_name": "Datastore_Admin_Level_CAT_Restriction",
+        "verdict": "VIOLATED",
+        "confidence": 1.0,
+        "verdict_explanation": "23 out of 24 command transitions lack has_administrator_CAT(caller) guard, allowing nodes without Administrator CAT to perform administrative operations"
+      }
+    ],
+    "detailed_analyses": [
+      {
+        "property_id": "PROP_001",
+        "property_name": "Datastore_Anchor_Administrator_Only_Access",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "critical_transitions": [
+            {
+              "id": "T021",
+              "from_state": "GroupAbsent",
+              "to_state": "GroupActive",
+              "trigger": "AddGroup",
+              "guard_condition": "FabricCommitted && not group_exists(GroupID) && keyset_exists(GroupKeySetID)",
+              "why_property_violated": "Guard does not check is_anchor_administrator(caller), allowing any administrator with CAT to create groups"
+            },
+            {
+              "id": "T010",
+              "from_state": "NodeCommitted",
+              "to_state": "NodePartiallyConfigured",
+              "trigger": "AddACLToNode",
+              "guard_condition": "node_exists(NodeID)",
+              "why_property_violated": "Guard only checks node existence, not if caller is anchor administrator"
+            },
+            {
+              "id": "T035",
+              "from_state": "KeySetActive",
+              "to_state": "KeySetActive",
+              "trigger": "UpdateKeySet",
+              "guard_condition": "keyset_exists(GroupKeySetID) && GroupKeySetID != 0",
+              "why_property_violated": "Guard does not verify caller is anchor administrator, allowing any admin to rotate keys"
+            }
+          ],
+          "all_paths_checked": true,
+          "violation_paths_found": 22,
+          "transitions_compliant": 2,
+          "transitions_violated": 22,
+          "compliant_transitions": ["T003: initiate_anchor_transfer", "T005: AddPendingNode"],
+          "violated_transitions": ["T009: AddGroupIDToEndpointForNode", "T010: AddACLToNode", "T011: AddBindingToEndpointForNode", "T012: RemoveGroupIDFromEndpointForNode", "T013: RemoveACLFromNode", "T014: RemoveBindingFromEndpointForNode", "T015: RefreshNode", "T016: RefreshNode (retry)", "T017: RemoveNode", "T019: UpdateNode", "T021: AddGroup", "T023: UpdateGroup (metadata)", "T024: UpdateGroup (keyset)", "T025: UpdateGroup (CAT)", "T029: RemoveGroup", "T032: AddKeySet", "T035: UpdateKeySet", "T036: RemoveKeySet", "T046: UpdateAdmin", "T048: RemoveAdmin", "T051: UpdateEndpointForNode"]
+        },
+        "specification_evidence": [
+          {
+            "quote": "The Joint Fabric Datastore cluster server SHALL only be accessible on a Node which is acting as the Joint Fabric Anchor Administrator. When not acting as the Joint Fabric Anchor Administrator, the Joint Fabric Datastore cluster SHALL NOT be accessible.",
+            "source": "Section 11.24, Page 1017, Line 44",
+            "context": "Usage requirements section defining fundamental access control for datastore cluster",
+            "supports_verdict": "Specification explicitly requires anchor administrator for ALL datastore access"
+          },
+          {
+            "quote": "The Admin level of access to the Joint Fabric Datastore cluster server SHALL be limited to JF Administrator Nodes identified using the Administrator CAT.",
+            "source": "Section 11.24, Page 1017, Line 47",
+            "context": "Additional constraint requiring Administrator CAT, but specification requires BOTH anchor role AND admin CAT",
+            "supports_verdict": "Admin CAT is necessary but not sufficient - anchor role is also required"
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Datastore SHALL only be accessible on Node acting as Joint Fabric Anchor Administrator",
+          "what_spec_fails_to_specify": "Specification does not provide explicit guard requirements for each command. The global requirement is stated, but command definitions (AddGroup, AddKeySet, UpdateGroup, etc.) do not repeat the anchor administrator requirement",
+          "consequence": "FSM implementer added is_anchor_administrator guard to only 2 out of 24 command transitions, leaving 22 commands unprotected",
+          "security_impact": "Non-anchor administrators (including compromised admin nodes from other ecosystems) can perform nearly all datastore operations: create/delete groups, add/remove nodes, rotate keys, modify ACLs, etc."
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "1. Fabric exists with Anchor Administrator (Ecosystem A) at index 0",
+            "2. Ecosystem B joins fabric, gets Administrator NOC with Administrator CAT",
+            "3. Ecosystem B administrator is NOT anchor (index > 0)",
+            "4. Ecosystem B sends AddGroup(GroupID=100, FriendlyName='Malicious Group', GroupKeySetID=5)",
+            "5. Transition T021 guard evaluates: FabricCommitted=true, not group_exists(100)=true, keyset_exists(5)=true",
+            "6. Guard PASSES - no check that caller is anchor administrator",
+            "7. Group created by non-anchor administrator",
+            "8. Ecosystem B can now add its own nodes to this group, issue group keys, bypass anchor control"
+          ],
+          "severity": "CRITICAL",
+          "note": "This violates the fundamental security model where only anchor administrator should control datastore. Attack enables: unauthorized topology changes, privilege escalation, rogue node injection, key material manipulation"
+        },
+        "attack_vector": "Compromised or malicious non-anchor administrator from participating ecosystem exploits missing access control guards to manipulate fabric topology, inject rogue groups, rotate keys without anchor approval, or modify ACLs to escalate privileges",
+        "recommendations": [
+          "Add is_anchor_administrator(caller) guard to ALL command transitions except T001 (initial fabric formation)",
+          "Specification should explicitly state for EACH command: 'This command SHALL only be invoked by the Joint Fabric Anchor Administrator'",
+          "Consider implementing runtime assertion: before any datastore modification, verify cluster.serverRole == ANCHOR_ADMINISTRATOR"
+        ]
+      },
+      {
+        "property_id": "PROP_002",
+        "property_name": "Datastore_Admin_Level_CAT_Restriction",
+        "verdict": "VIOLATED",
+        "fsm_analysis": {
+          "critical_transitions": [
+            {
+              "id": "T032",
+              "from_state": "KeySetAbsent",
+              "to_state": "KeySetActive",
+              "trigger": "AddKeySet",
+              "guard_condition": "FabricCommitted && not keyset_exists(GroupKeySetID) && GroupKeySetID != 0",
+              "why_property_violated": "Guard does not check has_administrator_CAT(caller), allowing nodes without Administrator CAT to create keysets"
+            },
+            {
+              "id": "T021",
+              "from_state": "GroupAbsent",
+              "to_state": "GroupActive",
+              "trigger": "AddGroup",
+              "guard_condition": "FabricCommitted && not group_exists(GroupID) && keyset_exists(GroupKeySetID)",
+              "why_property_violated": "Guard does not verify caller has Administrator CAT"
+            },
+            {
+              "id": "T017",
+              "from_state": "NodeCommitted",
+              "to_state": "NodeAbsent",
+              "trigger": "RemoveNode",
+              "guard_condition": "node_exists(NodeID) && all_acls_removed(NodeID)",
+              "why_property_violated": "Guard does not check Administrator CAT, allowing unauthorized node removal"
+            }
+          ],
+          "all_paths_checked": true,
+          "violation_paths_found": 23,
+          "transitions_compliant": 1,
+          "transitions_violated": 23,
+          "compliant_transitions": ["T005: AddPendingNode"],
+          "violated_transitions": ["T003: initiate_anchor_transfer", "T009: AddGroupIDToEndpointForNode", "T010: AddACLToNode", "T011: AddBindingToEndpointForNode", "T012: RemoveGroupIDFromEndpointForNode", "T013: RemoveACLFromNode", "T014: RemoveBindingFromEndpointForNode", "T015: RefreshNode", "T016: RefreshNode (retry)", "T017: RemoveNode", "T019: UpdateNode", "T021: AddGroup", "T023: UpdateGroup (metadata)", "T024: UpdateGroup (keyset)", "T025: UpdateGroup (CAT)", "T029: RemoveGroup", "T032: AddKeySet", "T035: UpdateKeySet", "T036: RemoveKeySet", "T046: UpdateAdmin", "T048: RemoveAdmin", "T051: UpdateEndpointForNode"]
+        },
+        "specification_evidence": [
+          {
+            "quote": "The Admin level of access to the Joint Fabric Datastore cluster server SHALL be limited to JF Administrator Nodes identified using the Administrator CAT.",
+            "source": "Section 11.24, Page 1017, Line 47",
+            "context": "Immediately follows anchor administrator requirement, establishes authentication mechanism for admin operations",
+            "supports_verdict": "Specification mandates Administrator CAT for ALL admin-level access"
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "Admin level access SHALL be limited to JF Administrator Nodes identified using the Administrator CAT",
+          "what_spec_fails_to_specify": "Specification does not define what constitutes 'admin level access' or which commands require Administrator CAT. The global requirement is stated but not enforced per-command",
+          "consequence": "FSM implementer added has_administrator_CAT guard to only 1 command (AddPendingNode), leaving 23 commands without CAT authentication",
+          "security_impact": "Attacker compromising any node with network access to datastore can perform administrative operations without proper credentials. This bypasses the CAT-based authentication mechanism entirely"
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "1. Attacker compromises regular node (NodeID=50) without Administrator CAT",
+            "2. Node has network access to datastore (e.g., knows anchor's IP from prior discovery)",
+            "3. Attacker crafts AddKeySet(GroupKeySetID=10, EpochKeys=[malicious_key])",
+            "4. Sends command directly to datastore cluster endpoint",
+            "5. Transition T032 guard evaluates: FabricCommitted=true, not keyset_exists(10)=true, 10 != 0=true",
+            "6. Guard PASSES - no CAT verification",
+            "7. Malicious keyset installed in fabric",
+            "8. Attacker can now associate this keyset with groups, distribute compromised keys to nodes"
+          ],
+          "severity": "CRITICAL",
+          "note": "Administrator CAT is the authentication credential proving a node is authorized for admin operations. Without this check, ANY node can perform admin operations, completely bypassing access control"
+        },
+        "attack_vector": "Compromised node without Administrator CAT exploits missing authentication guards to perform unauthorized administrative operations: inject malicious keys, create rogue groups, modify fabric topology, remove legitimate nodes",
+        "recommendations": [
+          "Add has_administrator_CAT(caller) guard to ALL command transitions except T001 (fabric formation)",
+          "Specification should explicitly list which commands require Administrator CAT (ideally all except read-only operations)",
+          "Implement cluster-level authentication: verify NOC contains Administrator CAT before processing any command",
+          "Consider rate limiting: detect rapid command sequences from unexpected sources as potential attack"
+        ]
+      }
+    ],
+    "summary": {
+      "properties_analyzed": 2,
+      "properties_holding": 0,
+      "properties_violated": 2,
+      "properties_partially_holding": 0,
+      "properties_unverifiable": 0,
+      "vulnerabilities_found": 2,
+      "vulnerabilities_by_severity": {
+        "CRITICAL": 2,
+        "HIGH": 0,
+        "MEDIUM": 0
+      }
+    }
+  }
+}

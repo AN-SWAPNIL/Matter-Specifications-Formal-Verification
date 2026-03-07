@@ -1,0 +1,1432 @@
+{
+  "fsm_model": {
+    "section_name": "6.6 Access Control",
+    "section_ref": "Matter Core Specification Section 6.6",
+    "description": "Complete FSM model of the Access Control system including ACL/ARL management, privilege evaluation, CAT-based revocation, and commissioning lifecycle",
+    
+    "states": [
+      {
+        "name": "FactoryReset",
+        "description": "Initial state after factory data reset. ACL is empty, no explicit access control entries exist.",
+        "is_initial": true,
+        "invariants": [
+          "acl_list == []",
+          "arl_list == []",
+          "no_explicit_acl_entries == true",
+          "no_fabrics_provisioned == true"
+        ],
+        "state_variables": {
+          "acl_list": "list<ACLEntry>",
+          "arl_list": "list<ARLEntry>",
+          "commissioning_arl_list": "list<ARLEntry>",
+          "fabric_count": "integer"
+        }
+      },
+      {
+        "name": "CommissioningPASEActive",
+        "description": "PASE commissioning session is active. Implicit Administer privilege granted to commissionee (not commissioner) for entire node, except CommissioningARL restrictions.",
+        "is_initial": false,
+        "invariants": [
+          "pase_session_active == true",
+          "implicit_admin_privilege_for_commissionee == true",
+          "is_commissioning == true",
+          "commissioning_arl_applies == true"
+        ],
+        "state_variables": {
+          "pase_session_id": "session_id",
+          "commissioning_passcode": "passcode_id",
+          "acl_list": "list<ACLEntry>",
+          "commissioning_arl_list": "list<ARLEntry>",
+          "fabric_index": "integer (may be 0 before fabric assignment)"
+        }
+      },
+      {
+        "name": "CommissioningCASEActive",
+        "description": "After AddNOC but before CommissioningComplete. First explicit ACL entry created. Both CommissioningARL and fabric-specific ARL may apply.",
+        "is_initial": false,
+        "invariants": [
+          "acl_list != []",
+          "has_initial_admin_acl_entry == true",
+          "case_session_active == true",
+          "is_commissioning == true",
+          "fabric_index != 0",
+          "commissioning_arl_applies == true"
+        ],
+        "state_variables": {
+          "acl_list": "list<ACLEntry>",
+          "arl_list": "list<ARLEntry>",
+          "commissioning_arl_list": "list<ARLEntry>",
+          "case_session_id": "session_id",
+          "fabric_index": "integer",
+          "pending_fabric_index": "integer",
+          "admin_subject": "node_id or CAT"
+        }
+      },
+      {
+        "name": "Operational",
+        "description": "Normal operational state after commissioning complete. Access control based on explicit ACL entries and ARL restrictions. No implicit privileges.",
+        "is_initial": false,
+        "invariants": [
+          "acl_list != []",
+          "is_commissioning == false",
+          "explicit_acl_enforcement == true",
+          "arl_applies == true",
+          "commissioning_arl_not_applies == true"
+        ],
+        "state_variables": {
+          "acl_list": "list<ACLEntry>",
+          "arl_list": "list<ARLEntry>",
+          "fabric_indices": "set<integer>",
+          "active_sessions": "map<session_id, session_metadata>",
+          "group_memberships": "map<group_id, group_key_id>"
+        }
+      },
+      {
+        "name": "ACLUpdateInProgress",
+        "description": "ACL entry is being modified. Updates take immediate effect, including within the same multi-action message.",
+        "is_initial": false,
+        "invariants": [
+          "acl_update_in_progress == true",
+          "immediate_effect_enforcement == true"
+        ],
+        "state_variables": {
+          "acl_list": "list<ACLEntry>",
+          "arl_list": "list<ARLEntry>",
+          "update_target_entry": "ACLEntry",
+          "update_operation": "add | modify | delete",
+          "current_message_actions": "list<action>",
+          "current_action_index": "integer"
+        }
+      },
+      {
+        "name": "ARLReviewInProgress",
+        "description": "Fabric restriction review is in progress. Administrator requested review via ReviewFabricRestrictions command.",
+        "is_initial": false,
+        "invariants": [
+          "arl_review_active == true",
+          "review_token_issued == true"
+        ],
+        "state_variables": {
+          "acl_list": "list<ACLEntry>",
+          "arl_list": "list<ARLEntry>",
+          "review_token": "token",
+          "fabric_under_review": "integer",
+          "pending_arl_updates": "list<ARLEntry>"
+        }
+      },
+      {
+        "name": "CATVersionUpdateInProgress",
+        "description": "CAT-based revocation in progress. Administrator updating CAT versions in NOCs and ACL entries across nodes.",
+        "is_initial": false,
+        "invariants": [
+          "cat_update_active == true",
+          "eventual_consistency_in_progress == true",
+          "version_increment_in_progress == true"
+        ],
+        "state_variables": {
+          "acl_list": "list<ACLEntry>",
+          "cat_identifier": "16-bit",
+          "old_version": "16-bit",
+          "new_version": "16-bit",
+          "nodes_updated": "set<node_id>",
+          "nodes_pending_update": "set<node_id>",
+          "nocs_reissued": "set<node_id>",
+          "acl_entries_updated": "set<node_id>"
+        }
+      },
+      {
+        "name": "SelfLockout",
+        "description": "Error state: Administrator locked themselves out via ACL update that removed their own access.",
+        "is_initial": false,
+        "invariants": [
+          "no_admin_access_exists == true",
+          "requires_factory_reset == true"
+        ],
+        "state_variables": {
+          "acl_list": "list<ACLEntry>",
+          "locked_out_subject": "node_id",
+          "last_successful_admin": "node_id or null"
+        }
+      },
+      {
+        "name": "AccessDenied",
+        "description": "Request denied due to insufficient privilege in ACL.",
+        "is_initial": false,
+        "invariants": [
+          "required_privilege_not_granted == true",
+          "arl_not_checked == true"
+        ],
+        "state_variables": {
+          "denied_request": "request",
+          "required_privilege": "privilege_enum",
+          "granted_privileges": "set<privilege_enum>",
+          "isd": "IncomingSubjectDescriptor"
+        }
+      },
+      {
+        "name": "AccessRestricted",
+        "description": "Request restricted by ARL despite ACL granting required privilege.",
+        "is_initial": false,
+        "invariants": [
+          "required_privilege_granted == true",
+          "arl_restriction_applies == true"
+        ],
+        "state_variables": {
+          "restricted_request": "request",
+          "granted_privilege": "privilege_enum",
+          "restricting_arl_entry": "ARLEntry",
+          "isd": "IncomingSubjectDescriptor"
+        }
+      },
+      {
+        "name": "AccessGranted",
+        "description": "Request allowed: required privilege granted and no ARL restriction.",
+        "is_initial": false,
+        "invariants": [
+          "required_privilege_granted == true",
+          "no_arl_restriction == true"
+        ],
+        "state_variables": {
+          "allowed_request": "request",
+          "granted_privilege": "privilege_enum",
+          "matching_acl_entry": "ACLEntry",
+          "isd": "IncomingSubjectDescriptor"
+        }
+      }
+    ],
+    
+    "transitions": [
+      {
+        "from_state": "FactoryReset",
+        "to_state": "CommissioningPASEActive",
+        "trigger": "PASE_session_establishment",
+        "guard_condition": "valid_passcode == true && passcode_id == 0",
+        "actions": [
+          "pase_session_active := true",
+          "commissioning_passcode := 0",
+          "is_commissioning := true"
+        ],
+        "timing_requirement": null,
+        "description": "PASE commissioning session established with default passcode. Implicit admin privilege for commissionee begins."
+      },
+      {
+        "from_state": "CommissioningPASEActive",
+        "to_state": "CommissioningCASEActive",
+        "trigger": "AddNOC_command",
+        "guard_condition": "pase_session_active == true && is_commissionee == true && valid_noc_provided == true",
+        "actions": [
+          "fabric_index := allocate_new_fabric_index()",
+          "admin_subject := extract_case_admin_subject(noc)",
+          "initial_acl_entry := create_initial_acl_entry(fabric_index, admin_subject)",
+          "acl_list := append(acl_list, initial_acl_entry)",
+          "arl_list := initialize_fabric_arl(fabric_index, commissioning_arl_list)",
+          "pending_fabric_index := fabric_index",
+          "establish_case_session(noc)"
+        ],
+        "timing_requirement": null,
+        "description": "AddNOC command executed during commissioning. Creates first explicit ACL entry granting Administer privilege to CaseAdminSubject."
+      },
+      {
+        "from_state": "CommissioningCASEActive",
+        "to_state": "Operational",
+        "trigger": "CommissioningComplete_command",
+        "guard_condition": "pending_fabric_index != null && acl_list != []",
+        "actions": [
+          "is_commissioning := false",
+          "pending_fabric_index := null",
+          "commissioning_arl_applies := false",
+          "generate_event(commissioning_complete)"
+        ],
+        "timing_requirement": null,
+        "description": "Commissioning completed. Transition to normal operational mode where explicit ACL enforcement applies without implicit privileges."
+      },
+      {
+        "from_state": "CommissioningPASEActive",
+        "to_state": "FactoryReset",
+        "trigger": "PASE_session_timeout",
+        "guard_condition": "pase_session_timeout_expired == true && acl_list == []",
+        "actions": [
+          "pase_session_active := false",
+          "is_commissioning := false",
+          "commissioning_passcode := null"
+        ],
+        "timing_requirement": null,
+        "description": "PASE session timed out before AddNOC. Return to factory reset state."
+      },
+      {
+        "from_state": "Operational",
+        "to_state": "ACLUpdateInProgress",
+        "trigger": "ACL_modification_request",
+        "guard_condition": "has_administer_privilege(requester) == true && valid_acl_entry_format(new_entry) == true",
+        "actions": [
+          "acl_update_in_progress := true",
+          "update_target_entry := identify_target_entry(request)",
+          "update_operation := extract_operation(request)"
+        ],
+        "timing_requirement": null,
+        "description": "Administrator initiates ACL modification. Requires Administer privilege."
+      },
+      {
+        "from_state": "ACLUpdateInProgress",
+        "to_state": "Operational",
+        "trigger": "ACL_update_complete",
+        "guard_condition": "update_operation_valid == true && no_validation_errors == true",
+        "actions": [
+          "apply_acl_update(update_target_entry, update_operation)",
+          "acl_update_in_progress := false",
+          "generate_event(acl_entry_changed)"
+        ],
+        "timing_requirement": "immediate (within same message for intra-message actions)",
+        "description": "ACL update successfully applied. Takes immediate effect including for subsequent actions in same message."
+      },
+      {
+        "from_state": "ACLUpdateInProgress",
+        "to_state": "SelfLockout",
+        "trigger": "ACL_update_complete",
+        "guard_condition": "update_removes_last_admin_access(requester) == true",
+        "actions": [
+          "apply_acl_update(update_target_entry, update_operation)",
+          "acl_update_in_progress := false",
+          "locked_out_subject := requester",
+          "generate_event(self_lockout_occurred)"
+        ],
+        "timing_requirement": "immediate",
+        "description": "ACL update removed requester's own administrative access. Node may be permanently inaccessible."
+      },
+      {
+        "from_state": "Operational",
+        "to_state": "ARLReviewInProgress",
+        "trigger": "ReviewFabricRestrictions_command",
+        "guard_condition": "has_administer_privilege(requester) == true",
+        "actions": [
+          "review_token := generate_review_token()",
+          "fabric_under_review := requester_fabric_index",
+          "arl_review_active := true",
+          "return_response(review_token)"
+        ],
+        "timing_requirement": null,
+        "description": "Administrator requests fabric restriction review. ARL may be updated asynchronously."
+      },
+      {
+        "from_state": "ARLReviewInProgress",
+        "to_state": "Operational",
+        "trigger": "ARL_review_complete",
+        "guard_condition": "arl_review_active == true",
+        "actions": [
+          "arl_list := apply_pending_arl_updates(arl_list, pending_arl_updates)",
+          "arl_review_active := false",
+          "generate_event(fabric_restriction_review_update, review_token)",
+          "generate_event(access_restriction_entry_changed)"
+        ],
+        "timing_requirement": "asynchronous",
+        "description": "ARL review completed. Updated ARL takes effect immediately."
+      },
+      {
+        "from_state": "Operational",
+        "to_state": "CATVersionUpdateInProgress",
+        "trigger": "CAT_revocation_initiated",
+        "guard_condition": "has_administer_privilege(requester) == true && cat_version_increment_valid == true",
+        "actions": [
+          "cat_update_active := true",
+          "cat_identifier := extract_cat_id(target_cat)",
+          "old_version := current_cat_version(cat_identifier)",
+          "new_version := old_version + 1",
+          "nodes_pending_update := identify_cat_group_nodes(cat_identifier)"
+        ],
+        "timing_requirement": null,
+        "description": "Administrator initiates CAT-based revocation by incrementing CAT version."
+      },
+      {
+        "from_state": "CATVersionUpdateInProgress",
+        "to_state": "CATVersionUpdateInProgress",
+        "trigger": "update_node_noc",
+        "guard_condition": "node_reachable == true && node_in_pending_list == true",
+        "actions": [
+          "issue_noc_with_new_cat_version(node, cat_identifier, new_version)",
+          "nocs_reissued := add(nocs_reissued, node)",
+          "nodes_pending_update := remove(nodes_pending_update, node)"
+        ],
+        "timing_requirement": null,
+        "description": "Update individual node's NOC with new CAT version. Iterative process for each reachable node."
+      },
+      {
+        "from_state": "CATVersionUpdateInProgress",
+        "to_state": "CATVersionUpdateInProgress",
+        "trigger": "update_node_acl",
+        "guard_condition": "node_reachable == true && node_has_cat_in_acl == true",
+        "actions": [
+          "update_acl_cat_version(node, cat_identifier, new_version)",
+          "acl_entries_updated := add(acl_entries_updated, node)",
+          "generate_event(acl_entry_changed)"
+        ],
+        "timing_requirement": null,
+        "description": "Update ACL entries on target nodes to require new CAT version."
+      },
+      {
+        "from_state": "CATVersionUpdateInProgress",
+        "to_state": "Operational",
+        "trigger": "cat_update_complete",
+        "guard_condition": "all_reachable_nodes_updated == true || admin_terminates_update == true",
+        "actions": [
+          "cat_update_active := false",
+          "log_unreachable_nodes(nodes_pending_update)",
+          "generate_event(cat_version_update_complete)"
+        ],
+        "timing_requirement": "eventual consistency (some nodes may remain unreachable)",
+        "description": "CAT version update completed for all reachable nodes. Unreachable nodes retain old policy until updated."
+      },
+      {
+        "from_state": "Operational",
+        "to_state": "AccessGranted",
+        "trigger": "incoming_request",
+        "guard_condition": "required_privilege_in_granted_set(request) == true && is_request_restricted(request, arl_list) == false",
+        "actions": [
+          "isd := get_isd_from_message(request.message, request.session_id)",
+          "granted_privileges := get_granted_privileges(acl_list, isd, request.endpoint_id, request.cluster_id)",
+          "record_attribution(isd)",
+          "allow_request_processing(request)"
+        ],
+        "timing_requirement": "per request evaluation",
+        "description": "Request evaluated: required privilege granted by ACL and not restricted by ARL. Access allowed."
+      },
+      {
+        "from_state": "Operational",
+        "to_state": "AccessRestricted",
+        "trigger": "incoming_request",
+        "guard_condition": "required_privilege_in_granted_set(request) == true && is_request_restricted(request, arl_list) == true",
+        "actions": [
+          "isd := get_isd_from_message(request.message, request.session_id)",
+          "granted_privileges := get_granted_privileges(acl_list, isd, request.endpoint_id, request.cluster_id)",
+          "restricting_arl_entry := find_restricting_arl_entry(request, arl_list)",
+          "record_attribution(isd)",
+          "deny_request_with_access_restricted_error(request)"
+        ],
+        "timing_requirement": "per request evaluation",
+        "description": "Request evaluated: required privilege granted by ACL but restricted by ARL. Access denied with ACCESS_RESTRICTED error."
+      },
+      {
+        "from_state": "Operational",
+        "to_state": "AccessDenied",
+        "trigger": "incoming_request",
+        "guard_condition": "required_privilege_in_granted_set(request) == false",
+        "actions": [
+          "isd := get_isd_from_message(request.message, request.session_id)",
+          "granted_privileges := get_granted_privileges(acl_list, isd, request.endpoint_id, request.cluster_id)",
+          "record_attribution(isd)",
+          "deny_request_with_access_denied_error(request)"
+        ],
+        "timing_requirement": "per request evaluation",
+        "description": "Request evaluated: required privilege not granted by ACL. Access denied."
+      },
+      {
+        "from_state": "CommissioningPASEActive",
+        "to_state": "AccessGranted",
+        "trigger": "incoming_request",
+        "guard_condition": "is_commissionee == true && is_request_restricted(request, commissioning_arl_list) == false",
+        "actions": [
+          "isd := get_isd_from_message(request.message, request.session_id)",
+          "granted_privileges := set(Administer, Manage, Operate, View)",
+          "record_attribution(isd)",
+          "allow_request_processing(request)"
+        ],
+        "timing_requirement": "per request evaluation",
+        "description": "During PASE commissioning, commissionee has implicit Administer privilege (except CommissioningARL restrictions)."
+      },
+      {
+        "from_state": "CommissioningPASEActive",
+        "to_state": "AccessRestricted",
+        "trigger": "incoming_request",
+        "guard_condition": "is_commissionee == true && is_request_restricted(request, commissioning_arl_list) == true",
+        "actions": [
+          "isd := get_isd_from_message(request.message, request.session_id)",
+          "restricting_arl_entry := find_restricting_arl_entry(request, commissioning_arl_list)",
+          "record_attribution(isd)",
+          "deny_request_with_access_restricted_error(request)"
+        ],
+        "timing_requirement": "per request evaluation",
+        "description": "During PASE commissioning, CommissioningARL restrictions override implicit Administer privilege."
+      },
+      {
+        "from_state": "CommissioningPASEActive",
+        "to_state": "AccessDenied",
+        "trigger": "incoming_request",
+        "guard_condition": "is_commissioner == true",
+        "actions": [
+          "isd := get_isd_from_message(request.message, request.session_id)",
+          "granted_privileges := set()",
+          "record_attribution(isd)",
+          "deny_request_with_access_denied_error(request)"
+        ],
+        "timing_requirement": "per request evaluation",
+        "description": "During PASE commissioning, commissioner has NO implicit privilege over commissionee (asymmetric)."
+      },
+      {
+        "from_state": "CommissioningCASEActive",
+        "to_state": "AccessGranted",
+        "trigger": "incoming_request",
+        "guard_condition": "required_privilege_in_granted_set(request) == true && is_request_restricted(request, commissioning_arl_list) == false && is_request_restricted(request, arl_list) == false",
+        "actions": [
+          "isd := get_isd_from_message(request.message, request.session_id)",
+          "granted_privileges := get_granted_privileges(acl_list, isd, request.endpoint_id, request.cluster_id)",
+          "record_attribution(isd)",
+          "allow_request_processing(request)"
+        ],
+        "timing_requirement": "per request evaluation",
+        "description": "After AddNOC but before CommissioningComplete, both CommissioningARL and fabric ARL apply."
+      },
+      {
+        "from_state": "CommissioningCASEActive",
+        "to_state": "AccessRestricted",
+        "trigger": "incoming_request",
+        "guard_condition": "required_privilege_in_granted_set(request) == true && (is_request_restricted(request, commissioning_arl_list) == true || is_request_restricted(request, arl_list) == true)",
+        "actions": [
+          "isd := get_isd_from_message(request.message, request.session_id)",
+          "granted_privileges := get_granted_privileges(acl_list, isd, request.endpoint_id, request.cluster_id)",
+          "restricting_arl_entry := find_restricting_arl_entry(request, commissioning_arl_list, arl_list)",
+          "record_attribution(isd)",
+          "deny_request_with_access_restricted_error(request)"
+        ],
+        "timing_requirement": "per request evaluation",
+        "description": "During CASE commissioning phase, either CommissioningARL or fabric ARL can restrict access."
+      },
+      {
+        "from_state": "AccessGranted",
+        "to_state": "Operational",
+        "trigger": "request_complete",
+        "guard_condition": "true",
+        "actions": [
+          "finalize_request_processing()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to operational state after processing allowed request."
+      },
+      {
+        "from_state": "AccessDenied",
+        "to_state": "Operational",
+        "trigger": "request_complete",
+        "guard_condition": "true",
+        "actions": [
+          "finalize_request_processing()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to operational state after denying request."
+      },
+      {
+        "from_state": "AccessRestricted",
+        "to_state": "Operational",
+        "trigger": "request_complete",
+        "guard_condition": "true",
+        "actions": [
+          "finalize_request_processing()"
+        ],
+        "timing_requirement": null,
+        "description": "Return to operational state after restricting request."
+      },
+      {
+        "from_state": "Operational",
+        "to_state": "Operational",
+        "trigger": "CASE_session_rejection",
+        "guard_condition": "no_matching_acl_entry(case_initiator) == true && implementation_specific_rejection_enabled == true",
+        "actions": [
+          "reject_case_session_establishment(case_initiator)",
+          "log_rejected_session(case_initiator)"
+        ],
+        "timing_requirement": null,
+        "description": "Optional implementation-specific optimization: Reject CASE session if no ACL entry matches. Must be careful to avoid rejecting valid connections."
+      },
+      {
+        "from_state": "SelfLockout",
+        "to_state": "FactoryReset",
+        "trigger": "factory_reset_command",
+        "guard_condition": "physical_reset_authorized == true",
+        "actions": [
+          "clear_all_fabrics()",
+          "acl_list := []",
+          "arl_list := []",
+          "commissioning_arl_list := device_default_commissioning_arl()",
+          "locked_out_subject := null"
+        ],
+        "timing_requirement": null,
+        "description": "Factory reset to recover from self-lockout. All fabrics and ACL entries erased."
+      }
+    ],
+    
+    "functions": [
+      {
+        "name": "get_isd_from_message",
+        "parameters": [
+          {"name": "message", "type": "Message", "description": "Incoming interaction model message"},
+          {"name": "session_id", "type": "session_id", "description": "Session identifier for the message"}
+        ],
+        "return_type": "IncomingSubjectDescriptor",
+        "description": "Derives the Incoming Subject Descriptor (ISD) from message and session metadata. ISD contains IsCommissioning flag, AuthMode, Subjects list, and FabricIndex. This is the security context used for access control decisions.",
+        "algorithm_detail": "Deterministic derivation based on session metadata. For PASE: AuthMode=PASE, IsCommissioning=true, Subjects=[0], FabricIndex=0 or assigned. For CASE: AuthMode=CASE, IsCommissioning=(fabric_index==pending_fabric_index), Subjects=[src_node_id, CATs...], FabricIndex=fabric_index (must be non-zero). For Group: AuthMode=Group, verify group membership via Group Key Management Cluster, Subjects=[group_id], FabricIndex=fabric_index (must be non-zero). On derivation failure, return safe default: IsCommissioning=false, AuthMode=None, Subjects=[], FabricIndex=0 (causes access denial).",
+        "usage_in_fsm": "Called in every access control evaluation transition to determine requester's authentication context"
+      },
+      {
+        "name": "get_granted_privileges",
+        "parameters": [
+          {"name": "acl", "type": "list<ACLEntry>", "description": "Access Control List"},
+          {"name": "subject_desc", "type": "IncomingSubjectDescriptor", "description": "ISD of incoming message"},
+          {"name": "endpoint_id", "type": "endpoint_id", "description": "Target endpoint"},
+          {"name": "cluster_id", "type": "cluster_id", "description": "Target cluster"}
+        ],
+        "return_type": "set<Privilege>",
+        "description": "Determines the complete set of privileges granted by ACL for the given subject and target. Implements privilege subsumption (Administer includes Manage, Operate, View; Manage includes Operate, View; Operate includes View). For PASE during commissioning, implicitly grants Administer if IsCommissioneeDuringCommissioning() is true.",
+        "algorithm_detail": "Initialize empty granted_privileges set. If PASE commissioning and IsCommissionee, add Administer (includes all lower privileges). Iterate through ACL entries: skip if FabricIndex=0 or FabricIndex mismatch; skip if AuthMode mismatch; check subject match (exact match or CAT match with version>=); check target match (cluster, endpoint, or device type); validate extensions; if all match, add entry's privilege to granted set with subsumption. Assert no Group AuthMode grants Administer. Return granted set.",
+        "usage_in_fsm": "Called in access control evaluation to determine what privileges subject has for target"
+      },
+      {
+        "name": "is_request_restricted",
+        "parameters": [
+          {"name": "arl", "type": "list<ARLEntry>", "description": "Access Restriction List (ARL or CommissioningARL)"},
+          {"name": "subject_desc", "type": "IncomingSubjectDescriptor", "description": "ISD of incoming message"},
+          {"name": "request_type", "type": "RequestTypeEnum", "description": "AttributeRead | AttributeWrite | CommandInvoke | EventRead"},
+          {"name": "endpoint_id", "type": "endpoint_id", "description": "Target endpoint"},
+          {"name": "cluster_id", "type": "cluster_id", "description": "Target cluster"},
+          {"name": "cluster_element", "type": "element_id", "description": "Attribute/Command/Event ID"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if request is restricted by ARL. ARL restrictions override ACL grants. Returns true if restriction applies.",
+        "algorithm_detail": "First check if restrictions are disallowed for this endpoint/cluster/element (Managed Device feature scope, commissioning-critical clusters). If disallowed, return false. Iterate ARL entries: if not commissioning, skip entries with FabricIndex mismatch; skip entries with endpoint mismatch; skip entries with cluster mismatch. For each restriction in entry: if AttributeAccessForbidden and request is read/write, check if ID is NULL (wildcard) or matches cluster_element, return true if match. If AttributeWriteForbidden and request is write, check ID match, return true if match. If CommandForbidden and request is invoke, check ID match, return true if match. If EventAccessForbidden and request is event read, check ID match, return true if match. Return false if no restriction matches.",
+        "usage_in_fsm": "Called after privilege check to determine if ARL overrides the ACL grant"
+      },
+      {
+        "name": "get_access_status",
+        "parameters": [
+          {"name": "acl", "type": "list<ACLEntry>", "description": "Access Control List"},
+          {"name": "arl_attr", "type": "list<ARLEntry>", "description": "Fabric-specific ARL"},
+          {"name": "commissioning_arl_attr", "type": "list<ARLEntry>", "description": "Commissioning ARL"},
+          {"name": "request_privilege", "type": "PrivilegeEnum", "description": "Required privilege for request"},
+          {"name": "subject_desc", "type": "IncomingSubjectDescriptor", "description": "ISD"},
+          {"name": "request_type", "type": "RequestTypeEnum", "description": "Request type"},
+          {"name": "endpoint_id", "type": "endpoint_id", "description": "Target endpoint"},
+          {"name": "cluster_id", "type": "cluster_id", "description": "Target cluster"},
+          {"name": "cluster_element", "type": "element_id", "description": "Target element"}
+        ],
+        "return_type": "AccessStatusEnum",
+        "description": "Main access control decision function. Returns AccessGranted, AccessRestricted, or AccessDenied.",
+        "algorithm_detail": "Call get_granted_privileges(acl, subject_desc, endpoint_id, cluster_id) to get granted set. If request_privilege is in granted set: select ARL source (commissioning_arl_attr if IsCommissioning, else arl_attr); call is_request_restricted(); if restricted, return AccessRestricted; else return AccessGranted. If request_privilege not in granted set, return AccessDenied.",
+        "usage_in_fsm": "Top-level function called to make access control decision for each request"
+      },
+      {
+        "name": "subject_matches",
+        "parameters": [
+          {"name": "acl_subject", "type": "subject_id", "description": "Subject from ACL entry"},
+          {"name": "isd_subject", "type": "subject_id", "description": "Subject from ISD"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if ACL subject matches ISD subject. Supports exact match or CAT match with version comparison.",
+        "algorithm_detail": "Return true if acl_subject == isd_subject (exact match). Return true if both are CATs (upper 32 bits = 0xFFFF_FFFD) and CAT_ID matches (bits [31:16]) and ISD_CAT_version >= ACL_CAT_version (bits [15:0]). CAT version comparison implements revocation: nodes with older CAT versions (lower version number) are denied access when ACL requires newer version.",
+        "usage_in_fsm": "Called within get_granted_privileges to match subjects"
+      },
+      {
+        "name": "add_granted_privilege",
+        "parameters": [
+          {"name": "granted_privileges", "type": "set<Privilege>", "description": "Set to update"},
+          {"name": "privilege", "type": "PrivilegeEnum", "description": "Privilege to add"}
+        ],
+        "return_type": "void",
+        "description": "Adds privilege to granted set with subsumption. Higher privileges include lower privileges.",
+        "algorithm_detail": "Add privilege to set. If Operate, also add View. If Manage, also add Operate and View. If Administer, also add Manage, Operate, and View. This ensures that privilege hierarchy is enforced: administrators can perform all operations, managers can perform operational and view operations, etc.",
+        "usage_in_fsm": "Called within get_granted_privileges when ACL entry matches"
+      },
+      {
+        "name": "create_initial_acl_entry",
+        "parameters": [
+          {"name": "fabric_index", "type": "integer", "description": "Newly allocated fabric index"},
+          {"name": "admin_subject", "type": "subject_id", "description": "CaseAdminSubject from AddNOC"}
+        ],
+        "return_type": "ACLEntry",
+        "description": "Creates the first ACL entry during AddNOC command. Grants Administer privilege to the commissioning administrator.",
+        "algorithm_detail": "Create ACL entry with: FabricIndex=fabric_index (non-zero), Privilege=Administer, AuthMode=CASE, Subjects=[admin_subject] (either Node ID for separately-administered fabric or Administrator CAT 0xFFFF_FFFD_FFFF_0001 for Joint Fabric), Targets=[] (entire node). This entry enables the administrator to manage the node after commissioning completes.",
+        "usage_in_fsm": "Called during AddNOC transition to bootstrap access control"
+      },
+      {
+        "name": "extract_case_admin_subject",
+        "parameters": [
+          {"name": "noc", "type": "X509Certificate", "description": "Node Operational Certificate"}
+        ],
+        "return_type": "subject_id",
+        "description": "Extracts the CaseAdminSubject from NOC. This is either the Node ID or the Administrator CAT for Joint Fabric.",
+        "algorithm_detail": "Parse NOC certificate. For Joint Fabric commissioning, extract Administrator CAT (identifier 0xFFFF, encoded as 0xFFFF_FFFD_FFFF_xxxx in subjects list) from certificate subject field (OID 1.3.6.1.4.1.37244.1.6). For separately-administered fabric, extract Node ID from certificate subject. Return as subject_id suitable for ACL entry.",
+        "usage_in_fsm": "Called during AddNOC to determine who gets initial Administer privilege"
+      },
+      {
+        "name": "extract_cats_from_certificate",
+        "parameters": [
+          {"name": "certificate", "type": "X509Certificate", "description": "Operational Certificate"}
+        ],
+        "return_type": "list<CAT>",
+        "description": "Extracts all CASE Authenticated Tags from certificate. Up to 3 CATs can be present.",
+        "algorithm_detail": "Parse certificate subject field for OID 1.3.6.1.4.1.37244.1.6 entries. Each entry is a 32-bit value: upper 16 bits = CAT identifier, lower 16 bits = CAT version. Encode for ISD subjects list by prepending 0xFFFF_FFFD to create 64-bit subject_id. Return list of encoded CATs (max 3). These CATs serve as group-like subjects that chain back to individual node through CA signature.",
+        "usage_in_fsm": "Called within get_isd_from_message for CASE sessions"
+      },
+      {
+        "name": "verify_group_membership",
+        "parameters": [
+          {"name": "group_id", "type": "group_id", "description": "Destination group ID from message"},
+          {"name": "group_key_id", "type": "group_key_id", "description": "Group key ID used to decrypt message"},
+          {"name": "group_key_mgmt_cluster", "type": "GroupKeyManagementCluster", "description": "Group Key Management Cluster instance"}
+        ],
+        "return_type": "boolean",
+        "description": "Verifies that the group_id and group_key_id have a valid mapping in Group Key Management Cluster.",
+        "algorithm_detail": "Query Group Key Management Cluster for mapping between group_id and group_key_id. Return true if mapping exists (message was properly decrypted with valid operational group key for this group). Return false if no mapping (prevents forged group messages). Group authentication has no source node attribution but relies on possession of symmetric group key.",
+        "usage_in_fsm": "Called within get_isd_from_message for Group authenticated messages"
+      },
+      {
+        "name": "validate_acl_entry",
+        "parameters": [
+          {"name": "entry", "type": "ACLEntry", "description": "ACL entry to validate"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates ACL entry constraints per specification.",
+        "algorithm_detail": "Check: FabricIndex != 0 (no explicit zero fabric entries); if Privilege=Administer then AuthMode=CASE (Group cannot grant Administer); if AuthMode=PASE then return false (PASE entries cannot be explicit); if Subjects=[] then AuthMode in {CASE, Group} (only these can have wildcard subjects); if Targets non-empty, each target must have at least one of {Cluster, Endpoint, DeviceType}; each target must not have both Endpoint and DeviceType (mutual exclusion); validate extensions if present. Return true if all constraints satisfied.",
+        "usage_in_fsm": "Called before applying ACL update to ensure entry is valid"
+      },
+      {
+        "name": "apply_acl_update",
+        "parameters": [
+          {"name": "target_entry", "type": "ACLEntry", "description": "Entry to add/modify/delete"},
+          {"name": "operation", "type": "enum{add, modify, delete}", "description": "Operation type"}
+        ],
+        "return_type": "void",
+        "description": "Applies ACL update atomically. Takes immediate effect including for subsequent actions in same message.",
+        "algorithm_detail": "If operation=add, append target_entry to acl_list. If operation=modify, replace matching entry in acl_list with target_entry. If operation=delete, remove matching entry from acl_list. Update takes effect immediately before any subsequent Interaction Model actions are processed. This enables instant privilege changes but creates risk of self-lockout if administrator modifies their own access within multi-action message.",
+        "usage_in_fsm": "Called during ACL update transitions"
+      },
+      {
+        "name": "initialize_fabric_arl",
+        "parameters": [
+          {"name": "fabric_index", "type": "integer", "description": "New fabric index"},
+          {"name": "commissioning_arl", "type": "list<ARLEntry>", "description": "CommissioningARL to copy"}
+        ],
+        "return_type": "list<ARLEntry>",
+        "description": "Initializes fabric-specific ARL during AddNOC. May copy restrictions from CommissioningARL.",
+        "algorithm_detail": "Device MAY add ARL entries with new FabricIndex at time of AddNOC. Typically copies restrictions from CommissioningARL and associates them with the new fabric. Creates fabric-scoped version of device-imposed restrictions. Returns new ARL entries to add to arl_list.",
+        "usage_in_fsm": "Called during AddNOC transition to establish fabric restrictions"
+      },
+      {
+        "name": "has_administer_privilege",
+        "parameters": [
+          {"name": "requester", "type": "IncomingSubjectDescriptor", "description": "Requester's ISD"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if requester has Administer privilege for Access Control Cluster.",
+        "algorithm_detail": "Call get_granted_privileges() for endpoint 0 (root endpoint), Access Control Cluster. Check if Administer is in granted set. Access Control Cluster updates require Administer privilege, enforcing same access control as all other clusters.",
+        "usage_in_fsm": "Called to gate ACL/ARL update operations"
+      },
+      {
+        "name": "update_removes_last_admin_access",
+        "parameters": [
+          {"name": "requester", "type": "subject_id", "description": "Subject performing update"},
+          {"name": "target_entry", "type": "ACLEntry", "description": "Entry being modified"},
+          {"name": "operation", "type": "enum", "description": "Operation type"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if ACL update will remove requester's own Administer privilege with no other administrators remaining.",
+        "algorithm_detail": "Simulate ACL update operation. Check if requester would still have Administer privilege after update. If requester = subject in target_entry being deleted/restricted, and no other ACL entry grants requester Administer privilege, return true (self-lockout will occur). Used to detect (but not prevent) self-lockout scenarios per specification's immediate effect semantics.",
+        "usage_in_fsm": "Called during ACL update to detect self-lockout and transition to SelfLockout state"
+      },
+      {
+        "name": "issue_noc_with_new_cat_version",
+        "parameters": [
+          {"name": "node", "type": "node_id", "description": "Target node"},
+          {"name": "cat_identifier", "type": "16-bit", "description": "CAT identifier"},
+          {"name": "new_version", "type": "16-bit", "description": "New CAT version"}
+        ],
+        "return_type": "void",
+        "description": "Issues new NOC to node with updated CAT version. Part of CAT-based revocation process.",
+        "algorithm_detail": "Obtain new NOC from Certificate Authority with updated CAT: identifier=cat_identifier, version=new_version. Send UpdateNOC command to node (or AddNOC if commissioning). Node updates its operational certificate to include new CAT version. Subsequent CASE sessions will present new CAT version to peers.",
+        "usage_in_fsm": "Called iteratively during CAT version update process"
+      },
+      {
+        "name": "update_acl_cat_version",
+        "parameters": [
+          {"name": "node", "type": "node_id", "description": "Target node with ACL entries"},
+          {"name": "cat_identifier", "type": "16-bit", "description": "CAT identifier"},
+          {"name": "new_version", "type": "16-bit", "description": "New required version"}
+        ],
+        "return_type": "void",
+        "description": "Updates ACL entries on target nodes to require new CAT version, completing revocation.",
+        "algorithm_detail": "Find ACL entries on target node containing CAT subject with matching identifier. Update CAT subject from 0xFFFF_FFFD_<cat_id>_<old_ver> to 0xFFFF_FFFD_<cat_id>_<new_ver>. After update, only nodes with CAT version >= new_version will match ACL entry. Nodes with old CAT version are effectively revoked. Coordinate with NOC updates to avoid denying authorized nodes or allowing revoked nodes.",
+        "usage_in_fsm": "Called during CAT version update to propagate new version requirement"
+      },
+      {
+        "name": "find_restricting_arl_entry",
+        "parameters": [
+          {"name": "request", "type": "Request", "description": "Request being evaluated"},
+          {"name": "arl_lists", "type": "list<list<ARLEntry>>", "description": "One or more ARL lists to check"}
+        ],
+        "return_type": "ARLEntry",
+        "description": "Identifies which ARL entry is restricting the request.",
+        "algorithm_detail": "Iterate through ARL lists and entries to find matching entry that restricts the request. Return the restricting entry for error reporting and auditing.",
+        "usage_in_fsm": "Called when returning AccessRestricted status to identify which ARL entry caused restriction"
+      },
+      {
+        "name": "allocate_new_fabric_index",
+        "parameters": [],
+        "return_type": "integer",
+        "description": "Allocates a new unique fabric index for the fabric being commissioned.",
+        "algorithm_detail": "Select unused fabric index from available range (1-254). Return non-zero fabric index that uniquely identifies this fabric on the node.",
+        "usage_in_fsm": "Called during AddNOC to assign fabric index"
+      },
+      {
+        "name": "establish_case_session",
+        "parameters": [
+          {"name": "noc", "type": "X509Certificate", "description": "Node Operational Certificate"}
+        ],
+        "return_type": "void",
+        "description": "Establishes CASE authenticated session using provided NOC.",
+        "algorithm_detail": "Complete CASE session establishment protocol using NOC. Store session metadata including fabric_index, src_node_id, and extracted CATs. Session provides authenticated context for subsequent requests.",
+        "usage_in_fsm": "Called during AddNOC to transition from PASE to CASE authentication"
+      },
+      {
+        "name": "record_attribution",
+        "parameters": [
+          {"name": "isd", "type": "IncomingSubjectDescriptor", "description": "Subject descriptor for request"}
+        ],
+        "return_type": "void",
+        "description": "Records attribution of action to the ISD (not to matched ACL entry).",
+        "algorithm_detail": "Log action attribution against ISD components: AuthMode, FabricIndex, and Subjects list (Node ID and/or CATs for CASE, Group ID for Group, Passcode ID for PASE). This provides precise attribution for audit trails. For CASE with Node ID, attribution is to specific node. For CAT-based or wildcard ACL entries, multiple nodes may match same entry but attribution distinguishes them via ISD.",
+        "usage_in_fsm": "Called during every access control evaluation for audit purposes"
+      },
+      {
+        "name": "endpoint_contains_device_type",
+        "parameters": [
+          {"name": "endpoint_id", "type": "endpoint_id", "description": "Endpoint to check"},
+          {"name": "device_type", "type": "device_type_id", "description": "Device type to match"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if endpoint contains the specified device type.",
+        "algorithm_detail": "Query data model for endpoint descriptor. Check if device_type is listed in endpoint's device type list. Used for Target matching when ACL entry specifies DeviceType rather than explicit Endpoint.",
+        "usage_in_fsm": "Called within get_granted_privileges for indirect endpoint matching via device type"
+      },
+      {
+        "name": "extensions_are_valid",
+        "parameters": [
+          {"name": "acl", "type": "list<ACLEntry>", "description": "Full ACL"},
+          {"name": "acl_entry", "type": "ACLEntry", "description": "Entry being validated"},
+          {"name": "subject_desc", "type": "IncomingSubjectDescriptor", "description": "ISD context"},
+          {"name": "endpoint_id", "type": "endpoint_id", "description": "Target endpoint"},
+          {"name": "cluster_id", "type": "cluster_id", "description": "Target cluster"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates Access Control Extensions for ACL entry. Extensions must not fail.",
+        "algorithm_detail": "If ACL entry has extensions, validate extension semantics and syntax. Implementation-specific extension validation. Return false if extension processing fails (causes ACL entry to be skipped). Return true if no extensions or extensions are valid. Extensions allow vendor-specific access control enhancements but must preserve security (only Administrators can install extensions).",
+        "usage_in_fsm": "Called within get_granted_privileges before granting privilege from ACL entry"
+      },
+      {
+        "name": "are_restrictions_disallowed",
+        "parameters": [
+          {"name": "request_type", "type": "RequestTypeEnum", "description": "Type of request"},
+          {"name": "endpoint_id", "type": "endpoint_id", "description": "Target endpoint"},
+          {"name": "cluster_id", "type": "cluster_id", "description": "Target cluster"},
+          {"name": "cluster_element", "type": "element_id", "description": "Target element"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if ARL restrictions are disallowed for this target. Certain clusters and elements can never be restricted (e.g., commissioning-critical clusters).",
+        "algorithm_detail": "Check if endpoint supports Managed Device feature (ARL only applies to such endpoints). Check if cluster is mandatory on endpoint (ARL only restricts mandatory clusters). Check if cluster/element is commissioning-critical (must never be restricted to avoid bricking device). Return true if restrictions are disallowed.",
+        "usage_in_fsm": "Called within is_request_restricted to determine scope of ARL enforcement"
+      },
+      {
+        "name": "generate_review_token",
+        "parameters": [],
+        "return_type": "token",
+        "description": "Generates unique token for fabric restriction review correlation.",
+        "algorithm_detail": "Generate cryptographically random or unique token. Returned in ReviewFabricRestrictionsResponse and included in FabricRestrictionReviewUpdate event to correlate asynchronous review completion.",
+        "usage_in_fsm": "Called when initiating ARL review"
+      },
+      {
+        "name": "apply_pending_arl_updates",
+        "parameters": [
+          {"name": "current_arl", "type": "list<ARLEntry>", "description": "Current ARL"},
+          {"name": "pending_updates", "type": "list<ARLEntry>", "description": "Pending updates from review"}
+        ],
+        "return_type": "list<ARLEntry>",
+        "description": "Applies pending ARL updates after review completes.",
+        "algorithm_detail": "Merge pending_updates into current_arl. May add, modify, or remove ARL entries based on device's review of fabric restrictions. Returns updated ARL. Changes take effect immediately.",
+        "usage_in_fsm": "Called when ARL review completes"
+      },
+      {
+        "name": "identify_cat_group_nodes",
+        "parameters": [
+          {"name": "cat_identifier", "type": "16-bit", "description": "CAT identifier"}
+        ],
+        "return_type": "set<node_id>",
+        "description": "Identifies all nodes in CAT group that need NOC and ACL updates.",
+        "algorithm_detail": "Query fabric for all nodes with CATs containing cat_identifier (any version). These nodes need NOC reissuance with new CAT version. Also identify target nodes whose ACL entries contain this CAT as subject. Return set of nodes requiring updates.",
+        "usage_in_fsm": "Called when initiating CAT-based revocation"
+      },
+      {
+        "name": "no_matching_acl_entry",
+        "parameters": [
+          {"name": "case_initiator", "type": "node_id", "description": "CASE session initiator identity"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if any ACL entry could match this CASE initiator. Used for optional session rejection optimization.",
+        "algorithm_detail": "Check if any ACL entry with AuthMode=CASE has Subjects list that could match case_initiator (considering Node ID match, CAT match, or wildcard empty list). Very careful analysis required to avoid false positives that would incorrectly reject valid connections. Return true only if definitively no ACL entry could match.",
+        "usage_in_fsm": "Called for optional CASE session rejection optimization (implementation-specific)"
+      },
+      {
+        "name": "IsCommissioneeDuringCommissioning",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if current context is commissionee during PASE commissioning (not commissioner).",
+        "algorithm_detail": "Return true if PASE session is active AND current endpoint is the commissionee being commissioned (not the commissioner). This determines whether implicit Administer privilege applies. Asymmetric: commissionee has implicit admin over itself, commissioner does NOT have implicit admin over commissionee.",
+        "usage_in_fsm": "Called within get_granted_privileges for PASE implicit privilege logic"
+      },
+      {
+        "name": "clear_all_fabrics",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Erases all fabric state during factory reset.",
+        "algorithm_detail": "Remove all operational certificates, fabric indices, session state, and fabric-scoped data. Node returns to pre-commissioned state.",
+        "usage_in_fsm": "Called during factory reset transition"
+      },
+      {
+        "name": "device_default_commissioning_arl",
+        "parameters": [],
+        "return_type": "list<ARLEntry>",
+        "description": "Returns device's default CommissioningARL configuration.",
+        "algorithm_detail": "Device manufacturer defines CommissioningARL entries that restrict access during commissioning. These restrictions prevent access to device-specific sensitive functionality even during commissioning when implicit Administer privilege exists.",
+        "usage_in_fsm": "Called during factory reset to initialize CommissioningARL"
+      },
+      {
+        "name": "required_privilege_in_granted_set",
+        "parameters": [
+          {"name": "request", "type": "Request", "description": "Request being evaluated"}
+        ],
+        "return_type": "boolean",
+        "description": "Checks if required privilege for request is in granted privileges set.",
+        "algorithm_detail": "Extract required privilege from request's target (attribute/command/event access quality from Data Model). Check if this privilege is in granted_privileges set returned by get_granted_privileges().",
+        "usage_in_fsm": "Used in guard conditions for access control decision transitions"
+      },
+      {
+        "name": "identify_target_entry",
+        "parameters": [
+          {"name": "request", "type": "Request", "description": "ACL modification request"}
+        ],
+        "return_type": "ACLEntry",
+        "description": "Identifies which ACL entry is being targeted for modification.",
+        "algorithm_detail": "Parse ACL modification request to extract target entry index or matching criteria. Return ACLEntry being added, modified, or deleted.",
+        "usage_in_fsm": "Called when processing ACL update request"
+      },
+      {
+        "name": "extract_operation",
+        "parameters": [
+          {"name": "request", "type": "Request", "description": "ACL modification request"}
+        ],
+        "return_type": "enum{add, modify, delete}",
+        "description": "Extracts operation type from ACL modification request.",
+        "algorithm_detail": "Determine if request is adding new entry, modifying existing entry, or deleting entry based on Interaction Model write operation.",
+        "usage_in_fsm": "Called when processing ACL update request"
+      },
+      {
+        "name": "valid_acl_entry_format",
+        "parameters": [
+          {"name": "entry", "type": "ACLEntry", "description": "Entry to validate"}
+        ],
+        "return_type": "boolean",
+        "description": "Validates basic ACL entry format and structure.",
+        "algorithm_detail": "Check that entry has valid field types and ranges. Calls validate_acl_entry() for constraint checking.",
+        "usage_in_fsm": "Called in guard condition before allowing ACL update"
+      }
+    ],
+    
+    "definitions": [
+      {
+        "term": "Access Control Entry (ACL Entry)",
+        "definition": "A rule in the Access Control List that grants a specific privilege level to specified subjects for specified targets. Contains: FabricIndex, Privilege, AuthMode, Subjects list, Targets list, optional Extensions.",
+        "security_relevance": "ACL entries are the sole mechanism for granting access (except implicit PASE privilege during commissioning). Compromise or misconfiguration of ACL entries breaks access control."
+      },
+      {
+        "term": "Access Restriction Entry (ARL Entry)",
+        "definition": "A device-imposed restriction that overrides ACL grants. Identifies specific attributes, commands, or events on specific endpoint/cluster that are not accessible on a fabric. Contains: FabricIndex, Endpoint, Cluster, Restrictions list.",
+        "security_relevance": "ARL provides device manufacturer security boundaries that cannot be bypassed by fabric administrators. Enables device to protect sensitive functionality."
+      },
+      {
+        "term": "Incoming Subject Descriptor (ISD)",
+        "definition": "Security context derived from incoming message and session metadata. Contains: IsCommissioning (bool), AuthMode (PASE/CASE/Group), Subjects list (Node IDs/CATs/Group IDs), FabricIndex. Deterministically derived per specification algorithm.",
+        "security_relevance": "ISD is the authenticated identity used for all access control decisions. If ISD derivation is compromised, entire access control system fails."
+      },
+      {
+        "term": "CASE Authenticated Tag (CAT)",
+        "definition": "32-bit value embedded in Operational Certificate: upper 16 bits = identifier (group), lower 16 bits = version (for revocation). Appears in ACL Subjects as 0xFFFF_FFFD_<cat_32bits>. Functions as group-like subject with individual node attribution via certificate chain.",
+        "security_relevance": "CATs enable group-based access control with revocation via version increment. Version comparison (ISD CAT version >= ACL CAT version) implements revocation without certificate revocation lists."
+      },
+      {
+        "term": "Privilege Subsumption",
+        "definition": "Hierarchical privilege model: Administer includes Manage, Operate, View. Manage includes Operate, View. Operate includes View. View is lowest privilege. Granting higher privilege automatically grants all lower privileges.",
+        "security_relevance": "Ensures consistent privilege semantics. Failures in subsumption implementation cause administrators to be denied low-privilege operations (operational failure)."
+      },
+      {
+        "term": "Wildcard Subject/Target",
+        "definition": "Empty Subjects list means all subjects with specified AuthMode. Empty Targets list means all clusters on all endpoints. Not represented as special value but as empty list.",
+        "security_relevance": "Wildcard grants can dramatically expand access. Accidental wildcards (e.g., via incremental deletion) create major security vulnerabilities."
+      },
+      {
+        "term": "Implicit PASE Privilege",
+        "definition": "During PASE commissioning session, commissionee has implicit Administer privilege over itself (not explicit ACL entry). Commissioner does NOT have implicit privilege over commissionee (asymmetric). Restricted by CommissioningARL.",
+        "security_relevance": "Enables bootstrapping of ACL during commissioning. Asymmetry prevents commissioner from gaining unauthorized permanent access."
+      },
+      {
+        "term": "Immediate Effect ACL Updates",
+        "definition": "ACL updates take effect immediately, even within the same multi-action Interaction Model message. Subsequent actions in same message see updated ACL.",
+        "security_relevance": "Enables instant privilege changes but creates self-lockout risk if administrator restricts own access within multi-action message."
+      },
+      {
+        "term": "CommissioningARL vs ARL",
+        "definition": "CommissioningARL applies during commissioning phase (PASE or CASE with IsCommissioning=true). Fabric-specific ARL applies after CommissioningComplete. Both restrict access but applied in different phases.",
+        "security_relevance": "Dual ARL model allows different restrictions during commissioning vs operation. Both must not prevent commissioning operations to avoid bricking device."
+      },
+      {
+        "term": "CAT-based Revocation",
+        "definition": "Multi-step process: 1) Prevent new NOCs for revoked nodes, 2) Issue new NOCs with incremented CAT version to authorized nodes, 3) Update ACL entries with new CAT version. Nodes with old CAT version denied access when ACL requires new version. Eventual consistency acceptable.",
+        "security_relevance": "Complex coordination required. Temporary windows where revoked nodes retain access (not yet updated nodes) or authorized nodes lose access (NOC updated but ACL not yet updated)."
+      },
+      {
+        "term": "Administrator CAT (0xFFFF)",
+        "definition": "Reserved CAT identifier for Joint Fabric administrators. CAT value 0xFFFF_0001 (version 1). Encoded in ACL as 0xFFFF_FFFD_FFFF_0001. Used exclusively in Joint Fabric context to grant Administer privilege to administrator nodes.",
+        "security_relevance": "Enables shared administration in Joint Fabric. Must not be used outside Joint Fabric context to avoid privilege confusion."
+      },
+      {
+        "term": "Anchor CAT (0xFFFE)",
+        "definition": "Reserved CAT identifier for Joint Fabric Anchor validation. CAT value 0xFFFE_0001 (version 1). Encoded in ACL as 0xFFFF_FFFD_FFFE_0001. Validates node as legitimate Joint Fabric Anchor.",
+        "security_relevance": "Establishes trust foundation for Joint Fabric. Compromise of Anchor CAT validation allows rogue anchors."
+      },
+      {
+        "term": "Self-Lockout",
+        "definition": "Error condition where administrator removes their own Administer privilege via ACL update with no other administrators remaining. Node becomes permanently inaccessible, requires factory reset.",
+        "security_relevance": "Caused by immediate effect ACL updates within multi-action message or single-action update that restricts administrator's own access. Not prevented by protocol, only detected."
+      },
+      {
+        "term": "FabricIndex",
+        "definition": "Integer (1-254) uniquely identifying fabric on node. 0 is invalid for explicit ACL entries (only implicit PASE entry has 0). Scopes ACL/ARL entries and sessions to specific fabric.",
+        "security_relevance": "Fabric isolation: ACL entries only apply to subjects on same fabric. FabricIndex mismatch causes ACL entry to be skipped. Zero FabricIndex in explicit entry breaks fabric isolation."
+      },
+      {
+        "term": "AuthMode",
+        "definition": "Authentication method for session/message: None (no auth), PASE (passcode), CASE (certificate), Group (symmetric group key). Determines subject type and access control rules.",
+        "security_relevance": "ACL entries only match if AuthMode matches ISD AuthMode. Cross-mode matching would break authentication boundaries."
+      },
+      {
+        "term": "Privilege Levels",
+        "definition": "View (read/subscribe), Operate (write operational data), Manage (write configuration data), Administer (write administrative data including ACL). Hierarchical: higher includes lower.",
+        "security_relevance": "Each privilege level corresponds to access quality in Data Model. Granting inappropriate privilege level enables unauthorized operations."
+      },
+      {
+        "term": "Access Control Extension",
+        "definition": "Optional vendor-specific extension to ACL entry. Installed by Administrators. Must be preserved verbatim. Extension validation failure causes ACL entry to be skipped.",
+        "security_relevance": "Extensions can modify access control behavior in implementation-specific ways. Malicious or buggy extensions could bypass access control or cause operational failures."
+      },
+      {
+        "term": "Attribution",
+        "definition": "Recording of action source against ISD (not matched ACL entry). Includes AuthMode, FabricIndex, Subjects (Node ID, CATs, Group ID). Enables audit trails.",
+        "security_relevance": "Precise attribution enables forensic analysis after security incidents. Recording against ACL entry loses precision when multiple subjects match same entry."
+      },
+      {
+        "term": "Managed Device Feature",
+        "definition": "Access Control Cluster feature flag indicating device supports ARL restrictions. Only mandatory clusters on endpoints with this feature can be restricted by ARL.",
+        "security_relevance": "Scopes ARL enforcement. Incorrect scope determination causes over-restriction (DoS) or under-restriction (security gap)."
+      },
+      {
+        "term": "CASE Session Rejection",
+        "definition": "Optional implementation-specific optimization: Reject CASE session establishment if initiator's identity doesn't match any ACL entry. Must be implemented carefully to avoid rejecting valid connections.",
+        "security_relevance": "Can prevent unauthorized nodes from establishing sessions (security benefit) but risks incorrect rejection causing node unreachability (availability risk)."
+      }
+    ],
+    
+    "security_properties": [
+      {
+        "property_name": "DEFAULT_DENY_ACCESS_CONTROL",
+        "type": "access_control",
+        "description": "All access is denied by default unless explicitly granted by ACL (or implicit PASE during commissioning)",
+        "fsm_states_involved": ["Operational", "CommissioningPASEActive", "CommissioningCASEActive"],
+        "critical_transitions": ["Operational->AccessDenied"]
+      },
+      {
+        "property_name": "ARL_OVERRIDES_ACL",
+        "type": "access_control",
+        "description": "ARL restrictions override ACL grants. Device-imposed boundaries cannot be bypassed by administrators.",
+        "fsm_states_involved": ["Operational", "AccessRestricted"],
+        "critical_transitions": ["Operational->AccessRestricted"]
+      },
+      {
+        "property_name": "IMMEDIATE_ACL_EFFECT",
+        "type": "consistency",
+        "description": "ACL updates take immediate effect including within same message for subsequent actions",
+        "fsm_states_involved": ["ACLUpdateInProgress", "Operational"],
+        "critical_transitions": ["ACLUpdateInProgress->Operational", "ACLUpdateInProgress->SelfLockout"]
+      },
+      {
+        "property_name": "PASE_IMPLICIT_ADMIN_ASYMMETRIC",
+        "type": "access_control",
+        "description": "PASE commissioning grants implicit Administer to commissionee over itself, NOT to commissioner over commissionee",
+        "fsm_states_involved": ["CommissioningPASEActive"],
+        "critical_transitions": ["CommissioningPASEActive->AccessGranted", "CommissioningPASEActive->AccessDenied"]
+      },
+      {
+        "property_name": "CAT_VERSION_REVOCATION",
+        "type": "revocation",
+        "description": "CAT version increment enables revocation: ISD CAT version must be >= ACL CAT version to match",
+        "fsm_states_involved": ["CATVersionUpdateInProgress", "Operational"],
+        "critical_transitions": ["CATVersionUpdateInProgress->Operational"]
+      },
+      {
+        "property_name": "NO_GROUP_ADMINISTER",
+        "type": "access_control",
+        "description": "Group AuthMode SHALL NOT grant Administer privilege (no source node authentication)",
+        "fsm_states_involved": ["Operational"],
+        "critical_transitions": ["Any access evaluation transition"]
+      },
+      {
+        "property_name": "FABRIC_ISOLATION",
+        "type": "access_control",
+        "description": "ACL entries only apply to subjects on same fabric (FabricIndex match required)",
+        "fsm_states_involved": ["Operational"],
+        "critical_transitions": ["Any access evaluation transition"]
+      },
+      {
+        "property_name": "AUTHMODE_ISOLATION",
+        "type": "access_control",
+        "description": "ACL entries only apply when AuthMode matches ISD AuthMode",
+        "fsm_states_involved": ["Operational"],
+        "critical_transitions": ["Any access evaluation transition"]
+      },
+      {
+        "property_name": "PRIVILEGE_SUBSUMPTION",
+        "type": "consistency",
+        "description": "Higher privileges include lower: Administer includes all; Manage includes Operate,View; Operate includes View",
+        "fsm_states_involved": ["Operational", "AccessGranted"],
+        "critical_transitions": ["Operational->AccessGranted"]
+      },
+      {
+        "property_name": "COMMISSIONING_ARL_RESTRICT_IMPLICIT_ADMIN",
+        "type": "access_control",
+        "description": "CommissioningARL restrictions override even implicit PASE Administer privilege",
+        "fsm_states_involved": ["CommissioningPASEActive"],
+        "critical_transitions": ["CommissioningPASEActive->AccessRestricted"]
+      },
+      {
+        "property_name": "ADDNOC_CREATES_INITIAL_ACL",
+        "type": "access_control",
+        "description": "AddNOC command automatically creates first ACL entry granting Administer to CaseAdminSubject",
+        "fsm_states_involved": ["CommissioningPASEActive", "CommissioningCASEActive"],
+        "critical_transitions": ["CommissioningPASEActive->CommissioningCASEActive"]
+      },
+      {
+        "property_name": "NO_EXPLICIT_PASE_ACL",
+        "type": "access_control",
+        "description": "ACL entries with PASE AuthMode SHALL NOT be explicitly added (only implicit during commissioning)",
+        "fsm_states_involved": ["Operational", "ACLUpdateInProgress"],
+        "critical_transitions": ["Operational->ACLUpdateInProgress"]
+      },
+      {
+        "property_name": "ATTRIBUTION_TO_ISD",
+        "type": "authenticity",
+        "description": "Actions attributed to ISD (AuthMode, FabricIndex, Subjects) not to matched ACL entry",
+        "fsm_states_involved": ["AccessGranted"],
+        "critical_transitions": ["Any access evaluation transition"]
+      },
+      {
+        "property_name": "CAT_EVENTUAL_CONSISTENCY",
+        "type": "consistency",
+        "description": "CAT version updates achieve eventual consistency; temporarily unreachable nodes may retain old policy",
+        "fsm_states_involved": ["CATVersionUpdateInProgress"],
+        "critical_transitions": ["CATVersionUpdateInProgress->Operational"]
+      },
+      {
+        "property_name": "ZERO_FABRICINDEX_INVALID",
+        "type": "access_control",
+        "description": "Explicit ACL entries must have FabricIndex != 0 (only implicit PASE entry has 0)",
+        "fsm_states_involved": ["Operational"],
+        "critical_transitions": ["Any ACL evaluation"]
+      },
+      {
+        "property_name": "ARL_COMMISSIONING_NOT_PREVENT",
+        "type": "access_control",
+        "description": "ARL and CommissioningARL SHALL NOT prevent commissioning operations (avoid bricking device)",
+        "fsm_states_involved": ["CommissioningPASEActive", "CommissioningCASEActive", "Operational"],
+        "critical_transitions": ["Any ARL evaluation"]
+      },
+      {
+        "property_name": "SELF_LOCKOUT_DETECTION",
+        "type": "consistency",
+        "description": "Self-lockout is detected when ACL update removes requester's own Administer privilege",
+        "fsm_states_involved": ["ACLUpdateInProgress", "SelfLockout"],
+        "critical_transitions": ["ACLUpdateInProgress->SelfLockout"]
+      },
+      {
+        "property_name": "WILDCARD_EMPTY_LIST",
+        "type": "access_control",
+        "description": "Empty Subjects/Targets lists mean wildcard (all subjects/targets matching AuthMode)",
+        "fsm_states_involved": ["Operational"],
+        "critical_transitions": ["Any ACL evaluation"]
+      },
+      {
+        "property_name": "CAT_ENCODING",
+        "type": "correctness",
+        "description": "CATs in ACL Subjects encoded as 0xFFFF_FFFD_<cat_32bits>; upper 32=prefix, lower 32=CAT",
+        "fsm_states_involved": ["Operational"],
+        "critical_transitions": ["Any CAT matching"]
+      },
+      {
+        "property_name": "ISD_DERIVATION_DETERMINISTIC",
+        "type": "consistency",
+        "description": "ISD derivation is deterministic based on message and session metadata; failure returns safe default",
+        "fsm_states_involved": ["All states with access evaluation"],
+        "critical_transitions": ["Any access evaluation transition"]
+      }
+    ],
+    
+    "initial_state": "FactoryReset",
+    
+    "all_states": [
+      "FactoryReset",
+      "CommissioningPASEActive",
+      "CommissioningCASEActive",
+      "Operational",
+      "ACLUpdateInProgress",
+      "ARLReviewInProgress",
+      "CATVersionUpdateInProgress",
+      "SelfLockout",
+      "AccessDenied",
+      "AccessRestricted",
+      "AccessGranted"
+    ],
+    
+    "all_triggers": [
+      "PASE_session_establishment",
+      "AddNOC_command",
+      "CommissioningComplete_command",
+      "PASE_session_timeout",
+      "ACL_modification_request",
+      "ACL_update_complete",
+      "ReviewFabricRestrictions_command",
+      "ARL_review_complete",
+      "CAT_revocation_initiated",
+      "update_node_noc",
+      "update_node_acl",
+      "cat_update_complete",
+      "incoming_request",
+      "request_complete",
+      "CASE_session_rejection",
+      "factory_reset_command"
+    ],
+    
+    "all_functions_used": [
+      "get_isd_from_message",
+      "get_granted_privileges",
+      "is_request_restricted",
+      "get_access_status",
+      "subject_matches",
+      "add_granted_privilege",
+      "create_initial_acl_entry",
+      "extract_case_admin_subject",
+      "extract_cats_from_certificate",
+      "verify_group_membership",
+      "validate_acl_entry",
+      "apply_acl_update",
+      "initialize_fabric_arl",
+      "has_administer_privilege",
+      "update_removes_last_admin_access",
+      "issue_noc_with_new_cat_version",
+      "update_acl_cat_version",
+      "find_restricting_arl_entry",
+      "allocate_new_fabric_index",
+      "establish_case_session",
+      "record_attribution",
+      "endpoint_contains_device_type",
+      "extensions_are_valid",
+      "are_restrictions_disallowed",
+      "generate_review_token",
+      "apply_pending_arl_updates",
+      "identify_cat_group_nodes",
+      "no_matching_acl_entry",
+      "IsCommissioneeDuringCommissioning",
+      "clear_all_fabrics",
+      "device_default_commissioning_arl",
+      "required_privilege_in_granted_set",
+      "identify_target_entry",
+      "extract_operation",
+      "valid_acl_entry_format"
+    ],
+    
+    "cryptographic_operations": [
+      {
+        "operation": "CASE_session_establishment",
+        "algorithm": "CASE protocol (Certificate Authenticated Session Establishment)",
+        "inputs": [
+          "Node Operational Certificate (X.509)",
+          "Private key corresponding to certificate",
+          "Fabric-scoped root certificate chain"
+        ],
+        "output": "Authenticated CASE session with derived session keys",
+        "assumptions": [
+          "Certificate validation is performed correctly",
+          "Certificate chain validates to trusted root",
+          "Private key is securely stored and not compromised",
+          "ECDSA signature validation is secure"
+        ]
+      },
+      {
+        "operation": "PASE_session_establishment",
+        "algorithm": "PASE protocol (Password Authenticated Session Establishment) - SPAKE2+",
+        "inputs": [
+          "Commissioning passcode (Passcode ID 0)",
+          "SPAKE2+ parameters"
+        ],
+        "output": "Authenticated PASE session with derived session keys",
+        "assumptions": [
+          "Passcode is only known to legitimate commissioner and commissionee",
+          "SPAKE2+ implementation is secure against offline dictionary attacks",
+          "Passcode has sufficient entropy"
+        ]
+      },
+      {
+        "operation": "Group_message_decryption",
+        "algorithm": "AES-128-CCM with operational group key",
+        "inputs": [
+          "Encrypted group message",
+          "Operational group key (128-bit)",
+          "Message nonce/IV"
+        ],
+        "output": "Decrypted message plaintext and authentication tag verification",
+        "assumptions": [
+          "Operational group key is securely distributed via Group Key Management Cluster",
+          "Group key is not compromised",
+          "Nonce/IV is not reused for same key",
+          "CCM authentication tag is verified"
+        ]
+      },
+      {
+        "operation": "CAT_extraction_from_certificate",
+        "algorithm": "X.509 certificate parsing for OID 1.3.6.1.4.1.37244.1.6",
+        "inputs": [
+          "Node Operational Certificate (X.509)"
+        ],
+        "output": "List of CATs (up to 3), each 32-bit value",
+        "assumptions": [
+          "Certificate was issued by trusted CA",
+          "Certificate signature validates",
+          "CAT values are correctly formatted (16-bit ID, 16-bit version)"
+        ]
+      },
+      {
+        "operation": "Certificate_signature_validation",
+        "algorithm": "ECDSA signature verification",
+        "inputs": [
+          "Certificate to validate",
+          "Issuer's public key (from CA certificate)",
+          "Certificate signature"
+        ],
+        "output": "Boolean (valid/invalid)",
+        "assumptions": [
+          "ECDSA implementation follows FIPS 186-4 or equivalent",
+          "Certificate chain validates to trusted root",
+          "No hash collision attacks on SHA-256"
+        ]
+      }
+    ],
+    
+    "security_assumptions": [
+      {
+        "assumption": "Message Layer provides accurate authentication metadata (AuthMode, source identity, CATs, etc.) to Interaction Model",
+        "type": "explicit",
+        "if_violated": "ISD derivation fails or produces incorrect context, enabling authentication bypass or impersonation"
+      },
+      {
+        "assumption": "CASE session establishment correctly validates Operational Certificate chain to trusted root",
+        "type": "explicit",
+        "if_violated": "Attackers can forge certificates and impersonate any node, completely bypassing access control"
+      },
+      {
+        "assumption": "Group Key Management Cluster correctly validates group membership before allowing group message decryption",
+        "type": "explicit",
+        "if_violated": "Attackers can send group messages with arbitrary Group IDs without possessing valid group keys"
+      },
+      {
+        "assumption": "Cryptographic primitives (ECDSA, AES-CCM, SPAKE2+, KDF) are not broken",
+        "type": "implicit",
+        "if_violated": "Authentication can be forged, messages can be decrypted without keys, sessions can be hijacked"
+      },
+      {
+        "assumption": "Administrators act in good faith and do not intentionally create insecure ACL configurations",
+        "type": "implicit",
+        "if_violated": "Administrators can deliberately create wildcard Group-Administer ACL entries or other insecure configurations"
+      },
+      {
+        "assumption": "Private keys and passcodes are securely stored and not compromised",
+        "type": "implicit",
+        "if_violated": "Key compromise enables impersonation and unauthorized access regardless of access control"
+      },
+      {
+        "assumption": "Fabric isolation is correctly enforced at lower layers (Message Layer, Session Layer)",
+        "type": "explicit",
+        "if_violated": "Cross-fabric attacks become possible if FabricIndex can be spoofed in messages"
+      },
+      {
+        "assumption": "Data Model correctly specifies required privilege for each operation (via access qualities)",
+        "type": "explicit",
+        "if_violated": "Operations may require wrong privilege level, enabling unauthorized access or over-restricting legitimate access"
+      },
+      {
+        "assumption": "Certificate Authority (CA) only issues NOCs with CATs to authorized nodes",
+        "type": "implicit",
+        "if_violated": "Attackers can obtain CATs they shouldn't have, gaining unintended group memberships and privileges"
+      },
+      {
+        "assumption": "Node correctly preserves ACL/ARL entries without internal modification",
+        "type": "explicit",
+        "if_violated": "Internal modifications can hide malicious entries or corrupt security policy, breaking auditing"
+      },
+      {
+        "assumption": "CommissioningARL and ARL are configured by device manufacturer to not prevent commissioning operations",
+        "type": "explicit",
+        "if_violated": "Device becomes unmanageable (permanently unreachable, requiring hardware intervention)"
+      },
+      {
+        "assumption": "Interaction Model processes multi-action messages sequentially in order",
+        "type": "explicit",
+        "if_violated": "ACL update side-effects become unpredictable; immediate effect semantics break"
+      },
+      {
+        "assumption": "Time synchronization is not required for access control (no time-based expiration in base spec)",
+        "type": "implicit",
+        "if_violated": "If extensions add time-based access control, clock skew enables attacks (expired credentials accepted, future credentials rejected)"
+      },
+      {
+        "assumption": "Node has accurate endpoint-to-device-type mapping for Target DeviceType matching",
+        "type": "explicit",
+        "if_violated": "DeviceType-based Target matching becomes unreliable, granting wrong access or denying correct access"
+      },
+      {
+        "assumption": "Eventual consistency is acceptable for CAT-based revocation (temporary windows where revoked nodes retain access)",
+        "type": "explicit",
+        "if_violated": "If instant revocation is required, CAT mechanism is insufficient and alternative revocation needed"
+      },
+      {
+        "assumption": "Access Control Extensions are implemented securely and do not introduce vulnerabilities",
+        "type": "implicit",
+        "if_violated": "Malicious or buggy extensions can bypass access control, cause crashes, or create security vulnerabilities"
+      },
+      {
+        "assumption": "Physical access control prevents unauthorized factory reset",
+        "type": "implicit",
+        "if_violated": "Attackers with physical access can factory reset and recommission device, taking control"
+      }
+    ],
+    
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": false,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true,
+      "notes": "No explicit timers in specification (PASE session timeout mentioned but not detailed). Error states included (SelfLockout, AccessDenied, AccessRestricted). All cryptographic operations documented. Guards are exclusive/exhaustive for access evaluation transitions. All functions referenced in actions are fully defined."
+    }
+  }
+}

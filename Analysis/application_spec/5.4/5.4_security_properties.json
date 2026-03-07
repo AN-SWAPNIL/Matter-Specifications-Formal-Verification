@@ -1,0 +1,731 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Closure Control",
+    "cluster_id": "0x0104",
+    "pics_code": "CLCTRL",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 5.4, Pages 494-510",
+
+    "properties": [
+      {
+        "id": "PROP_CLCTRL_001",
+        "name": "MoveTo_Requires_Timed_Invoke",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The MoveTo command SHALL only be executed when sent as a Timed Invoke, preventing replay attacks that could physically open or reposition a closure.",
+        "formal": "∀cmd. execute_success(MoveTo, cmd) ⟹ is_timed_invoke(cmd)",
+        "spec_source": "Section 5.4.8 Commands table: MoveTo Access = 'O T' (Operate, Timed required)",
+        "violation": {
+          "description": "An attacker who captures a legitimate MoveTo packet could replay it to physically open a closure at an arbitrary later time. Without the Timed Invoke mechanism, a recorded 'open garage door' command could be replayed indefinitely. Matter's Timed Invoke includes a timestamp window that expires, making replays infeasible.",
+          "attack_vector": "Capture a MoveTo(Position=MoveToFullyOpen) packet over network, replay after the session expires or against a different session without timed protection",
+          "physical_impact": "Unauthorized opening of garage doors, gates, windows, or other closures protecting entry points"
+        },
+        "proverifQuery": "query cmd:command ⊢ event moveto_executed(cmd) ==> event timed_invoke_valid(cmd)"
+      },
+      {
+        "id": "PROP_CLCTRL_002",
+        "name": "Calibrate_Requires_Timed_Invoke",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The Calibrate command SHALL only be executed when sent as a Timed Invoke, preventing replay attacks from triggering unannounced physical motion.",
+        "formal": "∀cmd. execute_success(Calibrate, cmd) ⟹ is_timed_invoke(cmd)",
+        "spec_source": "Section 5.4.8 Commands table: Calibrate Access = 'M T' (Manage, Timed required)",
+        "violation": {
+          "description": "A replayed Calibrate command causes the closure to move to its physical limits without any user intent. During calibration, the closure may make large sweeping movements that could injure persons or animals near the closure pathway. Timed Invoke prevents replay of captured calibration commands.",
+          "attack_vector": "Capture a legitimate Calibrate command, replay it when persons or objects are near the closure to cause unexpected physical motion",
+          "physical_impact": "Unannounced physical movement of closure to physical limits; potential injury to persons in path of movement"
+        },
+        "proverifQuery": "query cmd:command ⊢ event calibrate_executed(cmd) ==> event timed_invoke_valid(cmd)"
+      },
+      {
+        "id": "PROP_CLCTRL_003",
+        "name": "Calibrate_Requires_Manage_Privilege",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "Only principals holding Manage privilege SHALL successfully execute the Calibrate command.",
+        "formal": "∀principal, cmd. execute_success(Calibrate, principal, cmd) ⟹ has_privilege(principal, Manage)",
+        "spec_source": "Section 5.4.8 Commands table: Calibrate Access = 'M T' (Manage privilege required)",
+        "violation": {
+          "description": "A principal with only Operate privilege (e.g., a tenant controller) could trigger calibration, causing the closure to make large unpredictable movements to its physical limits. Calibration is an installation/configuration operation that should be restricted to installers or administrators.",
+          "attack_vector": "Principal with Operate-level access sends a Calibrate command to trigger unexpected physical motion or disrupt closure's known position state",
+          "physical_impact": "Closure moves to physical limits; destroys known position state; potential injury"
+        },
+        "proverifQuery": "query p:principal, cmd:command ⊢ event calibrate_executed(p, cmd) ==> event has_privilege(p, Manage)"
+      },
+      {
+        "id": "PROP_CLCTRL_004",
+        "name": "MoveTo_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "Only principals holding Operate privilege SHALL successfully execute the MoveTo command.",
+        "formal": "∀principal, cmd. execute_success(MoveTo, principal, cmd) ⟹ has_privilege(principal, Operate)",
+        "spec_source": "Section 5.4.8 Commands table: MoveTo Access = 'O T' (Operate privilege required)",
+        "violation": {
+          "description": "A View-only principal (e.g., a monitoring dashboard) could issue movement commands, physically repositioning closures without authorization. This is particularly concerning for security closures such as garage doors or entry gates.",
+          "attack_vector": "Obtain View-level access to device (e.g., via fabric misconfiguration) and send MoveTo command",
+          "physical_impact": "Unauthorized physical opening or repositioning of closure"
+        },
+        "proverifQuery": "query p:principal, cmd:command ⊢ event moveto_executed(p, cmd) ==> event has_privilege(p, Operate)"
+      },
+      {
+        "id": "PROP_CLCTRL_005",
+        "name": "Stop_Requires_Operate_Privilege",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "Only principals holding Operate privilege SHALL successfully execute the Stop command.",
+        "formal": "∀principal, cmd. execute_success(Stop, principal, cmd) ⟹ has_privilege(principal, Operate)",
+        "spec_source": "Section 5.4.8 Commands table: Stop Access = 'O' (Operate privilege required); Conformance = !IS",
+        "violation": {
+          "description": "A View-only principal could halt authorized closure movements (e.g., stopping an emergency-triggered closure event). However, this also means that a lower-privilege controller cannot stop a dangerous runaway movement — a deliberate design trade-off.",
+          "attack_vector": "View-level principal sends Stop to interrupt a security-critical closure movement (e.g., emergency closure)",
+          "physical_impact": "Closure halted mid-movement, potentially leaving a security gap or creating a physical hazard"
+        },
+        "proverifQuery": "query p:principal, cmd:command ⊢ event stop_executed(p, cmd) ==> event has_privilege(p, Operate)"
+      },
+      {
+        "id": "PROP_CLCTRL_006",
+        "name": "MoveTo_Only_In_Valid_States",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "MoveTo SHALL be rejected with INVALID_IN_STATE when MainState is not one of: Moving, WaitingForMotion, or Stopped.",
+        "formal": "∀cmd. execute_success(MoveTo, cmd) ⟹ MainState ∈ {Moving, WaitingForMotion, Stopped}",
+        "spec_source": "Section 5.4.8.2.4 Effect on Receipt: 'If this command is received in any state other than Moving, WaitingForMotion, or Stopped, a status code of INVALID_IN_STATE SHALL be returned.'",
+        "violation": {
+          "description": "If MoveTo succeeds during Error, Calibrating, Protected, SetupRequired, or Disengaged states, the closure may exhibit undefined physical behavior. For example, issuing a MoveTo during Error could override safety error conditions and force dangerous movement.",
+          "attack_vector": "Send MoveTo commands rapidly during error condition detection window, before MainState transitions to Error",
+          "physical_impact": "Closure moves despite active error condition (e.g., overtemperature, physical obstruction), risking hardware damage or injury"
+        },
+        "proverifQuery": "query cmd:command ⊢ event moveto_success(cmd) ==> (event main_state_is(Moving) || event main_state_is(WaitingForMotion) || event main_state_is(Stopped))"
+      },
+      {
+        "id": "PROP_CLCTRL_007",
+        "name": "Calibrate_Only_In_Valid_States",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "Calibrate SHALL be rejected with INVALID_IN_STATE when MainState is not one of: Stopped, SetupRequired, or Calibrating.",
+        "formal": "∀cmd. execute_success(Calibrate, cmd) ⟹ MainState ∈ {Stopped, SetupRequired, Calibrating}",
+        "spec_source": "Section 5.4.8.3.1 Effect on Receipt: 'if this command is invoked in any state other than Stopped or SetupRequired, the server SHALL respond with INVALID_IN_STATE'",
+        "violation": {
+          "description": "If Calibrate is accepted during Moving, WaitingForMotion, or Error states, the closure may attempt to calibrate while already in motion or in a fault condition, leading to undefined behavior and potential mechanical damage.",
+          "attack_vector": "Send Calibrate command during active movement to interrupt motion with unpredictable results",
+          "physical_impact": "Mechanical interference between ongoing movement and calibration motion; potential damage to closure"
+        },
+        "proverifQuery": "query cmd:command ⊢ event calibrate_success(cmd) ==> (event main_state_is(Stopped) || event main_state_is(SetupRequired) || event main_state_is(Calibrating))"
+      },
+      {
+        "id": "PROP_CLCTRL_008",
+        "name": "SetupRequired_Blocks_Movement",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "Movement commands SHALL be ignored (rejected) when MainState is SetupRequired, as the closure is not operational.",
+        "formal": "MainState == SetupRequired ⟹ reject(MoveTo)",
+        "spec_source": "Section 5.4.6.3 MainStateEnum: SetupRequired = 'Movement commands are ignored since the closure is not operational and requires further setup and/or calibration'",
+        "violation": {
+          "description": "If a movement command succeeds on an uncalibrated closure, position tracking will be inaccurate. The closure may move to incorrect physical positions, the OverallCurrentState.Position may not reflect reality, and SecureState may incorrectly indicate a secure closure.",
+          "attack_vector": "Exploit a window between device power-on and SetupRequired state establishment to issue MoveTo commands on an uncalibrated closure",
+          "physical_impact": "Closure moves to unverified position; SecureState incorrectly reports secure when position unknown"
+        },
+        "proverifQuery": "query cmd:command ⊢ event moveto_success(cmd) ==> event main_state_not(SetupRequired)"
+      },
+      {
+        "id": "PROP_CLCTRL_009",
+        "name": "Latched_Blocks_Position_Change",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "A position change request via MoveTo SHALL be rejected with INVALID_IN_STATE when the closure is currently latched (Latch==True) unless the command simultaneously requests unlatch (Latch=False).",
+        "formal": "∀cmd. execute_success(MoveTo_with_position_change, cmd) ⟹ (OverallCurrentState.Latch ≠ true ∨ cmd.Latch == false)",
+        "spec_source": "Section 5.4.8.2.4 Effect on Receipt: 'If this command requests a position change while the Latch field of the OverallCurrentState attribute is True (Latched), and the Latch field of this command is not set to False (Unlatched), a status code of INVALID_IN_STATE SHALL be returned.'",
+        "violation": {
+          "description": "Forcing a position change while the closure is mechanically latched would cause the actuator to fight against the latch mechanism, potentially causing mechanical damage to the latch, actuator, or closure structure. It could also defeat the security purpose of latching by partially breaking the latch without fully securing the closure.",
+          "attack_vector": "Issue MoveTo with a position change but without Latch=false to force actuator motion against engaged latch, causing mechanical damage that may then leave the closure permanently unlatchable",
+          "physical_impact": "Mechanical damage to latch mechanism; closure permanently unable to latch; security of physical space compromised"
+        },
+        "proverifQuery": "query cmd:command ⊢ event moveto_position_change_success(cmd) ==> (event latch_not_engaged() || event cmd_requests_unlatch(cmd))"
+      },
+      {
+        "id": "PROP_CLCTRL_010",
+        "name": "Remote_Latching_Requires_RemoteLatching_Bit",
+        "category": "Authorization",
+        "importance": "CRITICAL",
+        "claim": "A MoveTo command requesting latching (Latch=True) SHALL be rejected with INVALID_IN_STATE when LatchControlModes.RemoteLatching bit is 0 (manual-only latching).",
+        "formal": "∀cmd. cmd.Latch == true ∧ Feature_LT == true ∧ LatchControlModes.RemoteLatching == 0 ⟹ reject(cmd) with INVALID_IN_STATE",
+        "spec_source": "Section 5.4.8.2.2 Latch Field: 'if the LatchControlModes attribute specifies that manual intervention is required to latch - respond with INVALID_IN_STATE and remain in its current state'",
+        "violation": {
+          "description": "If remote latching is accepted on a hardware that only supports manual latching, the server would report OverallTargetState.Latch=True and potentially OverallCurrentState.Latch=True and SecureState=True without the physical latch actually engaging. This creates a false sense of security.",
+          "attack_vector": "Send MoveTo with Latch=true to a device with hardware-only latching; server incorrectly updates state to reflect latched without physical engagement",
+          "physical_impact": "Closure appears laterally secured in software (SecureState=True) while physically unlatched, enabling unauthorized entry"
+        },
+        "proverifQuery": "query cmd:command ⊢ event latch_set_success(cmd) ==> event remote_latching_supported()"
+      },
+      {
+        "id": "PROP_CLCTRL_011",
+        "name": "OperationalError_Sets_MainState_Error",
+        "category": "StateIntegrity",
+        "importance": "CRITICAL",
+        "claim": "A closure that generates an OperationalError event SHALL also set the MainState attribute to Error, ensuring the error is visible through both the event log and the current state attribute.",
+        "formal": "gen_event(OperationalError, d) ⟹ MainState(d) == Error",
+        "spec_source": "Section 5.4.9.1 OperationalError Event: 'A closure that generates this event SHALL also set the MainState attribute to Error, indicating an error condition.'",
+        "violation": {
+          "description": "If OperationalError event is generated without updating MainState to Error, the closure's state appears normal to attribute-polling clients while events indicate a fault. An attacker could suppress attribute subscriptions while the event log fills, leaving clients unaware of the error. Movement commands would then be accepted in an error condition.",
+          "attack_vector": "Exploit state inconsistency: subscribe to attribute changes but not events; closure enters error condition but MainState falsely shows Stopped, allowing MoveTo commands during fault",
+          "physical_impact": "Closure moves during active error condition (obstruction, overtemperature); injury or hardware damage"
+        },
+        "proverifQuery": "query d:device ⊢ event operational_error_generated(d) ==> event main_state_is(d, Error)"
+      },
+      {
+        "id": "PROP_CLCTRL_012",
+        "name": "PhysicallyBlocked_Triggers_ErrorState",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "When a PhysicallyBlocked error condition is detected (obstacle blocking closure movement), the closure SHALL enter Error state and SHALL stop physical motion.",
+        "formal": "detect(PhysicallyBlocked, d) ⟹ MainState(d) == Error ∧ motion_stopped(d)",
+        "spec_source": "Section 5.4.6.4 ClosureErrorEnum: PhysicallyBlocked = 'An obstacle is blocking the closure movement'; Section 5.4.9.1: error condition SHALL set MainState to Error",
+        "violation": {
+          "description": "If the closure continues movement after detecting a physical obstruction, it can crush objects or persons caught between the closure and its frame. Obstruction detection is a fundamental safety requirement for automated closures such as garage doors.",
+          "attack_vector": "Sensor manipulation: attacker disables or spoofs the obstruction detection sensor, preventing PhysicallyBlocked from being raised while a person or object is in the path of the closure",
+          "physical_impact": "CRITICAL: Crushing injury or death to person/animal caught in closing path of garage door, gate, or other automated closure"
+        },
+        "proverifQuery": "query d:device ⊢ event physically_blocked_detected(d) ==> event motion_stopped(d) && event main_state_is(d, Error)"
+      },
+      {
+        "id": "PROP_CLCTRL_013",
+        "name": "BlockedBySensor_Prevents_Movement",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "When a sensor determines the closure is unsafe to move (BlockedBySensor error), the closure SHALL NOT proceed with movement and SHALL enter Error state.",
+        "formal": "detect(BlockedBySensor, d) ⟹ MainState(d) == Error ∧ ¬movement_proceeds(d)",
+        "spec_source": "Section 5.4.6.4 ClosureErrorEnum: BlockedBySensor = 'The closure is unsafe to move, as determined by a sensor (e.g. photoelectric sensor) before attempting movement'",
+        "violation": {
+          "description": "A photoelectric or proximity sensor blocking closure movement is a pre-movement safety check. If this error is ignored and movement proceeds, the closure could strike a person, animal, or object that the sensor detected as present in the path.",
+          "attack_vector": "Jam or interfere with photoelectric sensor to generate a false 'clear' reading; or exploit a race condition between sensor check and movement initiation",
+          "physical_impact": "Closure strikes person/animal/object in its path despite safety sensor detection; potential serious injury"
+        },
+        "proverifQuery": "query d:device ⊢ event sensor_blocked(d) ==> event main_state_is(d, Error) && event movement_not_started(d)"
+      },
+      {
+        "id": "PROP_CLCTRL_014",
+        "name": "SecureState_Correctness",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "OverallCurrentState.SecureState SHALL be True only when all feature-applicable security conditions are satisfied: Position==FullyClosed (if PS feature) AND Latch==True (if LT feature).",
+        "formal": "SecureState == true ⟹ (¬Feature_PS ∨ Position == FullyClosed) ∧ (¬Feature_LT ∨ Latch == true)",
+        "spec_source": "Section 5.4.6.5.4 SecureState field: 'True if the closure meets the required conditions for a secure state, preventing unauthorized or undetectable access'",
+        "violation": {
+          "description": "If SecureState incorrectly reports True when the closure is open or unlatched, security monitoring systems relying on this field will falsely report the space as secured. Smart home systems and access control panels that use SecureState for security decisions would be deceived.",
+          "attack_vector": "Exploit implementation that sets SecureState=True prematurely (before position reaches FullyClosed) or incorrectly (when latch fails to engage); security dashboard shows 'secured' while closure is actually open",
+          "physical_impact": "Unauthorized entry to secured space (garage, building perimeter) while monitoring systems show false 'secured' status"
+        },
+        "proverifQuery": "query d:device ⊢ event secure_state_true(d) ==> (event position_fully_closed(d) || event feature_ps_not_supported(d)) && (event latch_engaged(d) || event feature_lt_not_supported(d))"
+      },
+      {
+        "id": "PROP_CLCTRL_015",
+        "name": "SecureState_False_When_Open",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "OverallCurrentState.SecureState SHALL be False when the closure's physical position or latch state permits unauthorized or undetectable access.",
+        "formal": "((Feature_PS ∧ Position ≠ FullyClosed) ∨ (Feature_LT ∧ Latch ≠ true)) ⟹ SecureState == false",
+        "spec_source": "Section 5.4.6.5.4 SecureState field: 'False if the closure does not meet these conditions and unauthorized or undetectable access is possible'",
+        "violation": {
+          "description": "If SecureState is not updated to False when the closure opens or unlatches, security monitoring cannot detect the insecure condition. Physical intruders could enter through the open closure without triggering security alerts that depend on SecureState change events.",
+          "attack_vector": "Exploit a state update race condition or implementation bug that delays SecureState=False reporting, allowing an intruder to enter the gap between actual opening and reported state change",
+          "physical_impact": "Unauthorized physical entry to secured space without security monitoring alert"
+        },
+        "proverifQuery": "query d:device ⊢ (event position_not_fully_closed(d) && event feature_ps_supported(d)) ==> event secure_state_false(d)"
+      },
+      {
+        "id": "PROP_CLCTRL_016",
+        "name": "Stop_Halts_Motion_States",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "When the Stop command is received with MainState in Moving, WaitingForMotion, or Calibrating, all motions SHALL be stopped and MainState SHALL be set to Stopped.",
+        "formal": "receive(Stop) ∧ MainState ∈ {Moving, WaitingForMotion, Calibrating} ⟹ stop_motion() ∧ MainState == Stopped",
+        "spec_source": "Section 5.4.8.1 Stop Command: 'any motions SHALL be stopped and the MainState attribute SHALL be set to Stopped'",
+        "violation": {
+          "description": "If Stop does not halt physical motion when in Moving state, persons in the path of the closure cannot use the Stop command as an emergency stop. This is a critical safety requirement for automated closures operating near persons.",
+          "attack_vector": "Implementation ignores Stop during Moving state (treating it as no-op), preventing emergency stop of potentially dangerous motion",
+          "physical_impact": "Person in path of closure cannot trigger emergency stop; crushing injury risk"
+        },
+        "proverifQuery": "query d:device ⊢ event stop_received(d) && (event main_state_is(d, Moving) || event main_state_is(d, WaitingForMotion) || event main_state_is(d, Calibrating)) ==> event motion_stopped(d) && event main_state_is(d, Stopped)"
+      },
+      {
+        "id": "PROP_CLCTRL_017",
+        "name": "Stop_Always_Returns_Success",
+        "category": "Availability",
+        "importance": "MEDIUM",
+        "claim": "The Stop command SHALL always return a SUCCESS status code, regardless of the current MainState value.",
+        "formal": "∀state. receive(Stop) ∧ MainState == state ⟹ return(SUCCESS)",
+        "spec_source": "Section 5.4.8.1 Stop Command: 'A status code of SUCCESS SHALL always be returned, regardless of the value of the MainState attribute when this command is received.'",
+        "violation": {
+          "description": "If Stop can return non-SUCCESS in some states, clients implementing emergency stop logic may interpret the failure as 'stop command not accepted' and retry, creating confusion in safety-critical scenarios. A consistent SUCCESS response enables reliable emergency stop patterns.",
+          "attack_vector": "No active attack vector; this is a reliability property. Implementation may incorrectly return INVALID_IN_STATE for Stop in Disengaged or Protected states.",
+          "physical_impact": "None directly; reliability concern for emergency stop user experience"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event stop_received(d, cmd) ==> event response_success(d, cmd)"
+      },
+      {
+        "id": "PROP_CLCTRL_018",
+        "name": "Disengaged_Prevents_Actuator_Movement",
+        "category": "StateIntegrity",
+        "importance": "CRITICAL",
+        "claim": "When MainState is Disengaged, all actuator movements SHALL be prevented; no movement commands SHALL succeed.",
+        "formal": "MainState == Disengaged ⟹ ¬movement_proceeds()",
+        "spec_source": "Section 5.4.6.3 MainStateEnum: Disengaged = 'Closure has a disengaged element preventing any actuator movements'",
+        "violation": {
+          "description": "If actuator movement proceeds while the closure is mechanically disengaged from its drive mechanism, the actuator may spin freely without moving the closure (wasting energy and potentially damaging the motor), or in a partial disengagement, cause unexpected and uncontrolled physical motion.",
+          "attack_vector": "Send MoveTo commands while closure is in manual-operation mode; if improperly handled, actuator may engage partially and cause erratic closure movement",
+          "physical_impact": "Uncontrolled physical motion of closure component; potential injury; motor damage"
+        },
+        "proverifQuery": "query d:device ⊢ event main_state_is(d, Disengaged) ==> event movement_rejected(d)"
+      },
+      {
+        "id": "PROP_CLCTRL_019",
+        "name": "OverallCurrentState_Follows_Target_Instantaneous",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When the Instantaneous (IS) feature is enabled, OverallCurrentState SHALL immediately follow OverallTargetState after a successful MoveTo command.",
+        "formal": "Feature_IS == true ∧ execute_success(MoveTo, cmd) ⟹ OverallCurrentState == OverallTargetState",
+        "spec_source": "Section 5.4.5.3 Instantaneous Feature: 'the OverallCurrentState attribute SHALL immediately follow the OverallTargetState attribute'",
+        "violation": {
+          "description": "If OverallCurrentState lags behind OverallTargetState on an IS device, clients may issue redundant commands because they believe the closure has not yet reached the target. This can cause oscillating behavior. More critically, SecureState may not update immediately, leaving a window where the closure is physically at target position but SecureState is stale.",
+          "attack_vector": "Exploit state update lag: query SecureState immediately after MoveTo(FullyClosed) on IS closure; stale False value may trigger unnecessary re-lock attempts or suppress security alerts",
+          "physical_impact": "None directly; reliability and state consistency concern"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event feature_is_enabled(d) && event moveto_success(d, cmd) ==> event current_state_equals_target(d)"
+      },
+      {
+        "id": "PROP_CLCTRL_020",
+        "name": "MoveTo_Success_Updates_OverallTargetState",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "On a successful MoveTo command, the OverallTargetState attribute SHALL be updated to reflect the requested Position, Latch, and/or Speed values.",
+        "formal": "execute_success(MoveTo, cmd) ⟹ OverallTargetState == requested_target(cmd)",
+        "spec_source": "Section 5.4.8.2.4 Effect on Receipt: 'The OverallTargetState Attribute SHALL be updated with the requested values for Position, Latch and/or Speed.'",
+        "violation": {
+          "description": "If OverallTargetState is not updated after a successful MoveTo, clients that read the attribute to track progress will believe no movement is commanded. This undermines the ability to monitor closure movements and verify that commanded positions match actual progress.",
+          "attack_vector": "Implementation updates physical motion without updating OverallTargetState; monitoring clients cannot reconcile actual motion with reported target",
+          "physical_impact": "None directly; reliability and auditability concern"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event moveto_success(d, cmd) ==> event overall_target_state_updated(d, cmd)"
+      },
+      {
+        "id": "PROP_CLCTRL_021",
+        "name": "OperationalError_Event_Generated_On_Error",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "When a reportable error condition is detected, an OperationalError event SHALL be generated with the ErrorState field containing the active error list.",
+        "formal": "detect(reportable_error, d, err) ⟹ gen_event(OperationalError, d, {ErrorState: [err]})",
+        "spec_source": "Section 5.4.9.1 OperationalError Event: 'This event SHALL be generated when a reportable error condition is detected.'",
+        "violation": {
+          "description": "If OperationalError events are suppressed or not generated, monitoring systems and operators are unaware of fault conditions. A closure that encounters a PhysicallyBlocked condition but doesn't generate an event provides no audit trail and no real-time alert to a monitoring app.",
+          "attack_vector": "Exploit an implementation that only updates MainState without generating the OperationalError event; monitoring clients relying on event stream miss the fault condition",
+          "physical_impact": "Fault condition undetected by monitoring system; subsequent commands may be issued without knowledge of the error"
+        },
+        "proverifQuery": "query d:device, err:error ⊢ event error_detected(d, err) ==> event operational_error_event_generated(d, err)"
+      },
+      {
+        "id": "PROP_CLCTRL_022",
+        "name": "SecureStateChanged_Event_On_SecureState_Change",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "When the SecureState field in OverallCurrentState changes value, a SecureStateChanged event SHALL be generated.",
+        "formal": "∆OverallCurrentState.SecureState(d) ⟹ gen_event(SecureStateChanged, d, {SecureValue: SecureState})",
+        "spec_source": "Section 5.4.9.4 SecureStateChanged Event: 'This event, if supported, SHALL be generated when the SecureState field in the OverallCurrentState attribute changes.'",
+        "violation": {
+          "description": "If the SecureStateChanged event is not generated when a closure opens (SecureState: True → False), security monitoring systems relying on event subscriptions will not receive the alert. An intruder opening the closure would not trigger any event-based alarm.",
+          "attack_vector": "Exploit implementation that updates OverallCurrentState.SecureState without generating SecureStateChanged; event-subscribed security controllers receive no alert when closure is opened",
+          "physical_impact": "Unauthorized physical entry not detected by event-based security monitoring"
+        },
+        "proverifQuery": "query d:device, old_val:bool, new_val:bool ⊢ event secure_state_changed(d, old_val, new_val) ==> event secure_state_event_generated(d, new_val)"
+      },
+      {
+        "id": "PROP_CLCTRL_023",
+        "name": "EngageStateChanged_Event_On_Disengage_Engage",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "When MainState transitions to or from Disengaged, an EngageStateChanged event SHALL be generated.",
+        "formal": "∆MainState(d, _, Disengaged) ∨ ∆MainState(d, Disengaged, _) ⟹ gen_event(EngageStateChanged, d, {EngageValue: actuator_engaged})",
+        "spec_source": "Section 5.4.9.3 EngageStateChanged Event: 'SHALL be generated when the MainStateEnum attribute changes state to and from disengaged'",
+        "violation": {
+          "description": "If EngageStateChanged is not generated when the closure becomes disengaged (manual operation mode), remote monitoring systems will not know that actuator control has been lost. The closure could be manually repositioned to any state without any remote visibility.",
+          "attack_vector": "Physically disengage the closure actuator; if event is not generated, remote monitoring remains unaware that the closure can now be freely moved manually without any electronic control or tracking",
+          "physical_impact": "Closure manually repositioned (e.g., to open position) by unauthorized person without remote detection"
+        },
+        "proverifQuery": "query d:device ⊢ event disengaged_state_entered(d) ==> event engage_state_changed_event_generated(d, false)"
+      },
+      {
+        "id": "PROP_CLCTRL_024",
+        "name": "MovementCompleted_Event_Generated",
+        "category": "EventIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When an overall closure operation ends (successfully or otherwise), a MovementCompleted event SHALL be generated (when IS feature is not active).",
+        "formal": "Feature_IS == false ∧ operation_ended(d) ⟹ gen_event(MovementCompleted, d)",
+        "spec_source": "Section 5.4.9.2 MovementCompleted Event: 'SHALL be generated when the overall operation ends, either successfully or otherwise'; Conformance = !IS",
+        "violation": {
+          "description": "If MovementCompleted is not generated, clients relying on this event to determine when a commanded movement has finished must fall back to polling OverallCurrentState and MainState, which is less efficient and more error-prone. Operations may be considered 'in-progress' indefinitely.",
+          "attack_vector": "Suppress MovementCompleted events to cause client-side state confusion, potentially triggering retry logic that re-issues MoveTo commands",
+          "physical_impact": "None directly; reliability concern"
+        },
+        "proverifQuery": "query d:device ⊢ event feature_is_disabled(d) && event operation_ended(d) ==> event movement_completed_event_generated(d)"
+      },
+      {
+        "id": "PROP_CLCTRL_025",
+        "name": "CurrentErrorList_No_Duplicates",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The CurrentErrorList attribute SHALL NOT contain duplicate ClosureErrorEnum values at any time.",
+        "formal": "∀t. ∀e. count(e, CurrentErrorList(t)) ≤ 1",
+        "spec_source": "Section 5.4.7.3 CurrentErrorList Attribute: 'There SHALL NOT be duplicate values of ClosureErrorEnum within the CurrentErrorList.'",
+        "violation": {
+          "description": "Duplicate entries in CurrentErrorList would cause monitoring clients to count the same error multiple times, potentially misrepresenting the severity of the fault condition. It would also complicate error processing logic that iterates the list.",
+          "attack_vector": "Trigger the same error condition repeatedly in rapid succession; if deduplication is not enforced, the list fills with duplicates, consuming capacity (max 10 entries) and masking other concurrent errors",
+          "physical_impact": "None directly; monitoring reliability concern"
+        },
+        "proverifQuery": "query d:device, e:error ⊢ event error_in_list(d, e, n) ==> n <= 1"
+      },
+      {
+        "id": "PROP_CLCTRL_026",
+        "name": "Unsupported_Feature_Fields_Ignored_No_Error",
+        "category": "Authorization",
+        "importance": "MEDIUM",
+        "claim": "MoveTo fields corresponding to unsupported features SHALL be ignored and SHALL NOT trigger errors or state changes, enabling interoperability between generic clients and feature-limited servers.",
+        "formal": "¬Feature_X ∧ field_X_present(cmd) ⟹ ignore(field_X(cmd)) ∧ ¬error_triggered()",
+        "spec_source": "Section 5.4.8.2.4 Effect on Receipt: 'the presence of an unsupported field SHALL NOT trigger errors or state changes'",
+        "violation": {
+          "description": "If an unsupported field causes an error response, generic clients (unaware of server's feature set) would have MoveTo commands rejected, denying basic closure control. This creates a denial-of-service against clients that cannot pre-check feature flags.",
+          "attack_vector": "Attacker crafts MoveTo including unsupported feature fields to cause generic clients' commands to be systematically rejected, preventing legitimate control of the closure",
+          "physical_impact": "None directly; denial of service against closure control"
+        },
+        "proverifQuery": "query d:device, cmd:command, f:feature ⊢ event feature_not_supported(d, f) && event field_present(cmd, f) ==> event field_ignored(d, f) && event no_error_returned(d, cmd)"
+      },
+      {
+        "id": "PROP_CLCTRL_027",
+        "name": "Null_Position_Fallback_Prevents_Position_Change",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When the Position field is absent from MoveTo and OverallTargetState.Position is NULL, the closure SHALL NOT change its current position.",
+        "formal": "Feature_PS ∧ ¬present(cmd.Position) ∧ OverallTargetState.Position == null ⟹ ¬position_change()",
+        "spec_source": "Section 5.4.8.2.1 Position Field: 'If the Position field in the OverallTargetState attribute is NULL, the position is unknown and the fallback is not applicable; in this case the field SHALL be ignored and the closure SHALL NOT change its position.'",
+        "violation": {
+          "description": "If the closure changes position based on an undefined or null target, it may move to an unintended position. After a reboot where OverallTargetState is null, a MoveTo with no Position field could cause the closure to move to an unexpected default position.",
+          "attack_vector": "Issue MoveTo with no Position field immediately after device reboot (when OverallTargetState is null); if implementation moves to a default position, the behavior is undefined and potentially dangerous",
+          "physical_impact": "Closure moves to unexpected position; security posture changes unpredictably"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event feature_ps_enabled(d) && event position_field_absent(cmd) && event target_position_null(d) ==> event position_unchanged(d)"
+      },
+      {
+        "id": "PROP_CLCTRL_028",
+        "name": "Calibrate_Idempotent_In_Calibrating_State",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "If the Calibrate command is received when MainState is already Calibrating, the server SHALL respond with SUCCESS without restarting the calibration procedure.",
+        "formal": "receive(Calibrate) ∧ MainState == Calibrating ⟹ return(SUCCESS) ∧ calibration_not_restarted()",
+        "spec_source": "Section 5.4.8.3.1 Effect on Receipt: 'If this command is received when already in the Calibrating state, the server SHALL respond with a status code of SUCCESS.'",
+        "violation": {
+          "description": "If Calibrate restarts the calibration procedure when already calibrating, rapid repeated Calibrate commands could cause the closure to oscillate between calibration start positions, potentially damaging the closure mechanism and never completing calibration.",
+          "attack_vector": "Send rapid Calibrate commands in succession to continuously restart calibration, preventing the closure from completing the procedure and remaining in an uncalibrated (SetupRequired-adjacent) state",
+          "physical_impact": "Closure repeatedly moves to limit positions; mechanical wear; permanent uncalibrated state"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event main_state_is(d, Calibrating) && event calibrate_received(d, cmd) ==> event response_success(d, cmd) && event calibration_not_restarted(d)"
+      },
+      {
+        "id": "PROP_CLCTRL_029",
+        "name": "Protected_State_Commands_MAY_Be_Rejected",
+        "category": "Authorization",
+        "importance": "MEDIUM",
+        "claim": "When MainState is Protected, motion commands MAY be rejected to prevent damage to the closure from protective mechanisms (e.g., wind protection).",
+        "formal": "MainState == Protected ∧ Feature_PT == true ⟹ MAY reject(motion_commands)",
+        "spec_source": "Section 5.4.6.3 MainStateEnum: Protected = 'Commands MAY be rejected'",
+        "violation": {
+          "description": "If an implementation always accepts movement commands in Protected state (ignoring the protection mechanism), a protective measure like wind protection could be overridden, potentially damaging the closure when it is deployed against wind forces. The spec uses MAY, leaving implementation discretion.",
+          "attack_vector": "Send MoveTo command when closure is in Protected state; if implementation accepts, the protection mechanism may be overridden, causing physical damage",
+          "physical_impact": "Closure damaged by operating against active protection mechanism (e.g., closure moved against wind protection restraints)"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event main_state_is(d, Protected) && event moveto_success(d, cmd) ==> event protection_overridable(d)"
+      },
+      {
+        "id": "PROP_CLCTRL_030",
+        "name": "ManufacturerErrors_Not_Duplicate_GeneralErrors",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "Manufacturer-specific error codes (range 0x80-0xBF) SHALL NOT duplicate the general error definitions (0x00-0x7F), and SHALL be scoped by the Vendor ID in the Basic Information cluster.",
+        "formal": "∀err ∈ ManufacturerError. ∀gen ∈ GeneralError. err ≠ gen ∧ scoped_by(err, VendorID)",
+        "spec_source": "Section 5.4.6.4 ClosureErrorEnum: 'The manufacturer-specific error definitions SHALL NOT duplicate the general error definitions. Such manufacturer-specific error definitions SHALL be scoped in the context of the Vendor ID present in the Basic Information cluster.'",
+        "violation": {
+          "description": "If manufacturer errors reuse general error values, monitoring systems cannot distinguish between a general PhysicallyBlocked condition and a manufacturer-specific cosmetically similar condition. This could cause incorrect automated responses to errors.",
+          "attack_vector": "Vendor ships firmware with manufacturer error 0x00 (overlapping with PhysicallyBlocked); monitoring system interprets manufacturer-specific non-critical error as a physical obstruction requiring emergency stop",
+          "physical_impact": "None directly; monitoring reliability and interoperability concern"
+        },
+        "proverifQuery": "query d:device, err:error ⊢ event manufacturer_error_raised(d, err) ==> event err_not_in_general_range(err)"
+      },
+      {
+        "id": "PROP_CLCTRL_031",
+        "name": "Closure_Dimension_SetTarget_Reflected_In_OverallCurrentState",
+        "category": "CrossCluster",
+        "importance": "MEDIUM",
+        "claim": "When Closure Dimension cluster SetTarget or Step commands affect the physical closure, these effects SHALL be reflected in the Closure Control cluster's OverallCurrentState attribute.",
+        "formal": "Closure_Dimension.execute(SetTarget|Step) ∧ affects_physical_state(d) ⟹ OverallCurrentState(d) reflects_actual_state(d)",
+        "spec_source": "Section 5.4.7.4 OverallCurrentState: 'The values of the different fields within the structure of this attribute depend on: The effects of SetTarget and Step commands in a Closure Dimension Cluster associated with this cluster'",
+        "violation": {
+          "description": "If physical position changes made via Closure Dimension cluster are not reflected in Closure Control's OverallCurrentState, the SecureState field may remain True while the closure has actually been opened via a dimension command. Security monitoring relying on Closure Control attributes would be deceived.",
+          "attack_vector": "Use Closure Dimension cluster commands to physically move closure without updating Closure Control's OverallCurrentState; SecureState remains True while closure is physically open",
+          "physical_impact": "Unauthorized access through open closure while Closure Control reports secure state"
+        },
+        "proverifQuery": "query d:device, cmd:command ⊢ event closure_dimension_cmd_executed(d, cmd) && event physical_state_changed(d) ==> event overall_current_state_updated(d)"
+      },
+      {
+        "id": "PROP_CLCTRL_032",
+        "name": "CountdownTime_Not_Reported_During_Normal_Countdown",
+        "category": "Availability",
+        "importance": "MEDIUM",
+        "claim": "CountdownTime SHALL NOT be reported as changed due to normal passage of time, preventing excessive reporting traffic that could degrade network reliability.",
+        "formal": "¬(dynamic_state_change ∨ boundary_transition) ∧ countdown_decrementing ⟹ ¬report(CountdownTime_change)",
+        "spec_source": "Section 5.4.7.1 CountdownTime Attribute: 'Changes to this attribute merely due to the normal passage of time with no other dynamic change of closure state SHALL NOT be reported.'",
+        "violation": {
+          "description": "If CountdownTime reports every second during a countdown, a single closure operation could generate hundreds of attribute change reports, congesting the Matter network and exhausting controller subscription processing capacity. This is especially problematic for closures with long movement times (up to 259200 seconds / 3 days).",
+          "attack_vector": "Trigger a long-duration closure movement (e.g., very slow blind descent); if CountdownTime reports every second, the continuous stream of reports degrades network performance for all devices",
+          "physical_impact": "None directly; network denial of service affecting other Matter devices' responsiveness"
+        },
+        "proverifQuery": "query d:device ⊢ event countdown_decrement_only(d) ==> event no_report_generated(d)"
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "Matter's Access Control Layer (ACL) correctly enforces privilege requirements before dispatching commands to the Closure Control cluster handler.",
+        "type": "Implicit",
+        "source": "Matter Core Specification (Access Control Cluster)",
+        "dependencies": ["PROP_CLCTRL_001", "PROP_CLCTRL_002", "PROP_CLCTRL_003", "PROP_CLCTRL_004", "PROP_CLCTRL_005"],
+        "impact_if_violated": "All access control properties fail; any principal can execute any command regardless of privilege level"
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "Matter's Timed Invoke mechanism provides effective replay protection by enforcing a short expiry window on timed commands, making replay attacks infeasible.",
+        "type": "Implicit",
+        "source": "Matter Core Specification (Timed Invoke)",
+        "dependencies": ["PROP_CLCTRL_001", "PROP_CLCTRL_002"],
+        "impact_if_violated": "Timed Invoke timestamp bypass allows replay of captured MoveTo and Calibrate commands indefinitely"
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "The LatchControlModes attribute accurately reflects the physical hardware capabilities of the latch mechanism (remote vs manual only).",
+        "type": "Implicit",
+        "source": "Derived from Section 5.4.6.7 and Section 5.4.7.6",
+        "dependencies": ["PROP_CLCTRL_010"],
+        "impact_if_violated": "PROP_CLCTRL_010 fails: server reports RemoteLatching=1 (capable) but hardware cannot engage latch remotely; Latch=true accepted, OverallCurrentState.Latch becomes true, SecureState becomes true, while physical latch is not engaged"
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "Physical obstruction sensors (photoelectric, pressure, etc.) are reliable, tamper-resistant, and correctly integrated with the closure's error detection logic.",
+        "type": "Implicit",
+        "source": "Derived from Section 5.4.6.4 (BlockedBySensor, PhysicallyBlocked error definitions)",
+        "dependencies": ["PROP_CLCTRL_012", "PROP_CLCTRL_013"],
+        "impact_if_violated": "Physical safety guarantees fail: closure does not detect obstructions; persons or objects in the path of the closure are not protected"
+      },
+      {
+        "id": "ASSUM_005",
+        "statement": "The closure accurately tracks its own physical position (via encoder, limit switches, or other sensor) to properly populate OverallCurrentState.Position and compute SecureState.",
+        "type": "Implicit",
+        "source": "Derived from Sections 5.4.6.5.1 and 5.4.6.5.4",
+        "dependencies": ["PROP_CLCTRL_014", "PROP_CLCTRL_015"],
+        "impact_if_violated": "SecureState incorrectly computed; security monitoring receives false information about closure's physical security posture"
+      },
+      {
+        "id": "ASSUM_006",
+        "statement": "When Closure Dimension cluster is associated, both clusters share a consistent internal representation of the closure's physical state without race conditions between their state updates.",
+        "type": "Implicit",
+        "source": "Derived from Section 5.4.4 and Section 5.4.7.4",
+        "dependencies": ["PROP_CLCTRL_031"],
+        "impact_if_violated": "State inconsistency between Closure Dimension and Closure Control clusters; SecureState in Closure Control may not reflect physical changes made via Closure Dimension commands"
+      },
+      {
+        "id": "ASSUM_007",
+        "statement": "The Boot and SetupRequired states are transient initial states not observable via the Matter attribute model during normal operation; once fully initialized, MainState is always a valid MainStateEnum value.",
+        "type": "Implicit",
+        "source": "Derived from Section 5.4.7.2.1 MainState Diagram (informational) and Section 5.4.6.3",
+        "dependencies": ["PROP_CLCTRL_008"],
+        "impact_if_violated": "Clients may send commands during the boot window before SetupRequired is established; commands may reach an uninitialized closure handler"
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 5.4.8 Commands (MoveTo)",
+        "normative_weakness": "Unspecified",
+        "description": "MoveTo requires only Operate privilege and Timed Invoke to physically open any closure. Unlike the Door Lock cluster which has RequirePINForRemoteOperation, the Closure Control cluster has no credential or authentication requirement beyond fabric membership at Operate privilege. Any fabric member with Operate access can open a garage door, gate, or window.",
+        "properties_affected": ["PROP_CLCTRL_001", "PROP_CLCTRL_004"],
+        "security_impact": "A compromised controller, rogue app, or user who has been granted Operate fabric membership can open any closure indefinitely with no additional credential. No brute-force protection is needed since no PIN exists to brute-force — access is purely privilege-based."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 5.4.8.2.2 Latch Field",
+        "normative_weakness": "Unspecified",
+        "description": "The spec explicitly handles Latch=true being rejected when LatchControlModes.RemoteLatching=0. However, it does not explicitly state that Latch=false (remote unlatching) SHALL be rejected when LatchControlModes.RemoteUnlatching=0. The rejection of remote unlatching is implied but not normatively stated.",
+        "properties_affected": ["PROP_CLCTRL_010"],
+        "security_impact": "An implementation may accept MoveTo with Latch=false (unlatch) even when RemoteUnlatching=0, defeating a physical security mechanism. The latch would be commanded to disengage remotely, but since hardware does not support it, the latch may remain engaged (best case) or an inconsistent state may occur (e.g., OverallTargetState.Latch=false while actual latch is engaged, then SecureState computation is incorrect)."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 5.4.8.2.4 Effect on Receipt",
+        "normative_weakness": "Ambiguous",
+        "description": "The spec allows MoveTo to be received while MainState is Moving (re-targeting during movement). However, it does not specify: (1) whether the previous movement is atomically aborted before the new target is set, (2) if there is any intermediate state exposure, or (3) how OverallCurrentState and OverallTargetState relate during the transition between old and new targets.",
+        "properties_affected": ["PROP_CLCTRL_006", "PROP_CLCTRL_020"],
+        "security_impact": "A rapid sequence of MoveTo commands with alternating targets could create a race condition in state tracking: clients reading OverallTargetState during the transition may see a stale or intermediate target; SecureState may briefly mis-report during the transition window."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 5.4.8.1 Stop Command",
+        "normative_weakness": "Unspecified",
+        "description": "The conformance of the Stop command is '!IS' (not applicable when Instantaneous feature is active). However, the spec does not define what status code SHALL be returned if Stop is sent to a device with IS feature enabled. No error handling is specified for this scenario.",
+        "properties_affected": ["PROP_CLCTRL_017"],
+        "security_impact": "Minor interoperability issue. A generic client unaware of IS feature may send Stop and receive an unexpected error or no response, creating client-side confusion. However, this does not create a direct security vulnerability since IS devices don't maintain moving state that requires stopping."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 5.4.6.3 MainStateEnum",
+        "normative_weakness": "MAY",
+        "description": "The Protected state specifies that 'Commands MAY be rejected' — this is a permissive MAY, not a mandatory SHALL. An implementation may choose to accept all commands in Protected state (ignoring the protection mechanism) or reject all, with no normative guidance on which commands must be rejected.",
+        "properties_affected": ["PROP_CLCTRL_029"],
+        "security_impact": "Attacker commanding movement in Protected state could override manufacturer-specific protective software or mechanical restraints, causing physical damage to the closure. The absence of any mandatory requirements makes protective behavior implementation-defined and unverifiable."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 5.4.5 Features",
+        "normative_weakness": "Unspecified",
+        "description": "No requirement mandates that at least one of PS (Positioning) or LT (MotionLatching) features must be supported. A closure supporting only IS (Instantaneous) feature provides no OverallCurrentState.Position or Latch fields, making SecureState computation based solely on the absence of these features. Client cannot verify any physical security condition.",
+        "properties_affected": ["PROP_CLCTRL_014", "PROP_CLCTRL_015"],
+        "security_impact": "A minimal-feature closure (IS only) has SecureState always based on null Position and null Latch, which by the SecureState rules means conditions are assumed met (feature not supported = condition not required). This creates false confidence in security monitoring for such closures."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 5.4.8.3.1 Effect on Receipt (Calibrate)",
+        "normative_weakness": "Unspecified",
+        "description": "No requirement to warn users, alert administrators, or restrict physical access before calibration begins. The closure may make large sweeping movements to physical limits during calibration with no notification beyond the MainState changing to Calibrating.",
+        "properties_affected": ["PROP_CLCTRL_002", "PROP_CLCTRL_003"],
+        "security_impact": "An authorized Manage-level principal can trigger calibration without any user-facing warning, causing unexpected physical motion in occupied spaces. The only protection is the Timed Invoke requirement (preventing replay), but an active attacker with Manage access can trigger calibration at will."
+      },
+      {
+        "id": "GAP_008",
+        "location": "Section 5.4.8.2 MoveTo Command",
+        "normative_weakness": "Unspecified",
+        "description": "No rate limiting is defined for the MoveTo command. A principal with Operate access and a valid Timed Invoke per command can issue successive MoveTo commands in rapid succession, potentially causing oscillating closure behavior (open/close/open) that causes mechanical wear or defeats position tracking.",
+        "properties_affected": ["PROP_CLCTRL_004", "PROP_CLCTRL_020"],
+        "security_impact": "A malicious or buggy Operate-level controller can repeatedly cycle the closure between positions, causing mechanical wear (denial of device availability) or causing position tracking loss if the closure's encoder cannot keep up, leading to stale OverallCurrentState values and incorrect SecureState."
+      },
+      {
+        "id": "GAP_009",
+        "location": "Section 5.4.9.1 OperationalError Event",
+        "normative_weakness": "Unspecified",
+        "description": "No defined mechanism or time bound for error recovery (CurrentErrorList clearing). The spec defines error entry via OperationalError event and MainState transitioning to Error, but provides no normative requirement for how long a device can remain in Error state or what actions clear specific error conditions.",
+        "properties_affected": ["PROP_CLCTRL_011", "PROP_CLCTRL_021"],
+        "security_impact": "A persistent error that never clears (e.g., TemperatureLimited due to a broken temperature sensor) permanently disables the closure (MoveTo rejected in Error state). There is no specified recovery mechanism, making denial-of-service via inducing a persistent error condition trivially effective if an attacker can control environmental conditions."
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": ["Closure Control", "Closure Dimension"],
+        "property": {
+          "claim": "Physical state changes caused by Closure Dimension SetTarget/Step commands SHALL be reflected in Closure Control's OverallCurrentState, including SecureState recomputation.",
+          "formal": "Closure_Dimension.execute(SetTarget|Step, d) ∧ affects_position(d) ⟹ OverallCurrentState(d) == actual_physical_state(d) ∧ SecureState(d) == computed_secure_state(d)"
+        },
+        "violation_scenario": "A Closure Dimension cluster with weaker access controls (or a bug in attribute update propagation) allows a controller to move a dimension of the closure without updating Closure Control's OverallCurrentState. The garage door is physically open but Closure Control reports OverallCurrentState.Position=FullyClosed and SecureState=True. A security monitoring app shows the garage as secured while it is actually open."
+      },
+      {
+        "id": "XPROP_002",
+        "clusters_involved": ["Closure Control", "Closure Dimension"],
+        "property": {
+          "claim": "The privilege required to move the closure via Closure Dimension commands SHALL NOT be lower than the privilege required to move it via Closure Control MoveTo commands.",
+          "formal": "∀cmd ∈ Closure_Dimension_motion_cmds. required_privilege(cmd) ≥ required_privilege(MoveTo)"
+        },
+        "violation_scenario": "If Closure Dimension cluster allows movement commands at View privilege while Closure Control requires Operate privilege for MoveTo, an attacker with View-level access could use Closure Dimension commands to physically open a closure that Closure Control's access control would have rejected."
+      },
+      {
+        "id": "XPROP_003",
+        "clusters_involved": ["Closure Control", "Basic Information"],
+        "property": {
+          "claim": "Manufacturer-specific error codes in CurrentErrorList SHALL be interpreted only in the context of the Vendor ID from the Basic Information cluster; the same error code value MAY have different meanings for different vendors.",
+          "formal": "interpret(err, d) where err ∈ ManufacturerErrorRange ⟹ context(BasicInformation.VendorID(d))"
+        },
+        "violation_scenario": "A monitoring system receives a manufacturer error code 0x80 from two different closure manufacturers. Without referencing the VendorID from Basic Information cluster, the system treats both as the same error, but Vendor A's 0x80 means 'low battery warning' while Vendor B's 0x80 means 'mechanical jam requiring service'. Incorrect automated response is triggered."
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_CLCTRL_012",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "Closure continues movement after detecting a physical obstruction (person, animal, or object in path). For overhead garage doors, this is the primary mechanism preventing crushing injuries.",
+        "spec_mitigation": "PhysicallyBlocked error causes OperationalError event (SHALL) and MainState transition to Error (SHALL per PROP_CLCTRL_011). However, the spec does not mandate a specific reversal behavior (backing up after contact) — only stopping."
+      },
+      {
+        "property_id": "PROP_CLCTRL_013",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "Closure moves into a path where a safety sensor has detected a person, animal, or object. Pre-movement sensor check is bypassed.",
+        "spec_mitigation": "BlockedBySensor error enters Error state (SHALL). The spec does not mandate how sensors are integrated, their minimum sensitivity, or tamper detection."
+      },
+      {
+        "property_id": "PROP_CLCTRL_009",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "Actuator forces movement while latch is mechanically engaged, shearing latch mechanism or creating a stuck partially-open closure that can no longer be secured.",
+        "spec_mitigation": "INVALID_IN_STATE returned for position-change while latched without simultaneous unlatching request (SHALL). Effective protection against software-induced mechanical damage."
+      },
+      {
+        "property_id": "PROP_CLCTRL_016",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "Emergency Stop not honored during active closure movement; person touching or caught in closure cannot reliably trigger stop via network command.",
+        "spec_mitigation": "Stop command SHALL halt motion and set MainState=Stopped (SHALL per spec), and SUCCESS SHALL always be returned. However, Stop requires Operate privilege — a person without network device access cannot trigger it remotely."
+      },
+      {
+        "property_id": "PROP_CLCTRL_015",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "Security monitoring application falsely reports closure as secured while it is physically open. Intruder enters through open garage/gate without triggering any security alert.",
+        "spec_mitigation": "SecureState rules are normatively defined (SHALL be False when open/unlatched). SecureStateChanged event SHALL be generated. However, spec notes SecureState 'is intended only as supplementary information and not as a replacement for a comprehensive security system.'"
+      },
+      {
+        "property_id": "PROP_CLCTRL_018",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "Closure in manual operation (Disengaged) mode receives actuator movement command that partially engages, causing erratic and uncontrolled physical motion.",
+        "spec_mitigation": "Disengaged state in MainStateEnum is defined as preventing actuator movements (SHALL by enum definition). EngageStateChanged event SHALL notify of state changes."
+      },
+      {
+        "property_id": "PROP_CLCTRL_002",
+        "safety_category": "PhysicalSecurity",
+        "failure_mode": "Replayed Calibrate command causes unannounced large-scale closure movement in an occupied space, striking persons or objects near the closure.",
+        "spec_mitigation": "Timed Invoke required (SHALL per command table); Manage privilege required (SHALL). Together these prevent both replay and unauthorized initiation, but an authorized Manage principal can still trigger calibration without physical warning."
+      }
+    ],
+
+    "summary": {
+      "total_properties": 32,
+      "by_importance": {
+        "CRITICAL": 8,
+        "HIGH": 13,
+        "MEDIUM": 11
+      },
+      "by_category": {
+        "AccessControl": 5,
+        "StateIntegrity": 10,
+        "PhysicalSafety": 6,
+        "Authentication": 0,
+        "SecretProtection": 0,
+        "Availability": 3,
+        "Authorization": 3,
+        "Timing": 0,
+        "EventIntegrity": 5,
+        "CrossCluster": 1
+      },
+      "spec_gaps_found": 9,
+      "safety_critical_count": 7,
+      "cross_cluster_properties_count": 3,
+      "assumptions_count": 7,
+      "notes": [
+        "Authentication and SecretProtection categories have 0 properties because Closure Control has no credential/PIN system — access is purely privilege-based.",
+        "Timing category has 0 properties because Closure Control has no auto-relock timer or schedule system; CountdownTime is informational only.",
+        "The most significant architectural security gap (GAP_001) is that Closure Control requires no credentials beyond fabric Operate privilege to physically open a closure, unlike Door Lock cluster which has RequirePINForRemoteOperation.",
+        "Physical Safety properties dominate CRITICAL importance due to the cluster's control of physical access points (garage doors, gates, windows)."
+      ]
+    }
+  }
+}

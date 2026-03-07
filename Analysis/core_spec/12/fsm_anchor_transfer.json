@@ -1,0 +1,1292 @@
+{
+  "fsm_model": {
+    "section_name": "Anchor Administrator Transfer",
+    "section_ref": "Matter 1.4 Core Specification, Chapter 12.2.6",
+    "description": "Complete FSM for transferring Anchor Administrator role from Administrator A (current Anchor) to Administrator B (candidate). Models mutual user consent, datastore migration, CAT version increment, and transition coordination across all Joint Fabric Administrators.",
+    "states": [
+      {
+        "name": "AnchorTransfer_Idle",
+        "description": "Initial state where Joint Fabric is operational with current Anchor Administrator A. No anchor transfer is in progress.",
+        "is_initial": true,
+        "invariants": [
+          "anchor_operational",
+          "no_transfer_in_progress",
+          "datastore_status_committed"
+        ],
+        "state_variables": {
+          "current_anchor_admin": "node_id (Admin A)",
+          "datastore_status": "enum(Committed, Pending, DeletePending)",
+          "transfer_active": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminB_CheckingConsent",
+        "description": "Administrator B checking if user consent has been obtained to initiate anchor transfer request. Consent required before sending TransferAnchorRequest.",
+        "is_initial": false,
+        "invariants": [
+          "admin_b_initiated_transfer",
+          "consent_check_pending"
+        ],
+        "state_variables": {
+          "admin_b_user_consent": "boolean",
+          "admin_b_node_id": "64-bit"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminB_SendingRequest",
+        "description": "Administrator B sending TransferAnchorRequest command to Administrator A over CASE-secured session. Consent already obtained.",
+        "is_initial": false,
+        "invariants": [
+          "admin_b_consent_obtained",
+          "transfer_request_sent"
+        ],
+        "state_variables": {
+          "transfer_request_id": "identifier",
+          "case_session_established": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminA_ValidatingRequest",
+        "description": "Administrator A validating TransferAnchorRequest: checking Admin B NOC contains Administrator CAT, verifying user consent, checking datastore status.",
+        "is_initial": false,
+        "invariants": [
+          "request_received",
+          "validation_in_progress"
+        ],
+        "state_variables": {
+          "admin_b_noc": "X.509_certificate",
+          "admin_a_user_consent": "boolean",
+          "datastore_entries_checked": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminA_DatastorePreparing",
+        "description": "Administrator A preparing datastore for transfer: setting status to DeletePending (read-only), stopping DNS-SD advertising, blocking new ICA cross-signing requests.",
+        "is_initial": false,
+        "invariants": [
+          "validation_passed",
+          "datastore_transitioning_readonly"
+        ],
+        "state_variables": {
+          "datastore_status": "DeletePending",
+          "dns_sd_advertising": "boolean (false)",
+          "ica_cross_signing_blocked": "boolean (true)"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminA_DatastoreReadOnly",
+        "description": "Administrator A datastore is in read-only mode (DeletePending). All other administrators must stop commissioning. Awaiting datastore copy by Admin B.",
+        "is_initial": false,
+        "invariants": [
+          "datastore_readonly",
+          "dns_advertising_stopped",
+          "commissioning_blocked_all_admins"
+        ],
+        "state_variables": {
+          "datastore_status": "DeletePending",
+          "transfer_response_sent": "boolean (true)",
+          "awaiting_datastore_copy": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminB_CopyingDatastore",
+        "description": "Administrator B copying Joint Fabric Datastore from Administrator A using attribute read or BDX protocol. Large datastore transfer in progress.",
+        "is_initial": false,
+        "invariants": [
+          "transfer_approved",
+          "datastore_copy_in_progress"
+        ],
+        "state_variables": {
+          "datastore_copy_progress": "percentage (0-100)",
+          "copy_method": "enum(attribute_read, bdx)",
+          "datastore_data": "bitstring"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminB_ConfiguringNewAnchor",
+        "description": "Administrator B configuring itself as new Anchor: setting datastore status to Committed, updating AnchorNodeId attribute, incrementing Administrator CAT version.",
+        "is_initial": false,
+        "invariants": [
+          "datastore_copied",
+          "configuring_new_anchor_role"
+        ],
+        "state_variables": {
+          "datastore_status": "Committed",
+          "anchor_node_id": "admin_b_node_id",
+          "old_admin_cat_version": "16-bit",
+          "new_admin_cat_version": "16-bit (incremented)"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminB_UpdatingAdministrators",
+        "description": "Administrator B updating all other Joint Fabric Administrators: adding new RCAC via AddTrustedRootCertificate, issuing new NOCs with updated Administrator CAT via AddNOC.",
+        "is_initial": false,
+        "invariants": [
+          "new_anchor_configured",
+          "updating_other_admins"
+        ],
+        "state_variables": {
+          "admins_to_update": "array_of_node_ids",
+          "admins_updated_count": "integer",
+          "new_rcac": "X.509_certificate",
+          "new_admin_cat_version": "16-bit"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminB_IssuingSelfNOC",
+        "description": "Administrator B issuing itself a new NOC with updated Anchor/Datastore CAT version. Self-certification step before advertising as new Anchor.",
+        "is_initial": false,
+        "invariants": [
+          "other_admins_updated",
+          "self_noc_issuance_pending"
+        ],
+        "state_variables": {
+          "new_self_noc": "X.509_certificate",
+          "new_anchor_datastore_cat_version": "16-bit",
+          "self_certification_complete": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminB_AdvertisingNewAnchor",
+        "description": "Administrator B advertising itself as new Anchor and Datastore provider via DNS-SD with JF TXT key (Administrator, Anchor, Datastore capabilities set).",
+        "is_initial": false,
+        "invariants": [
+          "self_noc_issued",
+          "dns_advertising_new_anchor"
+        ],
+        "state_variables": {
+          "jf_txt_key": "string (Administrator|Anchor|Datastore)",
+          "dns_sd_active": "boolean (true)",
+          "anchor_transition_complete": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_AdminB_SendingTransferComplete",
+        "description": "Administrator B sending TransferAnchorComplete command to Administrator A to announce successful anchor role transition.",
+        "is_initial": false,
+        "invariants": [
+          "new_anchor_advertising",
+          "notifying_old_anchor"
+        ],
+        "state_variables": {
+          "transfer_complete_sent": "boolean",
+          "admin_a_notified": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_OtherAdmins_DetectingNewAnchor",
+        "description": "All other Joint Fabric Administrators (excluding A and B) detecting new Anchor via DNS-SD service discovery. Discovering updated JF TXT key with new Datastore provider.",
+        "is_initial": false,
+        "invariants": [
+          "new_anchor_advertised",
+          "other_admins_discovering"
+        ],
+        "state_variables": {
+          "new_anchor_discovered": "boolean",
+          "new_datastore_discovered": "boolean",
+          "admins_detecting": "array_of_node_ids"
+        }
+      },
+      {
+        "name": "AnchorTransfer_OtherAdmins_SubscribingToDatastore",
+        "description": "Other administrators subscribing to new Datastore provider (Admin B). Establishing CASE session and verifying Anchor/Datastore CAT in Admin B's NOC.",
+        "is_initial": false,
+        "invariants": [
+          "new_datastore_discovered",
+          "case_session_establishing",
+          "cat_verification_pending"
+        ],
+        "state_variables": {
+          "case_session_to_new_datastore": "session_id",
+          "new_datastore_noc": "X.509_certificate",
+          "anchor_datastore_cat_verified": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_OtherAdmins_RequestingNewICAC",
+        "description": "Other administrators requesting ICA Cross-Signing from new Anchor Administrator B. Generating ICA CSR with new Anchor Fabric ID and sending ICACSRRequest.",
+        "is_initial": false,
+        "invariants": [
+          "subscribed_to_new_datastore",
+          "ica_cross_signing_requested"
+        ],
+        "state_variables": {
+          "new_ica_csr": "PKCS10_CSR",
+          "new_anchor_fabric_id": "64-bit",
+          "icacsr_request_sent": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_OtherAdmins_ReceivingNewICAC",
+        "description": "Other administrators receiving cross-signed ICAC from new Anchor Administrator B via ICACSRResponse. Validating returned ICAC chains to new Anchor RCAC.",
+        "is_initial": false,
+        "invariants": [
+          "ica_request_processed",
+          "new_icac_received"
+        ],
+        "state_variables": {
+          "new_cross_signed_icac": "X.509_certificate_PEM",
+          "new_icac_validated": "boolean"
+        }
+      },
+      {
+        "name": "AnchorTransfer_OtherAdmins_RemovingOldFabric",
+        "description": "Other administrators removing devices from old Anchor A fabric using RemoveFabric command. Cleaning up all nodes commissioned under old Anchor CA.",
+        "is_initial": false,
+        "invariants": [
+          "new_icac_validated",
+          "removing_old_fabric_devices"
+        ],
+        "state_variables": {
+          "old_fabric_nodes": "array_of_node_ids",
+          "old_fabric_removal_progress": "integer",
+          "old_anchor_rcac": "X.509_certificate"
+        }
+      },
+      {
+        "name": "AnchorTransfer_Complete_NewAnchorOperational",
+        "description": "Anchor transfer complete. Administrator B is now operational Anchor. All administrators transitioned to new Anchor CA. Old fabric removed from all nodes.",
+        "is_initial": false,
+        "invariants": [
+          "new_anchor_operational",
+          "all_admins_transitioned",
+          "old_fabric_removed"
+        ],
+        "state_variables": {
+          "current_anchor_admin": "admin_b_node_id",
+          "anchor_transition_complete": "boolean (true)",
+          "all_commissioning_active": "boolean (true)"
+        }
+      },
+      {
+        "name": "AnchorTransfer_Failed_AdminB_ConsentDenied",
+        "description": "Error state: User consent not obtained on Administrator B before sending TransferAnchorRequest. Transfer aborted at initiation.",
+        "is_initial": false,
+        "invariants": [
+          "admin_b_consent_denied",
+          "transfer_aborted",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "UserConsentDenied_AdminB",
+          "error_reason": "User did not consent to anchor transfer on Administrator B"
+        }
+      },
+      {
+        "name": "AnchorTransfer_Failed_AdminA_NoAdminCAT",
+        "description": "Error state: Administrator B's NOC does not contain Administrator CAT. Transfer request rejected by Administrator A.",
+        "is_initial": false,
+        "invariants": [
+          "admin_cat_missing",
+          "transfer_rejected",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "MissingAdministratorCAT",
+          "error_reason": "Admin B NOC lacks Administrator CAT",
+          "admin_b_noc": "X.509_certificate"
+        }
+      },
+      {
+        "name": "AnchorTransfer_Failed_AdminA_ConsentDenied",
+        "description": "Error state: User consent not obtained on Administrator A. TransferAnchorResponse with TransferAnchorStatusNoUserConsent sent.",
+        "is_initial": false,
+        "invariants": [
+          "admin_a_consent_denied",
+          "transfer_rejected",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "TransferAnchorStatusNoUserConsent",
+          "error_reason": "User did not consent to anchor transfer on Administrator A",
+          "response_sent": "boolean (true)"
+        }
+      },
+      {
+        "name": "AnchorTransfer_Failed_DatastoreBusy",
+        "description": "Error state: Datastore has Pending or DeletePending entries when transfer requested. TransferAnchorResponse with TransferAnchorStatusDatastoreBusy sent.",
+        "is_initial": false,
+        "invariants": [
+          "datastore_has_pending_entries",
+          "transfer_rejected",
+          "terminal_error_state"
+        ],
+        "state_variables": {
+          "error_code": "TransferAnchorStatusDatastoreBusy",
+          "error_reason": "Datastore has Pending or DeletePending entries",
+          "pending_entries": "array_of_entries",
+          "response_sent": "boolean (true)"
+        }
+      }
+    ],
+    "transitions": [
+      {
+        "from_state": "AnchorTransfer_Idle",
+        "to_state": "AnchorTransfer_AdminB_CheckingConsent",
+        "trigger": "user_initiates_anchor_transfer",
+        "guard_condition": "joint_fabric_operational == true && admin_b_is_administrator == true",
+        "actions": [
+          "admin_b_user_consent := check_user_consent_admin_b()",
+          "transfer_initiated := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminB_CheckingConsent",
+        "to_state": "AnchorTransfer_AdminB_SendingRequest",
+        "trigger": "consent_obtained_admin_b",
+        "guard_condition": "admin_b_user_consent == true",
+        "actions": [
+          "case_session_established := establish_case_session_to_admin_a()",
+          "transfer_request_id := send_transfer_anchor_request_command(admin_a_node_id)"
+        ],
+        "timing_requirement": "TransferAnchorRequest timeout: 120 seconds"
+      },
+      {
+        "from_state": "AnchorTransfer_AdminB_CheckingConsent",
+        "to_state": "AnchorTransfer_Failed_AdminB_ConsentDenied",
+        "trigger": "consent_denied_admin_b",
+        "guard_condition": "admin_b_user_consent == false",
+        "actions": [
+          "abort_anchor_transfer()",
+          "error_code := 'UserConsentDenied_AdminB'",
+          "error_reason := 'User did not consent to anchor transfer on Administrator B'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminB_SendingRequest",
+        "to_state": "AnchorTransfer_AdminA_ValidatingRequest",
+        "trigger": "transfer_request_received",
+        "guard_condition": "transfer_request_received == true",
+        "actions": [
+          "admin_b_noc := extract_noc_from_case_session()",
+          "admin_a_user_consent := check_user_consent_admin_a()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminA_ValidatingRequest",
+        "to_state": "AnchorTransfer_Failed_AdminA_NoAdminCAT",
+        "trigger": "validation_check_admin_cat",
+        "guard_condition": "has_administrator_cat(admin_b_noc) == false",
+        "actions": [
+          "send_transfer_anchor_response_error(MissingAdministratorCAT)",
+          "abort_anchor_transfer()",
+          "error_reason := 'Admin B NOC lacks Administrator CAT'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminA_ValidatingRequest",
+        "to_state": "AnchorTransfer_Failed_AdminA_ConsentDenied",
+        "trigger": "validation_check_consent",
+        "guard_condition": "has_administrator_cat(admin_b_noc) == true && admin_a_user_consent == false",
+        "actions": [
+          "send_transfer_anchor_response(TransferAnchorStatusNoUserConsent)",
+          "abort_anchor_transfer()",
+          "error_reason := 'User did not consent to anchor transfer on Administrator A'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminA_ValidatingRequest",
+        "to_state": "AnchorTransfer_Failed_DatastoreBusy",
+        "trigger": "validation_check_datastore",
+        "guard_condition": "has_administrator_cat(admin_b_noc) == true && admin_a_user_consent == true && has_pending_datastore_entries() == true",
+        "actions": [
+          "pending_entries := get_pending_datastore_entries()",
+          "send_transfer_anchor_response(TransferAnchorStatusDatastoreBusy)",
+          "abort_anchor_transfer()",
+          "error_reason := 'Datastore has Pending or DeletePending entries'"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminA_ValidatingRequest",
+        "to_state": "AnchorTransfer_AdminA_DatastorePreparing",
+        "trigger": "validation_passed",
+        "guard_condition": "has_administrator_cat(admin_b_noc) == true && admin_a_user_consent == true && has_pending_datastore_entries() == false",
+        "actions": [
+          "set_datastore_status(DeletePending)",
+          "stop_dns_sd_advertising_admin_a()",
+          "block_ica_cross_signing()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminA_DatastorePreparing",
+        "to_state": "AnchorTransfer_AdminA_DatastoreReadOnly",
+        "trigger": "datastore_readonly_set",
+        "guard_condition": "datastore_status == DeletePending && dns_sd_advertising == false && ica_cross_signing_blocked == true",
+        "actions": [
+          "send_transfer_anchor_response(Success)",
+          "transfer_response_sent := true",
+          "notify_all_admins_stop_commissioning()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminA_DatastoreReadOnly",
+        "to_state": "AnchorTransfer_AdminB_CopyingDatastore",
+        "trigger": "admin_b_starts_datastore_copy",
+        "guard_condition": "transfer_response_sent == true",
+        "actions": [
+          "datastore_copy_progress := 0",
+          "datastore_data := initiate_datastore_copy(admin_a_node_id)"
+        ],
+        "timing_requirement": "Datastore copy timeout: 600 seconds (10 minutes)"
+      },
+      {
+        "from_state": "AnchorTransfer_AdminB_CopyingDatastore",
+        "to_state": "AnchorTransfer_AdminB_ConfiguringNewAnchor",
+        "trigger": "datastore_copy_complete",
+        "guard_condition": "datastore_copy_progress == 100",
+        "actions": [
+          "set_datastore_status(Committed)",
+          "anchor_node_id := admin_b_node_id",
+          "old_admin_cat_version := get_current_admin_cat_version()",
+          "new_admin_cat_version := increment_cat_version(old_admin_cat_version)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminB_ConfiguringNewAnchor",
+        "to_state": "AnchorTransfer_AdminB_UpdatingAdministrators",
+        "trigger": "anchor_configuration_complete",
+        "guard_condition": "datastore_status == Committed && new_admin_cat_version > old_admin_cat_version",
+        "actions": [
+          "admins_to_update := get_all_other_joint_fabric_admins()",
+          "new_rcac := get_admin_b_rcac()",
+          "admins_updated_count := 0"
+        ],
+        "timing_requirement": "Administrator update timeout: 300 seconds (5 minutes)"
+      },
+      {
+        "from_state": "AnchorTransfer_AdminB_UpdatingAdministrators",
+        "to_state": "AnchorTransfer_AdminB_IssuingSelfNOC",
+        "trigger": "all_administrators_updated",
+        "guard_condition": "admins_updated_count == length(admins_to_update)",
+        "actions": [
+          "foreach_admin(add_trusted_root_certificate(new_rcac))",
+          "foreach_admin(add_noc_with_updated_admin_cat(new_admin_cat_version))",
+          "new_anchor_datastore_cat_version := new_admin_cat_version"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminB_IssuingSelfNOC",
+        "to_state": "AnchorTransfer_AdminB_AdvertisingNewAnchor",
+        "trigger": "self_noc_issued",
+        "guard_condition": "self_certification_complete == true",
+        "actions": [
+          "new_self_noc := issue_self_noc_with_anchor_datastore_cat(new_anchor_datastore_cat_version)",
+          "jf_txt_key := set_jf_capabilities(Administrator, Anchor, Datastore)",
+          "start_dns_sd_advertising_admin_b()"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminB_AdvertisingNewAnchor",
+        "to_state": "AnchorTransfer_AdminB_SendingTransferComplete",
+        "trigger": "dns_advertising_active",
+        "guard_condition": "dns_sd_active == true",
+        "actions": [
+          "send_transfer_anchor_complete_command(admin_a_node_id)",
+          "transfer_complete_sent := true"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_AdminB_SendingTransferComplete",
+        "to_state": "AnchorTransfer_OtherAdmins_DetectingNewAnchor",
+        "trigger": "other_admins_discover_new_anchor",
+        "guard_condition": "admin_a_notified == true",
+        "actions": [
+          "admins_detecting := get_all_other_admins_excluding_a_and_b()",
+          "new_anchor_discovered := dns_sd_discover_new_anchor()",
+          "new_datastore_discovered := dns_sd_discover_new_datastore()"
+        ],
+        "timing_requirement": "Service discovery timeout: 60 seconds"
+      },
+      {
+        "from_state": "AnchorTransfer_OtherAdmins_DetectingNewAnchor",
+        "to_state": "AnchorTransfer_OtherAdmins_SubscribingToDatastore",
+        "trigger": "new_datastore_discovered",
+        "guard_condition": "new_datastore_discovered == true",
+        "actions": [
+          "case_session_to_new_datastore := establish_case_to_new_datastore(admin_b_node_id)",
+          "new_datastore_noc := extract_noc_from_case_session()"
+        ],
+        "timing_requirement": "CASE session timeout: 60 seconds"
+      },
+      {
+        "from_state": "AnchorTransfer_OtherAdmins_SubscribingToDatastore",
+        "to_state": "AnchorTransfer_OtherAdmins_RequestingNewICAC",
+        "trigger": "datastore_subscription_complete",
+        "guard_condition": "has_anchor_datastore_cat(new_datastore_noc) == true && chains_to_anchor_icac(new_datastore_noc) == true",
+        "actions": [
+          "anchor_datastore_cat_verified := true",
+          "new_anchor_fabric_id := extract_fabric_id(new_datastore_noc)",
+          "new_ica_csr := generate_ica_csr_for_new_anchor(new_anchor_fabric_id)",
+          "send_icacsr_request_to_new_anchor(new_ica_csr)"
+        ],
+        "timing_requirement": "ICA CSR request timeout: 120 seconds"
+      },
+      {
+        "from_state": "AnchorTransfer_OtherAdmins_RequestingNewICAC",
+        "to_state": "AnchorTransfer_OtherAdmins_ReceivingNewICAC",
+        "trigger": "icacsr_response_received",
+        "guard_condition": "icacsr_request_sent == true",
+        "actions": [
+          "new_cross_signed_icac := extract_icac_from_response()",
+          "new_icac_validated := validate_icac_chains_to_new_anchor(new_cross_signed_icac)"
+        ],
+        "timing_requirement": null
+      },
+      {
+        "from_state": "AnchorTransfer_OtherAdmins_ReceivingNewICAC",
+        "to_state": "AnchorTransfer_OtherAdmins_RemovingOldFabric",
+        "trigger": "new_icac_validated",
+        "guard_condition": "new_icac_validated == true",
+        "actions": [
+          "old_fabric_nodes := get_all_nodes_under_old_anchor()",
+          "old_anchor_rcac := get_old_anchor_rcac()",
+          "old_fabric_removal_progress := 0"
+        ],
+        "timing_requirement": "Fabric removal timeout: 300 seconds (5 minutes)"
+      },
+      {
+        "from_state": "AnchorTransfer_OtherAdmins_RemovingOldFabric",
+        "to_state": "AnchorTransfer_Complete_NewAnchorOperational",
+        "trigger": "old_fabric_removed",
+        "guard_condition": "old_fabric_removal_progress == length(old_fabric_nodes)",
+        "actions": [
+          "foreach_node_remove_fabric(old_anchor_rcac)",
+          "start_commissioning_with_new_icac(new_cross_signed_icac)",
+          "current_anchor_admin := admin_b_node_id",
+          "all_commissioning_active := true"
+        ],
+        "timing_requirement": null
+      }
+    ],
+    "functions": [
+      {
+        "name": "check_user_consent_admin_b",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if user consent has been obtained on Administrator B to initiate anchor transfer. Prompts user if not already obtained.",
+        "algorithm_detail": "Queries consent management subsystem for Administrator B. If consent not previously stored, displays UI prompt asking user to confirm anchor transfer initiation. User must acknowledge they want Admin B to become new Anchor. Returns true if consent obtained, false if denied. Consent request includes information about current Anchor A and implications of transfer.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_Idle → AnchorTransfer_AdminB_CheckingConsent to verify precondition for transfer."
+      },
+      {
+        "name": "establish_case_session_to_admin_a",
+        "parameters": [],
+        "return_type": "session_id",
+        "description": "Establishes CASE (Certificate Authenticated Session Establishment) session from Administrator B to Administrator A. Required for secure TransferAnchorRequest transmission.",
+        "algorithm_detail": "Initiates CASE protocol using Admin B's NOC (containing Administrator CAT) to authenticate to Admin A. Performs Sigma protocol handshake with mutual certificate authentication. Derives session keys using HKDF-SHA256. Returns session_id for subsequent command invocations. Session secured with AES-128-CCM encryption.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_CheckingConsent → AnchorTransfer_AdminB_SendingRequest to establish secure channel."
+      },
+      {
+        "name": "send_transfer_anchor_request_command",
+        "parameters": [
+          {
+            "name": "admin_a_node_id",
+            "type": "64-bit",
+            "description": "Node ID of current Anchor Administrator A"
+          }
+        ],
+        "return_type": "request_id",
+        "description": "Sends TransferAnchorRequest command from Administrator B to Administrator A over CASE session. Requests transfer of Anchor role.",
+        "algorithm_detail": "Invokes TransferAnchorRequest command on Joint Fabric Management cluster (vendor-specific cluster). Command contains no parameters (request itself signifies intent). Sends over established CASE session. Returns request_id for tracking response. Command timeout: 120 seconds awaiting TransferAnchorResponse.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_CheckingConsent → AnchorTransfer_AdminB_SendingRequest to initiate transfer protocol."
+      },
+      {
+        "name": "extract_noc_from_case_session",
+        "parameters": [],
+        "return_type": "X.509_certificate",
+        "description": "Extracts responder NOC from active CASE session. Used by Administrator A to inspect Administrator B's certificate for CAT verification.",
+        "algorithm_detail": "Retrieves responder NOC from CASE session context (stored during Sigma-2 message processing). Parses DER-encoded X.509 certificate. Returns certificate for CAT and chain validation. NOC contains Administrator B's identity, Administrator CAT, and issuer information.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_SendingRequest → AnchorTransfer_AdminA_ValidatingRequest to extract Admin B's NOC."
+      },
+      {
+        "name": "check_user_consent_admin_a",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if user consent has been obtained on Administrator A to allow anchor transfer to Administrator B. Prompts user if not obtained.",
+        "algorithm_detail": "Queries consent management subsystem for Administrator A. If consent not stored, displays UI prompt asking user to approve transfer of Anchor role to Admin B. Shows Admin B identity and warns about implications. Returns true if consent obtained, false if denied. Consent decision stored for audit trail.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_SendingRequest → AnchorTransfer_AdminA_ValidatingRequest to verify mutual consent requirement."
+      },
+      {
+        "name": "has_administrator_cat",
+        "parameters": [
+          {
+            "name": "noc",
+            "type": "X.509_certificate",
+            "description": "NOC to check for Administrator CAT"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if NOC contains Administrator CASE Authenticated Tag in Subject DN. Administrator CAT is required for Admin B to request anchor transfer.",
+        "algorithm_detail": "Parses NOC Subject DN field. Searches for Matter CAT OID 1.3.6.1.4.1.37244.1.4. Extracts CAT value and checks if it matches reserved Administrator CAT identifier. Returns true if Administrator CAT present, false otherwise. Version number is ignored for presence check.",
+        "usage_in_fsm": "Called in transition guard AnchorTransfer_AdminA_ValidatingRequest to verify Admin B is legitimate administrator."
+      },
+      {
+        "name": "send_transfer_anchor_response_error",
+        "parameters": [
+          {
+            "name": "error_code",
+            "type": "enum",
+            "description": "Error code (MissingAdministratorCAT, TransferAnchorStatusNoUserConsent, TransferAnchorStatusDatastoreBusy)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sends TransferAnchorResponse command with error status code to Administrator B. Rejects anchor transfer request.",
+        "algorithm_detail": "Constructs TransferAnchorResponse command with StatusCode field set to specified error_code. Sends over CASE session to Administrator B. No additional data included in error response. Response indicates why transfer was rejected and terminates transfer protocol.",
+        "usage_in_fsm": "Called in error transitions from AnchorTransfer_AdminA_ValidatingRequest to communicate rejection reason."
+      },
+      {
+        "name": "send_transfer_anchor_response",
+        "parameters": [
+          {
+            "name": "status_code",
+            "type": "enum",
+            "description": "Status code (Success or error codes)"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sends TransferAnchorResponse command to Administrator B with specified status code. Can indicate success or various error conditions.",
+        "algorithm_detail": "Constructs TransferAnchorResponse command with StatusCode field. If Success: indicates transfer approved and datastore ready for copy. If error: indicates rejection reason. Sends over CASE session. Response triggers next phase of transfer protocol on Admin B side.",
+        "usage_in_fsm": "Called in multiple transitions to communicate validation results to Admin B."
+      },
+      {
+        "name": "abort_anchor_transfer",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Aborts anchor transfer procedure. Cleans up transfer state and returns to operational mode with current Anchor.",
+        "algorithm_detail": "Rolls back any partial transfer state changes. If datastore status was changed to DeletePending, reverts to Committed. Resumes DNS-SD advertising if stopped. Unblocks ICA cross-signing if blocked. Clears transfer_active flag. Logs abort event with reason. Does not modify any fabric configuration.",
+        "usage_in_fsm": "Called in all error transitions to cleanly terminate transfer and restore normal operation."
+      },
+      {
+        "name": "has_pending_datastore_entries",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Checks if Joint Fabric Datastore has any entries with status Pending or DeletePending. These indicate incomplete operations that block anchor transfer.",
+        "algorithm_detail": "Queries all DatastoreStatusEntry records in Joint Fabric Datastore. Checks if any entry has status field equal to Pending or DeletePending. Pending indicates operation in progress. DeletePending indicates deletion scheduled. Returns true if any such entries exist, false if all entries are Committed.",
+        "usage_in_fsm": "Called in transition guard AnchorTransfer_AdminA_ValidatingRequest to check datastore readiness for transfer."
+      },
+      {
+        "name": "get_pending_datastore_entries",
+        "parameters": [],
+        "return_type": "array_of_entries",
+        "description": "Retrieves list of all datastore entries with Pending or DeletePending status. Used for error reporting and diagnostics.",
+        "algorithm_detail": "Queries Joint Fabric Datastore for all DatastoreStatusEntry records. Filters entries where status equals Pending or DeletePending. Returns array containing entry identifiers, types, and status values. Used in error response to identify blocking operations.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminA_ValidatingRequest → AnchorTransfer_Failed_DatastoreBusy to capture blocking entries."
+      },
+      {
+        "name": "set_datastore_status",
+        "parameters": [
+          {
+            "name": "status",
+            "type": "enum(Committed, Pending, DeletePending)",
+            "description": "New datastore status value"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sets Joint Fabric Datastore status entry to specified value. DeletePending makes datastore read-only. Committed makes it read-write.",
+        "algorithm_detail": "Updates DatastoreStatusEntry attribute in Joint Fabric Datastore cluster. Sets status field to specified value. DeletePending triggers read-only mode: rejects all write operations, allows read operations for copying. Committed resumes normal read-write operation. Status change is immediately effective and visible to all subscribed administrators.",
+        "usage_in_fsm": "Called in transitions to control datastore access mode during transfer: DeletePending for read-only, Committed when new anchor operational."
+      },
+      {
+        "name": "stop_dns_sd_advertising_admin_a",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Stops DNS-SD service advertising of Administrator A's Administrator, Anchor, and Datastore capabilities. Makes Admin A invisible during transfer.",
+        "algorithm_detail": "Removes DNS-SD service records for Administrator A from mDNS responder. Clears JF TXT key capability flags (Administrator, Anchor, Datastore all set to 0). Stops responding to DNS-SD queries for these service types. Ensures other administrators and devices cannot discover Admin A as active Anchor during transfer window.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminA_ValidatingRequest → AnchorTransfer_AdminA_DatastorePreparing to prevent discovery during transfer."
+      },
+      {
+        "name": "block_ica_cross_signing",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Blocks all incoming ICA cross-signing requests on Administrator A. Returns BusyAnchorTransfer error for any ICACSRRequest received during transfer.",
+        "algorithm_detail": "Sets global flag ica_cross_signing_blocked to true in Joint Fabric PKI cluster handler. Any ICACSRRequest command received while flag is set immediately returns ICACSRResponse with StatusCode BusyAnchorTransfer. No CSR validation or signing is attempted. Flag remains set until anchor transfer completes or aborts.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminA_ValidatingRequest → AnchorTransfer_AdminA_DatastorePreparing to prevent inconsistent ICAC issuance."
+      },
+      {
+        "name": "notify_all_admins_stop_commissioning",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Notifies all other Joint Fabric Administrators to stop commissioning new devices. Sent when datastore enters DeletePending state.",
+        "algorithm_detail": "Broadcasts notification (via datastore status change event or explicit message) to all subscribed administrators. Administrators monitoring DatastoreStatusEntry see status change to DeletePending. This signals anchor transfer in progress. Administrators must immediately stop issuing new NOCs and halt all commissioning flows until transfer completes.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminA_DatastorePreparing → AnchorTransfer_AdminA_DatastoreReadOnly to coordinate fabric-wide freeze."
+      },
+      {
+        "name": "initiate_datastore_copy",
+        "parameters": [
+          {
+            "name": "source_node_id",
+            "type": "64-bit",
+            "description": "Node ID of Administrator A (datastore source)"
+          }
+        ],
+        "return_type": "bitstring (datastore data)",
+        "description": "Initiates copy of Joint Fabric Datastore from Administrator A to Administrator B. Uses attribute read or BDX (Bulk Data Exchange) protocol depending on datastore size.",
+        "algorithm_detail": "Determines datastore size via attribute query. If small (under 1MB): uses attribute read commands to retrieve all datastore entries sequentially. If large: initiates BDX transfer session for efficient bulk transfer. Reads NodeList, ACL mappings, administrator records, and all fabric-scoped metadata. Returns complete datastore as serialized bitstring. Validates checksums to ensure data integrity.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminA_DatastoreReadOnly → AnchorTransfer_AdminB_CopyingDatastore to transfer datastore content."
+      },
+      {
+        "name": "get_current_admin_cat_version",
+        "parameters": [],
+        "return_type": "16-bit",
+        "description": "Retrieves current Administrator CAT version number from datastore. Version is incremented during anchor transfer to revoke old Anchor's administrative access.",
+        "algorithm_detail": "Queries AdministratorCATVersion attribute from Joint Fabric Datastore. Returns 16-bit version number. Current version is embedded in all Administrator NOCs as part of Administrator CAT value. Version increments signify revocation of previous CAT holders.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_CopyingDatastore → AnchorTransfer_AdminB_ConfiguringNewAnchor to prepare version increment."
+      },
+      {
+        "name": "increment_cat_version",
+        "parameters": [
+          {
+            "name": "current_version",
+            "type": "16-bit",
+            "description": "Current CAT version number"
+          }
+        ],
+        "return_type": "16-bit",
+        "description": "Increments Administrator CAT version number. New version will be used in all updated NOCs, revoking access for administrators not receiving updates.",
+        "algorithm_detail": "Adds 1 to current_version value. Handles overflow by wrapping at 16-bit boundary (0xFFFF + 1 = 0x0000). New version is immediately stored in datastore and used for subsequent NOC issuance. All administrators receiving updated NOCs get new version; old Anchor A does not receive update and is thus revoked.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_CopyingDatastore → AnchorTransfer_AdminB_ConfiguringNewAnchor to generate new CAT version."
+      },
+      {
+        "name": "get_all_other_joint_fabric_admins",
+        "parameters": [],
+        "return_type": "array_of_node_ids",
+        "description": "Retrieves list of all Joint Fabric Administrators excluding Administrator A (old Anchor) and Administrator B (new Anchor). These administrators need updated credentials.",
+        "algorithm_detail": "Queries Administrator list from Joint Fabric Datastore. Filters to include only administrators with valid Administrator CAT. Excludes Admin A (being replaced) and Admin B (self). Returns array of Node IDs for administrators requiring RCAC and NOC updates during anchor transfer.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_ConfiguringNewAnchor → AnchorTransfer_AdminB_UpdatingAdministrators to identify update targets."
+      },
+      {
+        "name": "get_admin_b_rcac",
+        "parameters": [],
+        "return_type": "X.509_certificate",
+        "description": "Retrieves Administrator B's Root Certificate Authority Certificate (RCAC). This RCAC becomes new Anchor CA trust root.",
+        "algorithm_detail": "Accesses Administrator B's credential storage. Retrieves RCAC associated with Admin B's fabric. This RCAC will be distributed to all administrators as new trust anchor. All future NOCs will chain to this RCAC. Returns DER-encoded X.509 root certificate.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_ConfiguringNewAnchor → AnchorTransfer_AdminB_UpdatingAdministrators to prepare trust anchor distribution."
+      },
+      {
+        "name": "issue_self_noc_with_anchor_datastore_cat",
+        "parameters": [
+          {
+            "name": "cat_version",
+            "type": "16-bit",
+            "description": "Updated CAT version number"
+          }
+        ],
+        "return_type": "X.509_certificate",
+        "description": "Administrator B issues itself a new NOC with updated Anchor/Datastore CAT. Combines Anchor and Datastore roles in single CAT value.",
+        "algorithm_detail": "Generates new NOC for Admin B with Subject DN containing: Node ID, Fabric ID (Admin B's fabric), Anchor/Datastore CAT with specified version. Signs NOC using Admin B's ICAC private key. Issuer is Admin B's ICAC which chains to Admin B's RCAC (now Anchor CA). NOC grants both Anchor and Datastore privileges. Returns DER-encoded X.509 certificate.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_IssuingSelfNOC → AnchorTransfer_AdminB_AdvertisingNewAnchor to certify Admin B's new role."
+      },
+      {
+        "name": "set_jf_capabilities",
+        "parameters": [
+          {
+            "name": "capabilities",
+            "type": "variadic enum",
+            "description": "List of capabilities to advertise (Administrator, Anchor, Datastore)"
+          }
+        ],
+        "return_type": "string (JF TXT key value)",
+        "description": "Constructs JF TXT key string for DNS-SD advertising with specified Joint Fabric capabilities enabled.",
+        "algorithm_detail": "Creates JF TXT key string with bitfield encoding capabilities. Administrator capability: bit 0 set. Anchor capability: bit 1 set. Datastore capability: bit 2 set. For Admin B after anchor transfer, all three bits are set indicating full Anchor/Datastore/Administrator role. Returns formatted string for DNS-SD TXT record.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_IssuingSelfNOC → AnchorTransfer_AdminB_AdvertisingNewAnchor to advertise new Anchor."
+      },
+      {
+        "name": "start_dns_sd_advertising_admin_b",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Starts DNS-SD service advertising for Administrator B with Anchor, Datastore, and Administrator capabilities. Makes Admin B discoverable as new Anchor.",
+        "algorithm_detail": "Registers DNS-SD service records for Administrator B with mDNS responder. Sets JF TXT key with Administrator|Anchor|Datastore capabilities. Includes device type, vendor ID, fabric ID in TXT records. Advertisement interval: 1 second initially, then exponential backoff. Other administrators discover Admin B via DNS-SD queries for Anchor and Datastore service types.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_IssuingSelfNOC → AnchorTransfer_AdminB_AdvertisingNewAnchor to enable discovery."
+      },
+      {
+        "name": "send_transfer_anchor_complete_command",
+        "parameters": [
+          {
+            "name": "admin_a_node_id",
+            "type": "64-bit",
+            "description": "Node ID of old Anchor Administrator A"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sends TransferAnchorComplete command from Administrator B to Administrator A. Notifies old Anchor that transition is complete and Admin B is operational.",
+        "algorithm_detail": "Invokes TransferAnchorComplete command on Joint Fabric Management cluster over CASE session to Admin A. Command contains no parameters. Signifies Admin B has successfully assumed Anchor role, updated all administrators, and is advertising as new Anchor. Admin A can now decommission or transition to regular administrator role. No response expected.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_AdvertisingNewAnchor → AnchorTransfer_AdminB_SendingTransferComplete to finalize handoff."
+      },
+      {
+        "name": "get_all_other_admins_excluding_a_and_b",
+        "parameters": [],
+        "return_type": "array_of_node_ids",
+        "description": "Retrieves list of all Joint Fabric Administrators excluding both Administrator A and Administrator B. These administrators must discover new Anchor and transition independently.",
+        "algorithm_detail": "Queries Administrator list from Joint Fabric Datastore. Filters to include only administrators with valid Administrator CAT. Excludes both Admin A and Admin B. Returns array of Node IDs for administrators that will perform discovery, subscription, ICA re-request, and fabric migration steps.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_SendingTransferComplete → AnchorTransfer_OtherAdmins_DetectingNewAnchor to track other admins."
+      },
+      {
+        "name": "dns_sd_discover_new_anchor",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Performs DNS-SD discovery to detect new Anchor Administrator. Queries for service with Administrator and Anchor capabilities in JF TXT key.",
+        "algorithm_detail": "Sends mDNS query for Matter commissioning service type. Filters results for JF TXT key with Anchor capability bit set. Discovers Admin B's service record. Extracts Node ID, IP address, port from service record. Returns true if new Anchor discovered, false if not found within timeout (60 seconds).",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_SendingTransferComplete → AnchorTransfer_OtherAdmins_DetectingNewAnchor for other admins to find new Anchor."
+      },
+      {
+        "name": "dns_sd_discover_new_datastore",
+        "parameters": [],
+        "return_type": "boolean",
+        "description": "Performs DNS-SD discovery to detect new Datastore provider. Queries for service with Datastore capability in JF TXT key.",
+        "algorithm_detail": "Sends mDNS query for Matter commissioning service type. Filters results for JF TXT key with Datastore capability bit set. Discovers Admin B's datastore service record. Returns true if new Datastore discovered, false if not found within timeout (60 seconds). Datastore discovery enables subscription for datastore updates.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_AdminB_SendingTransferComplete → AnchorTransfer_OtherAdmins_DetectingNewAnchor for datastore subscription."
+      },
+      {
+        "name": "establish_case_to_new_datastore",
+        "parameters": [
+          {
+            "name": "new_datastore_node_id",
+            "type": "64-bit",
+            "description": "Node ID of new Datastore provider (Admin B)"
+          }
+        ],
+        "return_type": "session_id",
+        "description": "Establishes CASE session from other administrators to new Datastore provider (Admin B). Required for datastore subscription and NOC verification.",
+        "algorithm_detail": "Initiates CASE protocol to Admin B using administrator's NOC. Performs Sigma handshake with mutual authentication. Derives session keys. Returns session_id. During handshake, Admin B's NOC (containing Anchor/Datastore CAT) is exchanged and can be extracted for verification.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_OtherAdmins_DetectingNewAnchor → AnchorTransfer_OtherAdmins_SubscribingToDatastore for secure connection."
+      },
+      {
+        "name": "has_anchor_datastore_cat",
+        "parameters": [
+          {
+            "name": "noc",
+            "type": "X.509_certificate",
+            "description": "NOC to check for Anchor/Datastore CAT"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Checks if NOC contains Anchor/Datastore CASE Authenticated Tag. This combined CAT indicates node serves both Anchor and Datastore roles.",
+        "algorithm_detail": "Parses NOC Subject DN field. Searches for Matter CAT OID. Extracts CAT value and checks if it matches reserved Anchor/Datastore CAT identifier. Returns true if Anchor/Datastore CAT present, false otherwise. Used to verify Admin B's dual role.",
+        "usage_in_fsm": "Called in transition guard AnchorTransfer_OtherAdmins_SubscribingToDatastore to verify Admin B legitimacy."
+      },
+      {
+        "name": "chains_to_anchor_icac",
+        "parameters": [
+          {
+            "name": "noc",
+            "type": "X.509_certificate",
+            "description": "NOC to validate chain"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Validates that NOC chains to Anchor ICAC. Checks certificate chain and verifies Issuer is Anchor ICAC with jf-anchor-icac attribute.",
+        "algorithm_detail": "Extracts Issuer DN from NOC. Verifies Issuer certificate is ICAC (cA=FALSE in Basic Constraints). Checks Issuer certificate Subject DN contains reserved org-unit-name attribute 'jf-anchor-icac'. Validates NOC signature using Issuer public key. Verifies Issuer chains to known RCAC (Admin B's RCAC). Returns true if complete chain valid.",
+        "usage_in_fsm": "Called in transition guard AnchorTransfer_OtherAdmins_SubscribingToDatastore to confirm Admin B's Anchor authority."
+      },
+      {
+        "name": "generate_ica_csr_for_new_anchor",
+        "parameters": [
+          {
+            "name": "new_anchor_fabric_id",
+            "type": "64-bit",
+            "description": "Fabric ID of new Anchor (Admin B's fabric)"
+          }
+        ],
+        "return_type": "PKCS10_CSR",
+        "description": "Generates new ICA Certificate Signing Request for cross-signing by new Anchor Administrator B. CSR contains new Anchor Fabric ID in Subject DN.",
+        "algorithm_detail": "Constructs PKCS#10 CSR with Subject DN containing matter-fabric-id attribute set to new_anchor_fabric_id (Admin B's fabric). SubjectPublicKey is administrator's existing ICAC public key. Signs CSR with administrator's ICAC private key using ECDSA-SHA256. Returns DER-encoded CSR for submission to new Anchor.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_OtherAdmins_SubscribingToDatastore → AnchorTransfer_OtherAdmins_RequestingNewICAC to request cross-signing."
+      },
+      {
+        "name": "send_icacsr_request_to_new_anchor",
+        "parameters": [
+          {
+            "name": "csr",
+            "type": "PKCS10_CSR",
+            "description": "ICA CSR to send to new Anchor"
+          }
+        ],
+        "return_type": "void",
+        "description": "Sends ICACSRRequest command to new Anchor Administrator B. Requests cross-signing of ICAC with new Anchor CA.",
+        "algorithm_detail": "Invokes ICACSRRequest command on Joint Fabric PKI cluster over CASE session to Admin B. ICACSR parameter contains DER-encoded CSR. Request includes administrator's vendor ID for DCL validation. Awaits ICACSRResponse with cross-signed ICAC. Timeout: 120 seconds.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_OtherAdmins_SubscribingToDatastore → AnchorTransfer_OtherAdmins_RequestingNewICAC for re-certification."
+      },
+      {
+        "name": "extract_icac_from_response",
+        "parameters": [],
+        "return_type": "X.509_certificate_PEM",
+        "description": "Extracts cross-signed ICAC from ICACSRResponse command. Returns ICAC in PEM format issued by new Anchor CA.",
+        "algorithm_detail": "Parses ICACSRResponse command payload. Extracts ICAC field containing PEM-encoded certificate. Validates StatusCode is Success. Decodes PEM format (base64 with header/footer). Returns cross-signed ICAC certificate for validation and storage.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_OtherAdmins_RequestingNewICAC → AnchorTransfer_OtherAdmins_ReceivingNewICAC to retrieve new ICAC."
+      },
+      {
+        "name": "validate_icac_chains_to_new_anchor",
+        "parameters": [
+          {
+            "name": "icac",
+            "type": "X.509_certificate",
+            "description": "Cross-signed ICAC to validate"
+          }
+        ],
+        "return_type": "boolean",
+        "description": "Validates that cross-signed ICAC chains to new Anchor RCAC (Admin B's RCAC). Checks signature and certificate constraints.",
+        "algorithm_detail": "Verifies ICAC Issuer DN matches new Anchor RCAC Subject DN. Validates ICAC signature using new Anchor RCAC public key. Checks Basic Constraints: cA=FALSE. Verifies SubjectPublicKey matches administrator's original ICAC public key (cross-signing requirement). Confirms matter-fabric-id attribute equals new Anchor's fabric ID. Returns true if all validations pass.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_OtherAdmins_RequestingNewICAC → AnchorTransfer_OtherAdmins_ReceivingNewICAC to verify new ICAC."
+      },
+      {
+        "name": "get_all_nodes_under_old_anchor",
+        "parameters": [],
+        "return_type": "array_of_node_ids",
+        "description": "Retrieves list of all nodes commissioned under old Anchor A's fabric. These nodes must be removed via RemoveFabric command.",
+        "algorithm_detail": "Queries local fabric table for all nodes commissioned under old Anchor RCAC. Filters by Fabric Index associated with old Anchor's fabric. Returns array of Node IDs for nodes requiring RemoveFabric invocation. Excludes nodes already migrated to new Anchor fabric.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_OtherAdmins_ReceivingNewICAC → AnchorTransfer_OtherAdmins_RemovingOldFabric to identify removal targets."
+      },
+      {
+        "name": "get_old_anchor_rcac",
+        "parameters": [],
+        "return_type": "X.509_certificate",
+        "description": "Retrieves old Anchor A's Root Certificate Authority Certificate. Used to identify fabric for removal.",
+        "algorithm_detail": "Accesses local trusted root certificate store. Retrieves RCAC associated with old Anchor A's fabric (fabric being replaced). Returns DER-encoded X.509 root certificate. This RCAC is used as identifier in RemoveFabric command to specify which fabric to remove.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_OtherAdmins_ReceivingNewICAC → AnchorTransfer_OtherAdmins_RemovingOldFabric to identify old fabric."
+      },
+      {
+        "name": "foreach_node_remove_fabric",
+        "parameters": [
+          {
+            "name": "rcac",
+            "type": "X.509_certificate",
+            "description": "RCAC identifying fabric to remove"
+          }
+        ],
+        "return_type": "void",
+        "description": "Iterates over all nodes commissioned under old Anchor fabric and removes fabric using RemoveFabric command. Cleans up old fabric-scoped data.",
+        "algorithm_detail": "For each node in old_fabric_nodes list: establishes CASE session using administrator credentials under NEW fabric, invokes RemoveFabric command with FabricIndex corresponding to old Anchor RCAC, waits for acknowledgment. RemoveFabric deletes NOC, RCAC, ICAC, ACLs, keys for old fabric. Tracks removal progress. Handles nodes that are offline or unreachable (skips with warning).",
+        "usage_in_fsm": "Called in transition AnchorTransfer_OtherAdmins_RemovingOldFabric → AnchorTransfer_Complete_NewAnchorOperational to clean up old fabric."
+      },
+      {
+        "name": "start_commissioning_with_new_icac",
+        "parameters": [
+          {
+            "name": "new_icac",
+            "type": "X.509_certificate",
+            "description": "Cross-signed ICAC from new Anchor for NOC issuance"
+          }
+        ],
+        "return_type": "void",
+        "description": "Resumes device commissioning operations using new cross-signed ICAC from Anchor B. All new NOCs issued will chain to new Anchor CA.",
+        "algorithm_detail": "Updates commissioning subsystem to use new_icac for NOC signing. Stores new ICAC in secure credential storage. Configures NOC issuance to use new ICAC private key for signing. All subsequent commissioning operations issue NOCs with Issuer=new_icac, chaining to new Anchor RCAC. Commissioning flows resume normal operation.",
+        "usage_in_fsm": "Called in transition AnchorTransfer_OtherAdmins_RemovingOldFabric → AnchorTransfer_Complete_NewAnchorOperational to resume operations."
+      }
+    ],
+    "definitions": [
+      {
+        "term": "Anchor Administrator Transfer",
+        "definition": "Protocol for changing Joint Fabric Anchor Administrator from current Anchor A to candidate Administrator B. Involves mutual user consent, datastore migration, CAT version increment, and coordinated transition of all administrators to new Anchor CA trust root.",
+        "security_relevance": "Anchor transfer is highest-risk operation in Joint Fabric. Requires perfect coordination across all administrators. Partial failures create split-brain scenarios where fabric fragments. Old Anchor must be cryptographically revoked via CAT version increment to prevent dual-anchor attacks."
+      },
+      {
+        "term": "TransferAnchorRequest",
+        "definition": "Command sent from candidate Administrator B to current Anchor Administrator A requesting transfer of Anchor role. Requires prior user consent on Admin B. Triggers validation checks on Admin A side.",
+        "security_relevance": "TransferAnchorRequest must be authenticated via CASE session with Administrator CAT verification. Without CAT check, any node could request anchor role. Request initiates critical state transition affecting entire fabric."
+      },
+      {
+        "term": "TransferAnchorResponse",
+        "definition": "Response command from Administrator A to Administrator B indicating approval or rejection of anchor transfer. StatusCode can be Success, TransferAnchorStatusNoUserConsent, or TransferAnchorStatusDatastoreBusy.",
+        "security_relevance": "TransferAnchorResponse success signals Admin A has entered read-only mode and other admins must stop commissioning. Malicious response forgery could cause denial-of-service or premature datastore freezing."
+      },
+      {
+        "term": "Datastore Status (DeletePending)",
+        "definition": "Read-only state for Joint Fabric Datastore during anchor transfer. Status set to DeletePending indicates datastore is being copied and no writes are permitted. All administrators must observe this status and halt commissioning.",
+        "security_relevance": "DeletePending enforces datastore consistency during migration. If administrators ignore status and continue commissioning, new devices are added to datastore being deprecated, causing loss of commissioned devices after transfer completes."
+      },
+      {
+        "term": "BusyAnchorTransfer",
+        "definition": "Error status returned for ICACSRRequest commands received during anchor transfer. Indicates Anchor Administrator cannot process cross-signing requests because transfer is in progress.",
+        "security_relevance": "BusyAnchorTransfer prevents ICA issuance during transfer window when RCAC is changing. Cross-signed ICACs issued during transfer would chain to wrong RCAC, creating invalid certificate chains after new Anchor operational."
+      },
+      {
+        "term": "Administrator CAT Version Increment",
+        "definition": "Procedure to increment Administrator CAT version number during anchor transfer. New version is embedded in all updated NOCs. Old Anchor A does not receive updated NOC, effectively revoking its administrative privileges.",
+        "security_relevance": "CAT version increment is cryptographic revocation mechanism for old Anchor. Without version increment, old Anchor retains administrative access and can compete with new Anchor. Version must increment before old Anchor can reconnect to prevent unauthorized access."
+      },
+      {
+        "term": "TransferAnchorComplete",
+        "definition": "Command sent from new Anchor Administrator B to old Anchor Administrator A signaling successful completion of anchor role transition. Indicates Admin B is operational and all administrators have transitioned.",
+        "security_relevance": "TransferAnchorComplete allows old Anchor to decommission gracefully. Premature or forged TransferAnchorComplete could cause old Anchor to shut down before transition is complete, leaving fabric in inconsistent state with no operational Anchor."
+      },
+      {
+        "term": "Mutual User Consent",
+        "definition": "Requirement for anchor transfer where user consent must be obtained on both Administrator A (sending Anchor role) and Administrator B (receiving Anchor role). Both users must explicitly approve the transfer.",
+        "security_relevance": "Mutual consent prevents hostile anchor takeover. Without Admin A consent, Admin B could unilaterally seize Anchor role. Without Admin B consent, Admin A could force unwilling administrator to become Anchor. Consent on both sides ensures legitimate, coordinated transfer."
+      }
+    ],
+    "security_properties": [
+      {
+        "property_name": "PROP_017_Anchor_Transfer_Mutual_Consent",
+        "type": "authorization",
+        "description": "Anchor transfer SHALL require mutual user consent: consent on Administrator A to transfer Anchor role, and consent on Administrator B to receive Anchor role. Either party can veto transfer.",
+        "fsm_states_involved": [
+          "AnchorTransfer_AdminB_CheckingConsent",
+          "AnchorTransfer_AdminA_ValidatingRequest",
+          "AnchorTransfer_Failed_AdminB_ConsentDenied",
+          "AnchorTransfer_Failed_AdminA_ConsentDenied"
+        ],
+        "critical_transitions": [
+          "AnchorTransfer_AdminB_CheckingConsent → AnchorTransfer_Failed_AdminB_ConsentDenied (guard: admin_b_user_consent == false)",
+          "AnchorTransfer_AdminA_ValidatingRequest → AnchorTransfer_Failed_AdminA_ConsentDenied (guard: admin_a_user_consent == false)"
+        ]
+      },
+      {
+        "property_name": "PROP_018_Anchor_Transfer_Datastore_Check",
+        "type": "consistency",
+        "description": "Before accepting anchor transfer request, Administrator A MUST verify no datastore entries have status Pending or DeletePending. Ensures datastore is in consistent state before migration.",
+        "fsm_states_involved": [
+          "AnchorTransfer_AdminA_ValidatingRequest",
+          "AnchorTransfer_AdminA_DatastorePreparing",
+          "AnchorTransfer_Failed_DatastoreBusy"
+        ],
+        "critical_transitions": [
+          "AnchorTransfer_AdminA_ValidatingRequest → AnchorTransfer_Failed_DatastoreBusy (guard: has_pending_datastore_entries() == true)",
+          "AnchorTransfer_AdminA_ValidatingRequest → AnchorTransfer_AdminA_DatastorePreparing (guard: has_pending_datastore_entries() == false)"
+        ]
+      },
+      {
+        "property_name": "PROP_019_Datastore_ReadOnly_During_Transfer",
+        "type": "atomicity",
+        "description": "Once anchor transfer approved, Administrator A MUST set datastore status to DeletePending (read-only), stop DNS-SD advertising, and block ICA cross-signing. All other administrators MUST stop commissioning when detecting DeletePending status.",
+        "fsm_states_involved": [
+          "AnchorTransfer_AdminA_DatastorePreparing",
+          "AnchorTransfer_AdminA_DatastoreReadOnly"
+        ],
+        "critical_transitions": [
+          "AnchorTransfer_AdminA_DatastorePreparing → AnchorTransfer_AdminA_DatastoreReadOnly (actions: set_datastore_status(DeletePending), stop_dns_sd_advertising, block_ica_cross_signing)"
+        ]
+      },
+      {
+        "property_name": "PROP_020_CAT_Version_Increment_During_Transfer",
+        "type": "security",
+        "description": "Administrator B MUST increment Administrator CAT version after assuming Anchor role. Old Anchor A MUST NOT receive updated NOC with new CAT version, effectively revoking its administrative access.",
+        "fsm_states_involved": [
+          "AnchorTransfer_AdminB_ConfiguringNewAnchor",
+          "AnchorTransfer_AdminB_UpdatingAdministrators"
+        ],
+        "critical_transitions": [
+          "AnchorTransfer_AdminB_ConfiguringNewAnchor → AnchorTransfer_AdminB_UpdatingAdministrators (actions: increment_cat_version, update other admins excluding Admin A)"
+        ]
+      },
+      {
+        "property_name": "PROP_021_ICA_CrossSigning_Blocked_During_Transfer",
+        "type": "consistency",
+        "description": "During anchor transfer, Administrator A MUST return BusyAnchorTransfer error for any ICACSRRequest received. Prevents issuance of ICACs chaining to wrong RCAC during RCAC transition.",
+        "fsm_states_involved": [
+          "AnchorTransfer_AdminA_DatastorePreparing",
+          "AnchorTransfer_AdminA_DatastoreReadOnly"
+        ],
+        "critical_transitions": [
+          "AnchorTransfer_AdminA_DatastorePreparing → AnchorTransfer_AdminA_DatastoreReadOnly (action: block_ica_cross_signing sets BusyAnchorTransfer error)"
+        ]
+      },
+      {
+        "property_name": "PROP_022_TransferAnchorComplete_Sequencing",
+        "type": "correctness",
+        "description": "Administrator B MUST send TransferAnchorComplete to Administrator A only after: datastore copied, Admin B configured as Anchor, all administrators updated, Admin B advertising as new Anchor. Ensures transfer completion before old Anchor decommissions.",
+        "fsm_states_involved": [
+          "AnchorTransfer_AdminB_AdvertisingNewAnchor",
+          "AnchorTransfer_AdminB_SendingTransferComplete"
+        ],
+        "critical_transitions": [
+          "AnchorTransfer_AdminB_AdvertisingNewAnchor → AnchorTransfer_AdminB_SendingTransferComplete (guard: dns_sd_active == true, action: send_transfer_anchor_complete)"
+        ]
+      },
+      {
+        "property_name": "PROP_023_ICA_Rerequest_After_Anchor_Transfer",
+        "type": "correctness",
+        "description": "All administrators (excluding A and B) MUST request ICA cross-signing from new Anchor Administrator B, receive cross-signed ICAC, and remove old fabric devices. Ensures all administrators transition to new Anchor CA trust root.",
+        "fsm_states_involved": [
+          "AnchorTransfer_OtherAdmins_RequestingNewICAC",
+          "AnchorTransfer_OtherAdmins_ReceivingNewICAC",
+          "AnchorTransfer_OtherAdmins_RemovingOldFabric"
+        ],
+        "critical_transitions": [
+          "AnchorTransfer_OtherAdmins_SubscribingToDatastore → AnchorTransfer_OtherAdmins_RequestingNewICAC (action: generate_ica_csr, send_icacsr_request)",
+          "AnchorTransfer_OtherAdmins_ReceivingNewICAC → AnchorTransfer_OtherAdmins_RemovingOldFabric (action: remove old fabric devices)"
+        ]
+      }
+    ],
+    "initial_state": "AnchorTransfer_Idle",
+    "all_states": [
+      "AnchorTransfer_Idle",
+      "AnchorTransfer_AdminB_CheckingConsent",
+      "AnchorTransfer_AdminB_SendingRequest",
+      "AnchorTransfer_AdminA_ValidatingRequest",
+      "AnchorTransfer_AdminA_DatastorePreparing",
+      "AnchorTransfer_AdminA_DatastoreReadOnly",
+      "AnchorTransfer_AdminB_CopyingDatastore",
+      "AnchorTransfer_AdminB_ConfiguringNewAnchor",
+      "AnchorTransfer_AdminB_UpdatingAdministrators",
+      "AnchorTransfer_AdminB_IssuingSelfNOC",
+      "AnchorTransfer_AdminB_AdvertisingNewAnchor",
+      "AnchorTransfer_AdminB_SendingTransferComplete",
+      "AnchorTransfer_OtherAdmins_DetectingNewAnchor",
+      "AnchorTransfer_OtherAdmins_SubscribingToDatastore",
+      "AnchorTransfer_OtherAdmins_RequestingNewICAC",
+      "AnchorTransfer_OtherAdmins_ReceivingNewICAC",
+      "AnchorTransfer_OtherAdmins_RemovingOldFabric",
+      "AnchorTransfer_Complete_NewAnchorOperational",
+      "AnchorTransfer_Failed_AdminB_ConsentDenied",
+      "AnchorTransfer_Failed_AdminA_NoAdminCAT",
+      "AnchorTransfer_Failed_AdminA_ConsentDenied",
+      "AnchorTransfer_Failed_DatastoreBusy"
+    ],
+    "all_triggers": [
+      "user_initiates_anchor_transfer",
+      "consent_obtained_admin_b",
+      "consent_denied_admin_b",
+      "transfer_request_received",
+      "validation_check_admin_cat",
+      "validation_check_consent",
+      "validation_check_datastore",
+      "validation_passed",
+      "datastore_readonly_set",
+      "admin_b_starts_datastore_copy",
+      "datastore_copy_complete",
+      "anchor_configuration_complete",
+      "all_administrators_updated",
+      "self_noc_issued",
+      "dns_advertising_active",
+      "other_admins_discover_new_anchor",
+      "new_datastore_discovered",
+      "datastore_subscription_complete",
+      "icacsr_response_received",
+      "new_icac_validated",
+      "old_fabric_removed"
+    ],
+    "all_functions_used": [
+      "check_user_consent_admin_b",
+      "establish_case_session_to_admin_a",
+      "send_transfer_anchor_request_command",
+      "extract_noc_from_case_session",
+      "check_user_consent_admin_a",
+      "has_administrator_cat",
+      "send_transfer_anchor_response_error",
+      "send_transfer_anchor_response",
+      "abort_anchor_transfer",
+      "has_pending_datastore_entries",
+      "get_pending_datastore_entries",
+      "set_datastore_status",
+      "stop_dns_sd_advertising_admin_a",
+      "block_ica_cross_signing",
+      "notify_all_admins_stop_commissioning",
+      "initiate_datastore_copy",
+      "get_current_admin_cat_version",
+      "increment_cat_version",
+      "get_all_other_joint_fabric_admins",
+      "get_admin_b_rcac",
+      "issue_self_noc_with_anchor_datastore_cat",
+      "set_jf_capabilities",
+      "start_dns_sd_advertising_admin_b",
+      "send_transfer_anchor_complete_command",
+      "get_all_other_admins_excluding_a_and_b",
+      "dns_sd_discover_new_anchor",
+      "dns_sd_discover_new_datastore",
+      "establish_case_to_new_datastore",
+      "has_anchor_datastore_cat",
+      "chains_to_anchor_icac",
+      "generate_ica_csr_for_new_anchor",
+      "send_icacsr_request_to_new_anchor",
+      "extract_icac_from_response",
+      "validate_icac_chains_to_new_anchor",
+      "get_all_nodes_under_old_anchor",
+      "get_old_anchor_rcac",
+      "foreach_node_remove_fabric",
+      "start_commissioning_with_new_icac"
+    ],
+    "cryptographic_operations": [
+      {
+        "operation": "CASE Session Establishment for Transfer",
+        "algorithm": "CASE with Sigma protocol, ECDSA-SHA256 signatures, HKDF-SHA256 key derivation",
+        "inputs": [
+          "admin_b_noc (with Administrator CAT)",
+          "admin_a_noc (with Anchor CAT)",
+          "ephemeral_keys (ECDH P-256)"
+        ],
+        "output": "Secure session for TransferAnchorRequest/Response commands",
+        "assumptions": [
+          "Administrator CAT presence in NOC is verified during CASE handshake",
+          "Session keys provide authenticated encryption for transfer protocol messages",
+          "CASE session prevents man-in-the-middle attacks during critical transfer handshake"
+        ]
+      },
+      {
+        "operation": "Datastore Copy Integrity",
+        "algorithm": "Checksum verification (CRC32 or SHA-256 hash)",
+        "inputs": [
+          "datastore_data (complete serialized datastore)"
+        ],
+        "output": "Boolean (data integrity verified)",
+        "assumptions": [
+          "Datastore copy transmitted over CASE-secured channel",
+          "Checksum computed on source (Admin A) and verified on destination (Admin B)",
+          "Integrity verification prevents corrupted datastore from being activated"
+        ]
+      },
+      {
+        "operation": "NOC Issuance with Updated CAT",
+        "algorithm": "X.509 certificate generation with ECDSA-SHA256 signature",
+        "inputs": [
+          "admin_node_id",
+          "new_admin_cat_version (16-bit incremented value)",
+          "icac_private_key (for signing)"
+        ],
+        "output": "New NOC with updated Administrator CAT version",
+        "assumptions": [
+          "CAT version embedded in Subject DN as part of CAT value",
+          "Old Anchor A excluded from NOC update distribution",
+          "New CAT version higher than previous version prevents version rollback"
+        ]
+      }
+    ],
+    "security_assumptions": [
+      {
+        "assumption": "User consent mechanisms on both Administrator A and Administrator B are secure and cannot be bypassed programmatically or through UI manipulation.",
+        "type": "Explicit",
+        "if_violated": "Properties PROP_017 fails. Attacker bypasses consent on either Admin A or Admin B, forcing anchor transfer without user authorization. Hostile administrator seizes Anchor role, controls entire Joint Fabric datastore and ICA issuance."
+      },
+      {
+        "assumption": "Datastore copy mechanism preserves integrity and completeness. No data corruption or truncation occurs during transfer from Admin A to Admin B.",
+        "type": "Explicit",
+        "if_violated": "Properties PROP_019, PROP_022 fail. Corrupted datastore causes Admin B to operate with incomplete node lists, missing ACLs, or incorrect administrator records. Leads to authorization failures, device lockouts, and inability to manage Joint Fabric."
+      },
+      {
+        "assumption": "All administrators correctly observe datastore status transitions and stop commissioning when status becomes DeletePending.",
+        "type": "Explicit",
+        "if_violated": "Property PROP_019 fails. Administrators ignore DeletePending status and continue commissioning new devices to old datastore. After transfer completes, newly commissioned devices are lost because they exist only in deprecated datastore copy held by old Anchor A."
+      },
+      {
+        "assumption": "CAT version increment is monotonic and version rollback is prevented. Administrators reject NOCs with CAT versions lower than currently observed maximum.",
+        "type": "Implicit",
+        "if_violated": "Property PROP_020 fails. Attacker downgrades CAT version to re-enable old Anchor A's administrative access. Old Anchor competes with new Anchor, creating split-brain scenario with conflicting datastore states and duplicate ICA issuance."
+      },
+      {
+        "assumption": "Time synchronization across administrators is sufficient that transfer coordination events (datastore copy complete, DNS-SD advertising active, TransferAnchorComplete sent) occur in expected order without exploitable race conditions.",
+        "type": "Implicit",
+        "if_violated": "Properties PROP_022, PROP_023 fail. Clock drift creates temporal windows where multiple Anchors appear operational simultaneously. Other administrators may discover new Anchor before old Anchor completes shutdown, or vice versa, causing inconsistent fabric state."
+      }
+    ],
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "no_loops_in_actions": true,
+      "all_functions_defined": true,
+      "all_guards_exclusive_or_exhaustive": true,
+      "all_timers_modeled": true,
+      "cryptographic_operations_detailed": true,
+      "error_states_included": true
+    }
+  }
+}

@@ -1,0 +1,360 @@
+{
+  "cluster_fsm": {
+    "cluster_name": "Water Heater Management",
+    "cluster_id": "0x0094",
+    "pics_code": "EWATERHTR",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 9.5, Pages 746-753",
+    "revision": 2,
+
+    "features": [
+      {
+        "bit": 0,
+        "code": "EM",
+        "name": "EnergyManagement",
+        "conformance": "O",
+        "description": "Allows energy management control of the tank; enables TankVolume (0x0002) and EstimatedHeatRequired (0x0003) attributes",
+        "affects_states": [],
+        "affects_transitions": []
+      },
+      {
+        "bit": 1,
+        "code": "TP",
+        "name": "TankPercent",
+        "conformance": "O",
+        "description": "Supports monitoring the percentage of hot water in the tank; enables TankPercentage (0x0004) attribute and TargetPercentage/TargetReheat fields within WaterHeaterBoostInfoStruct",
+        "affects_states": [],
+        "affects_transitions": ["T003"]
+      }
+    ],
+
+    "dependencies": [
+      {
+        "cluster": "Thermostat",
+        "relationship": "SHALL_COEXIST",
+        "description": "This cluster SHALL be on an endpoint that also includes the Thermostat cluster. The Thermostat cluster provides the occupiedHeatingSetpoint used as the default heating target during boost, and its MinHeatSetpointLimit/MaxHeatSetpointLimit constrain valid TemporarySetpoint values in WaterHeaterBoostInfoStruct."
+      }
+    ],
+
+    "states": [
+      {
+        "name": "Boost_Inactive",
+        "description": "No active boost operation. Water heating is controlled exclusively through the current Water Heater Mode (e.g., Off, Manual, or Timed).",
+        "is_initial": true,
+        "invariants": [
+          "BoostState == Inactive"
+        ],
+        "state_attributes": {
+          "BoostState": "Inactive"
+        },
+        "feature_requirements": [],
+        "safety_implications": "Water heating follows normal scheduled or manual operation. No risk of unexpected heating beyond configured modes."
+      },
+      {
+        "name": "Boost_Active",
+        "description": "A Boost operation is in progress. The water heater is actively attempting to heat water, potentially overriding other mode settings (e.g., Off mode or a Timed off-period). One or more heat sources indicated in HeatDemand are active. The boost persists until Duration expires, a OneShot target is reached, or a CancelBoost command is received.",
+        "is_initial": false,
+        "invariants": [
+          "BoostState == Active",
+          "timer_boost > 0"
+        ],
+        "state_attributes": {
+          "BoostState": "Active"
+        },
+        "feature_requirements": [],
+        "safety_implications": "The heater may override Off or Timed mode constraints, causing unexpected energy consumption. EmergencyBoost may simultaneously activate multiple heat sources (e.g., heat pump and immersion element). TemporarySetpoint directs heating to a potentially higher-than-normal setpoint."
+      }
+    ],
+
+    "transitions": [
+      {
+        "id": "T001",
+        "from_state": "Boost_Inactive",
+        "to_state": "Boost_Active",
+        "trigger": {
+          "type": "command",
+          "name": "Boost",
+          "command_id": "0x00"
+        },
+        "guard_condition": "BoostInfo.Duration >= device_minimum_boost_duration",
+        "actions": [
+          "BoostState := Active",
+          "timer_boost := BoostInfo.Duration",
+          "generate_event(BoostStarted, {BoostInfo: command.BoostInfo})",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": "BoostInfo.Duration specifies the time period in seconds for which boost is activated; timer_boost counts down from this value",
+        "error_responses": [
+          {
+            "condition": "BoostInfo.Duration is shorter than the device-specific minimum accepted duration (e.g., heat pump ramp-up requirement)",
+            "status_code": "INVALID_IN_STATE",
+            "description": "Duration too short for device to meaningfully honor the boost; command rejected, BoostState remains Inactive"
+          }
+        ],
+        "spec_reference": "Section 9.5.8.1.1 'Effect on receipt'"
+      },
+      {
+        "id": "T002",
+        "from_state": "Boost_Active",
+        "to_state": "Boost_Active",
+        "trigger": {
+          "type": "command",
+          "name": "Boost",
+          "command_id": "0x00"
+        },
+        "guard_condition": "BoostState == Active && BoostInfo.Duration >= device_minimum_boost_duration",
+        "actions": [
+          "discard_previous_boost_parameters()",
+          "timer_boost := BoostInfo.Duration",
+          "generate_event(BoostStarted, {BoostInfo: command.BoostInfo})",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": "Timer is reset to the new Duration; BoostState remains Active without interruption",
+        "error_responses": [
+          {
+            "condition": "BoostInfo.Duration is shorter than the device-specific minimum accepted duration",
+            "status_code": "INVALID_IN_STATE",
+            "description": "New duration rejected; previous boost parameters remain in effect, timer continues from its current value"
+          }
+        ],
+        "spec_reference": "Section 9.5.8.1.1 'Effect on receipt' — 'If the Water Heater was already in the BoostState Active when this command is received...'"
+      },
+      {
+        "id": "T003",
+        "from_state": "Boost_Active",
+        "to_state": "Boost_Inactive",
+        "trigger": {
+          "type": "attribute_change",
+          "name": "temperature_or_tankpercent_target_reached",
+          "command_id": null
+        },
+        "guard_condition": "BoostState == Active && boost_params.OneShot == true && (CurrentTemperature >= COALESCE(boost_params.TemporarySetpoint, thermostat.occupiedHeatingSetpoint) || (Feature_TP == true && TankPercentage >= boost_params.TargetPercentage))",
+        "actions": [
+          "BoostState := Inactive",
+          "generate_event(BoostEnded, {})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Fires as soon as the monitored temperature or TankPercentage crosses the target threshold, before Duration expires",
+        "error_responses": [],
+        "spec_reference": "Section 9.5.8.1.1 'Effect on receipt' — OneShot field behavior; Section 9.5.6.3.2 OneShot Field"
+      },
+      {
+        "id": "T004",
+        "from_state": "Boost_Active",
+        "to_state": "Boost_Inactive",
+        "trigger": {
+          "type": "timer",
+          "name": "timer_boost_expired",
+          "command_id": null
+        },
+        "guard_condition": "timer_boost == 0",
+        "actions": [
+          "BoostState := Inactive",
+          "generate_event(BoostEnded, {})"
+        ],
+        "access_required": null,
+        "timed_required": false,
+        "timing_constraint": "Fires when timer_boost, initialized from BoostInfo.Duration at T001 or T002, counts down to zero",
+        "error_responses": [],
+        "spec_reference": "Section 9.5.8.1.1 'Effect on receipt' — 'or the boost command's duration times out after the specified Duration, then BoostState transitions to Inactive'"
+      },
+      {
+        "id": "T005",
+        "from_state": "Boost_Active",
+        "to_state": "Boost_Inactive",
+        "trigger": {
+          "type": "command",
+          "name": "CancelBoost",
+          "command_id": "0x01"
+        },
+        "guard_condition": "BoostState == Active",
+        "actions": [
+          "BoostState := Inactive",
+          "generate_event(BoostEnded, {})",
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.5.8.2.1 'Effect on receipt'"
+      },
+      {
+        "id": "T006",
+        "from_state": "Boost_Inactive",
+        "to_state": "Boost_Inactive",
+        "trigger": {
+          "type": "command",
+          "name": "CancelBoost",
+          "command_id": "0x01"
+        },
+        "guard_condition": "BoostState == Inactive",
+        "actions": [
+          "return SUCCESS"
+        ],
+        "access_required": "M",
+        "timed_required": false,
+        "timing_constraint": null,
+        "error_responses": [],
+        "spec_reference": "Section 9.5.8.2.1 'Effect on receipt' — 'If the BoostState attribute value was already Inactive when this command is received, the BoostState attribute value shall remain Inactive and the server SHALL return SUCCESS'"
+      }
+    ],
+
+    "events": [
+      {
+        "id": "0x00",
+        "name": "BoostStarted",
+        "priority": "INFO",
+        "generated_by": ["T001", "T002"],
+        "fields": [
+          {
+            "name": "BoostInfo",
+            "type": "WaterHeaterBoostInfoStruct",
+            "description": "Copy of all WaterHeaterBoostInfoStruct field values received in the accepted Boost command (Duration, OneShot, EmergencyBoost, TemporarySetpoint, TargetPercentage, TargetReheat as applicable)"
+          }
+        ],
+        "description": "Generated whenever a Boost command is accepted, whether the transition is from Boost_Inactive to Boost_Active (T001) or a refresh within Boost_Active (T002). The access privilege for reading this event is View (V)."
+      },
+      {
+        "id": "0x01",
+        "name": "BoostEnded",
+        "priority": "INFO",
+        "generated_by": ["T003", "T004", "T005"],
+        "fields": [],
+        "description": "Generated whenever BoostState transitions from Active to Inactive, regardless of the cause: OneShot target reached (T003), Duration expired (T004), or CancelBoost command received (T005). No payload fields are defined. The access privilege for reading this event is View (V)."
+      }
+    ],
+
+    "timers": [
+      {
+        "name": "timer_boost",
+        "source_attribute": "BoostInfo.Duration (field within WaterHeaterBoostInfoStruct)",
+        "trigger": "Initialized on successful receipt of a Boost command (T001 or T002); reset to new Duration on T002",
+        "expiry_transition": "T004",
+        "resolution": "seconds"
+      }
+    ],
+
+    "functions": [
+      {
+        "name": "discard_previous_boost_parameters",
+        "parameters": [],
+        "return_type": "void",
+        "description": "Replaces all previously stored WaterHeaterBoostInfoStruct field values (Duration, OneShot, EmergencyBoost, TemporarySetpoint, TargetPercentage, TargetReheat) with the corresponding values from the newly received Boost command. The boost timer is reset to the new Duration. BoostState remains Active and is not interrupted.",
+        "usage_in_fsm": "T002"
+      },
+      {
+        "name": "activate_heat_sources",
+        "parameters": [
+          {
+            "name": "emergencyBoost",
+            "type": "bool",
+            "description": "If true, multiple heat sources may be activated simultaneously to heat water rapidly; selection is manufacturer-specific"
+          }
+        ],
+        "return_type": "void",
+        "description": "Selects and activates one or more heat sources from the HeaterTypes bitmap according to manufacturer-specific logic, setting the corresponding bits in the HeatDemand attribute. If emergencyBoost is true, more than one source (e.g., heat pump and ImmersionElement1) may be active simultaneously. Called implicitly upon entering Boost_Active and during reheat cycles within that state.",
+        "usage_in_fsm": "Implicitly upon T001, T002; HeatDemand attribute reflects the result"
+      }
+    ],
+
+    "access_control_summary": {
+      "view_commands": [],
+      "operate_commands": [],
+      "manage_commands": ["Boost", "CancelBoost"],
+      "administer_commands": [],
+      "timed_commands": []
+    },
+
+    "safety_critical_elements": [
+      {
+        "element_type": "transition",
+        "element_id": "T001",
+        "safety_concern": "Boost command overrides Off and Timed mode settings, causing unexpected water heating. Any client with Manage privilege (which is broader than Operate) can activate boost without occupant awareness or scheduling constraints.",
+        "mitigation_in_spec": "Manage privilege required (Access: M). Duration bounds the maximum boost period. INVALID_IN_STATE returned if Duration is too short for the device."
+      },
+      {
+        "element_type": "transition",
+        "element_id": "T002",
+        "safety_concern": "A new Boost command while already active silently replaces all previous boost parameters, including safety-constraining fields like OneShot and TargetPercentage. A malicious client could extend an unattended boost indefinitely or remove a previously set OneShot constraint.",
+        "mitigation_in_spec": "A new BoostStarted event is generated so monitoring clients are notified of parameter changes. No cooldown or confirmation mechanism is specified."
+      },
+      {
+        "element_type": "state",
+        "element_id": "Boost_Active",
+        "safety_concern": "EmergencyBoost simultaneously activates multiple heat sources, causing accelerated energy consumption and potential thermal stress on hardware. TemporarySetpoint can direct heating above the normal Thermostat setpoint if clients deliberately set it near MaxHeatSetpointLimit.",
+        "mitigation_in_spec": "TemporarySetpoint SHALL be within MinHeatSetpointLimit and MaxHeatSetpointLimit of the Thermostat cluster (Section 9.5.6.3.4). EmergencyBoost heat source selection is manufacturer-specific, so no upper bound on simultaneous activation is standardized."
+      },
+      {
+        "element_type": "attribute",
+        "element_id": "BoostState",
+        "safety_concern": "No rate limiting on Boost commands is specified. A compromised Manage-privilege client can continuously re-issue Boost commands to perpetually reset timer_boost, preventing CancelBoost from expiring the boost naturally and keeping the heater in Boost_Active indefinitely.",
+        "mitigation_in_spec": "NONE specified in Section 9.5."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "location": "Section 9.5.8.1",
+        "gap_type": "missing_constraint",
+        "description": "The minimum acceptable Duration is described as device-specific ('if the duration field is too short for the water heater to accept'). No floor value is mandated in the specification, making acceptance criteria non-interoperable.",
+        "security_impact": "Interoperability inconsistency: a Duration of 1 second may be accepted on one device and rejected on another. A very short Duration in T002 also enables rapid BoostStarted event generation (event log flooding)."
+      },
+      {
+        "location": "Section 9.5.6.3.1",
+        "gap_type": "missing_constraint",
+        "description": "Duration field has a minimum constraint of 1 second but no maximum value is defined. The elapsed-s type allows arbitrarily large values.",
+        "security_impact": "A malicious Manage-privilege client could set Duration to the maximum elapsed-s representable value, keeping the device in Boost_Active for an extremely long period without requiring repeated commands."
+      },
+      {
+        "location": "Section 9.5.9.2",
+        "gap_type": "missing_constraint",
+        "description": "The BoostEnded event has no payload fields. It is impossible to determine from the event alone whether the boost ended due to a OneShot target being reached (T003), Duration expiry (T004), or a CancelBoost command (T005).",
+        "security_impact": "Audit and forensic gap: a security monitoring system cannot distinguish a normally completed boost from one cancelled by an unauthorized CancelBoost command without correlating with other event logs."
+      },
+      {
+        "location": "Section 9.5.8.1.1",
+        "gap_type": "ambiguous",
+        "description": "When Boost is received while BoostState is Active (T002), the spec says the device 'SHALL continue in this BoostState, but SHALL discard the effect of the values of the fields from the previous Boost commands'. It is ambiguous whether timer_boost is immediately reset to the full new Duration (extending boost) or whether the new Duration is measured from the original boost start time.",
+        "security_impact": "Timer extension ambiguity: if implementations differ, a client that intends to extend an ongoing boost may actually shorten it (or vice versa), leading to unexpected physical behavior or security policy bypass."
+      },
+      {
+        "location": "Section 9.5.8.1.1",
+        "gap_type": "missing_constraint",
+        "description": "No minimum interval or rate limit between successive Boost commands is specified for the Active-to-Active refresh case (T002).",
+        "security_impact": "A compromised Manage-privilege client can flood the server with Boost commands at high frequency, generating excessive BoostStarted events (INFO-level event log exhaustion) and continuously resetting timer_boost to prevent natural expiry."
+      },
+      {
+        "location": "Section 9.5.7.6",
+        "gap_type": "missing_constraint",
+        "description": "No fault or power-loss recovery behavior is specified for BoostState. If the device powers off or experiences a hardware fault while in Boost_Active, whether BoostState is persisted and resumed, or reset to Inactive, is undefined.",
+        "security_impact": "Undefined post-fault state creates a race condition: after power restoration, the device may resume active boost heating without any BoostStarted event, leaving monitoring clients with a stale Inactive view of BoostState."
+      },
+      {
+        "location": "Section 9.5.6.3.4",
+        "gap_type": "weak_normative",
+        "description": "TemporarySetpoint 'SHALL be within the constraints of MinHeatSetpointLimit and MaxHeatSetpointLimit' of the Thermostat cluster. The enforcement point — whether the server validates at command receipt or at heating time — is not specified.",
+        "security_impact": "If validation is deferred or omitted, a malicious client could set TemporarySetpoint above safe temperatures, directing the heater to heat water beyond the designed safety threshold before validation is triggered."
+      }
+    ],
+
+    "initial_state": "Boost_Inactive",
+    "all_states": ["Boost_Inactive", "Boost_Active"],
+    "all_triggers": ["Boost", "CancelBoost", "timer_boost_expired", "temperature_or_tankpercent_target_reached"],
+
+    "validation_checklist": {
+      "no_conditionals_in_actions": true,
+      "all_commands_mapped": true,
+      "all_events_mapped": true,
+      "all_features_handled": true,
+      "access_control_documented": true,
+      "timers_modeled": true,
+      "error_paths_included": true,
+      "safety_implications_noted": true
+    }
+  }
+}

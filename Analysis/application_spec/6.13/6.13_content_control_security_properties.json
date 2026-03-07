@@ -1,0 +1,752 @@
+{
+  "cluster_properties": {
+    "cluster_name": "Content Control",
+    "cluster_id": "0x050F",
+    "pics_code": "CONCON",
+    "spec_reference": "Matter 1.5 Application Cluster Specification, Section 6.13, Pages 611-627",
+
+    "properties": [
+      {
+        "id": "PROP_001",
+        "name": "Enable_Disable_Requires_Manage_And_Timed",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The Enable and Disable commands SHALL only be accepted from clients with Manage privilege AND using a Timed Interaction.",
+        "formal": "∀invoker, cmd. cmd ∈ {Enable, Disable} ∧ invoke(invoker, cmd) ⟹ has_privilege(invoker, Manage) ∧ is_timed_invoke(cmd)",
+        "spec_source": "Section 6.13.8 Commands table: Enable (0x03) Access='M T', Disable (0x04) Access='M T'",
+        "violation": {
+          "description": "A client with Operate or View privilege could turn off all parental controls by invoking Disable. Lacking Timed Invoke also opens a replay-window attack where a captured command frame is re-submitted to disable content control after the legitimate administrator has left.",
+          "attack_vector": "Send Disable command without Timed Invoke, or from a node that has only been granted Operate-level ACL entries. On an implementation that skips privilege checks, Enabled is set to false regardless.",
+          "physical_impact": "All content filtering, screen time, channel blocking, and application blocking are deactivated. Children gain unrestricted access to all content until an administrator re-enables the feature."
+        },
+        "proverifQuery": "query invoker:principal, cmd:command; event invoke_success(invoker, cmd) ==> (has_privilege(invoker, Manage) && is_timed_invoke(cmd))"
+      },
+      {
+        "id": "PROP_002",
+        "name": "ResetPIN_Requires_Administer_And_Timed",
+        "category": "AccessControl",
+        "importance": "CRITICAL",
+        "claim": "The ResetPIN command SHALL only be accepted from clients with Administer privilege AND using a Timed Interaction; a non-Administer client must not be able to obtain or reset the PIN.",
+        "formal": "∀invoker. invoke(invoker, ResetPIN) ⟹ has_privilege(invoker, Administer) ∧ is_timed_invoke(ResetPIN)",
+        "spec_source": "Section 6.13.8 Commands table: ResetPIN (0x01) Access='A T'",
+        "violation": {
+          "description": "If a Manage-level client can invoke ResetPIN, it receives the new PIN in plain text via ResetPINResponse, effectively obtaining the credential used to gate Operate-level operations such as AddBonusTime. This elevates a Manage-level compromise to a full Content Control bypass.",
+          "attack_vector": "A compromised home automation app with Manage (but not Administer) privileges calls ResetPIN; if the privilege check is missing the new PIN is returned, allowing the attacker to also control AddBonusTime with Operate privilege.",
+          "physical_impact": "Attacker learns the current content control PIN and can subsequently use Operate-level commands (AddBonusTime) to bypass screen time limits for any child account."
+        },
+        "proverifQuery": "query invoker:principal; event resetpin_success(invoker) ==> has_privilege(invoker, Administer)"
+      },
+      {
+        "id": "PROP_003",
+        "name": "UpdatePIN_Requires_Matching_OldPIN",
+        "category": "Authentication",
+        "importance": "CRITICAL",
+        "claim": "The UpdatePIN command SHALL succeed only when the OldPIN field matches the current stored PIN; a mismatch SHALL return InvalidPINCode and the PIN SHALL remain unchanged.",
+        "formal": "∀invoker, oldpin, newpin. invoke(invoker, UpdatePIN, {OldPIN:oldpin, NewPIN:newpin}) ∧ oldpin ≠ current_PIN ⟹ return(InvalidPINCode) ∧ current_PIN = current_PIN_unchanged",
+        "spec_source": "Section 6.13.8.1: 'the media device SHALL check if the OldPIN field of this command is the same as the current PIN. If the PINs are the same, then the PIN code SHALL be set to NewPIN. Otherwise a response with InvalidPINCode error status SHALL be returned.'",
+        "violation": {
+          "description": "If OldPIN verification is skipped, any Manage-level client can overwrite the PIN without knowing the old one. This silently invalidates the previous administrator's credential and hands PIN control to the attacker.",
+          "attack_vector": "Send UpdatePIN with an arbitrary OldPIN field. If the device does not validate the field and updates the PIN unconditionally, the attacker sets a new PIN of their choice.",
+          "physical_impact": "The previous administrator can no longer authorize Operate-level AddBonusTime through the correct PIN; attacker fully controls screen time extension authorization."
+        },
+        "proverifQuery": "query invoker:principal, oldpin:pin, newpin:pin; event updatepin_success(invoker, oldpin, newpin) ==> oldpin = current_PIN()"
+      },
+      {
+        "id": "PROP_004",
+        "name": "AddBonusTime_Operate_Requires_Valid_PIN",
+        "category": "Authentication",
+        "importance": "CRITICAL",
+        "claim": "When a client with Operate privilege invokes AddBonusTime, the device SHALL verify that the PINCode field matches the current PIN; if it does not match, the device SHALL return InvalidPINCode and SHALL NOT modify RemainingScreenTime.",
+        "formal": "∀invoker, pin, bonus. has_privilege(invoker, Operate) ∧ ¬has_privilege(invoker, Manage) ∧ invoke(invoker, AddBonusTime, {PINCode:pin, BonusTime:bonus}) ∧ pin ≠ current_PIN ⟹ return(InvalidPINCode) ∧ RemainingScreenTime = RemainingScreenTime_unchanged",
+        "spec_source": "Section 6.13.8.6: 'If a client with Operate privilege invokes this command, the media device SHALL check whether the PINCode passed in the command matches the current PINCode value... If the PINs do not match, then a response with InvalidPINCode error status SHALL be returned, and no changes SHALL be made to RemainingScreenTime.'",
+        "violation": {
+          "description": "Without PIN validation, any Operate-level client (e.g., a child's account or an unauthorized automation device) can extend screen time without limit. This renders the screen time control feature completely ineffective.",
+          "attack_vector": "Invoke AddBonusTime with a random or empty PINCode value repeatedly. If PIN check is bypassed, RemainingScreenTime increases each time, granting unlimited viewing time.",
+          "physical_impact": "Screen time controls for child protection are bypassed. Children can watch content indefinitely beyond configured daily limits."
+        },
+        "proverifQuery": "query invoker:principal, pin:pin; event bonustime_granted(invoker) ∧ has_privilege_only(invoker, Operate) ==> pin_validated(invoker, pin)"
+      },
+      {
+        "id": "PROP_005",
+        "name": "ScreenTimeExhausted_Terminates_Playback",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "When Feature_ST is enabled, Enabled is TRUE, and RemainingScreenTime reaches 0, the media device SHALL immediately terminate playback of content.",
+        "formal": "∀t. Feature_ST == true ∧ Enabled == true ∧ RemainingScreenTime(t) == 0 ⟹ content_playing(t) == false",
+        "spec_source": "Section 6.13.7.7: 'When this value equals 0, the media device SHALL terminate the playback of content.'",
+        "violation": {
+          "description": "If the device continues playback after RemainingScreenTime reaches 0, the entire screen time control mechanism is defeated at the enforcement point rather than at the authorization point. No amount of correct access control prevents this violation.",
+          "attack_vector": "This is an implementation defect rather than a command-based attack: the device simply ignores the RemainingScreenTime==0 condition and continues playback.",
+          "physical_impact": "Children exceed the daily screen time limit without restriction, defeating the primary purpose of the parental control feature."
+        },
+        "proverifQuery": "query d:device, t:time; event remaining_screen_time_zero(d, t) ==> event playback_terminated(d, t)"
+      },
+      {
+        "id": "PROP_006",
+        "name": "BlockContentTimeWindow_Blocks_All_Content",
+        "category": "PhysicalSafety",
+        "importance": "CRITICAL",
+        "claim": "When Feature_BTW is enabled, Enabled is TRUE, and the current time enters a period defined in BlockContentTimeWindow, the device SHALL block content currently playing and SHALL reject any new request to play content for the duration of the window.",
+        "formal": "∀t. Feature_BTW == true ∧ Enabled == true ∧ in_block_window(t) ⟹ ¬content_playing(t) ∧ ∀req. play_request(req, t) ⟹ rejected(req)",
+        "spec_source": "Section 6.13.7.11: 'The media device SHALL reject any request to play content during one period of this attribute. If it is entering any one period of this attribute, the media device SHALL block content which is playing and generate an event EnteringBlockContentTimeWindow.'",
+        "violation": {
+          "description": "If the device allows playback to continue during a block window, scheduled bedtime or study-time restrictions are fully bypassed. A child who starts content just before the window opens would continue watching indefinitely.",
+          "attack_vector": "Exploit a race condition: start playback one second before the window begins. If the device only blocks new play requests but does not terminate ongoing playback, the restriction is bypassed for existing streams.",
+          "physical_impact": "Children watch content during prohibited times (e.g., nighttime, school hours), defeating schedule-based parental controls."
+        },
+        "proverifQuery": "query d:device, t:time; event block_window_entered(d, t) ==> event playback_blocked(d, t) ∧ event play_requests_rejected(d, t)"
+      },
+      {
+        "id": "PROP_007",
+        "name": "All_Configuration_Commands_Require_Manage",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "All content control configuration commands (SetScreenDailyTime, BlockUnratedContent, UnblockUnratedContent, SetOnDemandRatingThreshold, SetScheduledContentRatingThreshold, AddBlockChannels, RemoveBlockChannels, AddBlockApplications, RemoveBlockApplications, SetBlockContentTimeWindow, RemoveBlockContentTimeWindow) SHALL require Manage privilege.",
+        "formal": "∀invoker, cmd. cmd ∈ ConfigCommands ∧ invoke(invoker, cmd) ⟹ has_privilege(invoker, Manage)",
+        "spec_source": "Section 6.13.8 Commands table: all configuration commands listed with Access='M'",
+        "violation": {
+          "description": "An Operate-level client could modify blocking rules, rating thresholds, and time windows without the content administrator's authorization. This allows an unauthorized user to relax all content restrictions.",
+          "attack_vector": "A node granted Operate-level ACL access invokes RemoveBlockChannels to unblock adult content channels, or SetOnDemandRatingThreshold with a permissive rating value, bypassing all configured parental controls.",
+          "physical_impact": "Children gain access to blocked content, channels, and applications. Scheduled viewing restrictions are removed."
+        },
+        "proverifQuery": "query invoker:principal, cmd:configcommand; event config_cmd_success(invoker, cmd) ==> has_privilege(invoker, Manage)"
+      },
+      {
+        "id": "PROP_008",
+        "name": "UpdatePIN_Requires_Manage_And_Timed",
+        "category": "AccessControl",
+        "importance": "HIGH",
+        "claim": "The UpdatePIN command SHALL require Manage privilege AND a Timed Interaction; a lower-privilege client must not be able to change the PIN.",
+        "formal": "∀invoker. invoke(invoker, UpdatePIN) ⟹ has_privilege(invoker, Manage) ∧ is_timed_invoke(UpdatePIN)",
+        "spec_source": "Section 6.13.8 Commands table: UpdatePIN (0x00) Access='M T'",
+        "violation": {
+          "description": "An Operate-level client changing the PIN would lock out the administrator while retaining AddBonusTime ability with the new PIN. Without Timed Invoke, replay attacks can re-submit a captured UpdatePIN frame.",
+          "attack_vector": "Replay a captured UpdatePIN command after the timed window to change the PIN when the administrator is not present.",
+          "physical_impact": "Administrator loses PIN control of the content control system; Operate-level actors control when screen time extensions are authorized."
+        },
+        "proverifQuery": "query invoker:principal; event updatepin_success(invoker) ==> has_privilege(invoker, Manage) && is_timed_invoke()"
+      },
+      {
+        "id": "PROP_009",
+        "name": "AddBonusTime_Manage_Ignores_PIN",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "When a client with Manage or greater privilege invokes AddBonusTime, the device SHALL ignore the PINCode field and directly increase RemainingScreenTime by BonusTime.",
+        "formal": "∀invoker, pin, bonus. has_privilege(invoker, Manage) ∧ invoke(invoker, AddBonusTime, {PINCode:pin, BonusTime:bonus}) ⟹ RemainingScreenTime := RemainingScreenTime + bonus",
+        "spec_source": "Section 6.13.8.6: 'If a client with Manage privilege or greater invokes this command, the media device SHALL ignore the PINCode field and directly increase the RemainingScreenTime attribute by the specified BonusTime value.'",
+        "violation": {
+          "description": "If a Manage client's AddBonusTime is incorrectly gated by PIN validation, legitimate administrators are prevented from granting bonus time, causing denial-of-service on the AddBonusTime function. Conversely, if a non-Manage client's PIN check is mistakenly skipped, screen time restrictions are bypassed.",
+          "attack_vector": "Misconfiguration of privilege tier logic where AddBonusTime incorrectly applies PIN validation to Manage clients, rendering the feature unusable by administrators.",
+          "physical_impact": "Administrators cannot grant emergency bonus time, e.g., during special circumstances where the child needs extended viewing time."
+        },
+        "proverifQuery": "query invoker:principal, bonus:time; has_privilege(invoker, Manage) && event addbonus_invoked(invoker, bonus) ==> event remaining_screen_time_increased(bonus)"
+      },
+      {
+        "id": "PROP_010",
+        "name": "PM_Absent_Operate_AddBonusTime_Rejected_Without_OOB_PIN",
+        "category": "Authorization",
+        "importance": "HIGH",
+        "claim": "A server that does not support the PM feature SHALL respond with InvalidPINCode to Operate-privilege clients invoking AddBonusTime unless an out-of-band PIN has been configured and the client provides a matching PINCode.",
+        "formal": "∀invoker, pin. Feature_PM == false ∧ has_privilege_only(invoker, Operate) ∧ invoke(invoker, AddBonusTime, {PINCode:pin}) ∧ ¬oob_pin_configured() ⟹ return(InvalidPINCode)",
+        "spec_source": "Section 6.13.8.6: 'A server that does not support the PM feature SHALL respond with InvalidPINCode to clients that only have Operate privilege unless: It has been provided with the PIN value to expect via an out of band mechanism, and the client has provided a PINCode that matches the expected PIN value.'",
+        "violation": {
+          "description": "If a PM-absent server grants AddBonusTime to Operate clients without any PIN, screen time controls are freely bypassed by anyone with Operate access. The out-of-band PIN exception must be tightly controlled.",
+          "attack_vector": "On a device without PM feature, invoke AddBonusTime with any PINCode. If the server incorrectly accepts the command, unlimited bonus time is granted.",
+          "physical_impact": "Screen time limits are circumvented for any Operate-privilege node, defeating the parental control intent of the cluster."
+        },
+        "proverifQuery": "query invoker:principal, pin:pin; Feature_PM_absent() && has_privilege_only(invoker, Operate) && event addbonus_success(invoker) ==> oob_pin_configured() && pin_matches_oob(pin)"
+      },
+      {
+        "id": "PROP_011",
+        "name": "OnDemandRatingThreshold_Must_Be_In_OnDemandRatings",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The SetOnDemandRatingThreshold command SHALL only set OnDemandRatingThreshold to a value present in the OnDemandRatings attribute; if the value is not in the list, InvalidRating SHALL be returned.",
+        "formal": "∀invoker, rating. invoke(invoker, SetOnDemandRatingThreshold, {Rating:rating}) ∧ rating ∉ OnDemandRatings ⟹ return(InvalidRating) ∧ OnDemandRatingThreshold = OnDemandRatingThreshold_unchanged",
+        "spec_source": "Section 6.13.8.10: 'the media device SHALL check if the Rating field is one of values present in the OnDemandRatings attribute. If not, then a response with InvalidRating error status SHALL be returned.'",
+        "violation": {
+          "description": "If out-of-range ratings are accepted, the threshold could be set to an arbitrary string that matches no content, causing all on-demand content to be unblocked (if the comparison logic is string-based), or to a maximally permissive rating that allows all content.",
+          "attack_vector": "Submit a SetOnDemandRatingThreshold with Rating set to an empty string or a value not in the regional rating system. If the check is missing, the threshold is set to an invalid value.",
+          "physical_impact": "On-demand content rating filter becomes non-functional; restricted content becomes accessible to children."
+        },
+        "proverifQuery": "query invoker:principal, r:rating; event set_ondemand_threshold_success(invoker, r) ==> r ∈ OnDemandRatings()"
+      },
+      {
+        "id": "PROP_012",
+        "name": "ScheduledRatingThreshold_Must_Be_In_ScheduledRatings",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The SetScheduledContentRatingThreshold command SHALL only set ScheduledContentRatingThreshold to a value present in the ScheduledContentRatings attribute; if not, InvalidRating SHALL be returned.",
+        "formal": "∀invoker, rating. invoke(invoker, SetScheduledContentRatingThreshold, {Rating:rating}) ∧ rating ∉ ScheduledContentRatings ⟹ return(InvalidRating) ∧ ScheduledContentRatingThreshold = ScheduledContentRatingThreshold_unchanged",
+        "spec_source": "Section 6.13.8.11: 'the media device SHALL check if the Rating field is one of values present in the ScheduledContentRatings attribute. If not, then a response with InvalidRating error status SHALL be returned.'",
+        "violation": {
+          "description": "An invalid rating string could disable scheduled content filtering by setting a threshold that never matches, effectively allowing all scheduled content regardless of age appropriateness.",
+          "attack_vector": "Submit SetScheduledContentRatingThreshold with a crafted Rating string not in the list. If validation is absent, the threshold is set to an undefined value.",
+          "physical_impact": "Scheduled content rating filter becomes non-functional; children can watch age-inappropriate scheduled programming."
+        },
+        "proverifQuery": "query invoker:principal, r:rating; event set_scheduled_threshold_success(invoker, r) ==> r ∈ ScheduledContentRatings()"
+      },
+      {
+        "id": "PROP_013",
+        "name": "AddBlockChannels_Validates_Channel_Membership",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The AddBlockChannels command SHALL validate that each channel in the Channels field is a valid channel (present in the Channel cluster's ChannelList attribute); if any channel is invalid, InvalidChannel SHALL be returned.",
+        "formal": "∀invoker, channels. invoke(invoker, AddBlockChannels, {Channels:channels}) ∧ ∃ch ∈ channels. ¬channel_valid(ch) ⟹ return(InvalidChannel) ∧ BlockChannelList = BlockChannelList_unchanged",
+        "spec_source": "Section 6.13.8.12: 'the media device SHALL check if the channels passed in this command are valid. If the channel is invalid, then a response with InvalidChannel error Status SHALL be returned.' and Section 6.13.8.12.1: 'This field SHALL be set to values present in ChannelList attribute in the Channel cluster.'",
+        "violation": {
+          "description": "Accepting invalid channels could corrupt the BlockChannelList with phantom entries, causing inconsistent blocking behavior. Conversely, omitting validation could allow injection of entries that are never actually blocked because they don't correspond to real channels.",
+          "attack_vector": "Send AddBlockChannels with MajorNumber/MinorNumber values that don't correspond to any entry in the Channel cluster's ChannelList. If not validated, phantom entries are added to BlockChannelList.",
+          "physical_impact": "Blocked channel enforcement may be inconsistent; actual channels a child should not see may remain accessible if the block list is filled with phantom entries."
+        },
+        "proverifQuery": "query invoker:principal, ch:channel; event block_channel_added(invoker, ch) ==> channel_in_channel_list(ch)"
+      },
+      {
+        "id": "PROP_014",
+        "name": "BlockChannelIndex_NULL_On_AddBlockChannels",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The BlockChannelIndex field in each channel entry passed with AddBlockChannels SHALL be NULL; the device assigns unique indexes — the caller must not pre-assign them.",
+        "formal": "∀invoker, channels. invoke(invoker, AddBlockChannels, {Channels:channels}) ⟹ ∀ch ∈ channels. ch.BlockChannelIndex == NULL",
+        "spec_source": "Section 6.13.8.12.1: 'The BlockChannelIndex field passed in this command SHALL be NULL.'",
+        "violation": {
+          "description": "If the device accepts caller-supplied BlockChannelIndex values, a malicious client could deliberately assign indexes that collide with existing entries, causing confusion in subsequent RemoveBlockChannels operations or silently overwriting existing blocked channel records.",
+          "attack_vector": "Submit AddBlockChannels with non-NULL BlockChannelIndex values chosen to collide with existing entries in BlockChannelList.",
+          "physical_impact": "Blocked channel list integrity is compromised; existing blocks may be silently overwritten or removed through index collisions."
+        },
+        "proverifQuery": "query invoker:principal, ch:channel; event addblockchannels_accepted(invoker, ch) ==> ch.BlockChannelIndex == NULL"
+      },
+      {
+        "id": "PROP_015",
+        "name": "RemoveBlockChannels_All_Indexes_Must_Exist",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The RemoveBlockChannels command SHALL return ChannelNotExist if any channel index in ChannelIndexes is not present in BlockChannelList; no channels SHALL be removed in that case.",
+        "formal": "∀invoker, indexes. invoke(invoker, RemoveBlockChannels, {ChannelIndexes:indexes}) ∧ ∃idx ∈ indexes. ¬idx_in_BlockChannelList(idx) ⟹ return(ChannelNotExist) ∧ BlockChannelList = BlockChannelList_unchanged",
+        "spec_source": "Section 6.13.8.13: 'If one or more channels indicated by ChannelIndexes passed in this command field are not present in the BlockChannelList attribute, then a response with ChannelNotExist error Status SHALL be returned.'",
+        "violation": {
+          "description": "Partial removal without error reporting creates inconsistency in the BlockChannelList, and an attacker could probe the list structure by observing which indexes succeed and which fail (oracle attack on the list contents).",
+          "attack_vector": "Submit RemoveBlockChannels with a mix of valid and invalid indexes. If partial removal occurs instead of rejection, the attacker can enumerate valid indexes to understand the current block list.",
+          "physical_impact": "BlockChannelList becomes inconsistent; unintended channels may be unblocked."
+        },
+        "proverifQuery": "query invoker:principal, idx:index; event removechannel_success(invoker, idx) ==> idx_in_BlockChannelList(idx)"
+      },
+      {
+        "id": "PROP_016",
+        "name": "AddBlockApplications_All_Existing_Returns_AlreadyExist",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "If all applications in an AddBlockApplications command are already present in BlockApplicationList, the device SHALL return ApplicationAlreadyExist; if at least one is new, the new application(s) SHALL be added and SUCCESS returned.",
+        "formal": "∀invoker, apps. invoke(invoker, AddBlockApplications, {Applications:apps}) ∧ apps ⊆ BlockApplicationList ⟹ return(ApplicationAlreadyExist) ∧ BlockApplicationList = BlockApplicationList_unchanged",
+        "spec_source": "Section 6.13.8.14: 'If all applications in Applications field are already present in BlockApplicationList attribute, then a response with ApplicationAlreadyExist error Status SHALL be returned.'",
+        "violation": {
+          "description": "If duplicates are silently added, the BlockApplicationList grows unboundedly with duplicate entries, potentially causing resource exhaustion or inconsistent removal behavior.",
+          "attack_vector": "Repeatedly send AddBlockApplications with the same application. If duplicates are accepted, the list grows without bound.",
+          "physical_impact": "Resource exhaustion may prevent legitimate new block entries from being added, effectively preventing the administrator from blocking additional applications."
+        },
+        "proverifQuery": "query invoker:principal, apps:applist; event addapps_success(invoker, apps) ==> ∃app ∈ apps. ¬app_in_BlockApplicationList(app)"
+      },
+      {
+        "id": "PROP_017",
+        "name": "RemoveBlockApplications_All_Must_Exist",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The RemoveBlockApplications command SHALL return ApplicationNotExist if any application in the Applications field is not present in BlockApplicationList; no applications SHALL be removed in that case.",
+        "formal": "∀invoker, apps. invoke(invoker, RemoveBlockApplications, {Applications:apps}) ∧ ∃app ∈ apps. ¬app_in_BlockApplicationList(app) ⟹ return(ApplicationNotExist) ∧ BlockApplicationList = BlockApplicationList_unchanged",
+        "spec_source": "Section 6.13.8.15: 'If one or more applications in Applications field which are not present in the BlockApplicationList attribute, then a response with ApplicationNotExist error Status SHALL be returned.'",
+        "violation": {
+          "description": "Partial removal creates inconsistency and an oracle for probing the block list's contents. An attacker submitting mixed valid/invalid applications could learn which apps are currently blocked.",
+          "attack_vector": "Submit RemoveBlockApplications with known and probed application IDs to enumerate the BlockApplicationList without read access.",
+          "physical_impact": "BlockApplicationList becomes inconsistent; applications children should not access may become accessible."
+        },
+        "proverifQuery": "query invoker:principal, app:app; event removeapp_success(invoker, app) ==> app_in_BlockApplicationList(app)"
+      },
+      {
+        "id": "PROP_018",
+        "name": "No_Duplicate_DayOfWeek_In_BlockContentTimeWindow",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The BlockContentTimeWindow attribute SHALL NOT contain multiple entries for the same day of week; the SetBlockContentTimeWindow command must enforce this uniqueness constraint.",
+        "formal": "∀e1, e2 ∈ BlockContentTimeWindow. e1 ≠ e2 ⟹ e1.DayOfWeek ∩ e2.DayOfWeek == ∅",
+        "spec_source": "Section 6.13.7.11: 'There SHALL NOT be multiple entries in this attribute list for the same day of week.'",
+        "violation": {
+          "description": "Multiple entries for the same day create ambiguity in enforcement: which time period applies when two entries conflict? An attacker could inject a permissive second entry for a day that already has a restrictive entry, potentially causing the device to use the wrong window.",
+          "attack_vector": "Use SetBlockContentTimeWindow with TimeWindowIndex=NULL and a new DayOfWeek value. If duplicate day checking is absent, two entries with the same DayOfWeek are created, creating enforcement ambiguity.",
+          "physical_impact": "Scheduled blocking windows may be inconsistently enforced, allowing content access during times that should be blocked."
+        },
+        "proverifQuery": "query e1:window, e2:window; in_BlockContentTimeWindow(e1) && in_BlockContentTimeWindow(e2) && e1 ≠ e2 ==> disjoint(e1.DayOfWeek, e2.DayOfWeek)"
+      },
+      {
+        "id": "PROP_019",
+        "name": "SetBlockTimeWindow_NULL_Index_Duplicate_Detection",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When SetBlockContentTimeWindow is called with TimeWindowIndex==NULL, the device SHALL check for an existing entry matching both DayOfWeek and TimePeriod; if a match exists, TimeWindowAlreadyExist SHALL be returned and no entry added.",
+        "formal": "∀invoker, tw. invoke(invoker, SetBlockContentTimeWindow, {TimeWindow:tw}) ∧ tw.TimeWindowIndex == NULL ∧ ∃e ∈ BlockContentTimeWindow. e.DayOfWeek == tw.DayOfWeek ∧ e.TimePeriod == tw.TimePeriod ⟹ return(TimeWindowAlreadyExist) ∧ BlockContentTimeWindow = BlockContentTimeWindow_unchanged",
+        "spec_source": "Section 6.13.8.16: 'If the TimeWindowIndex field is NULL, the media device SHALL check if there is an entry in the BlockContentTimeWindow attribute which matches with the TimePeriod and DayOfWeek fields passed in this command. If Yes, then a response with TimeWindowAlreadyExist error status SHALL be returned.'",
+        "violation": {
+          "description": "Accepting duplicate time window entries circumvents the max-7-entry constraint (since multiple overlapping entries can reference the same real day/time) and creates unpredictable blocking behavior.",
+          "attack_vector": "Submit SetBlockContentTimeWindow with NULL index and values matching an existing entry. If accepted, the list grows with duplicate entries consuming the 7-slot quota.",
+          "physical_impact": "Legitimate blocking windows may be displaced by duplicates, or the 7-slot limit fills up preventing configuration of actual needed windows."
+        },
+        "proverifQuery": "query invoker:principal, tw:timewindow; event settimewindow_add_success(invoker, tw) ==> ¬∃e. in_BlockContentTimeWindow(e) && e.DayOfWeek == tw.DayOfWeek && e.TimePeriod == tw.TimePeriod"
+      },
+      {
+        "id": "PROP_020",
+        "name": "SetBlockTimeWindow_NonNull_Index_Replaces_Entry",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "When SetBlockContentTimeWindow is called with a non-NULL TimeWindowIndex that is present in BlockContentTimeWindow, the device SHALL replace the existing entry at that index with the new time window.",
+        "formal": "∀invoker, tw. invoke(invoker, SetBlockContentTimeWindow, {TimeWindow:tw}) ∧ tw.TimeWindowIndex ≠ NULL ∧ tw.TimeWindowIndex ∈ existing_indexes(BlockContentTimeWindow) ⟹ BlockContentTimeWindow[tw.TimeWindowIndex] := tw",
+        "spec_source": "Section 6.13.8.16: 'If the TimeWindowIndex field is not NULL and presents in the BlockContentTimeWindow attribute, the media device SHALL replace the original time window with the new time window passed in this command.'",
+        "violation": {
+          "description": "If the replace operation instead adds a new entry rather than replacing, the 7-slot quota is consumed unpredictably. If it silently overwrites without updating all fields, stale time window data may cause incorrect blocking.",
+          "attack_vector": "Send SetBlockContentTimeWindow with a valid non-NULL index but malformed TimePeriod or DayOfWeek. If the replace is not atomic, partial updates create inconsistent time window state.",
+          "physical_impact": "Blocking windows may be incorrectly updated, causing content to be blocked or unblocked at wrong times."
+        },
+        "proverifQuery": "query invoker:principal, tw:timewindow; event settimewindow_replace_success(invoker, tw) ==> BlockContentTimeWindow(tw.TimeWindowIndex) == tw"
+      },
+      {
+        "id": "PROP_021",
+        "name": "RemoveBlockTimeWindow_All_Indexes_Must_Exist",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The RemoveBlockContentTimeWindow command SHALL return TimeWindowNotExist if any time window index in TimeWindowIndexes is not present in BlockContentTimeWindow; no windows SHALL be removed in that case.",
+        "formal": "∀invoker, indexes. invoke(invoker, RemoveBlockContentTimeWindow, {TimeWindowIndexes:indexes}) ∧ ∃idx ∈ indexes. ¬idx_in_BlockContentTimeWindow(idx) ⟹ return(TimeWindowNotExist) ∧ BlockContentTimeWindow = BlockContentTimeWindow_unchanged",
+        "spec_reference": "Section 6.13.8.17: 'If one or more time window indexes passed in this command are not present in BlockContentTimeWindow attribute, then a response with TimeWindowNotExist error status SHALL be returned.'",
+        "spec_source": "Section 6.13.8.17",
+        "violation": {
+          "description": "Partial removal of time windows without error reporting creates inconsistent state and allows probing of the window index space. An attacker could enumerate which indexes are valid.",
+          "attack_vector": "Submit RemoveBlockContentTimeWindow with a mix of valid and invalid indexes to enumerate the BlockContentTimeWindow index space via error differential.",
+          "physical_impact": "Time window blocking may become inconsistent; unintended windows may be removed, allowing content during blocked periods."
+        },
+        "proverifQuery": "query invoker:principal, idx:index; event removetimewindow_success(invoker, idx) ==> idx_in_BlockContentTimeWindow(idx)"
+      },
+      {
+        "id": "PROP_022",
+        "name": "RemainingScreenTimeExpired_Event_Generated_At_Zero",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "The RemainingScreenTimeExpired event SHALL be generated when RemainingScreenTime equals 0; this event must not be suppressible.",
+        "formal": "∀d, t. Feature_ST == true ∧ Enabled == true ∧ RemainingScreenTime(d, t) == 0 ⟹ event_generated(d, RemainingScreenTimeExpired, t)",
+        "spec_source": "Section 6.13.9.1: 'This event SHALL be generated when the RemainingScreenTime equals 0.'",
+        "violation": {
+          "description": "If the event is not generated, subscribers (e.g., parent monitoring apps) do not receive notification that the child's screen time has expired. The parent cannot take action and the device's enforcement might be unmonitored.",
+          "attack_vector": "A device implementation that skips event generation when screen time expires; parent apps relying on event-driven notifications never learn the limit was hit.",
+          "physical_impact": "Parents lose visibility into screen time enforcement; monitoring apps cannot log or alert on the expiration of daily limits."
+        },
+        "proverifQuery": "query d:device, t:time; event remaining_time_reaches_zero(d, t) ==> event RemainingScreenTimeExpired_generated(d, t)"
+      },
+      {
+        "id": "PROP_023",
+        "name": "EnteringBlockWindow_Event_Generated_On_Entry",
+        "category": "EventIntegrity",
+        "importance": "HIGH",
+        "claim": "The EnteringBlockContentTimeWindow event SHALL be generated whenever the device enters a period configured in BlockContentTimeWindow.",
+        "formal": "∀d, t. Feature_BTW == true ∧ Enabled == true ∧ enters_block_window(d, t) ⟹ event_generated(d, EnteringBlockContentTimeWindow, t)",
+        "spec_source": "Section 6.13.7.11: 'the media device SHALL block content which is playing and generate an event EnteringBlockContentTimeWindow.' and Section 6.13.9.2: 'This event SHALL be generated when entering a period of blocked content.'",
+        "violation": {
+          "description": "Without this event, monitoring clients cannot log or alert when the device enters a scheduled block window. Parents lose audit visibility into when blocking enforcement activates.",
+          "attack_vector": "Implementation silently enters block windows without generating the event. If the parent's monitoring app relies solely on events for awareness, it misses all window entry notifications.",
+          "physical_impact": "Audit trail of content blocking enforcement is incomplete; parents cannot monitor compliance with configured schedules."
+        },
+        "proverifQuery": "query d:device, t:time; event block_window_entered(d, t) ==> event EnteringBlockWindow_generated(d, t)"
+      },
+      {
+        "id": "PROP_024",
+        "name": "BlockUnrated_Enforced_When_Enabled",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "When Feature_BU is enabled, Enabled is TRUE, and BlockUnrated is TRUE, the device SHALL prevent playback of any unrated content.",
+        "formal": "∀t, content. Feature_BU == true ∧ Enabled(t) == true ∧ BlockUnrated(t) == true ∧ unrated(content) ⟹ ¬playback_permitted(content, t)",
+        "spec_source": "Section 6.13.7.8: 'Otherwise [BlockUnrated==true], the media device SHALL prevent the playback of unrated content.'",
+        "violation": {
+          "description": "If unrated content is allowed despite BlockUnrated==true, content that deliberately lacks ratings (a common technique to avoid classification) bypasses all filtering, defeating the safety intent.",
+          "attack_vector": "Implementation only enforces rated content thresholds and ignores the BlockUnrated flag. Any unrated streaming application serves content without restriction.",
+          "physical_impact": "Children can access unrated content that may be entirely inappropriate; unrated content is not subject to any rating-based filtering."
+        },
+        "proverifQuery": "query t:time, content:media; Enabled(t) && BlockUnrated(t) && unrated(content) ==> ¬event playback_started(content, t)"
+      },
+      {
+        "id": "PROP_025",
+        "name": "OnDemandRating_Threshold_Enforced",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "When Feature_OCR is enabled and Enabled is TRUE, the device SHALL prevent playback of on-demand content whose rating is greater than or equal to OnDemandRatingThreshold (in a young-to-old ordered rating system).",
+        "formal": "∀t, content. Feature_OCR == true ∧ Enabled(t) == true ∧ content.rating ≥ OnDemandRatingThreshold(t) ⟹ ¬playback_permitted(content, t)",
+        "spec_source": "Section 6.13.7.3: 'if the on-demand content rating is greater than or equal to OnDemandRatingThreshold... then on-demand content is not appropriate for the User and the Node SHALL prevent the playback of content.'",
+        "violation": {
+          "description": "If on-demand rating enforcement is absent, age-inappropriate on-demand content (movies, shows) is accessible to children regardless of the configured content control settings.",
+          "attack_vector": "Device plays content with rating >= threshold because enforcement logic is absent or only enforced for scheduled content. Content with adult ratings becomes accessible via VOD.",
+          "physical_impact": "Children access age-inappropriate on-demand content bypassing the configured rating threshold."
+        },
+        "proverifQuery": "query t:time, content:media; Enabled(t) && content.rating >= OnDemandRatingThreshold(t) ==> ¬event ondemand_playback_permitted(content, t)"
+      },
+      {
+        "id": "PROP_026",
+        "name": "ScheduledRating_Threshold_Enforced",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "When Feature_SCR is enabled and Enabled is TRUE, the device SHALL block scheduled content whose rating is greater than or equal to ScheduledContentRatingThreshold.",
+        "formal": "∀t, content. Feature_SCR == true ∧ Enabled(t) == true ∧ content.rating ≥ ScheduledContentRatingThreshold(t) ⟹ scheduled_content_blocked(content, t)",
+        "spec_source": "Section 6.13.7.5: 'if the scheduled content rating is greater than or equal to ScheduledContentRatingThreshold... the scheduled content is not appropriate for the User and SHALL be blocked.'",
+        "violation": {
+          "description": "Failure to enforce the scheduled content rating threshold allows broadcast television content that exceeds the configured rating limit to be viewed during live TV sessions.",
+          "attack_vector": "Device does not apply the threshold filter to live/scheduled content. Children watch broadcast programs rated above the configured limit.",
+          "physical_impact": "Children access age-inappropriate live or scheduled broadcast content during viewing sessions."
+        },
+        "proverifQuery": "query t:time, content:media; Enabled(t) && content.rating >= ScheduledContentRatingThreshold(t) ==> event scheduled_content_blocked(content, t)"
+      },
+      {
+        "id": "PROP_027",
+        "name": "BlockChannelList_Enforced_When_Enabled",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "When Feature_BC is enabled and Enabled is TRUE, the device SHALL block access to all channels listed in BlockChannelList.",
+        "formal": "∀t, ch. Feature_BC == true ∧ Enabled(t) == true ∧ ch ∈ BlockChannelList(t) ⟹ ¬channel_accessible(ch, t)",
+        "spec_source": "Section 6.13.7.9: 'This attribute SHALL indicate a set of channels that SHALL be blocked when the Content Control feature is activated.'",
+        "violation": {
+          "description": "If channel blocking is not enforced, explicitly blocked channels remain accessible, defeating the channel-specific parental control configuration.",
+          "attack_vector": "Device does not check BlockChannelList when a channel tuning request is received. Children can tune to any explicitly blocked channel.",
+          "physical_impact": "Children access channels the parent has explicitly blocked (e.g., adult, violence-containing, or thematically inappropriate channels)."
+        },
+        "proverifQuery": "query t:time, ch:channel; Enabled(t) && ch ∈ BlockChannelList(t) ==> ¬event channel_tuned(ch, t)"
+      },
+      {
+        "id": "PROP_028",
+        "name": "BlockApplicationList_Enforced_When_Enabled",
+        "category": "PhysicalSafety",
+        "importance": "HIGH",
+        "claim": "When Feature_BA is enabled and Enabled is TRUE, the device SHALL block access to all applications listed in BlockApplicationList.",
+        "formal": "∀t, app. Feature_BA == true ∧ Enabled(t) == true ∧ app ∈ BlockApplicationList(t) ⟹ ¬application_accessible(app, t)",
+        "spec_source": "Section 6.13.7.10: 'This attribute SHALL indicate a set of applications that SHALL be blocked when the Content Control feature is activated.'",
+        "violation": {
+          "description": "If application blocking is not enforced, explicitly blocked applications remain usable, defeating application-level parental controls.",
+          "attack_vector": "Device does not check BlockApplicationList before launching an application. A child launches an app that the parent has explicitly blocked.",
+          "physical_impact": "Children access applications the parent has explicitly prohibited (e.g., social media, adult content apps, gaming apps)."
+        },
+        "proverifQuery": "query t:time, app:application; Enabled(t) && app ∈ BlockApplicationList(t) ==> ¬event app_launched(app, t)"
+      },
+      {
+        "id": "PROP_029",
+        "name": "BonusTime_Cannot_Exceed_Day_Remainder",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The BonusTime field in AddBonusTime SHALL NOT exceed the remaining time of the current day; values that would violate this constraint must be rejected.",
+        "formal": "∀invoker, bonus. invoke(invoker, AddBonusTime, {BonusTime:bonus}) ⟹ bonus ≤ seconds_remaining_in_day()",
+        "spec_source": "Section 6.13.8.6.2: 'This field SHALL NOT exceed the remaining time of this day.'",
+        "violation": {
+          "description": "If bonus time exceeding the remaining day is accepted, RemainingScreenTime could be set to a value larger than the daily limit (up to 86400 seconds), effectively granting more than a full day of viewing in a single command.",
+          "attack_vector": "Submit AddBonusTime with BonusTime set to 86400 seconds. If the remaining-day check is absent, RemainingScreenTime is set arbitrarily high.",
+          "physical_impact": "Screen time limits for the day are completely bypassed by a single AddBonusTime invocation with an oversized bonus value."
+        },
+        "proverifQuery": "query invoker:principal, bonus:time; event addbonus_accepted(invoker, bonus) ==> bonus <= remaining_seconds_today()"
+      },
+      {
+        "id": "PROP_030",
+        "name": "ScreenDailyTime_Max_86400",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "The ScreenTime field in SetScreenDailyTime SHALL not exceed 86400 seconds; ScreenDailyTime attribute is constrained to a max of 86400.",
+        "formal": "∀invoker, st. invoke(invoker, SetScreenDailyTime, {ScreenTime:st}) ⟹ st ≤ 86400",
+        "spec_source": "Section 6.13.7 Attributes table: ScreenDailyTime (0x0005) Constraint='max 86400' and Section 6.13.8.7.1 field constraint.",
+        "violation": {
+          "description": "Accepting values above 86400 seconds (24 hours) means the screen time limit exceeds a full day, rendering it effectively infinite.",
+          "attack_vector": "Submit SetScreenDailyTime with ScreenTime=999999. If the constraint is not validated, ScreenDailyTime is set well above 86400, granting unlimited daily viewing.",
+          "physical_impact": "Screen time limit becomes effectively boundless; children watch content beyond the intended maximum daily allowance."
+        },
+        "proverifQuery": "query invoker:principal, st:time; event set_screen_daily_time_success(invoker, st) ==> st <= 86400"
+      },
+      {
+        "id": "PROP_031",
+        "name": "TimePeriod_EndHour_GTE_StartHour",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "In a TimePeriodStruct, EndHour SHALL be greater than or equal to StartHour; configurations with EndHour < StartHour must be rejected.",
+        "formal": "∀period ∈ TimePeriodStruct. period.EndHour ≥ period.StartHour",
+        "spec_source": "Section 6.13.5.6.3: 'EndHour SHALL be equal to or greater than StartHour'",
+        "violation": {
+          "description": "If EndHour < StartHour is accepted, the time period is semantically invalid and the device's enforcement logic must handle this edge case. Implementation-defined handling may result in the period never activating, always activating, or activating at wrong times.",
+          "attack_vector": "Submit SetBlockContentTimeWindow with TimePeriod where EndHour < StartHour. If accepted, the resulting window causes implementation-defined blocking behavior.",
+          "physical_impact": "Block window may fail to enforce any restriction, or may block content at incorrect times."
+        },
+        "proverifQuery": "query period:timeperiod; event timeperiod_accepted(period) ==> period.EndHour >= period.StartHour"
+      },
+      {
+        "id": "PROP_032",
+        "name": "TimePeriod_EndMinute_GT_StartMinute_Same_Hour",
+        "category": "StateIntegrity",
+        "importance": "MEDIUM",
+        "claim": "When EndHour equals StartHour in a TimePeriodStruct, EndMinute SHALL be strictly greater than StartMinute.",
+        "formal": "∀period ∈ TimePeriodStruct. period.EndHour == period.StartHour ⟹ period.EndMinute > period.StartMinute",
+        "spec_source": "Section 6.13.5.6.4: 'If EndHour is equal to StartHour then EndMinute SHALL be greater than StartMinute.'",
+        "violation": {
+          "description": "A time period with StartHour==EndHour and StartMinute==EndMinute has zero duration; if accepted, it creates a zero-length block window that either never activates or triggers edge case behavior in the scheduler.",
+          "attack_vector": "Submit a time window with StartHour==EndHour and StartMinute==EndMinute (zero duration). If accepted, this may consume a slot in the 7-entry limit without enforcing any restriction.",
+          "physical_impact": "A zero-duration block window wastes a slot in the 7-entry BlockContentTimeWindow limit without providing any content blocking."
+        },
+        "proverifQuery": "query period:timeperiod; event timeperiod_accepted(period) && period.EndHour == period.StartHour ==> period.EndMinute > period.StartMinute"
+      },
+      {
+        "id": "PROP_033",
+        "name": "BlockContentTimeWindow_Max_Seven_Entries",
+        "category": "Availability",
+        "importance": "MEDIUM",
+        "claim": "The BlockContentTimeWindow attribute list SHALL contain at most 7 entries (one per day of week); attempts to add an eighth entry must be rejected.",
+        "formal": "∀t. |BlockContentTimeWindow(t)| ≤ 7",
+        "spec_source": "Section 6.13.7 Attributes table: BlockContentTimeWindow (0x000A) Constraint='max 7'",
+        "violation": {
+          "description": "Exceeding the 7-entry limit could cause memory exhaustion on constrained devices or corrupt the attribute state. A denial-of-service attack could exhaust the list with bogus entries, preventing the administrator from adding legitimate windows.",
+          "attack_vector": "A Manage-level attacker fills all 7 slots with useless time windows (e.g., 23:58–23:59 each on different days), preventing the administrator from configuring meaningful block windows.",
+          "physical_impact": "Legitimate blocking windows cannot be added; attackers with Manage access can prevent correct parental schedule configuration."
+        },
+        "proverifQuery": "query t:time; count(BlockContentTimeWindow(t)) <= 7"
+      },
+      {
+        "id": "PROP_034",
+        "name": "ResetPIN_Returns_ResetPINResponse_With_NewPIN",
+        "category": "Authentication",
+        "importance": "HIGH",
+        "claim": "Upon successful execution of ResetPIN, the device SHALL generate a ResetPINResponse command containing the new PIN code.",
+        "formal": "∀invoker. invoke_success(invoker, ResetPIN) ⟹ ∃newpin. sent(invoker, ResetPINResponse, {PINCode:newpin}) ∧ newpin == current_PIN()",
+        "spec_source": "Section 6.13.8.2: 'If this command is executed successfully, a ResetPINResponse command with a new PIN SHALL be returned.' Section 6.13.8.3: PINCode field is M.",
+        "violation": {
+          "description": "If ResetPINResponse is not returned, the administrator does not receive the new PIN after reset, effectively being locked out of PIN-gated operations (AddBonusTime with Operate clients). The device's PIN is unknown to anyone.",
+          "attack_vector": "Device resets PIN but suppresses ResetPINResponse (e.g., due to a messaging failure). The new PIN is unknown; AddBonusTime configuration is impossible for Operate clients.",
+          "physical_impact": "Administrator cannot use PIN-gated AddBonusTime delegation; screen time extension requires Manage-level access for all future operations."
+        },
+        "proverifQuery": "query invoker:principal; event resetpin_success(invoker) ==> ∃pin:pin. event resetpinresponse_sent(invoker, pin)"
+      },
+      {
+        "id": "PROP_035",
+        "name": "Enabled_Attribute_Accurately_Reflects_State",
+        "category": "StateIntegrity",
+        "importance": "HIGH",
+        "claim": "The Enabled attribute SHALL accurately and immediately reflect the activation state of the Content Control feature: TRUE when active (post-Enable), FALSE when inactive (post-Disable).",
+        "formal": "∀t. invoke_success(Enable, t) ⟹ Enabled(t+ε) == true ∧ invoke_success(Disable, t) ⟹ Enabled(t+ε) == false",
+        "spec_source": "Section 6.13.8.4: 'the media device SHALL set the Enabled attribute to TRUE.' Section 6.13.8.5: 'the media device SHALL set the Enabled attribute to FALSE.'",
+        "violation": {
+          "description": "If the Enabled attribute is stale or incorrect, clients monitoring the attribute (via subscriptions or reads) receive wrong state information, and enforcement behavior diverges from the observable attribute value. Monitoring apps may report controls as active when they are not, or vice versa.",
+          "attack_vector": "Attribute update is delayed or omitted after an Enable/Disable command. A monitoring client reads Enabled==true but the device is not enforcing any restrictions.",
+          "physical_impact": "Parents believe content controls are active when they are not, providing false assurance while children access restricted content."
+        },
+        "proverifQuery": "query t:time; event enable_cmd_success(t) ==> Enabled(t) == true && event disable_cmd_success(t) ==> Enabled(t) == false"
+      }
+    ],
+
+    "assumptions": [
+      {
+        "id": "ASSUM_001",
+        "statement": "The Matter network layer correctly enforces privilege levels (View < Operate < Manage < Administer) and the device rejects commands from clients without sufficient ACL entries before any cluster-level processing occurs.",
+        "type": "Explicit",
+        "source": "Matter Core Specification, General ACL enforcement model",
+        "dependencies": ["PROP_001", "PROP_002", "PROP_007", "PROP_008"],
+        "impact_if_violated": "All access control properties (PROP_001, PROP_002, PROP_007, PROP_008) fail simultaneously; any enrolled client can invoke any command regardless of privilege."
+      },
+      {
+        "id": "ASSUM_002",
+        "statement": "The current PIN is stored securely on the device and is not readable via any cluster attribute, command, or diagnostic interface except through the ResetPIN command (which requires Administer privilege).",
+        "type": "Implicit",
+        "source": "Derived from Section 6.13.8.1–6.13.8.3 (PIN fields appear only in commands, never in readable attributes)",
+        "dependencies": ["PROP_003", "PROP_004"],
+        "impact_if_violated": "PROP_003 and PROP_004 fail: a readable PIN attribute enables any View-level client to extract the PIN without invoking any restricted command."
+      },
+      {
+        "id": "ASSUM_003",
+        "statement": "Timed Invoke enforcement is handled correctly by the Matter session layer; the device correctly rejects commands that require Timed Invoke but are received without a valid timed interaction.",
+        "type": "Explicit",
+        "source": "Matter Core Specification, Timed Interaction requirements",
+        "dependencies": ["PROP_001", "PROP_002", "PROP_008"],
+        "impact_if_violated": "Commands requiring Timed Invoke (Enable, Disable, UpdatePIN, ResetPIN) can be replayed or submitted outside the timed window, enabling replay attacks on configuration commands."
+      },
+      {
+        "id": "ASSUM_004",
+        "statement": "The device maintains a reliable wall-clock time source for evaluating BlockContentTimeWindow schedules. If the clock is tampered with or loses synchronization, schedule-based blocking cannot be correctly enforced.",
+        "type": "Implicit",
+        "source": "Derived from Section 6.13.7.11 and 6.13.5.5–6.13.5.6 (time windows are evaluated against real-world time)",
+        "dependencies": ["PROP_006", "PROP_018", "PROP_019", "PROP_023"],
+        "impact_if_violated": "PROP_006, PROP_018, PROP_019, PROP_023 fail: block windows never activate or activate at wrong times; schedule-based parental controls are entirely ineffective."
+      },
+      {
+        "id": "ASSUM_005",
+        "statement": "When the Manage-level AddBonusTime path ignores the PINCode field (per spec), no lower-privilege client can masquerade as a Manage-level invoker. Privilege spoofing is prevented by the Matter security layer.",
+        "type": "Implicit",
+        "source": "Derived from Section 6.13.8.6 and Matter ACL enforcement model",
+        "dependencies": ["PROP_009"],
+        "impact_if_violated": "PROP_009 fails: an Operate-level client that spoofs Manage privilege bypasses PIN validation entirely, granting unlimited bonus time."
+      },
+      {
+        "id": "ASSUM_006",
+        "statement": "The out-of-band PIN mechanism (referenced for PM-absent servers) is provisioned through a secure channel. If the out-of-band PIN is delivered insecurely, it can be intercepted and used to bypass AddBonusTime restrictions.",
+        "type": "Implicit",
+        "source": "Derived from Section 6.13.8.6 out-of-band PIN exception",
+        "dependencies": ["PROP_010"],
+        "impact_if_violated": "PROP_010 fails: an attacker who intercepts the out-of-band PIN can invoke AddBonusTime with Operate privilege on a PM-absent device."
+      }
+    ],
+
+    "spec_gaps": [
+      {
+        "id": "GAP_001",
+        "location": "Section 6.13.8.6 'AddBonusTime Command'",
+        "normative_weakness": "Unspecified",
+        "description": "No rate limiting, lockout policy, failed-attempt counter, or maximum attempt count is defined for incorrect PIN submissions via AddBonusTime with Operate privilege. A 6-digit numeric PIN has at most 1,000,000 combinations (less if minimum length is not enforced).",
+        "properties_affected": ["PROP_004"],
+        "security_impact": "Brute-force attack: an Operate-level client submits all possible 6-digit PINs; within one million requests (or far fewer for short PINs), the correct PIN is found. No lockout mechanism prevents this."
+      },
+      {
+        "id": "GAP_002",
+        "location": "Section 6.13.8.1 'UpdatePIN Command'",
+        "normative_weakness": "Unspecified",
+        "description": "No minimum PIN length or character class requirement is specified. A 1-digit or all-zeros PIN ('0') is conformant. The PIN constraint is 'max 6', not 'min N'.",
+        "properties_affected": ["PROP_004", "PROP_003"],
+        "security_impact": "Trivially short PINs reduce the brute-force search space for AddBonusTime attacks to as few as 10 combinations (single digit 0-9)."
+      },
+      {
+        "id": "GAP_003",
+        "location": "Section 6.13.8.5 'Disable Command'",
+        "normative_weakness": "Unspecified",
+        "description": "The Disable command requires only Manage privilege and Timed Invoke. No PIN verification is required to turn off all content controls. Any legitimate Manage-level node (e.g., a second authorized device) can deactivate parental controls without knowing the content control PIN.",
+        "properties_affected": ["PROP_001"],
+        "security_impact": "The PIN gate applies only to Operate-level AddBonusTime; it does not protect the Disable command. A Manage-level node that has been compromised or whose access should be restricted can fully disable all parental controls."
+      },
+      {
+        "id": "GAP_004",
+        "location": "Section 6.13.8.14 'AddBlockApplications Command'",
+        "normative_weakness": "MAY",
+        "description": "The UnidentifiableApplication error response is specified with MAY (not SHALL). A server may silently ignore unrecognized applications, add them to BlockApplicationList anyway, or return the error. Behavior is implementation-defined.",
+        "properties_affected": ["PROP_016"],
+        "security_impact": "An attacker submitting fake ApplicationIDs gets unpredictable behavior: some implementations block a phantom app (harmless but wastes list space), while others silently fail, leaving the application accessible and the administrator believing it is blocked."
+      },
+      {
+        "id": "GAP_005",
+        "location": "Section 6.13.9 'Events'",
+        "normative_weakness": "Unspecified",
+        "description": "No ExitingBlockContentTimeWindow event is defined. The FSM transition from the BlockTimeWindowActive state back to Normal state is unobservable via events. Clients must poll the BlockContentTimeWindow attribute and wall-clock time to detect window exit.",
+        "properties_affected": ["PROP_023"],
+        "security_impact": "Monitoring clients have no event-driven notification that a block window has ended. Audit logs of enforcement periods are incomplete; a parent cannot determine via events alone how long a block window was active."
+      },
+      {
+        "id": "GAP_006",
+        "location": "Section 6.13.8.16 'SetBlockContentTimeWindow Command'",
+        "normative_weakness": "Unspecified",
+        "description": "The spec defines behavior when TimeWindowIndex is NULL (add new) and when it is non-NULL and exists (replace). It does not define behavior when TimeWindowIndex is non-NULL but does NOT exist in BlockContentTimeWindow (neither add nor replace is specified).",
+        "properties_affected": ["PROP_019", "PROP_020"],
+        "security_impact": "Implementations may silently add the entry with the caller-specified index instead of rejecting it, allowing attackers to inject entries with chosen index values and disrupt subsequent remove operations."
+      },
+      {
+        "id": "GAP_007",
+        "location": "Section 6.13 (entire cluster)",
+        "normative_weakness": "Unspecified",
+        "description": "The spec does not define whether configuration commands (e.g., AddBlockChannels, SetScreenDailyTime) are accepted while Enabled==false. It is unclear if the device should reject, accept, or silently buffer configuration in the Disabled state.",
+        "properties_affected": ["PROP_007"],
+        "security_impact": "If configuration is blocked in the Disabled state, an attacker who first disables content control can prevent reconfiguration. If configuration is always accepted, an attacker with Manage access can pre-populate configurations while Disabled."
+      },
+      {
+        "id": "GAP_008",
+        "location": "Section 6.13.9.1 'RemainingScreenTimeExpired Event'",
+        "normative_weakness": "Unspecified",
+        "description": "The RemainingScreenTimeExpired event has no fields. It does not indicate the current RemainingScreenTime value, the viewer identity, or any contextual information about what content was terminated.",
+        "properties_affected": ["PROP_022"],
+        "security_impact": "Audit logs cannot correlate expiration events with specific usage sessions. Limited forensic information hinders detection of screen time manipulation (e.g., repeated AddBonusTime invocations)."
+      },
+      {
+        "id": "GAP_009",
+        "location": "Section 6.13 Cluster Classification",
+        "normative_weakness": "Unspecified",
+        "description": "The entire cluster is marked Provisional (Conformance='P'). The spec notes: 'Support for Content Control cluster is provisional.' The security model, command set, and attribute definitions may change in future Matter revisions.",
+        "properties_affected": ["PROP_001", "PROP_002", "PROP_003", "PROP_004", "PROP_005", "PROP_006"],
+        "security_impact": "Any formal verification result is valid only against Matter 1.5 Revision 1 of this cluster. Future revisions may introduce breaking changes to the security model without backward compatibility guarantees."
+      }
+    ],
+
+    "cross_cluster_properties": [
+      {
+        "id": "XPROP_001",
+        "clusters_involved": ["Content Control (0x050F)", "Channel (implicit dependency)"],
+        "property": {
+          "claim": "A channel added to BlockChannelList via AddBlockChannels must correspond to a valid entry in the Channel cluster's ChannelList attribute on the same endpoint; the Content Control cluster depends on the Channel cluster for channel validity.",
+          "formal": "∀ch. ch ∈ BlockChannelList ⟹ ch ∈ ChannelCluster.ChannelList"
+        },
+        "violation_scenario": "If the Channel cluster's ChannelList changes after channels are added to BlockChannelList (e.g., channels are removed from the lineup), BlockChannelList may contain stale entries for channels that no longer exist. The spec does not define a synchronization mechanism between the two lists. Stale entries waste list slots and the channel index may be reused for a different channel, causing unintended blocking of the wrong channel."
+      },
+      {
+        "id": "XPROP_002",
+        "clusters_involved": ["Content Control (0x050F)", "Application Launcher / Application Basic (implicit)"],
+        "property": {
+          "claim": "Applications added to BlockApplicationList via AddBlockApplications must be identifiable by the device; the content control enforcement depends on the application identity/launch subsystem to recognize and block listed applications.",
+          "formal": "∀app. app ∈ BlockApplicationList ∧ Enabled == true ⟹ app_launch_blocked(app)"
+        },
+        "violation_scenario": "An application that changes its ApplicationID or CatalogVendorID after being blocked may no longer match its BlockApplicationList entry, silently escaping the block. No mechanism is defined to track application identity changes or purge stale entries."
+      }
+    ],
+
+    "safety_critical_properties": [
+      {
+        "property_id": "PROP_005",
+        "safety_category": "ChildSafety",
+        "failure_mode": "Children watch content beyond the configured daily screen time limit. The device fails to terminate playback when RemainingScreenTime reaches 0, rendering the screen time protection feature completely ineffective at the enforcement layer.",
+        "spec_mitigation": "Section 6.13.7.7 explicitly states 'the media device SHALL terminate the playback of content' when RemainingScreenTime equals 0. However, no verification mechanism is defined; compliance is entirely implementation-dependent."
+      },
+      {
+        "property_id": "PROP_006",
+        "safety_category": "ChildSafety",
+        "failure_mode": "Children watch content during scheduled block windows (e.g., bedtime, school hours). Device fails to terminate ongoing playback on window entry and/or fails to reject new play requests during the window.",
+        "spec_mitigation": "Section 6.13.7.11 states the device SHALL block content playing and SHALL reject play requests during block periods. The EnteringBlockContentTimeWindow event provides observability but there is no event for exit or for attempts to play content during blocked windows."
+      },
+      {
+        "property_id": "PROP_024",
+        "safety_category": "ChildSafety",
+        "failure_mode": "Unrated content — which often includes the most extreme material since it deliberately avoids classification — is displayed to children despite BlockUnrated==true. All unrated streaming content becomes accessible.",
+        "spec_mitigation": "Section 6.13.7.8 requires enforcement when BlockUnrated==true. The spec notes that the device SHOULD alert the user when limits of the feature are reached (e.g., if it cannot control content within apps), but this SHOULD is advisory, not mandatory."
+      },
+      {
+        "property_id": "PROP_025",
+        "safety_category": "ChildSafety",
+        "failure_mode": "Age-inappropriate on-demand content (movies, series with adult ratings) is accessible to children despite an OnDemandRatingThreshold configured below the content's rating.",
+        "spec_mitigation": "Section 6.13.7.3 requires blocking when content rating >= threshold. The spec notes device SHOULD inform users when the feature cannot control content within apps — acknowledging that app-level content cannot always be controlled by the platform."
+      },
+      {
+        "property_id": "PROP_027",
+        "safety_category": "ChildSafety",
+        "failure_mode": "Channels explicitly blocked by the parent administrator remain tunable by children. The explicit channel-level block list is not consulted or enforced during channel selection.",
+        "spec_mitigation": "Section 6.13.7.9 mandates blocking. No secondary mechanism (e.g., event on block attempt, audit log) is defined for channel block enforcement attempts."
+      },
+      {
+        "property_id": "PROP_028",
+        "safety_category": "ChildSafety",
+        "failure_mode": "Applications explicitly prohibited by the parent (e.g., social media, adult content apps) remain launchable by children. The BlockApplicationList is not checked before allowing application launch.",
+        "spec_mitigation": "Section 6.13.7.10 mandates blocking. The UnidentifiableApplication MAY response for AddBlockApplications (GAP_004) means some applications may be listed but not actually identified for blocking, creating a silent gap in enforcement."
+      }
+    ],
+
+    "summary": {
+      "total_properties": 35,
+      "by_importance": {
+        "CRITICAL": 6,
+        "HIGH": 22,
+        "MEDIUM": 7
+      },
+      "by_category": {
+        "AccessControl": 4,
+        "StateIntegrity": 12,
+        "PhysicalSafety": 8,
+        "Authentication": 4,
+        "Authorization": 3,
+        "Availability": 1,
+        "EventIntegrity": 3
+      },
+      "spec_gaps_found": 9,
+      "safety_critical_count": 6,
+      "cross_cluster_properties": 2,
+      "assumptions": 6,
+      "notes": [
+        "This cluster is entirely targeted at child safety (parental controls). All PhysicalSafety properties are of the ChildSafety subcategory — there are no life-safety (fire, flood, physical injury) implications.",
+        "The most dangerous spec gap (GAP_001) is the complete absence of brute-force protection on AddBonusTime PIN validation. Combined with GAP_002 (no minimum PIN length), the screen time PIN provides negligible security against a motivated child with Operate-level access.",
+        "The cluster is Provisional (GAP_009), meaning all properties here apply specifically to Matter 1.5 Revision 1 and may be invalidated by future revisions.",
+        "PROP_001 (Enable/Disable requires Manage+Timed) is marked CRITICAL because disabling all parental controls with no PIN requirement is the single most impactful security outcome for this cluster.",
+        "The PIN protects only AddBonusTime at the Operate level. All Manage-level configuration commands, including Disable, are PIN-free. This is an intentional design choice per the spec but constitutes a significant security asymmetry."
+      ]
+    }
+  }
+}

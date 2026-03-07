@@ -1,0 +1,738 @@
+{
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Datastore_Anchor_Administrator_Only_Access",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Joint Fabric Datastore cluster SHALL only be accessible on a Node acting as the Joint Fabric Anchor Administrator",
+      "formal": "∀node. can_access(node, JF_Datastore) ⟹ is_anchor_admin(node)",
+      "violation": "Non-anchor administrator nodes gain access to the datastore, enabling unauthorized manipulation of fabric topology, group memberships, and security credentials. Attackers can inject malicious nodes, revoke legitimate nodes, or escalate privileges by modifying ACL lists.",
+      "proverifQuery": "query node:principal ⊢ event access_datastore(node) ==> event is_anchor_admin(node)"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Datastore_Admin_Level_CAT_Restriction",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Admin level access to the Joint Fabric Datastore SHALL be limited to JF Administrator Nodes identified using the Administrator CAT",
+      "formal": "∀node. has_admin_access(node, JF_Datastore) ⟹ has_administrator_CAT(node)",
+      "violation": "Nodes without Administrator CAT gain administrative access to datastore, allowing unauthorized fabric reconfiguration. Attackers bypass authentication mechanisms, modify trust anchors, inject rogue administrators, or manipulate cryptographic key distribution.",
+      "proverifQuery": "query node:principal ⊢ event admin_access(node, datastore) ==> has_CAT(node, admin_CAT)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Datastore_Inaccessible_When_Not_Anchor",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "When not acting as the Joint Fabric Anchor Administrator, the Joint Fabric Datastore cluster SHALL NOT be accessible",
+      "formal": "∀node, t. ¬is_anchor_admin(node, t) ⟹ ¬can_access(any_node, JF_Datastore@node, t)",
+      "violation": "Datastore remains accessible on non-anchor nodes, creating multiple inconsistent datastores. Attackers exploit split-brain scenarios where conflicting fabric configurations coexist, enabling bypass of revocation mechanisms and membership restrictions.",
+      "proverifQuery": "query node:principal, t:time ⊢ event access_datastore_at(node, t) ==> event is_anchor_admin_at(node, t)"
+    },
+    {
+      "id": "PROP_004",
+      "name": "Commissioner_Must_Update_Datastore",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "Joint Fabric Administrator SHALL update the Datastore with changes made to Nodes and Groups",
+      "formal": "∀admin, change. makes_change(admin, nodes_or_groups, change) ⟹ must_update(admin, datastore, change)",
+      "violation": "Datastore diverges from actual fabric state. Administrators operate with stale membership information, allowing revoked nodes to maintain access or preventing legitimate nodes from accessing resources. Inconsistent state enables split-access attacks.",
+      "proverifQuery": "query admin:principal, change:bitstring ⊢ event node_group_change(admin, change) ==> event update_datastore(admin, change)"
+    },
+    {
+      "id": "PROP_005",
+      "name": "Commissioner_Retry_On_Temporary_Failure",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If attempts to update the Datastore fail due to temporary conditions, the Commissioner SHALL periodically retry the attempted commands until successful",
+      "formal": "∀cmd, t. failed(cmd, temporary_condition, t) ⟹ ∃t'>t. retry(cmd, t')",
+      "violation": "Failed datastore updates never complete, causing permanent inconsistency between actual fabric state and datastore records. Nodes remain in pending state indefinitely, group membership changes are lost, and revocations are not propagated.",
+      "proverifQuery": "query cmd:command, t:time ⊢ event command_failed_temp(cmd, t) ==> event command_retry(cmd, t2) && t2 > t"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Resource_Exhausted_User_Notification",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "RESOURCE_EXHAUSTED error SHALL notify the user of storage capacity limit using proprietary means outside specification",
+      "formal": "∀t. error(RESOURCE_EXHAUSTED, t) ⟹ notify_user(storage_limit_reached, t)",
+      "violation": "Users unaware of storage exhaustion continue attempting operations that fail silently. Datastore cannot store new nodes or security updates, potentially leaving nodes unprotected or inaccessible without administrator awareness.",
+      "proverifQuery": "query t:time ⊢ event resource_exhausted(t) ==> event user_notified(t)"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Pending_Then_Committed_Workflow",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "Node commissioning follows two-step workflow: pending status before completion, committed status after successful commissioning",
+      "formal": "∀node. state(node, committed) ⟹ ∃t1<t2. state(node, pending, t1) ∧ commissioning_success(node, t1, t2) ∧ state(node, committed, t2)",
+      "violation": "Nodes enter committed state without completing commissioning, appearing valid while lacking proper security configuration. Half-commissioned nodes may lack proper ACLs, group keys, or authentication credentials, creating security gaps.",
+      "proverifQuery": "query node:principal ⊢ event state_committed(node) ==> event state_pending(node) && event commissioning_complete(node)"
+    },
+    {
+      "id": "PROP_008",
+      "name": "AddPendingNode_Before_CASE",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "Commissioner SHALL add a Node Information Entry to the Datastore (pending status) before finalizing commissioning via CASE",
+      "formal": "∀node. finalize_commissioning_CASE(node) ⟹ prior_event(add_pending_node(node))",
+      "violation": "Nodes complete commissioning without datastore entry. Other administrators cannot discover the node, ACL propagation fails, and group key distribution is incomplete. Node operates in fabric without proper authorization framework.",
+      "proverifQuery": "query node:principal ⊢ event finalize_CASE(node) ==> event add_pending_node(node)"
+    },
+    {
+      "id": "PROP_009",
+      "name": "RefreshNode_After_Commissioning_Success",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "After successful commissioning completion, Commissioner SHALL invoke Refresh Node Command to mark entry as committed",
+      "formal": "∀node. commissioning_success(node) ⟹ must_invoke(refresh_node_command(node))",
+      "violation": "Successfully commissioned nodes remain in pending state indefinitely. Other administrators treat them as incomplete, skip synchronization operations, or attempt redundant commissioning. Node cannot receive group key updates or ACL changes.",
+      "proverifQuery": "query node:principal ⊢ event commissioning_success(node) ==> event invoke_refresh_node(node)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Remove_Pending_On_Commissioning_Failure",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If finalize commissioning step fails, the Commissioner removes the pending node from the Datastore",
+      "formal": "∀node. commissioning_fail(node) ⟹ must_invoke(remove_node_command(node))",
+      "violation": "Failed commissioning attempts leave stale pending entries in datastore. Accumulation of zombie entries exhausts storage capacity, prevents legitimate node additions, and creates confusion about which nodes are actually present in fabric.",
+      "proverifQuery": "query node:principal ⊢ event commissioning_fail(node) ==> event remove_node(node)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "Remove_ACL_Before_Removing_Node",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When removing a Node from Joint Fabric, Administrator SHALL first remove access privileges before removing Node Information Entry",
+      "formal": "∀node. remove_node(node) ⟹ prior_event(remove_all_ACLs(node))",
+      "violation": "Node removal completes while ACL references persist on other nodes. Removed node's NodeID can be reused, inheriting stale ACL grants on other devices. Attacker commissioning node with recycled NodeID gains unauthorized access to resources.",
+      "proverifQuery": "query node:principal ⊢ event remove_node(node) ==> event remove_ACLs(node)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Datastore_Periodic_Pending_Review",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Datastore SHALL periodically review data in Pending and PendingDeletion state and attempt to reach corresponding Node to apply updates",
+      "formal": "∀entry. state(entry, pending) ∨ state(entry, pending_deletion) ⟹ ∃Δt. periodically_attempt_update(entry, Δt)",
+      "violation": "Pending configuration changes never propagate to unreachable nodes. When nodes return to network, they operate with stale group memberships, outdated ACLs, and revoked keys, creating security vulnerabilities and access control bypasses.",
+      "proverifQuery": "query entry:record, t:time ⊢ event state_pending(entry, t) ==> event periodic_attempt(entry, t2) && t2 > t"
+    },
+    {
+      "id": "PROP_013",
+      "name": "AddGroup_Unique_GroupID",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "AddGroup command SHALL ensure no Groups in GroupList attribute have the given GroupID; return CONSTRAINT_ERROR if match found",
+      "formal": "∀gid. add_group(gid) ∧ exists_in_grouplist(gid) ⟹ return(CONSTRAINT_ERROR)",
+      "violation": "Duplicate GroupIDs created in fabric cause ambiguous group membership resolution. Nodes using same GroupID for different security contexts receive mismatched keys, enabling unauthorized decryption or message spoofing within wrong group.",
+      "proverifQuery": "query gid:groupid ⊢ event add_group(gid) && event exists_group(gid) ==> event return_error(CONSTRAINT_ERROR)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "UpdateGroup_Propagates_To_All_Members",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "When Group Information Entry is updated, Datastore SHALL iterate through each Node Information Entry and update all affected nodes",
+      "formal": "∀group, field. update_group(group, field) ⟹ ∀node∈members(group). update_node_pending(node, field)",
+      "violation": "Group updates applied inconsistently across members. Nodes operate with mismatched group keys, CAT versions, or permissions. Revoked members continue to decrypt group communications, and new members cannot authenticate to group-protected resources.",
+      "proverifQuery": "query group:groupid, field:bitstring, node:principal ⊢ event update_group(group, field) && event is_member(node, group) ==> event update_node(node, field)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "RemoveGroup_Prevents_InUse_Groups",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "RemoveGroup SHALL fail with CONSTRAINT_ERROR if Group is in use by any Nodes (without DeletePending status)",
+      "formal": "∀gid. remove_group(gid) ∧ (∃node. is_member(node, gid) ∧ ¬state(node.group_entry, delete_pending)) ⟹ return(CONSTRAINT_ERROR)",
+      "violation": "Group deleted while nodes still reference it. Nodes retain group keys and ACL references to non-existent group, but cannot receive group key updates or validate group CAT credentials. Access control becomes unpredictable and non-enforceable.",
+      "proverifQuery": "query gid:groupid, node:principal ⊢ event remove_group(gid) && event is_member(node, gid) && not(event delete_pending(node, gid)) ==> event return_error(CONSTRAINT_ERROR)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "RemoveKeySet_Prevents_InUse_KeySets",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "RemoveKeySet SHALL fail with CONSTRAINT_ERROR if KeySet is in use by any Groups (without PendingDelete status)",
+      "formal": "∀ksid. remove_keyset(ksid) ∧ (∃group. uses_keyset(group, ksid) ∧ ¬state(group, delete_pending)) ⟹ return(CONSTRAINT_ERROR)",
+      "violation": "KeySet deleted while groups actively use it. Groups lose cryptographic keys for secure communication but remain configured. Nodes cannot establish group sessions, group communications fail, or nodes continue using deleted keys creating key reuse vulnerabilities.",
+      "proverifQuery": "query ksid:keysetid, group:groupid ⊢ event remove_keyset(ksid) && event group_uses_keyset(group, ksid) && not(event delete_pending(group)) ==> event return_error(CONSTRAINT_ERROR)"
+    },
+    {
+      "id": "PROP_017",
+      "name": "IPK_KeySet_Cannot_Be_Removed",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "Attempt to remove the IPK (GroupKeySetID of 0) SHALL fail with response CONSTRAINT_ERROR",
+      "formal": "∀cmd. remove_keyset(0) ⟹ return(CONSTRAINT_ERROR)",
+      "violation": "IPK (Identity Protection Key) removal breaks fundamental fabric identity protection. All fabric communications lose privacy protection, exposing node identities and communication patterns to passive eavesdroppers and enabling targeted attacks.",
+      "proverifQuery": "query ⊢ event remove_keyset(ipk_id) ==> event return_error(CONSTRAINT_ERROR)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "GroupKeySetList_Minimum_One_Entry_IPK",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "GroupKeySetList attribute SHALL contain at least one entry, the IPK, which has GroupKeySetID of 0",
+      "formal": "∀t. ∃entry∈GroupKeySetList. entry.GroupKeySetID = 0",
+      "violation": "Fabric operates without IPK, eliminating identity protection. Node identities exposed in all communications, enabling tracking, profiling, and targeted attacks. Fundamental Matter security guarantee violated across entire fabric.",
+      "proverifQuery": "query t:time ⊢ event state_at(groupkeysetlist, t) ==> event contains_ipk(groupkeysetlist, t)"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Anchor_Admin_Single_Index_Zero",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Only one Administrator may serve as Anchor Root CA and Anchor Fabric Administrator and SHALL have index value 0; all others SHALL be referenced at index 1 or greater",
+      "formal": "∀t. count(admin: admin.index=0) = 1 ∧ (admin.index=0 ⟹ is_anchor_root_CA(admin)) ∧ ∀admin. is_anchor_root_CA(admin) ⟹ admin.index=0",
+      "violation": "Multiple administrators claim anchor role or anchor operates at wrong index. Split-brain fabric topology emerges with conflicting trust anchors. Nodes follow different administrators as root of trust, enabling parallel fabric takeover and PKI compromise.",
+      "proverifQuery": "query admin1:principal, admin2:principal ⊢ event is_anchor_admin(admin1) && event is_anchor_admin(admin2) ==> admin1 = admin2"
+    },
+    {
+      "id": "PROP_020",
+      "name": "AdminList_Empty_Indicates_Fabric_Not_Formed",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "A null value or empty AdminList indicates that the Joint Fabric is not yet formed",
+      "formal": "∀t. (AdminList = null ∨ AdminList = ∅) ⟺ ¬fabric_formed(t)",
+      "violation": "Fabric appears formed when AdminList is empty, or operations proceed on unformed fabric. Nodes attempt to join non-existent fabric, administrators issue credentials without trust anchor, creating orphaned security contexts without root of trust.",
+      "proverifQuery": "query t:time ⊢ event adminlist_empty(t) ==> not(event fabric_formed(t))"
+    },
+    {
+      "id": "PROP_021",
+      "name": "UpdateKeySet_Triggers_Pending_Node_Updates",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "When KeySet is updated and NodeKeySetList contains entry with given GroupKeySetID, update Status to Pending and update GroupKeySet on Node",
+      "formal": "∀ksid, node. update_keyset(ksid) ∧ has_keyset(node, ksid) ⟹ set_pending(node, ksid) ∧ propagate_update(node, ksid)",
+      "violation": "Nodes miss cryptographic key updates, continuing to use old keys while other nodes rotate to new keys. Group communication fails due to key mismatch, or security is compromised when old keys are revoked but still in use.",
+      "proverifQuery": "query ksid:keysetid, node:principal ⊢ event update_keyset(ksid) && event node_has_keyset(node, ksid) ==> event set_pending(node, ksid) && event propagate_update(node, ksid)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "UpdateGroup_CAT_Version_Increment_Required",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "When removing Node from Group with access control considerations, Administrator SHALL update GroupKeySetID and increment GroupCATVersion",
+      "formal": "∀node, group. remove_from_group_with_ACL(node, group) ⟹ update_keyset(group) ∧ increment(group.CATVersion)",
+      "violation": "Removed node retains valid CAT credentials with same version number. Node continues to authenticate using group CAT despite revocation, accessing group-protected resources indefinitely. Revocation mechanism completely bypassed.",
+      "proverifQuery": "query node:principal, group:groupid ⊢ event remove_node_from_group_acl(node, group) ==> event update_keyset(group) && event increment_cat_version(group)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "AddPendingNode_Must_Not_Exist",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "If a Node Information Entry exists for the given NodeID, AddPendingNode command SHALL return INVALID_CONSTRAINT",
+      "formal": "∀nid. add_pending_node(nid) ∧ exists_in_nodelist(nid) ⟹ return(INVALID_CONSTRAINT)",
+      "violation": "Duplicate node entries created with same NodeID. Datastore contains conflicting information about single node (different ACLs, group memberships, credentials). Administrators apply updates to wrong entry, causing unpredictable security configuration.",
+      "proverifQuery": "query nid:nodeid ⊢ event add_pending_node(nid) && event node_exists(nid) ==> event return_error(INVALID_CONSTRAINT)"
+    },
+    {
+      "id": "PROP_024",
+      "name": "RefreshNode_Synchronizes_Endpoint_List",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "RefreshNode SHALL ensure Endpoint List in datastore matches actual PartsList from Descriptor cluster on Node",
+      "formal": "∀node. refresh_node(node) ⟹ sync_complete(datastore.endpointlist(node), node.descriptor.partslist)",
+      "violation": "Datastore endpoint list diverges from actual node capabilities. Administrators configure non-existent endpoints or miss existing ones. Group bindings and ACLs reference invalid endpoints, creating security gaps where real endpoints lack proper protection.",
+      "proverifQuery": "query node:principal ⊢ event refresh_node(node) ==> event endpoints_synced(node, datastore_endpoints, actual_endpoints)"
+    },
+    {
+      "id": "PROP_025",
+      "name": "RefreshNode_Applies_Pending_GroupID_Changes",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "RefreshNode SHALL add GroupIDList entries with Status Pending to Node's Group List, marking Committed on success",
+      "formal": "∀node, gid. refresh_node(node) ∧ status(node.groupid(gid), pending) ⟹ add_to_node(node, gid) → status(node.groupid(gid), committed)",
+      "violation": "Pending group membership changes never materialize on nodes. Nodes lack group keys for groups they should be members of, cannot receive multicast commands, or remain members of groups they were removed from.",
+      "proverifQuery": "query node:principal, gid:groupid ⊢ event refresh_node(node) && event pending_groupid(node, gid) ==> event add_to_node(node, gid) && event committed_groupid(node, gid)"
+    },
+    {
+      "id": "PROP_026",
+      "name": "RefreshNode_Removes_DeletePending_GroupIDs",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "RefreshNode SHALL remove GroupIDList entries with Status DeletePending from Node's Group List",
+      "formal": "∀node, gid. refresh_node(node) ∧ status(node.groupid(gid), delete_pending) ⟹ remove_from_node(node, gid)",
+      "violation": "Nodes retain revoked group memberships indefinitely. Expelled members continue receiving group communications, decrypt sensitive multicast messages, and respond to group commands. Group-based access control and revocation completely ineffective.",
+      "proverifQuery": "query node:principal, gid:groupid ⊢ event refresh_node(node) && event delete_pending_groupid(node, gid) ==> event remove_from_node(node, gid)"
+    },
+    {
+      "id": "PROP_027",
+      "name": "RefreshNode_Synchronizes_GroupKeySets",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "RefreshNode SHALL ensure GroupKeySetList in datastore matches Group Keys on Node, adding Pending KeySets and replacing remaining entries",
+      "formal": "∀node. refresh_node(node) ⟹ ∀ksid. (status(node.keyset(ksid), pending) → add_keyset_to_node(node, ksid)) ∧ replace_remaining_keysets(node)",
+      "violation": "Node cryptographic keys diverge from authoritative datastore. Nodes use wrong epoch keys, cannot decrypt group messages, or continue using compromised keys after rotation. Key distribution mechanism breaks down enabling communication failures or security breaches.",
+      "proverifQuery": "query node:principal, ksid:keysetid ⊢ event refresh_node(node) && event pending_keyset(node, ksid) ==> event add_keyset_to_node(node, ksid) && event committed_keyset(node, ksid)"
+    },
+    {
+      "id": "PROP_028",
+      "name": "RefreshNode_Synchronizes_ACL_List",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "RefreshNode SHALL ensure ACLList in datastore matches ACL attribute on Node, adding Pending ACLs and replacing remaining entries",
+      "formal": "∀node. refresh_node(node) ⟹ ∀acl. (status(node.acl(acl), pending) → add_acl_to_node(node, acl)) ∧ replace_remaining_acls(node)",
+      "violation": "Access control policies diverge between datastore and actual nodes. Nodes enforce stale ACLs granting access to revoked controllers or blocking legitimate access. Attackers exploit inconsistency to maintain access after revocation or escalate privileges.",
+      "proverifQuery": "query node:principal, acl:aclentry ⊢ event refresh_node(node) && event pending_acl(node, acl) ==> event add_acl_to_node(node, acl) && event committed_acl(node, acl)"
+    },
+    {
+      "id": "PROP_029",
+      "name": "RefreshNode_Sets_Commissioning_Committed",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "After completing all synchronization steps, RefreshNode SHALL update CommissioningStatusEntry to Committed",
+      "formal": "∀node. refresh_node_complete(node) ⟹ status(node.commissioning, committed)",
+      "violation": "Successfully synchronized nodes remain in pending state. Other administrators continuously attempt redundant synchronization, creating race conditions. Node treated as incomplete despite being fully operational, blocking administrative workflows.",
+      "proverifQuery": "query node:principal ⊢ event refresh_node_complete(node) ==> event commissioning_status_committed(node)"
+    },
+    {
+      "id": "PROP_030",
+      "name": "AddGroupIDToEndpoint_Ensures_KeySet_Present",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "AddGroupIDToEndpointForNode SHALL ensure Node's Group Key List includes KeySet for given Group ID before adding group membership",
+      "formal": "∀node, ep, gid. add_groupid_to_endpoint(node, ep, gid) ⟹ ensure_keyset_present(node, keyset_of(gid))",
+      "violation": "Endpoint added to group without corresponding cryptographic keys. Node cannot decrypt group communications or authenticate group messages. Group membership is non-functional, creating illusion of access while node is cryptographically excluded.",
+      "proverifQuery": "query node:principal, ep:endpoint, gid:groupid ⊢ event add_groupid_to_endpoint(node, ep, gid) ==> event keyset_present(node, keyset_of(gid))"
+    },
+    {
+      "id": "PROP_031",
+      "name": "RemoveGroupIDFromEndpoint_Removes_KeySet_When_Unused",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "RemoveGroupIDFromEndpointForNode SHALL remove KeySet from Node when no other endpoints on Node use that Group's KeySet",
+      "formal": "∀node, ep, gid, ksid. remove_groupid_from_endpoint(node, ep, gid) ∧ ksid=keyset_of(gid) ∧ ¬(∃ep2≠ep. uses_keyset(node, ep2, ksid)) ⟹ remove_keyset(node, ksid)",
+      "violation": "Nodes retain cryptographic keys after all group memberships removed. Revoked nodes continue to possess valid group keys indefinitely, enabling passive eavesdropping on group communications and potential future active attacks if re-commissioned.",
+      "proverifQuery": "query node:principal, ep:endpoint, gid:groupid, ksid:keysetid ⊢ event remove_groupid_from_endpoint(node, ep, gid) && event keyset_unused(node, ksid) ==> event remove_keyset_from_node(node, ksid)"
+    },
+    {
+      "id": "PROP_032",
+      "name": "AddACLToNode_Pending_Then_Committed",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "AddACLToNode SHALL set new ACLEntry status to Pending, add to Node, then update to Committed on success",
+      "formal": "∀node, acl. add_acl(node, acl) ⟹ status(acl, pending) → add_to_node(node, acl) → (success ⟹ status(acl, committed))",
+      "violation": "ACL atomicity violated: datastore shows committed while node update failed, or node updated without datastore tracking. Administrator decisions based on incorrect access control state. Revocations appear complete while nodes still grant access.",
+      "proverifQuery": "query node:principal, acl:aclentry ⊢ event add_acl(node, acl) ==> event status_pending(acl) && event add_to_node(node, acl) && (event node_update_success(node, acl) ==> event status_committed(acl))"
+    },
+    {
+      "id": "PROP_033",
+      "name": "RemoveACLFromNode_DeletePending_Then_Remove",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "RemoveACLFromNode SHALL set ACLEntry status to DeletePending, remove from Node, then remove from datastore on success",
+      "formal": "∀node, acl. remove_acl(node, acl) ⟹ status(acl, delete_pending) → remove_from_node(node, acl) → (success ⟹ delete_from_datastore(acl))",
+      "violation": "ACL removal completes in datastore while node still enforces it, or node removes ACL while datastore shows active. Access control revocation appears successful but node continues granting access. Removed controllers maintain unauthorized access.",
+      "proverifQuery": "query node:principal, acl:aclentry ⊢ event remove_acl(node, acl) ==> event status_delete_pending(acl) && event remove_from_node(node, acl) && (event node_remove_success(node, acl) ==> event delete_from_datastore(acl))"
+    },
+    {
+      "id": "PROP_034",
+      "name": "Group_Based_Controller_Access_Control",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Joint Fabric Administrators SHALL use groups in Datastore for managing access to Nodes, avoiding ACL entries referencing single NodeID",
+      "formal": "∀node, controller. grant_access(node, controller) ⟹ ∃group. add_to_group(controller, group) ∧ acl_references_group(node, group)",
+      "violation": "Administrators create per-NodeID ACLs instead of group-based ACLs. Access control management becomes unscalable and inconsistent. Adding/removing controllers requires touching every node individually, creating windows where revocations are incomplete.",
+      "proverifQuery": "query node:principal, controller:principal ⊢ event grant_access(node, controller) ==> event uses_group_based_acl(node, controller)"
+    },
+    {
+      "id": "PROP_035",
+      "name": "Grant_Access_Via_CAT_And_ACL",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "To add access privilege to NodeA by ControllerB, Administrator SHALL configure NodeA ACL to allow group, then provide NOC to controller containing group's CAT tag",
+      "formal": "∀nodeA, controllerB, group. grant_access(nodeA, controllerB) ⟹ add_acl(nodeA, group) ∧ issue_noc_with_cat(controllerB, group.cat)",
+      "violation": "Access grants incomplete: Node has ACL for group but controller lacks CAT, or controller has CAT but node lacks ACL. Controller cannot access resource (denial of service) or accesses resources it shouldn't (privilege escalation through CAT reuse).",
+      "proverifQuery": "query nodeA:principal, controllerB:principal, group:groupid ⊢ event grant_access(nodeA, controllerB, group) ==> event add_acl(nodeA, group) && event issue_noc_with_cat(controllerB, group_cat)"
+    },
+    {
+      "id": "PROP_036",
+      "name": "Revoke_Access_Via_CAT_Version_Increment",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "To remove access privilege of ControllerB on NodeA, Administrator SHALL revoke access to group and ensure CAT version for Group Information Entry is incremented",
+      "formal": "∀nodeA, controllerB, group. revoke_access(nodeA, controllerB, group) ⟹ remove_from_group(controllerB, group) ∧ increment(group.cat_version)",
+      "violation": "Controller removed from group but CAT version unchanged. Controller's existing NOC with old CAT version remains valid, enabling continued access to group-protected resources. Revocation mechanism completely ineffective - removed controllers retain access indefinitely.",
+      "proverifQuery": "query nodeA:principal, controllerB:principal, group:groupid ⊢ event revoke_access(nodeA, controllerB, group) ==> event remove_from_group(controllerB, group) && event increment_cat_version(group)"
+    },
+    {
+      "id": "PROP_037",
+      "name": "Node_Synchronization_Retry_On_Failure",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If node update fails during any synchronization operation, pending change SHALL be applied in subsequent Node Refresh",
+      "formal": "∀node, change. update_fail(node, change) ⟹ status(change, pending) ∧ ∃t'>t. apply_during_refresh(node, change, t')",
+      "violation": "Failed node updates lost permanently instead of being retried. Nodes diverge from authoritative datastore state indefinitely. Security configurations (ACLs, group keys, memberships) remain inconsistent, creating persistent access control vulnerabilities.",
+      "proverifQuery": "query node:principal, change:bitstring, t:time ⊢ event update_fail(node, change, t) ==> event state_pending(change) && event retry_on_refresh(node, change, t2) && t2 > t"
+    },
+    {
+      "id": "PROP_038",
+      "name": "Binding_Synchronization_DeletePending_Removal",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "RefreshNode SHALL remove BindingList entries with Status DeletePending from Node's Binding List",
+      "formal": "∀node, binding. refresh_node(node) ∧ status(node.binding(binding), delete_pending) ⟹ remove_binding_from_node(node, binding)",
+      "violation": "Nodes retain stale bindings to removed endpoints or groups. Controllers continue sending commands to wrong destinations, causing unintended device actuation. Security impact if binding points to newly commissioned device with recycled endpoint identifier.",
+      "proverifQuery": "query node:principal, binding:bindingentry ⊢ event refresh_node(node) && event delete_pending_binding(node, binding) ==> event remove_binding_from_node(node, binding)"
+    },
+    {
+      "id": "PROP_039",
+      "name": "AddBinding_Pending_Then_Committed",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "AddBindingToEndpointForNode SHALL set new Binding status to Pending, add to Node, then update to Committed on success",
+      "formal": "∀node, ep, binding. add_binding(node, ep, binding) ⟹ status(binding, pending) → add_to_node(node, binding) → (success ⟹ status(binding, committed))",
+      "violation": "Binding state inconsistent between datastore and node. Administrator sees binding as active when node lacks it (false positive) or sees pending when already committed (false negative). Control relationships unreliable, commands fail unpredictably.",
+      "proverifQuery": "query node:principal, ep:endpoint, binding:bindingentry ⊢ event add_binding(node, ep, binding) ==> event status_pending(binding) && event add_to_node(node, binding) && (event success ==> event status_committed(binding))"
+    },
+    {
+      "id": "PROP_040",
+      "name": "RemoveBinding_DeletePending_Then_Remove",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "RemoveBindingFromEndpointForNode SHALL set Binding status to DeletePending, remove from Node, then remove from datastore on success",
+      "formal": "∀node, binding. remove_binding(node, binding) ⟹ status(binding, delete_pending) → remove_from_node(node, binding) → (success ⟹ delete_from_datastore(binding))",
+      "violation": "Binding removal incomplete: datastore shows removed while node still has binding, or node removes binding while datastore tracks it. Controllers send commands via removed bindings (fail) or administrators see bindings as active when non-functional.",
+      "proverifQuery": "query node:principal, binding:bindingentry ⊢ event remove_binding(node, binding) ==> event status_delete_pending(binding) && event remove_from_node(node, binding) && (event success ==> event delete_from_datastore(binding))"
+    },
+    {
+      "id": "PROP_041",
+      "name": "Administrator_Tracked_With_VendorID",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "VendorID of Joint Fabric Administrator must be explicitly tracked so controlling Administrator can sign intermediate certificates for Administrator to issue operational certificates",
+      "formal": "∀admin. is_jf_admin(admin) ⟹ ∃vendor_id. tracked(admin, vendor_id) ∧ can_sign_intermediate_cert(anchor_admin, admin, vendor_id)",
+      "violation": "Administrator VendorID not tracked, preventing proper certificate chain validation. Anchor cannot scope intermediate certificates to correct vendor, enabling cross-vendor certificate issuance. One vendor's administrator potentially issues NOCs for another vendor's devices.",
+      "proverifQuery": "query admin:principal ⊢ event is_jf_admin(admin) ==> event tracked_vendor_id(admin, vid) && event can_sign_intermediate(anchor, admin, vid)"
+    },
+    {
+      "id": "PROP_042",
+      "name": "JF_Admin_Added_To_AdminList_Not_NodeList",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Joint Fabric Administrator Nodes SHALL be added to AdminList via AddAdmin Command, not to regular NodeList via AddPendingNode Command",
+      "formal": "∀node. is_jf_admin(node) ⟹ add_to_adminlist(node) ∧ ¬add_to_nodelist(node)",
+      "violation": "Administrator nodes incorrectly added to regular NodeList. Administrators treated as regular nodes for group key distribution and ACL management. Administrators lack proper credential issuance capabilities or are subject to access controls meant for end devices.",
+      "proverifQuery": "query node:principal ⊢ event is_jf_admin(node) ==> event add_to_adminlist(node) && not(event add_to_nodelist(node))"
+    },
+    {
+      "id": "PROP_043",
+      "name": "StatusEntry_Committed_Indicates_Ready",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Committed status on DataStore StatusEntry indicates the DataStore is ready for use; Pending status indicates not yet ready",
+      "formal": "status(datastore, committed) ⟺ ready_for_use(datastore)",
+      "violation": "Administrators operate on datastore while still in pending state. Incomplete initialization leads to missing root certificates, uninitialized key material, or partial administrator lists. Operations fail unpredictably or succeed with incomplete security context.",
+      "proverifQuery": "query ⊢ event datastore_status_committed ==> event datastore_ready"
+    },
+    {
+      "id": "PROP_044",
+      "name": "DeletePending_Indicates_Transfer_In_Progress",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "DeletePending status on DataStore indicates DataStore is being transferred to another Joint Fabric Anchor Administrator",
+      "formal": "status(datastore, delete_pending) ⟺ transfer_in_progress(datastore, new_anchor)",
+      "violation": "Datastore operations continue during anchor administrator transfer. Two administrators simultaneously claim anchor role, creating split-brain fabric with divergent membership and security policies. Nodes follow different anchors, breaking fabric consistency.",
+      "proverifQuery": "query ⊢ event datastore_status_delete_pending ==> event transfer_in_progress"
+    },
+    {
+      "id": "PROP_045",
+      "name": "One_Administrator_Group_Per_Fabric",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "There should be only one Administrator group per fabric (GroupPermission level)",
+      "formal": "∀fabric. count(group: group.permission=administrator ∧ group∈fabric) ≤ 1",
+      "violation": "Multiple administrator groups with identical privilege levels exist. Ambiguous authority hierarchy enables privilege confusion attacks. Administrators from different groups compete for control, potentially issuing conflicting ACLs or revoking each other's access.",
+      "proverifQuery": "query fabric:fabricid ⊢ event admin_group_count(fabric, count) ==> count <= 1"
+    },
+    {
+      "id": "PROP_046",
+      "name": "One_Manage_Group_Per_Ecosystem",
+      "category": "AccessControl",
+      "importance": "HIGH",
+      "claim": "There should be at most one Manage group per Ecosystem (Vendor Entry) at the GroupPermission level",
+      "formal": "∀vendor. count(group: group.permission=manage ∧ group.vendor=vendor) ≤ 1",
+      "violation": "Multiple management groups per vendor create competing administrative authorities within single ecosystem. Conflicting management policies applied to same devices. Vendors lose clear control boundaries, enabling administrative conflicts and security policy inconsistencies.",
+      "proverifQuery": "query vendor:vendorid ⊢ event manage_group_count(vendor, count) ==> count <= 1"
+    },
+    {
+      "id": "PROP_047",
+      "name": "Anchor_Administrator_Cannot_Be_Removed",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "The anchor administrator (AdminList[0]) cannot be removed. RemoveAdmin must reject attempts with CONSTRAINT_ERROR",
+      "formal": "∀admin. (admin.index = 0) ⇒ ¬event(remove_admin(admin))",
+      "violation": "Anchor administrator removed from AdminList. Fabric loses trust anchor, AnchorRootCA invalidated, all certificate chains break. Entire fabric becomes non-functional with no recovery mechanism.",
+      "proverifQuery": "query admin:principal ⊢ event remove_admin(admin) && event is_anchor_admin(admin) ==> event return_error(CONSTRAINT_ERROR)"
+    },
+    {
+      "id": "PROP_048",
+      "name": "UpdateAdmin_Preserves_Anchor_Role",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "UpdateAdmin on anchor administrator must not change index or NodeID. Only FriendlyName and ICAC can be updated",
+      "formal": "∀admin. (admin.index = 0) ∧ event(update_admin(admin)) ⇒ admin.index' = 0 ∧ admin.NodeID' = admin.NodeID",
+      "violation": "UpdateAdmin changes anchor administrator's index or NodeID. Trust anchor identity changes unpredictably, breaking certificate validation and CASE sessions across fabric.",
+      "proverifQuery": "query admin:principal ⊢ event update_admin(admin) && event is_anchor_admin_before(admin) ==> event is_anchor_admin_after(admin)"
+    },
+    {
+      "id": "PROP_049",
+      "name": "UpdateEndpointForNode_Does_Not_Affect_Security_State",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "UpdateEndpointForNode only modifies FriendlyName metadata, does not alter security-relevant state (ACLs, GroupIDs, Bindings)",
+      "formal": "∀endpoint. event(update_endpoint(endpoint)) ⇒ endpoint.ACL' = endpoint.ACL ∧ endpoint.GroupIDs' = endpoint.GroupIDs ∧ endpoint.Bindings' = endpoint.Bindings",
+      "violation": "UpdateEndpointForNode unintentionally modifies security state. ACLs or group memberships changed as side effect of name update. Unpredictable access control changes.",
+      "proverifQuery": "query endpoint:endpoint, node:principal ⊢ event update_endpoint_name(node, endpoint) ==> event security_state_unchanged(node, endpoint)"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "Joint Fabric Anchor Administrator role is mutually exclusive and unambiguously determined",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_001, PROP_003, PROP_019, PROP_044 fail. Multiple nodes claim anchor role simultaneously, creating split-brain fabric with conflicting datastores and trust anchors."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "Administrator CAT credentials cannot be forged or stolen by non-administrator nodes",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_002, PROP_035, PROP_036 fail. Any node can impersonate administrator by presenting stolen or forged CAT, gaining unrestricted datastore access and ability to modify entire fabric topology."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "Network communication between Administrator and Datastore is reliable enough that retries eventually succeed",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_005, PROP_012, PROP_037 fail. Persistent network failures prevent datastore updates from ever completing. Pending state accumulates indefinitely, exhausting storage and preventing all new operations."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Nodes correctly report their endpoint configuration via Descriptor cluster during RefreshNode operation",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_024 fails. Malicious or buggy nodes misreport endpoints, causing datastore to configure non-existent endpoints or miss real ones. ACLs and group memberships applied to wrong endpoints."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "CAT version increments are monotonic and never reused within lifetime of group",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_022, PROP_036 fail. CAT version rollover or reuse allows revoked controllers to regain access. Previously revoked CAT version becomes valid again, completely breaking revocation mechanism."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "NodeIDs are not reused within timeframe where stale ACL references could persist",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_011 fails. Rapid NodeID reuse allows newly commissioned node to inherit ACL grants intended for previous node with same ID. Unauthorized access through stale ACL entries pointing to recycled NodeID."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "Anchor Root CA private key remains secure and is not compromised",
+      "type": "Explicit",
+      "impact_if_violated": "All security properties fail. Compromised anchor CA can issue arbitrary credentials, create rogue administrators, sign malicious NOCs, and completely subvert fabric trust model."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "Group key cryptographic material (epoch keys) is generated with sufficient entropy and remains confidential",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_016, PROP_018, PROP_021, PROP_027, PROP_030, PROP_031 fail. Weak or leaked group keys allow non-members to decrypt group communications and forge authenticated group messages."
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "Commissioning process (PASE/CASE) completes atomically - either fully succeeds or fully fails",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_007, PROP_008, PROP_009, PROP_010 fail. Partial commissioning leaves nodes in undefined state - appears committed but lacks security credentials, or appears pending but has valid NOC."
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "Administrators coordinate to avoid simultaneous conflicting operations on same node or group",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_014, PROP_021, PROP_037 fail. Race conditions between administrators cause last-write-wins conflicts. Security updates overwrite each other, ACL changes lost, or nodes end up with inconsistent configuration."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Non-anchor node exposes writable datastore endpoint, enabling unauthorized topology modification",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker discovers non-anchor node with accessible datastore service and sends AddAdmin command to inject rogue administrator into fabric"
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Node without Administrator CAT gains admin access, enabling fabric takeover",
+      "severity": "CRITICAL",
+      "attack_vector": "Compromised node bypasses CAT check and invokes privileged commands (RemoveNode, UpdateGroup) to expel legitimate administrators and add attacker-controlled admin"
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Multiple active datastores create split-brain fabric with divergent membership views",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker causes anchor role confusion, resulting in parallel datastores. Half of administrators see legitimate nodes as members, other half sees attacker nodes, enabling parallel fabric infiltration"
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Node marked committed without completing commissioning, lacking proper security configuration",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker directly manipulates CommissioningStatusEntry to committed, bypassing RefreshNode validation. Node appears valid but lacks ACLs, allowing universal access"
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Stale ACL references enable newly commissioned node to inherit unauthorized access grants",
+      "severity": "CRITICAL",
+      "attack_vector": "Node removed without ACL cleanup. Attacker commissions new node, datastore assigns recycled NodeID. New node gains access to resources via ACLs intended for old node"
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Group key update applied to only subset of members, enabling stale key exploitation",
+      "severity": "CRITICAL",
+      "attack_vector": "Removed member not updated during group key rotation. Former member continues using old keys to decrypt group communications or impersonate group member"
+    },
+    {
+      "property_id": "PROP_017",
+      "vulnerability": "IPK removal exposes all node identities to passive network observers",
+      "severity": "CRITICAL",
+      "attack_vector": "Malicious administrator removes IPK via RemoveKeySet(0). All fabric communications lose identity protection, enabling comprehensive traffic analysis and targeted device attacks"
+    },
+    {
+      "property_id": "PROP_019",
+      "vulnerability": "Multiple administrators claim anchor role, creating competing trust hierarchies",
+      "severity": "CRITICAL",
+      "attack_vector": "Race condition during fabric formation allows two administrators to write index 0 simultaneously. Fabric splits with nodes trusting different root CAs, enabling isolated fabric compromise"
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Removed group member retains valid CAT, bypassing revocation",
+      "severity": "CRITICAL",
+      "attack_vector": "Administrator removes node from group but forgets to increment CATVersion. Removed node's NOC still valid, continues accessing group-protected resources indefinitely"
+    },
+    {
+      "property_id": "PROP_026",
+      "vulnerability": "Revoked node continues receiving group communications after expulsion",
+      "severity": "CRITICAL",
+      "attack_vector": "DeletePending group membership not removed during RefreshNode. Expelled node retains group keys, passively monitors sensitive multicast traffic, or actively responds to group commands"
+    },
+    {
+      "property_id": "PROP_027",
+      "vulnerability": "Node misses key rotation, uses compromised keys after security incident",
+      "severity": "CRITICAL",
+      "attack_vector": "Key compromise detected, administrator rotates keys via UpdateKeySet. Node unreachable during update, continues using compromised keys. Attacker exploits known key material to decrypt traffic or forge messages"
+    },
+    {
+      "property_id": "PROP_028",
+      "vulnerability": "Node enforces outdated ACL after revocation, granting access to removed controller",
+      "severity": "CRITICAL",
+      "attack_vector": "Administrator revokes controller access via RemoveACLFromNode. Node offline during update, comes back with stale ACL. Revoked controller retains full access to device"
+    },
+    {
+      "property_id": "PROP_031",
+      "vulnerability": "Revoked node retains group keys enabling passive eavesdropping",
+      "severity": "CRITICAL",
+      "attack_vector": "Node removed from all groups but KeySet not deleted. Node silently monitors group communications, collecting sensitive information without active participation"
+    },
+    {
+      "property_id": "PROP_033",
+      "vulnerability": "Removed ACL persists on node while datastore shows deletion complete",
+      "severity": "HIGH",
+      "attack_vector": "Network failure during RemoveACLFromNode allows datastore to complete while node update fails. Administrator believes revocation succeeded, but removed controller still has access"
+    },
+    {
+      "property_id": "PROP_036",
+      "vulnerability": "Controller retains valid CAT credentials after access revocation",
+      "severity": "CRITICAL",
+      "attack_vector": "Administrator removes controller from group without incrementing CAT version. Controller's existing NOC with group CAT remains valid, enabling indefinite access to group-protected nodes"
+    },
+    {
+      "property_id": "PROP_047",
+      "vulnerability": "Anchor administrator removal creates orphaned fabric",
+      "severity": "CRITICAL",
+      "attack_vector": "Missing constraint check allows RemoveAdmin(AdminList[0].NodeID). Fabric loses trust anchor, all certificate chains invalid, complete fabric collapse"
+    },
+    {
+      "property_id": "PROP_048",
+      "vulnerability": "UpdateAdmin race conditions cause lost ICAC updates",
+      "severity": "HIGH",
+      "attack_vector": "Two administrators simultaneously update same admin. Last-write-wins overwrites critical ICAC revocation with stale value, compromised admin retains access"
+    },
+    {
+      "property_id": "PROP_049",
+      "vulnerability": "Endpoint name confusion enables social engineering",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker renames sensor endpoint to 'Door Lock'. User grants Administrator ACL thinking it controls lock. Sensor gains full device control"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "node_commissioning",
+      "properties_enforcing_transitions": ["PROP_007", "PROP_008", "PROP_009", "PROP_010", "PROP_029"],
+      "critical_property": "PROP_007: Node must transition Pending→Committed only after successful commissioning. Violating creates half-commissioned nodes with security gaps."
+    },
+    {
+      "state_name": "datastore_status",
+      "properties_enforcing_transitions": ["PROP_043", "PROP_044"],
+      "critical_property": "PROP_043: Datastore must be Committed before operations proceed. Operating on Pending datastore creates operations without proper trust anchor."
+    },
+    {
+      "state_name": "group_membership_state",
+      "properties_enforcing_transitions": ["PROP_025", "PROP_026", "PROP_030"],
+      "critical_property": "PROP_026: DeletePending group memberships must be removed on RefreshNode. Failure enables revoked members to maintain group access."
+    },
+    {
+      "state_name": "keyset_distribution_state",
+      "properties_enforcing_transitions": ["PROP_021", "PROP_027", "PROP_031"],
+      "critical_property": "PROP_027: Nodes must synchronize to updated KeySets. Stale keys enable decryption after key rotation or continued use of compromised keys."
+    },
+    {
+      "state_name": "acl_synchronization_state",
+      "properties_enforcing_transitions": ["PROP_028", "PROP_032", "PROP_033"],
+      "critical_property": "PROP_028: ACL updates must reach committed state on node. Pending ACLs create access control bypass when node enforces old policy."
+    },
+    {
+      "state_name": "binding_synchronization_state",
+      "properties_enforcing_transitions": ["PROP_038", "PROP_039", "PROP_040"],
+      "critical_property": "PROP_038: DeletePending bindings must be removed during RefreshNode. Stale bindings cause commands to reach wrong endpoints."
+    },
+    {
+      "state_name": "administrator_anchor_state",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_019", "PROP_047", "PROP_048"],
+      "critical_property": "PROP_047: Anchor administrator cannot be removed. Only mechanism: fabric dissolution or anchor transfer via DeletePending state."
+    },
+    {
+      "state_name": "endpoint_metadata_state",
+      "properties_enforcing_transitions": ["PROP_049"],
+      "critical_property": "PROP_049: UpdateEndpointForNode only changes FriendlyName, security state (ACLs, GroupIDs, Bindings) remains unchanged."
+    },
+      "properties_enforcing_transitions": ["PROP_001", "PROP_003", "PROP_019", "PROP_044"],
+      "critical_property": "PROP_019: Exactly one administrator at index 0 serves as anchor. Multiple anchors create split-brain fabric with competing trust roots."
+    }
+  ]
+  "additionalInsights": "The specification exhibits significant temporal consistency vulnerabilities stemming from the Pending→Committed state machine pattern. The core risk is ASYMMETRIC STATE across datastore and nodes: datastore shows Committed while node remains Pending (or vice versa), creating a window where security assumptions are violated.\n\nKey emergent vulnerabilities:\n\n1. **CAT VERSION ATTACK SURFACE**: The specification heavily relies on CAT version increments for revocation (PROP_022, PROP_036), but provides no mechanism to enforce version monotonicity or prevent version exhaustion. An attacker causing rapid group membership churn can exhaust the uint16 CAT version space (65535 versions), after which revocation breaks entirely.\n\n2. **REFRESH NODE AS CRITICAL SECURITY BOUNDARY**: RefreshNode is not just a synchronization operation - it's the ONLY mechanism ensuring security updates reach nodes. Any failure in RefreshNode (network partitions, node crashes, malicious nodes refusing updates) creates permanent security vulnerabilities. The specification should mandate maximum refresh intervals and timeout enforcement.\n\n3. **GROUP KEY DISTRIBUTION ATOMICITY**: The specification lacks clarity on whether group key updates are atomic across all group members. PROP_014 requires iteration but doesn't specify failure handling if subset of members update successfully. This enables PARTIAL KEY ROTATION attacks where old and new keys coexist in single group.\n\n4. **ADMINISTRATOR COORDINATION ASSUMPTION**: The specification assumes administrators coordinate to avoid conflicts (ASSUM_010), but provides no coordination mechanism. Multiple administrators simultaneously updating same node creates race conditions with LAST-WRITE-WINS semantics, potentially losing security-critical updates like ACL revocations.\n\n5. **NO REVOCATION LIST OR TIMESTAMPING**: The specification lacks any notion of temporal freshness or certificate validity periods. Once a node obtains a NOC with CAT, that credential remains valid until CAT version increments. This creates unbounded validity periods where compromised credentials remain exploitable.\n\n6. **PENDING STATE ACCUMULATION**: Failed updates remain in Pending state indefinitely, relying on periodic RefreshNode. No mechanism bounds pending queue size or prioritizes security-critical updates. A node with thousands of pending changes may never successfully synchronize.\n\n7. **IPK CRITICALITY UNDER-SPECIFIED**: While PROP_017 prevents IPK removal, the specification doesn't mandate IPK rotation schedules or compromise detection. The IPK is a single point of failure - its compromise breaks identity protection across entire fabric with no recovery path.\n\n8. **SPLIT BRAIN DURING ANCHOR TRANSFER**: The DeletePending state (PROP_044) indicates anchor transfer in progress, but the specification provides no protocol for safely transferring anchor role without creating two simultaneous anchors. This is a critical operational security gap.\n\nRecommendations for enhanced security:\n- Add CAT version exhaustion detection and group retirement protocol\n- Define maximum RefreshNode intervals with enforcement\n- Add atomic multi-node update primitives for group operations  \n- Implement administrator operation ordering/consensus mechanism\n- Add certificate validity periods and revocation lists\n- Define pending queue limits and security update prioritization\n- Mandate IPK rotation schedule and compromise recovery procedure\n- Specify anchor transfer protocol with consensus handoff",
+  "summary": {
+    "total_properties": 49,
+    "by_importance": {
+      "CRITICAL": 35,
+      "HIGH": 12,
+      "MEDIUM": 2
+    },
+    "by_category": {
+      "Security": 11,
+      "AccessControl": 11,
+      "Consistency": 8,
+      "Correctness": 9,
+      "Atomicity": 4,
+      "Cryptography": 0,
+      "Timing": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 10,
+    "vulnerabilities_identified": 18,
+    "specification_coverage": "Complete coverage of all 20 commands: AddAdmin, UpdateAdmin, RemoveAdmin, AddKeySet, UpdateKeySet, RemoveKeySet, AddGroup, UpdateGroup, RemoveGroup, AddPendingNode, RefreshNode, UpdateNode, RemoveNode, UpdateEndpointForNode, AddGroupIDToEndpointForNode, RemoveGroupIDFromEndpointForNode, AddACLToNode, RemoveACLFromNode, AddBindingToEndpointForNode, RemoveBindingFromEndpointForNode",
+    "key_findings": [
+      "Anchor Administrator is single point of trust and CANNOT be removed - fabric dissolution only option (PROP_001, PROP_019, PROP_047)",
+      "UpdateAdmin must preserve anchor role identity to maintain certificate chain integrity (PROP_048)",
+      "All administrator operations require proper access control and constraint validation (PROP_047, PROP_048, PROP_049)"
+    ]
+  }
+}

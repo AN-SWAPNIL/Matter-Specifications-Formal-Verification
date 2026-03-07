@@ -1,0 +1,208 @@
+{
+  "vulnerability_analysis": {
+    "analysis_metadata": {
+      "specification": "Matter Specification R1.4 - Section 7.15 Atomic Write",
+      "specification_pages": "448-454",
+      "fsm_model": "atomic-write-fsm.json",
+      "security_properties": "atomic-write-security-properties.json",
+      "analysis_date": "2026-01-30",
+      "total_properties": 43,
+      "properties_analyzed": 15,
+      "analysis_complete": false,
+      "status": "in_progress"
+    },
+    "property_verdicts": [
+      {
+        "property_id": "PROP_001",
+        "property_name": "Atomic_Writer_ID_Authentication",
+        "verdict": "HOLDS",
+        "confidence": 1.0
+      },
+      {
+        "property_id": "PROP_002",
+        "property_name": "Accessing_Fabric_Mandatory",
+        "verdict": "HOLDS",
+        "confidence": 1.0
+      },
+      {
+        "property_id": "PROP_003",
+        "property_name": "Atomic_Write_State_Isolation",
+        "verdict": "HOLDS",
+        "confidence": 1.0
+      },
+      {
+        "property_id": "PROP_004",
+        "property_name": "Pending_Write_Visibility_Isolation",
+        "verdict": "HOLDS",
+        "confidence": 1.0
+      },
+      {
+        "property_id": "PROP_005",
+        "property_name": "All_Or_Nothing_Commit_Atomicity",
+        "verdict": "VIOLATED",
+        "confidence": 0.95
+      },
+      {
+        "property_id": "PROP_006",
+        "property_name": "Timeout_Enforcement_Rollback",
+        "verdict": "HOLDS",
+        "confidence": 1.0
+      },
+      {
+        "property_id": "PROP_010",
+        "property_name": "Single_Atomic_Write_Per_Client_Cluster",
+        "verdict": "HOLDS",
+        "confidence": 1.0
+      },
+      {
+        "property_id": "PROP_016",
+        "property_name": "Shared_Resource_Attribute_Expansion",
+        "verdict": "AMBIGUOUS",
+        "confidence": 0.5
+      },
+      {
+        "property_id": "PROP_017",
+        "property_name": "Commit_Rollback_Attribute_Matching",
+        "verdict": "HOLDS",
+        "confidence": 1.0
+      },
+      {
+        "property_id": "PROP_021",
+        "property_name": "Commit_Single_Message_Processing",
+        "verdict": "HOLDS",
+        "confidence": 0.9
+      },
+      {
+        "property_id": "PROP_023",
+        "property_name": "Commit_Validation_Failure_Handling",
+        "verdict": "HOLDS",
+        "confidence": 1.0
+      },
+      {
+        "property_id": "PROP_034",
+        "property_name": "External_Command_Bypasses_Atomic_Write",
+        "verdict": "SPECIFICATION_DESIGN_FLAW",
+        "confidence": 1.0,
+        "note": "FSM correctly implements spec, but spec allows race condition"
+      }
+    ],
+    "detailed_analyses": [
+      {
+        "property_id": "PROP_005",
+        "property_name": "All_Or_Nothing_Commit_Atomicity",
+        "verdict": "VIOLATED",
+        "severity": "CRITICAL",
+        "fsm_analysis": {
+          "attack_path": [
+            {
+              "state": "SERVER_COMMIT_VALIDATION",
+              "trigger": "validation_complete",
+              "guard": "!any_validation_failed(validation_status_list) && !would_violate_constraints(pending_writes, attrib_ids_set)",
+              "action": "Proceed to SERVER_COMMIT_APPLICATION",
+              "transition_id": "T030"
+            },
+            {
+              "state": "SERVER_COMMIT_APPLICATION",
+              "trigger": "perform_application",
+              "guard": "application_in_progress == true && application_results == empty",
+              "action": "application_results := apply_all_pending_writes_atomically(pending_writes)",
+              "transition_id": "T031",
+              "violation": "Function applies writes SEQUENTIALLY, not atomically"
+            },
+            {
+              "state": "SERVER_COMMIT_APPLICATION",
+              "trigger": "application_complete",
+              "guard": "any_application_failed(application_results)",
+              "action": [
+                "discard_atomic_write_state(current_state)",
+                "send_atomic_response(FAILURE, application_results, 0)"
+              ],
+              "transition_id": "T032",
+              "violation": "NO ROLLBACK OF ALREADY-APPLIED WRITES"
+            }
+          ],
+          "violation_mechanism": "T031 calls apply_all_pending_writes_atomically() which applies writes sequentially. If write N fails, writes 1 through N-1 are already committed to storage. T032 only discards the Atomic Write State but does not roll back storage changes.",
+          "violation_paths_found": 1
+        },
+        "specification_evidence": [
+          {
+            "quote": "Attempt to apply all pending writes to the attributes in the Atomic Write State associated with the client: i. For each pending write, write the pending value to the attribute, and store the returned status code in the status code field on the attribute status whose AttributeID matches the ID of the attribute. ii. If any pending write fails, return an AtomicResponse with an atomic status code of FAILURE and the list of attribute statuses.",
+            "source": "Section 7.15.6.4, 'Effect on Receipt - Commit Write', Page 453, Step 6.b",
+            "context": "Describes commit application algorithm",
+            "supports_verdict": "Spec uses 'For each' implying sequential, and says 'return FAILURE' but NOT 'roll back previous writes'"
+          },
+          {
+            "quote": "On commit, all pending writes in an Atomic Write State must either succeed completely or fail completely; partial application is forbidden.",
+            "source": "PROP_005 claim from security properties",
+            "context": "Security requirement",
+            "supports_verdict": "Property requires all-or-nothing but spec doesn't guarantee it"
+          }
+        ],
+        "specification_gap": {
+          "what_spec_claims": "All pending writes should be applied atomically (implicit from 'atomic write' protocol name)",
+          "what_spec_fails_to_specify": "Specification does not define rollback mechanism for partial failures. Step 6.b.ii only says 'return FAILURE' not 'undo already-applied writes'.",
+          "consequence": "Implementation following spec literally will apply writes sequentially and NOT roll back on failure",
+          "security_impact": "Cluster enters inconsistent state where some attributes reflect transaction while others don't, violating ACID atomicity"
+        },
+        "counterexample_scenario": {
+          "steps": [
+            "Client begins atomic write with timeout",
+            "Client writes: [ClusterConfig.Mode=3, ClusterConfig.Threshold=100, ClusterConfig.EnableFlag=true]",
+            "All writes buffered successfully",
+            "Client sends CommitWrite",
+            "Server validates all writes: pass",
+            "Server enters T031: apply_all_pending_writes_atomically()",
+            "  - ClusterConfig.Mode=3: write succeeds, committed to NV storage",
+            "  - ClusterConfig.Threshold=100: write succeeds, committed to NV storage",
+            "  - ClusterConfig.EnableFlag=true: write FAILS (storage error, disk full, etc.)",
+            "T032 triggers: any_application_failed() = true",
+            "T032 actions:",
+            "  - discard_atomic_write_state() - state cleaned up",
+            "  - send_atomic_response(FAILURE, statuses) - client informed",
+            "RESULT: Mode=3 and Threshold=100 are committed, but EnableFlag=false (old value)",
+            "Cluster now in INCONSISTENT state:",
+            "  - Application logic expects: if Mode=3 then EnableFlag must be true (constraint)",
+            "  - Actual state: Mode=3 but EnableFlag=false",
+            "  - Constraint VIOLATED"
+          ],
+          "severity": "CRITICAL",
+          "impact": "Violates all-or-nothing atomicity guarantee, enables constraint violations, breaks ACID properties"
+        },
+        "recommendations": [
+          {
+            "spec_fix": "Add explicit rollback requirement: 'If any pending write fails during application, the server SHALL roll back all previously applied writes from this transaction and restore original attribute values.'",
+            "location": "Section 7.15.6.4, CommitWrite step 6.b.ii"
+          },
+          {
+            "spec_fix": "Define atomic application semantics: 'Servers SHOULD implement two-phase commit or prepare-commit protocol to ensure atomicity. Alternatively, servers MAY use transaction logs to enable rollback.'",
+            "location": "Section 7.15.6.4, new subsection"
+          },
+          {
+            "fsm_fix": "Add rollback function: rollback_partial_application(application_results) that reverts any writes with SUCCESS status",
+            "location": "T032 actions, before send_atomic_response"
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "properties_analyzed": 15,
+      "properties_holding": 9,
+      "properties_violated": 1,
+      "properties_ambiguous": 1,
+      "properties_design_flaws": 1,
+      "properties_unverifiable": 0,
+      "vulnerabilities_found": 1,
+      "vulnerabilities_by_severity": {
+        "CRITICAL": 1,
+        "HIGH": 0,
+        "MEDIUM": 0
+      },
+      "key_findings": [
+        "PROP_005 (All_Or_Nothing_Commit_Atomicity): CRITICAL violation - no rollback mechanism for partial commit failures",
+        "PROP_016 (Shared_Resource_Attribute_Expansion): AMBIGUOUS - unclear if expanded statuses returned to client",
+        "PROP_034 (External_Command_Bypasses): Spec design flaw - allows race condition, not FSM violation"
+      ],
+      "next_action": "Continue analyzing remaining 28 properties, focus on commit/rollback paths and data integrity"
+    }
+  }
+}

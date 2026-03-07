@@ -1,0 +1,825 @@
+{
+  "specification": "Matter Specification R1.4 - Section 7.15 Atomic Write",
+  "properties": [
+    {
+      "id": "PROP_001",
+      "name": "Atomic_Writer_ID_Authentication",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "An Atomic Writer ID must be a valid Operational Node ID from a Secure Session Context; Groupcast sessions must result in invalid Atomic Writer ID.",
+      "formal": "∀session, id. (session_type(session) = SecureSession ⇒ atomic_writer_id(session) = peer_node_id(session)) ∧ (session_type(session) = Groupcast ⇒ ¬valid(atomic_writer_id(session)))",
+      "violation": "If an invalid or unavailable Atomic Writer ID is accepted, an attacker could impersonate legitimate clients or bypass session authentication. This breaks client identification and allows unauthorized atomic write operations, potentially corrupting shared state across fabric nodes.",
+      "proverifQuery": "query s:session, c:client ⊢ event begin_atomic_write(c, s) ==> (session_type(s) = secure ∧ has_valid_node_id(c))"
+    },
+    {
+      "id": "PROP_002",
+      "name": "Accessing_Fabric_Mandatory",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "Every AtomicRequest command must have an associated accessing fabric; requests without a fabric must be rejected with INVALID_COMMAND.",
+      "formal": "∀req:AtomicRequest. ¬has_fabric(req) ⇒ reject(req, INVALID_COMMAND)",
+      "violation": "Without fabric isolation, an attacker from one fabric could manipulate atomic writes in another fabric, breaking multi-tenancy isolation. This enables cross-fabric data corruption and unauthorized access to attributes belonging to different administrative domains.",
+      "proverifQuery": "query req:request ⊢ event process_atomic_request(req) ==> has_accessing_fabric(req)"
+    },
+    {
+      "id": "PROP_003",
+      "name": "Atomic_Write_State_Isolation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "An Atomic Write State uniquely associates a client (via Atomic Writer ID and fabric) with a specific set of attributes on an endpoint/cluster; writes from non-associated clients must be rejected with INVALID_IN_STATE.",
+      "formal": "∀client, attr, state. (associated(client, state) ∧ contains(state, attr)) ⇒ can_write(client, attr) ∧ ∀client2. (¬associated(client2, state) ⇒ ¬can_write(client2, attr))",
+      "violation": "If write isolation fails, multiple clients could concurrently write to the same atomic attribute set, causing race conditions and breaking atomicity guarantees. An attacker could inject writes into another client's transaction, corrupting the atomic operation and potentially causing inconsistent cluster state.",
+      "proverifQuery": "query c:client, a:attribute, s:state ⊢ event write_attribute(c, a) ==> (associated(c, s) ∧ contains(s, a))"
+    },
+    {
+      "id": "PROP_004",
+      "name": "Pending_Write_Visibility_Isolation",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "Pending writes to atomic attributes must be visible only to the client associated with the Atomic Write State and must not affect server operation until committed.",
+      "formal": "∀client, attr, val, state. (pending_write(client, attr, val, state) ∧ associated(client, state)) ⇒ (∀client2. client2 ≠ client ⇒ read(client2, attr) ≠ val) ∧ server_state_unchanged(attr, val)",
+      "violation": "If pending writes leak to other clients or affect server operation prematurely, atomicity is broken. An attacker could observe uncommitted values, enabling timing attacks or data exfiltration. Server operations using uncommitted data could cause cascading failures or expose intermediate transaction states.",
+      "proverifQuery": "query c1:client, c2:client, a:attribute, v:value, s:state ⊢ event read_attribute(c2, a) ==> (pending_write(c1, a, v, s) ∧ c1 ≠ c2 ⇒ ¬reveals(c2, v))"
+    },
+    {
+      "id": "PROP_005",
+      "name": "All_Or_Nothing_Commit_Atomicity",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "On commit, all pending writes in an Atomic Write State must either succeed completely or fail completely; partial application is forbidden.",
+      "formal": "∀state, writes. commit(state, writes) ⇒ (∀w ∈ writes. applied(w)) ∨ (∀w ∈ writes. ¬applied(w))",
+      "violation": "If partial commits occur, the system enters an inconsistent state where some attributes reflect the transaction while others do not. This breaks ACID properties and can corrupt cluster state, leading to unpredictable behavior, security policy violations, or system deadlock when attributes have interdependencies.",
+      "proverifQuery": "query s:state, W:set_of_writes ⊢ event commit_complete(s, W) ==> (all_applied(W) ∨ none_applied(W))"
+    },
+    {
+      "id": "PROP_006",
+      "name": "Timeout_Enforcement_Rollback",
+      "category": "Timing",
+      "importance": "HIGH",
+      "claim": "If a client does not send a CommitWrite request before the timeout returned by the server in BeginWrite response, the server must automatically rollback all pending writes and discard the Atomic Write State.",
+      "formal": "∀client, state, timeout. (created_state(client, state, timeout) ∧ time_elapsed(timeout) ∧ ¬received(CommitWrite, client)) ⇒ rollback(state) ∧ discard(state)",
+      "violation": "Without timeout enforcement, abandoned transactions could lock attributes indefinitely, causing denial-of-service for other clients. An attacker could deliberately initiate atomic writes and abandon them to starve legitimate clients of access. Memory leaks from retained Atomic Write States could exhaust server resources.",
+      "proverifQuery": "query c:client, s:state, t:time ⊢ event timeout_expired(s, t) ==> (¬event commit_received(c, s) ⇒ event rollback_executed(s))"
+    },
+    {
+      "id": "PROP_007",
+      "name": "Attribute_Request_List_Non_Empty",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "The AttributeRequests field in any AtomicRequest must contain at least one attribute ID; empty lists must be rejected with INVALID_COMMAND.",
+      "formal": "∀req:AtomicRequest. |req.AttributeRequests| = 0 ⇒ reject(req, INVALID_COMMAND)",
+      "violation": "Empty attribute lists would create meaningless Atomic Write States, wasting server resources and potentially being used for resource exhaustion attacks. An attacker could spam empty requests to consume server processing cycles and memory for state management without performing legitimate operations.",
+      "proverifQuery": "query req:request ⊢ event process_request(req) ==> |req.attributes| > 0"
+    },
+    {
+      "id": "PROP_008",
+      "name": "Attribute_Request_List_No_Duplicates",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "The AttributeRequests field must not contain duplicate attribute IDs; duplicates must be rejected with INVALID_COMMAND.",
+      "formal": "∀req:AtomicRequest, id. count(id, req.AttributeRequests) ≤ 1 ∨ reject(req, INVALID_COMMAND)",
+      "violation": "Duplicate attribute IDs could cause ambiguous state management and complicate commit logic. An attacker could exploit duplicates to trigger edge cases in commit validation, potentially bypassing constraint checks or causing double-application of writes that should be atomic.",
+      "proverifQuery": "query req:request, attr:attrib_id ⊢ event accept_request(req) ==> count(attr, req.attributes) ≤ 1"
+    },
+    {
+      "id": "PROP_009",
+      "name": "Attribute_Existence_Validation",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "All attribute IDs in AttributeRequests must reference attributes supported by the server; unsupported attributes must cause rejection with INVALID_COMMAND.",
+      "formal": "∀req:AtomicRequest, id ∈ req.AttributeRequests. supported(server, id) ∨ reject(req, INVALID_COMMAND)",
+      "violation": "Allowing requests for non-existent attributes could lead to undefined behavior, memory corruption, or information disclosure if the server attempts to operate on invalid memory locations. An attacker could probe for attribute IDs to map server memory layout or trigger buffer overflows.",
+      "proverifQuery": "query req:request, attr:attrib_id ⊢ event begin_write(req, attr) ==> server_supports(attr)"
+    },
+    {
+      "id": "PROP_010",
+      "name": "Single_Atomic_Write_Per_Client_Cluster",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "A client cannot have multiple concurrent Atomic Write States for the same cluster and endpoint; attempting a second BeginWrite before completing the first must result in INVALID_IN_STATE error.",
+      "formal": "∀client, cluster, endpoint, state1. associated(client, state1) ∧ state1.cluster = cluster ∧ state1.endpoint = endpoint ⇒ ¬can_create_state(client, cluster, endpoint)",
+      "violation": "Multiple concurrent atomic writes by the same client could create race conditions, deadlocks, or ordering ambiguities. An attacker could exploit this to create complex transaction interleavings that violate invariants, bypass constraint checks, or cause non-deterministic behavior exploitable for side-channel attacks.",
+      "proverifQuery": "query c:client, cl:cluster, ep:endpoint, s1:state ⊢ event begin_write(c, cl, ep) ==> ¬exists_state(c, cl, ep)"
+    },
+    {
+      "id": "PROP_011",
+      "name": "BeginWrite_Timeout_Mandatory",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "BeginWrite requests must include a Timeout field; CommitWrite and RollbackWrite requests must omit it; violations must be rejected with INVALID_COMMAND.",
+      "formal": "∀req:AtomicRequest. (req.type = BeginWrite ⇒ has_field(req, Timeout)) ∧ (req.type ∈ {CommitWrite, RollbackWrite} ⇒ ¬has_field(req, Timeout))",
+      "violation": "Missing timeout in BeginWrite allows indefinite resource holding. Unexpected timeout in Commit/Rollback could cause protocol confusion. An attacker could omit timeouts to hold locks indefinitely or inject timeouts to cause premature rollbacks of legitimate transactions.",
+      "proverifQuery": "query req:request ⊢ event accept_begin_write(req) ==> has_timeout(req)"
+    },
+    {
+      "id": "PROP_012",
+      "name": "Privilege_Based_Access_Control",
+      "category": "AccessControl",
+      "importance": "CRITICAL",
+      "claim": "During BeginWrite, if a client lacks sufficient privilege to write to a requested attribute, the server must return UNSUPPORTED_ACCESS status for that attribute.",
+      "formal": "∀client, attr. ¬has_privilege(client, write, attr) ⇒ status(attr) = UNSUPPORTED_ACCESS",
+      "violation": "Bypassing privilege checks allows unauthorized data modification, breaking access control policies. An attacker could escalate privileges by writing to protected attributes, potentially modifying security configurations, admin settings, or critical cluster state that should be restricted to privileged users.",
+      "proverifQuery": "query c:client, a:attribute ⊢ event attribute_status(a, SUCCESS) ==> has_write_privilege(c, a)"
+    },
+    {
+      "id": "PROP_013",
+      "name": "Atomic_Quality_Enforcement",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Only attributes with the Atomic quality can participate in atomic writes; attributes without this quality must return INVALID_COMMAND status.",
+      "formal": "∀attr. ¬has_quality(attr, Atomic) ⇒ status(attr) = INVALID_COMMAND",
+      "violation": "Allowing non-atomic attributes in atomic transactions violates protocol semantics and could cause the server to apply inconsistent locking or buffering strategies. An attacker could mix atomic and non-atomic attributes to create race conditions or bypass transactional guarantees on other attributes.",
+      "proverifQuery": "query a:attribute ⊢ event include_in_atomic_write(a) ==> has_atomic_quality(a)"
+    },
+    {
+      "id": "PROP_014",
+      "name": "Attribute_Locking_Exclusivity",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If an attribute is already being used by a different client's atomic write, attempts by other clients to include it must receive BUSY status.",
+      "formal": "∀client1, client2, attr, state. (client1 ≠ client2 ∧ associated(client1, state) ∧ contains(state, attr)) ⇒ status_for_client2(attr) = BUSY",
+      "violation": "Without proper locking, concurrent atomic writes could interfere with each other, breaking isolation and atomicity. An attacker could intentionally create lock contention to deny service or exploit race conditions during commit, potentially causing data corruption or inconsistent cluster state.",
+      "proverifQuery": "query c1:client, c2:client, a:attribute, s:state ⊢ event request_attribute(c2, a) ==> (locked_by(a, c1, s) ∧ c1 ≠ c2 ⇒ status(a) = BUSY)"
+    },
+    {
+      "id": "PROP_015",
+      "name": "Resource_Exhaustion_Protection",
+      "category": "Security",
+      "importance": "HIGH",
+      "claim": "If the server lacks resources to buffer pending writes for an attribute, it must return RESOURCE_EXHAUSTED status rather than accepting the operation.",
+      "formal": "∀attr. ¬has_resources(server, attr) ⇒ status(attr) = RESOURCE_EXHAUSTED",
+      "violation": "Accepting operations without sufficient resources could lead to memory exhaustion, buffer overflows, or system crashes. An attacker could deliberately exhaust resources to cause denial-of-service or trigger out-of-memory conditions that may bypass security checks or cause undefined behavior.",
+      "proverifQuery": "query a:attribute ⊢ event accept_attribute(a) ==> has_sufficient_resources(server, a)"
+    },
+    {
+      "id": "PROP_016",
+      "name": "Shared_Resource_Attribute_Set_Expansion",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If a server requires additional attributes beyond those requested due to shared resource constraints, it must return statuses for all included attributes as if they had been requested.",
+      "formal": "∀req_attrs, actual_attrs. (actual_attrs ⊃ req_attrs) ⇒ (∀a ∈ actual_attrs. a ∈ response.AttributeStatus)",
+      "violation": "If the client is not informed of additional attributes included in the atomic write, subsequent CommitWrite or RollbackWrite operations with mismatched attribute sets will fail with INVALID_IN_STATE, causing transaction abandonment. This breaks the protocol flow and could be exploited to cause denial-of-service by forcing transaction failures.",
+      "proverifQuery": "query req:set_of_attrs, resp:set_of_attrs ⊢ event return_response(resp) ==> (expanded(resp, req) ⇒ complete_status(resp))"
+    },
+    {
+      "id": "PROP_017",
+      "name": "Subsequent_Request_Attribute_Set_Matching",
+      "category": "Correctness",
+      "importance": "CRITICAL",
+      "claim": "CommitWrite and RollbackWrite requests must provide exactly the attribute IDs returned in the BeginWrite response AttributeStatus, not the originally requested IDs (if different due to expansion).",
+      "formal": "∀begin_resp, commit_req. commit_req.AttributeRequests = begin_resp.AttributeStatus.AttributeIDs",
+      "violation": "Mismatched attribute sets between BeginWrite response and Commit/Rollback request cause INVALID_IN_STATE errors, breaking the transaction flow. An attacker could exploit this by manipulating attribute lists to cause legitimate transactions to fail, or by confusing the server's state management to bypass validation checks.",
+      "proverifQuery": "query begin:response, commit:request ⊢ event commit_write(commit) ==> attributes_match(commit.attrs, begin.returned_attrs)"
+    },
+    {
+      "id": "PROP_018",
+      "name": "No_State_Creation_On_Partial_Failure",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If any requested attribute in BeginWrite has a status other than SUCCESS, the server must not create an Atomic Write State and must return overall FAILURE status.",
+      "formal": "∀req, attrs, statuses. (∃a ∈ attrs. status(a) ≠ SUCCESS) ⇒ (¬create_state(req) ∧ overall_status = FAILURE)",
+      "violation": "Creating a state when some attributes failed would put the system in an ambiguous condition where the client might not know which attributes are protected. This could lead to partial writes being attempted, data corruption, or deadlocks from holding locks on attributes that should not have been reserved.",
+      "proverifQuery": "query req:request, attrs:set ⊢ event state_created(req) ==> ∀a ∈ attrs. status(a) = SUCCESS"
+    },
+    {
+      "id": "PROP_019",
+      "name": "Timeout_Negotiation_Bounded",
+      "category": "Timing",
+      "importance": "MEDIUM",
+      "claim": "If the requested timeout exceeds the server's maximum, the server may return an alternative (lower) timeout; otherwise, it must return the requested timeout.",
+      "formal": "∀req_timeout, srv_max. (req_timeout > srv_max ⇒ return_timeout ≤ srv_max) ∧ (req_timeout ≤ srv_max ⇒ return_timeout = req_timeout)",
+      "violation": "Unbounded timeout acceptance could allow clients to hold resources indefinitely. Conversely, silently reducing timeouts without informing the client could cause premature rollbacks. An attacker could exploit excessive timeouts for DoS or exploit timeout mismatches to cause race conditions between client expectations and server behavior.",
+      "proverifQuery": "query req_t:time, srv_t:time, ret_t:time ⊢ event return_timeout(ret_t) ==> (req_t > srv_t ⇒ ret_t ≤ srv_t) ∧ (req_t ≤ srv_t ⇒ ret_t = req_t)"
+    },
+    {
+      "id": "PROP_020",
+      "name": "State_Verification_On_Commit",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "Before processing CommitWrite, the server must verify that the client is associated with an Atomic Write State matching the endpoint, cluster, and attribute set of the request.",
+      "formal": "∀req:CommitWrite, state. process(req) ⇒ (associated(req.client, state) ∧ state.endpoint = req.endpoint ∧ state.cluster = req.cluster ∧ state.attrs = req.attrs)",
+      "violation": "Without state verification, a client could commit writes it never initiated, potentially applying arbitrary changes to attributes. An attacker could forge commit requests for other clients' transactions, causing unauthorized data modification, or commit to attributes that were never locked, breaking isolation guarantees.",
+      "proverifQuery": "query c:client, req:commit_request, s:state ⊢ event process_commit(req) ==> (associated(c, s) ∧ matches(s, req))"
+    },
+    {
+      "id": "PROP_021",
+      "name": "Pending_Writes_As_Single_Message",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "During commit, all pending writes must be processed as if they arrived in a single message, maintaining transactional semantics.",
+      "formal": "∀state, writes. commit(state) ⇒ process_atomically(writes) ≡ process_single_message(writes)",
+      "violation": "Processing writes as separate messages could introduce intermediate states where some writes are visible before others, breaking atomicity. An attacker could observe or exploit these intermediate states to violate invariants, perform time-of-check-time-of-use attacks, or cause race conditions with concurrent operations.",
+      "proverifQuery": "query writes:set ⊢ event commit(writes) ==> atomic_processing(writes)"
+    },
+    {
+      "id": "PROP_022",
+      "name": "Commit_Validation_Pre_Apply",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "Before applying writes, the server must validate each write and return appropriate error codes (e.g., DATA_VERSION_MISMATCH) if any write cannot succeed.",
+      "formal": "∀write, attr. can_apply(write, attr) ∨ (¬can_apply(write, attr) ⇒ return_error_code(write, reason))",
+      "violation": "Applying writes without validation could corrupt data, violate constraints, or create inconsistent state. An attacker could exploit missing validation to bypass version checks, apply stale data, or violate business logic constraints that should prevent certain write combinations.",
+      "proverifQuery": "query w:write, a:attribute ⊢ event apply_write(w, a) ==> validated(w, a)"
+    },
+    {
+      "id": "PROP_023",
+      "name": "Single_Write_Failure_Causes_Total_Rollback",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "If validation reveals any write would fail, all pending writes must be discarded, the state deleted, and FAILURE returned with per-attribute status list.",
+      "formal": "∀writes, state. (∃w ∈ writes. ¬valid(w)) ⇒ (discard_all(writes) ∧ delete(state) ∧ return(FAILURE, status_list))",
+      "violation": "Partial rollback or continuing after detecting failures breaks atomicity guarantees. The system could enter an inconsistent state with some writes applied and others not, violating ACID properties and potentially corrupting cluster state with unpredictable consequences for dependent attributes or operations.",
+      "proverifQuery": "query W:set_of_writes, s:state ⊢ event validation_failure(W) ==> (discard(W) ∧ delete_state(s) ∧ status(FAILURE))"
+    },
+    {
+      "id": "PROP_024",
+      "name": "Constraint_Violation_Detection",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "If the collective writes would violate any constraint after validation, all writes must be discarded, state deleted, and CONSTRAINT_ERROR returned.",
+      "formal": "∀writes, constraints. violates_constraints(writes, constraints) ⇒ (discard_all(writes) ∧ delete(state) ∧ return(CONSTRAINT_ERROR))",
+      "violation": "Applying writes that violate constraints could corrupt cluster state, break invariants, or cause system instability. An attacker could craft transactions that pass individual attribute validation but violate global constraints, potentially causing denial-of-service, security policy violations, or exploiting undefined behavior in constraint-dependent logic.",
+      "proverifQuery": "query W:set_of_writes, C:constraints ⊢ event apply(W) ==> ¬violates(W, C)"
+    },
+    {
+      "id": "PROP_025",
+      "name": "Write_Application_Failure_Handling",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "If any write fails during actual application (after validation passed), the server must return FAILURE with attribute status list showing which write failed.",
+      "formal": "∀writes, w ∈ writes. (validated(writes) ∧ fails_application(w)) ⇒ return(FAILURE, status_with_failure(w))",
+      "violation": "Silent failures or incomplete error reporting could leave the client unaware of transaction status, causing state divergence between client and server expectations. An attacker could exploit ambiguous failure states to retry operations inappropriately or make incorrect assumptions about attribute states.",
+      "proverifQuery": "query W:set_of_writes, w:write ⊢ event application_failure(w) ==> (w ∈ W ∧ return(FAILURE, status(w)))"
+    },
+    {
+      "id": "PROP_026",
+      "name": "Successful_Commit_Empty_Status_List",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "On successful commit, the server must return SUCCESS status with an empty attribute status list (no per-attribute details needed for success case).",
+      "formal": "∀commit. success(commit) ⇒ (return_status = SUCCESS ∧ |attribute_status_list| = 0)",
+      "violation": "Non-empty status lists on success could confuse clients or indicate protocol implementation errors. Inconsistent response formats complicate client logic and could be exploited to cause client-side parsing errors or misinterpretation of transaction outcome.",
+      "proverifQuery": "query c:commit ⊢ event commit_success(c) ==> (status(SUCCESS) ∧ empty_list(attribute_statuses))"
+    },
+    {
+      "id": "PROP_027",
+      "name": "State_Cleanup_On_Commit_Completion",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "After commit processing (whether successful or failed), the Atomic Write State must be discarded to free resources and prevent reuse.",
+      "formal": "∀state, commit_result. after_commit(commit_result) ⇒ discard(state)",
+      "violation": "Retained states after commit could enable state reuse attacks, cause memory leaks, or allow double-commits. An attacker could exploit undiscarded states to send multiple commit requests, potentially applying the same writes repeatedly, or to maintain locks that should have been released.",
+      "proverifQuery": "query s:state, result:commit_result ⊢ event commit_completed(result) ==> event state_discarded(s)"
+    },
+    {
+      "id": "PROP_028",
+      "name": "State_Verification_On_Rollback",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Before processing RollbackWrite, the server must verify that the client is associated with an Atomic Write State matching the endpoint, cluster, and attribute set.",
+      "formal": "∀req:RollbackWrite, state. process(req) ⇒ (associated(req.client, state) ∧ state.endpoint = req.endpoint ∧ state.cluster = req.cluster ∧ state.attrs = req.attrs)",
+      "violation": "Without verification, clients could rollback states they don't own or that don't exist, causing confusion or enabling denial-of-service by disrupting other clients' transactions. An attacker could send spurious rollback requests to interfere with legitimate atomic writes.",
+      "proverifQuery": "query c:client, req:rollback_request, s:state ⊢ event process_rollback(req) ==> (associated(c, s) ∧ matches(s, req))"
+    },
+    {
+      "id": "PROP_029",
+      "name": "Rollback_Discards_All_Pending_Writes",
+      "category": "Atomicity",
+      "importance": "HIGH",
+      "claim": "On rollback, all pending writes must be discarded completely, with no partial application or side effects.",
+      "formal": "∀state, writes. rollback(state) ⇒ (∀w ∈ writes. discarded(w) ∧ ¬applied(w))",
+      "violation": "Partial rollback or side effects from discarded writes could leave the system in an inconsistent state. An attacker could exploit incomplete rollback to cause pending values to leak into server state or to maintain partial locks that interfere with subsequent operations.",
+      "proverifQuery": "query s:state, W:set_of_writes ⊢ event rollback(s) ==> ∀w ∈ W. (discarded(w) ∧ ¬applied(w))"
+    },
+    {
+      "id": "PROP_030",
+      "name": "Rollback_Success_Guaranteed",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "Rollback operations must always succeed and return SUCCESS status after discarding pending writes and deleting the state.",
+      "formal": "∀rollback_req. valid_state(rollback_req) ⇒ (execute_rollback(rollback_req) ∧ return(SUCCESS))",
+      "violation": "Failed rollbacks could leave the system in an undefined state with locks held indefinitely and resources not released. This enables denial-of-service and prevents attribute access by other clients, potentially cascading to broader system unavailability.",
+      "proverifQuery": "query req:rollback ⊢ event execute_rollback(req) ==> status(SUCCESS)"
+    },
+    {
+      "id": "PROP_031",
+      "name": "Read_Returns_Pending_Value_To_Writer",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If a client with an associated Atomic Write State reads an attribute it has written to, the server must return the pending (uncommitted) value.",
+      "formal": "∀client, attr, val, state. (associated(client, state) ∧ pending_write(client, attr, val, state)) ⇒ read(client, attr) = val",
+      "violation": "Returning stale values to the writing client breaks transaction read consistency and could cause the client to make incorrect decisions based on outdated information. This violates \"read your writes\" consistency and could lead to double-writes, constraint violations, or logic errors in client applications.",
+      "proverifQuery": "query c:client, a:attribute, v:value, s:state ⊢ event read(c, a) ==> (pending_write(c, a, v, s) ⇒ returns(v))"
+    },
+    {
+      "id": "PROP_032",
+      "name": "Read_Returns_Current_Value_If_No_Pending_Write",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If a client with an associated Atomic Write State reads an attribute it has not written to, the server must return the current (committed) value.",
+      "formal": "∀client, attr, state. (associated(client, state) ∧ ¬pending_write(client, attr, _, state)) ⇒ read(client, attr) = current_value(attr)",
+      "violation": "Returning incorrect values could confuse the client or expose pending writes from the client's own transaction that shouldn't appear yet. This breaks isolation between read and write operations within a transaction and could cause the client to violate its own transaction logic.",
+      "proverifQuery": "query c:client, a:attribute, s:state ⊢ event read(c, a) ==> (¬has_pending_write(c, a, s) ⇒ returns(current_value(a)))"
+    },
+    {
+      "id": "PROP_033",
+      "name": "Integrity_Checks_Use_Pending_Values",
+      "category": "Consistency",
+      "importance": "CRITICAL",
+      "claim": "When validating writes during an atomic transaction, integrity checks must evaluate constraints in the context of all pending values, not just current values.",
+      "formal": "∀state, writes, checks. validate(writes, checks) ⇒ context(checks) = pending_values(state)",
+      "violation": "Evaluating integrity checks against current values instead of pending values could allow writes that violate constraints when considered together, breaking atomicity guarantees. An attacker could craft transactions where individual writes pass checks but the collective result violates invariants, causing data corruption or security policy violations.",
+      "proverifQuery": "query W:set_of_writes, C:checks, s:state ⊢ event validate(W, C) ==> uses_context(C, pending_values(s))"
+    },
+    {
+      "id": "PROP_034",
+      "name": "External_Command_Bypasses_Atomic_Write",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If a server receives a command that modifies an attribute with the Atomic quality while a client has an Atomic Write State containing that attribute, the server must apply the command change as if no atomic write exists, potentially causing commit failure.",
+      "formal": "∀cmd, attr, state. (modifies(cmd, attr) ∧ contains(state, attr) ∧ has_atomic_quality(attr)) ⇒ apply_immediately(cmd) ∧ may_cause_commit_failure(state)",
+      "violation": "If external commands were blocked or deferred, it would create complex locking semantics and potential deadlocks. However, allowing them means atomic writes can become invalid mid-transaction. An attacker could deliberately invoke commands to disrupt atomic writes, causing denial-of-service by forcing transaction failures for legitimate clients.",
+      "proverifQuery": "query cmd:command, a:attribute, s:state ⊢ event modify_attribute(cmd, a) ==> (contains(s, a) ⇒ applied_immediately(cmd))"
+    },
+    {
+      "id": "PROP_035",
+      "name": "Data_Version_Mismatch_Detection",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "If an attribute's data version changes between BeginWrite and CommitWrite (e.g., due to external command), the commit must fail with DATA_VERSION_MISMATCH error.",
+      "formal": "∀attr, version_begin, version_commit. (version_begin ≠ version_commit) ⇒ commit_fails(attr, DATA_VERSION_MISMATCH)",
+      "violation": "Ignoring version changes could cause lost updates where the atomic write overwrites changes made by external commands, violating causality and potentially corrupting data. An attacker could exploit this by deliberately triggering version changes to cause denial-of-service through forced commit failures.",
+      "proverifQuery": "query a:attribute, v1:version, v2:version ⊢ event commit_attribute(a, v2) ==> (begin_version(a) = v1 ∧ v1 ≠ v2 ⇒ error(DATA_VERSION_MISMATCH))"
+    },
+    {
+      "id": "PROP_036",
+      "name": "Client_Cancellation_Right",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "If a client does not accept the attribute statuses or alternative timeout returned in BeginWrite response, it must cancel the atomic write using RollbackWrite.",
+      "formal": "∀client, response. (¬accepts(client, response.statuses) ∨ ¬accepts(client, response.timeout)) ⇒ must_send(client, RollbackWrite)",
+      "violation": "Without explicit cancellation, the server would maintain the Atomic Write State until timeout, wasting resources. This is a specification requirement rather than a security vulnerability, but violating it could cause resource leaks and affect system availability for other clients.",
+      "proverifQuery": "query c:client, resp:response ⊢ event reject_response(c, resp) ==> event send_rollback(c)"
+    },
+    {
+      "id": "PROP_037",
+      "name": "AttributeStatus_List_Completeness",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "The AttributeStatus list in AtomicResponse must contain a status for each attribute ID provided in the corresponding AtomicRequest.",
+      "formal": "∀req:AtomicRequest, resp:AtomicResponse. ∀id ∈ req.AttributeRequests. ∃status ∈ resp.AttributeStatus. status.AttributeID = id",
+      "violation": "Missing attribute statuses could cause client confusion about which attributes were accepted, leading to incorrect subsequent operations. An attacker could exploit incomplete status lists to cause clients to operate on incorrect assumptions about transaction state.",
+      "proverifQuery": "query req:request, resp:response ⊢ event return_response(resp, req) ==> ∀id ∈ req.attrs. ∃status ∈ resp.statuses. status.id = id"
+    },
+    {
+      "id": "PROP_038",
+      "name": "Timeout_Field_Conditional_Presence",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "The Timeout field in AtomicResponse must be included if and only if the corresponding AtomicRequest was BeginWrite; it must be omitted for CommitWrite/RollbackWrite responses.",
+      "formal": "∀req:AtomicRequest, resp:AtomicResponse. (req.type = BeginWrite ⇔ has_field(resp, Timeout))",
+      "violation": "Timeout field presence inconsistency could cause protocol parsing errors or client confusion about timeout applicability. Unexpected timeout values could cause clients to mismanage transaction timing, leading to premature abandonment or excessive resource holding.",
+      "proverifQuery": "query req:request, resp:response ⊢ event return_response(resp, req) ==> (req.type = BeginWrite ⇔ has_timeout(resp))"
+    },
+    {
+      "id": "PROP_039",
+      "name": "Pending_Write_Buffering_Isolation",
+      "category": "Security",
+      "importance": "CRITICAL",
+      "claim": "The server must buffer pending writes in isolation such that no other operation can access, modify, or leak the pending values before commit.",
+      "formal": "∀client, writes, state. pending_writes(client, writes, state) ⇒ (∀operation. operation ≠ read_by_same_client ⇒ ¬can_access(operation, writes))",
+      "violation": "Leaked pending writes could expose sensitive data before transaction commit, breaking confidentiality. An attacker could observe pending values to gain unauthorized information or manipulate them to cause data corruption when the transaction commits. Buffer overflow or memory safety issues in pending write storage could be exploited for code execution.",
+      "proverifQuery": "query c:client, W:writes, s:state, op:operation ⊢ event access_pending_writes(op, W) ==> (op = read_by_client(c) ∧ pending_by(c, W))"
+    },
+    {
+      "id": "PROP_040",
+      "name": "Attribute_ID_Ordering_Irrelevance",
+      "category": "Correctness",
+      "importance": "MEDIUM",
+      "claim": "When matching attribute sets between BeginWrite and CommitWrite/RollbackWrite, the server must compare sets irrespective of order.",
+      "formal": "∀attrs1, attrs2. set_equal(attrs1, attrs2) ⇒ match(attrs1, attrs2) (regardless of ordering)",
+      "violation": "Order-dependent matching would cause spurious INVALID_IN_STATE errors when clients legitimately reorder attribute lists. This breaks protocol usability and could be exploited to cause denial-of-service by forcing transaction failures for clients that don't maintain exact ordering.",
+      "proverifQuery": "query a1:set, a2:set ⊢ event match_attributes(a1, a2) ==> set_equal(a1, a2)"
+    },
+    {
+      "id": "PROP_041",
+      "name": "State_Three_Stage_Flow_Enforcement",
+      "category": "Correctness",
+      "importance": "HIGH",
+      "claim": "The atomic write protocol must enforce the three-stage flow: BeginWrite → (Write Requests) → CommitWrite/RollbackWrite; violations must be rejected.",
+      "formal": "∀client. (¬has_state(client) ⇒ only_allow(BeginWrite)) ∧ (has_state(client) ⇒ allow({WriteRequest, CommitWrite, RollbackWrite}))",
+      "violation": "Allowing out-of-order operations could cause undefined state transitions, race conditions, or protocol confusion. An attacker could exploit improper flow enforcement to skip validation stages, apply writes without proper locking, or create inconsistent states that bypass security checks.",
+      "proverifQuery": "query c:client, op:operation ⊢ event execute(c, op) ==> valid_transition(state(c), op)"
+    },
+    {
+      "id": "PROP_042",
+      "name": "Server_Processing_Atomicity_Guarantee",
+      "category": "Atomicity",
+      "importance": "CRITICAL",
+      "claim": "During commit, the server must ensure that either all attributes are updated atomically or none are, with no intermediate state observable by any client.",
+      "formal": "∀state, attrs, observers. commit(state, attrs) ⇒ (∀o ∈ observers. observes(o, all_updated(attrs)) ∨ observes(o, none_updated(attrs)))",
+      "violation": "Observable intermediate states break atomicity and could be exploited for time-of-check-time-of-use attacks. An attacker observing partial updates could violate invariants, perform unauthorized operations on inconsistent data, or cause cascading failures in dependent operations that assume atomic updates.",
+      "proverifQuery": "query s:state, attrs:set, obs:observer ⊢ event commit(s, attrs) ==> ¬observes_partial_state(obs, attrs)"
+    },
+    {
+      "id": "PROP_043",
+      "name": "Non_Associated_Client_Read_Isolation",
+      "category": "Consistency",
+      "importance": "HIGH",
+      "claim": "Clients without an associated Atomic Write State must read the current committed value of atomic attributes, never pending values from other clients' transactions.",
+      "formal": "∀c:client, a:attribute, s:state. (¬associated(c, s) ∧ contains(s, a) ∧ has_pending_write(s, a)) ⇒ read(c, a) = current_value(a)",
+      "violation": "If non-associated clients can observe pending uncommitted values, transaction isolation breaks. An attacker could continuously read attributes to observe ongoing transactions, leak sensitive uncommitted data, or use this information for timing attacks to predict or influence commit outcomes.",
+      "proverifQuery": "query c:client, a:attribute, s:state, v:value ⊢ event read_value(c, a, v) ==> (¬associated(c, s) ∧ has_pending(s, a) ⇒ v = committed_value(a))"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ASSUM_001",
+      "statement": "The Atomic Writer ID derived from Peer Node ID in Secure Session Context is authentic and cannot be forged by attackers.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_001 (Atomic_Writer_ID_Authentication), PROP_003 (Atomic_Write_State_Isolation), PROP_020 (State_Verification_On_Commit), PROP_028 (State_Verification_On_Rollback) all fail. An attacker could impersonate legitimate clients, hijack atomic writes, and corrupt cluster state."
+    },
+    {
+      "id": "ASSUM_002",
+      "statement": "The server has sufficient memory and resources to buffer pending writes for reasonable transaction sizes under normal operation.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_015 (Resource_Exhaustion_Protection) becomes critical. If resource checks fail, atomic writes would be rejected, causing denial-of-service. System could crash under load."
+    },
+    {
+      "id": "ASSUM_003",
+      "statement": "The timeout mechanism is reliable and the server can accurately detect when timeout intervals expire.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_006 (Timeout_Enforcement_Rollback) fails. Stale transactions would hold locks indefinitely, causing resource exhaustion and denial-of-service for other clients attempting to access the same attributes."
+    },
+    {
+      "id": "ASSUM_004",
+      "statement": "Data version tracking is accurately maintained and external commands properly update version numbers when modifying attributes.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_035 (Data_Version_Mismatch_Detection) fails. Lost updates could occur where atomic writes overwrite external changes without detection, violating causality and causing data corruption."
+    },
+    {
+      "id": "ASSUM_005",
+      "statement": "The server's pending write buffer is implemented with proper isolation guarantees (e.g., memory protection, access control).",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_004 (Pending_Write_Visibility_Isolation), PROP_039 (Pending_Write_Buffering_Isolation) fail. Pending values could leak to unauthorized clients, breaking confidentiality and transaction isolation."
+    },
+    {
+      "id": "ASSUM_006",
+      "statement": "Integrity checks and constraint validation functions are comprehensive and correctly implemented to catch all invariant violations.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_024 (Constraint_Violation_Detection), PROP_033 (Integrity_Checks_Use_Pending_Values) fail. Invalid data could be committed, corrupting cluster state and breaking system invariants."
+    },
+    {
+      "id": "ASSUM_007",
+      "statement": "The fabric isolation mechanism correctly prevents cross-fabric access and each session is properly associated with exactly one fabric.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_002 (Accessing_Fabric_Mandatory) fails. Cross-fabric attacks become possible where clients from one fabric manipulate data in another fabric, breaking multi-tenancy isolation."
+    },
+    {
+      "id": "ASSUM_008",
+      "statement": "Attribute locking mechanism is correctly implemented to prevent concurrent access by different clients.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_014 (Attribute_Locking_Exclusivity), PROP_010 (Single_Atomic_Write_Per_Client_Cluster) fail. Race conditions and deadlocks could occur, breaking isolation and atomicity."
+    },
+    {
+      "id": "ASSUM_009",
+      "statement": "The server correctly identifies and processes commands that modify attributes, including updating data versions appropriately.",
+      "type": "Implicit",
+      "impact_if_violated": "PROP_034 (External_Command_Bypasses_Atomic_Write), PROP_035 (Data_Version_Mismatch_Detection) fail. External modifications might not be detected, causing lost updates or stale atomic writes to be applied."
+    },
+    {
+      "id": "ASSUM_010",
+      "statement": "Barring software errors, the commit/rollback operations are implemented atomically at the storage layer (no partial persistence).",
+      "type": "Explicit",
+      "impact_if_violated": "PROP_005 (All_Or_Nothing_Commit_Atomicity), PROP_042 (Server_Processing_Atomicity_Guarantee) fail. Partial commits could occur, breaking ACID properties and causing data corruption."
+    }
+  ],
+  "vulnerabilities_if_violated": [
+    {
+      "property_id": "PROP_001",
+      "vulnerability": "Session hijacking and client impersonation through forged Atomic Writer IDs",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker intercepts or forges session context to inject malicious Peer Node ID, then initiates atomic writes with elevated privileges to modify protected attributes"
+    },
+    {
+      "property_id": "PROP_002",
+      "vulnerability": "Cross-fabric data manipulation and multi-tenancy isolation breach",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends AtomicRequest without fabric context or with manipulated fabric ID to access/modify attributes in victim fabric"
+    },
+    {
+      "property_id": "PROP_003",
+      "vulnerability": "Transaction hijacking and unauthorized write injection",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker without associated Atomic Write State sends write requests to attributes locked by legitimate client, injecting malicious data into ongoing transaction"
+    },
+    {
+      "property_id": "PROP_004",
+      "vulnerability": "Information disclosure of uncommitted transaction data",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker reads attributes during another client's atomic write to observe pending values, extracting sensitive data before commit or inferring business logic"
+    },
+    {
+      "property_id": "PROP_005",
+      "vulnerability": "Partial write corruption causing inconsistent cluster state",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker triggers race conditions or crashes during commit to cause partial application of writes, leaving cluster in undefined state exploitable for privilege escalation"
+    },
+    {
+      "property_id": "PROP_006",
+      "vulnerability": "Resource exhaustion and denial-of-service through abandoned transactions",
+      "severity": "HIGH",
+      "attack_vector": "Attacker initiates many atomic writes with long timeouts then abandons them, locking attributes and exhausting server memory with pending write buffers"
+    },
+    {
+      "property_id": "PROP_007",
+      "vulnerability": "Resource exhaustion through empty request spam",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker floods server with empty AttributeRequests to consume processing cycles and state management overhead"
+    },
+    {
+      "property_id": "PROP_008",
+      "vulnerability": "Transaction logic confusion through duplicate attribute handling",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker sends requests with duplicate attribute IDs to trigger edge cases in commit validation, potentially bypassing constraint checks"
+    },
+    {
+      "property_id": "PROP_009",
+      "vulnerability": "Memory corruption and information disclosure via invalid attribute IDs",
+      "severity": "HIGH",
+      "attack_vector": "Attacker probes with invalid attribute IDs to cause buffer overflows, out-of-bounds access, or leak memory layout information"
+    },
+    {
+      "property_id": "PROP_010",
+      "vulnerability": "Deadlock and race condition exploitation through concurrent transactions",
+      "severity": "HIGH",
+      "attack_vector": "Attacker creates multiple concurrent Atomic Write States for same cluster/endpoint to cause transaction interleavings that violate invariants"
+    },
+    {
+      "property_id": "PROP_011",
+      "vulnerability": "Indefinite resource holding or premature transaction termination",
+      "severity": "HIGH",
+      "attack_vector": "Attacker omits timeout in BeginWrite to hold locks indefinitely, or injects timeout in Commit/Rollback to cause protocol confusion"
+    },
+    {
+      "property_id": "PROP_012",
+      "vulnerability": "Privilege escalation through unauthorized attribute modification",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker bypasses privilege checks to write to admin-only attributes, modifying security configurations or critical cluster settings"
+    },
+    {
+      "property_id": "PROP_013",
+      "vulnerability": "Protocol semantic violation and inconsistent locking behavior",
+      "severity": "HIGH",
+      "attack_vector": "Attacker mixes atomic and non-atomic attributes to create race conditions or bypass transactional guarantees"
+    },
+    {
+      "property_id": "PROP_014",
+      "vulnerability": "Concurrent transaction interference and atomicity violation",
+      "severity": "HIGH",
+      "attack_vector": "Attacker exploits missing lock exclusivity to access attributes locked by another client, causing data corruption during commit"
+    },
+    {
+      "property_id": "PROP_015",
+      "vulnerability": "Memory exhaustion and system crash",
+      "severity": "HIGH",
+      "attack_vector": "Attacker forces server to accept writes beyond resource capacity, causing out-of-memory conditions or buffer overflows"
+    },
+    {
+      "property_id": "PROP_016",
+      "vulnerability": "Transaction failure through attribute set mismatch",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker exploits incomplete status reporting to cause INVALID_IN_STATE errors in legitimate client transactions"
+    },
+    {
+      "property_id": "PROP_017",
+      "vulnerability": "State management confusion and transaction failure",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker manipulates attribute lists between BeginWrite and Commit to bypass validation or cause state management errors exploitable for unauthorized access"
+    },
+    {
+      "property_id": "PROP_018",
+      "vulnerability": "Partial transaction initialization causing resource leaks",
+      "severity": "HIGH",
+      "attack_vector": "Attacker triggers partial failures to cause state creation when it shouldn't occur, holding locks on attributes that weren't properly reserved"
+    },
+    {
+      "property_id": "PROP_019",
+      "vulnerability": "Denial-of-service through excessive timeout or race conditions through timeout mismatch",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker requests extremely long timeouts to starve resources, or exploits timeout mismatches to cause race between client expectations and server behavior"
+    },
+    {
+      "property_id": "PROP_020",
+      "vulnerability": "Unauthorized commit of forged transactions",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker sends CommitWrite for transactions never initiated, applying arbitrary changes to attributes without proper authorization or locking"
+    },
+    {
+      "property_id": "PROP_021",
+      "vulnerability": "Atomicity violation through observable intermediate states",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker exploits sequential processing to observe intermediate states where some writes visible but not others, performing TOCTOU attacks"
+    },
+    {
+      "property_id": "PROP_022",
+      "vulnerability": "Data corruption through invalid write application",
+      "severity": "HIGH",
+      "attack_vector": "Attacker crafts writes that bypass validation to apply stale data, violate version checks, or break business logic constraints"
+    },
+    {
+      "property_id": "PROP_023",
+      "vulnerability": "Partial commit breaking ACID properties",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker triggers conditions where validation failure doesn't cause full rollback, leaving some writes applied and corrupting cluster state"
+    },
+    {
+      "property_id": "PROP_024",
+      "vulnerability": "Invariant violation and system instability",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker crafts transactions that pass individual validation but violate global constraints, causing security policy violations or exploiting constraint-dependent logic"
+    },
+    {
+      "property_id": "PROP_025",
+      "vulnerability": "Ambiguous transaction outcome causing state divergence",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker exploits silent application failures to cause client-server state divergence, making incorrect assumptions about attribute states"
+    },
+    {
+      "property_id": "PROP_026",
+      "vulnerability": "Client confusion and protocol parsing errors",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker exploits inconsistent response formats to cause client-side errors or misinterpretation of transaction outcome"
+    },
+    {
+      "property_id": "PROP_027",
+      "vulnerability": "State reuse attacks and memory leaks",
+      "severity": "HIGH",
+      "attack_vector": "Attacker exploits undiscarded states to send multiple commit requests or maintain locks indefinitely"
+    },
+    {
+      "property_id": "PROP_028",
+      "vulnerability": "Transaction interference and denial-of-service",
+      "severity": "HIGH",
+      "attack_vector": "Attacker sends spurious rollback requests to disrupt legitimate atomic writes or rollback states owned by other clients"
+    },
+    {
+      "property_id": "PROP_029",
+      "vulnerability": "Incomplete rollback causing state inconsistency",
+      "severity": "HIGH",
+      "attack_vector": "Attacker exploits partial rollback to cause pending values to leak into server state or maintain locks interfering with subsequent operations"
+    },
+    {
+      "property_id": "PROP_030",
+      "vulnerability": "Indefinite resource holding and denial-of-service",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker triggers rollback failures to leave system in undefined state with locks held indefinitely"
+    },
+    {
+      "property_id": "PROP_031",
+      "vulnerability": "Transaction read inconsistency causing logic errors",
+      "severity": "HIGH",
+      "attack_vector": "Attacker exploits stale read values to cause writing client to make incorrect decisions, potentially causing double-writes or constraint violations"
+    },
+    {
+      "property_id": "PROP_032",
+      "vulnerability": "Isolation violation exposing pending writes",
+      "severity": "HIGH",
+      "attack_vector": "Attacker exploits incorrect read handling to observe pending writes from client's own transaction prematurely"
+    },
+    {
+      "property_id": "PROP_033",
+      "vulnerability": "Constraint bypass through incorrect validation context",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker crafts transactions where individual writes pass validation against current values but violate invariants when considered with pending values"
+    },
+    {
+      "property_id": "PROP_034",
+      "vulnerability": "Denial-of-service through forced transaction failures",
+      "severity": "HIGH",
+      "attack_vector": "Attacker deliberately invokes commands to modify attributes locked in atomic writes, causing legitimate transactions to fail at commit"
+    },
+    {
+      "property_id": "PROP_035",
+      "vulnerability": "Lost updates and data corruption",
+      "severity": "HIGH",
+      "attack_vector": "Attacker triggers external commands during atomic write, then exploits missing version check to overwrite those changes, violating causality"
+    },
+    {
+      "property_id": "PROP_036",
+      "vulnerability": "Resource waste and availability degradation",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker exploits lack of explicit cancellation to cause server to maintain unnecessary states until timeout"
+    },
+    {
+      "property_id": "PROP_037",
+      "vulnerability": "Client confusion and incorrect transaction state assumptions",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker exploits incomplete status lists to cause clients to operate on wrong assumptions about which attributes are locked"
+    },
+    {
+      "property_id": "PROP_038",
+      "vulnerability": "Protocol parsing errors and timeout mismanagement",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker exploits timeout field inconsistency to cause client confusion about timeout applicability, leading to premature abandonment"
+    },
+    {
+      "property_id": "PROP_039",
+      "vulnerability": "Confidentiality breach and data corruption",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker exploits buffer isolation weaknesses to access pending writes, extracting sensitive data or manipulating values before commit"
+    },
+    {
+      "property_id": "PROP_040",
+      "vulnerability": "Denial-of-service through forced transaction failures",
+      "severity": "MEDIUM",
+      "attack_vector": "Attacker exploits order-dependent matching to cause spurious INVALID_IN_STATE errors in legitimate transactions"
+    },
+    {
+      "property_id": "PROP_041",
+      "vulnerability": "Protocol confusion enabling validation bypass",
+      "severity": "HIGH",
+      "attack_vector": "Attacker sends out-of-order operations to skip validation stages, apply writes without locking, or create inconsistent states bypassing security checks"
+    },
+    {
+      "property_id": "PROP_042",
+      "vulnerability": "Time-of-check-time-of-use attacks and invariant violations",
+      "severity": "CRITICAL",
+      "attack_vector": "Attacker observes partial updates during commit to perform operations on inconsistent data, violating invariants or causing cascading failures"
+    },
+    {
+      "property_id": "PROP_043",
+      "vulnerability": "Transaction observation and information leakage",
+      "severity": "HIGH",
+      "attack_vector": "Attacker continuously reads locked attributes to observe ongoing transaction activity, leak uncommitted data, or perform timing attacks to predict commit outcomes"
+    }
+  ],
+  "fsmReferenceProperties": [
+    {
+      "state_name": "IDLE",
+      "properties_enforcing_transitions": ["PROP_041"],
+      "critical_property": "PROP_041 - Only BeginWrite allowed; other operations must be rejected to prevent protocol confusion"
+    },
+    {
+      "state_name": "BEGIN_WRITE_SENT",
+      "properties_enforcing_transitions": ["PROP_001", "PROP_002", "PROP_007", "PROP_008", "PROP_009", "PROP_011"],
+      "critical_property": "PROP_001 - Authentication failure here prevents state creation and all subsequent operations"
+    },
+    {
+      "state_name": "ACTIVE_TRANSACTION",
+      "properties_enforcing_transitions": ["PROP_003", "PROP_010", "PROP_020", "PROP_028"],
+      "critical_property": "PROP_003 - Write isolation must be maintained; violations allow transaction hijacking"
+    },
+    {
+      "state_name": "PENDING_WRITES_BUFFERED",
+      "properties_enforcing_transitions": ["PROP_004", "PROP_031", "PROP_032", "PROP_033", "PROP_039"],
+      "critical_property": "PROP_004 - Pending write visibility isolation is critical; leaks break confidentiality and atomicity"
+    },
+    {
+      "state_name": "COMMIT_VALIDATION",
+      "properties_enforcing_transitions": ["PROP_021", "PROP_022", "PROP_024", "PROP_033", "PROP_035"],
+      "critical_property": "PROP_024 - Constraint validation failure triggers rollback; bypass allows invariant violations"
+    },
+    {
+      "state_name": "COMMIT_APPLICATION",
+      "properties_enforcing_transitions": ["PROP_005", "PROP_023", "PROP_025", "PROP_042"],
+      "critical_property": "PROP_005 - All-or-nothing atomicity is the core guarantee; partial commits break ACID properties"
+    },
+    {
+      "state_name": "ROLLBACK",
+      "properties_enforcing_transitions": ["PROP_028", "PROP_029", "PROP_030"],
+      "critical_property": "PROP_029 - All pending writes must be discarded; partial rollback causes state corruption"
+    },
+    {
+      "state_name": "TIMEOUT_EXPIRED",
+      "properties_enforcing_transitions": ["PROP_006", "PROP_019"],
+      "critical_property": "PROP_006 - Automatic rollback on timeout prevents indefinite resource holding"
+    },
+    {
+      "state_name": "STATE_CLEANUP",
+      "properties_enforcing_transitions": ["PROP_027"],
+      "critical_property": "PROP_027 - State must be discarded after commit/rollback to prevent reuse attacks"
+    }
+  ],
+  "additionalInsights": "1. **Hidden Race Condition**: PROP_034 creates a deliberate race window where external commands can invalidate atomic writes. While the spec acknowledges this may cause commit failures, it provides no mechanism for clients to detect or prevent this. An attacker with the ability to invoke commands could systematically disrupt atomic writes, causing persistent denial-of-service that is difficult to distinguish from legitimate operation.\n\n2. **Timeout Asymmetry**: PROP_019 allows servers to silently reduce client-requested timeouts, but does not require the client to acknowledge or verify the alternative timeout. If a client doesn't properly process the response timeout and uses its original request timeout, it may attempt commits after the server has already rolled back, creating a desynchronization vulnerability.\n\n3. **Resource Exhaustion Through Attribute Expansion**: PROP_016 allows servers to expand the attribute set beyond what the client requested due to \"shared resource\" constraints. While this is returned to the client, there is no upper bound specified. A malicious or buggy server could claim all attributes on a cluster are \"shared resources,\" forcing clients to lock an entire cluster for any atomic write, enabling targeted denial-of-service.\n\n4. **Implicit State Leakage Through Error Timing**: The various INVALID_IN_STATE, BUSY, and RESOURCE_EXHAUSTED errors can be used for side-channel attacks. By observing error patterns and timing, an attacker could infer which attributes are locked, which clients are active, and when resources are constrained, potentially enabling more targeted attacks or business logic information leakage.\n\n5. **No Commit Ordering Guarantees**: While PROP_042 ensures atomicity within a single transaction, the specification does not address ordering between multiple committed transactions from different clients. In a high-contention scenario, this could lead to causality violations visible to observers, especially if external commands (PROP_034) interleave.\n\n6. **Pending Write Integrity Gap**: PROP_033 requires integrity checks to use pending values, but does not specify how to handle checks that depend on attributes not in the current Atomic Write State. An attacker could craft transactions that lock only some attributes involved in a constraint, causing validation to pass with incomplete information, then exploit the missing attributes to violate the constraint through separate operations.\n\n7. **Fabric Isolation Assumption**: PROP_002 relies entirely on the session layer's fabric association. If the session layer has vulnerabilities in fabric identification or if fabric switching is possible mid-session, the atomic write isolation breaks completely, enabling cross-tenant attacks.\n\n8. **Memory Safety Implications**: PROP_039 and PROP_015 are particularly critical for memory-unsafe implementations (e.g., C/C++). The specification does not provide guidance on secure pending write buffer implementation, potentially leading to implementations vulnerable to buffer overflows, use-after-free, or information disclosure through uninitialized memory.\n\n9. **State Machine Deadlock Potential**: The combination of PROP_010 (single state per client/cluster) and PROP_014 (attribute locking) could create deadlock scenarios if a client crashes or network partition occurs. While PROP_006 provides timeout-based recovery, the timeout could be set very high, causing extended unavailability.\n\n10. **Specification Gap - Retry Semantics**: The specification mentions clients \"MAY choose to try again\" (after BUSY status) but provides no guidance on backoff, maximum retries, or detection of persistent failures. This could lead to retry storms under contention, amplifying denial-of-service conditions.",
+  "summary": {
+    "total_properties": 43,
+    "by_importance": {
+      "CRITICAL": 20,
+      "HIGH": 19,
+      "MEDIUM": 4
+    },
+    "by_category": {
+      "Security": 6,
+      "AccessControl": 2,
+      "Consistency": 12,
+      "Atomicity": 6,
+      "Timing": 2,
+      "Correctness": 14,
+      "Cryptography": 0,
+      "Revocation": 0
+    },
+    "total_assumptions": 10,
+    "vulnerabilities_identified": 42
+  }
+}
